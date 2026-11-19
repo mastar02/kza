@@ -119,7 +119,9 @@ def _capture_settings(config: dict) -> dict:
             'watchdog': {key: rooms.get('stream_watchdog', {}).get(key) for key in
                          ('enabled', 'check_interval_s', 'no_frames_timeout_s',
                           'first_frame_grace_s', 'reopen_backoff_min_s', 'reopen_backoff_max_s',
-                          'catalog_refresh_min_interval_s', 'catalog_refresh_max_interval_s')}}
+                          'catalog_refresh_min_interval_s', 'catalog_refresh_max_interval_s',
+                          'xvf_reboot_enabled', 'xvf_reboot_after_failures',
+                          'xvf_reboot_max_per_hour', 'xvf_reboot_settle_s')}}
 
 
 def collect_snapshot() -> dict:

@@ -22,6 +22,9 @@ from enum import Enum
 
 # The cap counts reboots inside this sliding window.
 REBOOT_WINDOW_S = 3600.0
+# A due reboot deferred by an activity for this long is logged as an error
+# once: an activity flag that never clears would otherwise hide a dead room.
+REBOOT_DEFERRAL_ALERT_S = 600.0
 
 
 class XvfRebootDecision(str, Enum):

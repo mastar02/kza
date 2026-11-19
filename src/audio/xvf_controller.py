@@ -342,10 +342,20 @@ class XvfController:
         handle is retired either way; ``wait_reenumerated``
         adopts the new device. Blocking: run it off the event loop.
 
+        Only a port-bound controller reboots: without a parseable
+        ``usb_port`` the discovery would take the first XVF3800 on the bus,
+        which may be another room's healthy microphone, so nothing is sent.
+
         Returns:
             The outcome and the USB address the device had, which changes
             when it re-enumerates. Never raises (fail-open).
         """
+        if parse_usb_port(self.usb_port) is None:
+            logger.warning(
+                f"XvfController: REBOOT not sent: no parseable usb_port ({self.usb_port!r}); "
+                "refusing to reboot whichever XVF3800 comes first on the bus"
+            )
+            return XvfRebootResult(XvfRebootOutcome.NO_DEVICE)
         with self._usb_lock:
             # Fresh discovery, never the cached handle: after a replug the
             # cache may still point to a device that left the bus.
@@ -398,8 +408,11 @@ class XvfController:
 
         Returns:
             True when the new device was found and cached; False on timeout,
-            abort or any discovery failure (fail-open).
+            abort, any discovery failure (fail-open) or a controller without
+            a parseable ``usb_port`` (it could adopt another room's device).
         """
+        if parse_usb_port(self.usb_port) is None:
+            return False
         deadline = monotonic() + max(0.0, timeout_s)
         seen_absent = False
         while True:

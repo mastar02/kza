@@ -1395,9 +1395,12 @@ rooms:
     # re-enumere (hasta xvf_reboot_settle_s), se re-aplica xvf_tuning (el
     # REBOOT vuelve el DSP a fábrica), se refresca el catálogo de PortAudio si
     # no lista la card nueva y se reabre. Nunca durante un comando, una
-    # conversación o una respuesta. Cada reboot dentro de la hora duplica las
-    # fallas requeridas para el siguiente; con xvf_reboot_max_per_hour
-    # alcanzado deja de rebootear y loguea que hace falta re-enchufar el mic.
+    # conversación o una respuesta: mientras tanto la room sigue con la
+    # reapertura normal, y si la espera supera 10 min se loguea un error. Solo
+    # se rebootea con un XvfController atado a su propio puerto. Cada reboot
+    # dentro de la hora duplica las fallas requeridas para el siguiente; con
+    # xvf_reboot_max_per_hour alcanzado deja de rebootear y loguea que hace
+    # falta re-enchufar el mic.
     xvf_reboot_enabled: true
     xvf_reboot_after_failures: 2
     xvf_reboot_max_per_hour: 3

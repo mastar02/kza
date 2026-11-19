@@ -489,6 +489,18 @@ class TestFirmwareReboot:
         c = XvfController(usb_port="7-5.3")
         assert c.reboot() == XvfRebootResult(XvfRebootOutcome.NO_DEVICE)
 
+    @pytest.mark.parametrize("usb_port", [None, "", "not-a-port"])
+    def test_unbound_controller_never_reboots_the_first_xvf_on_the_bus(self, monkeypatch, usb_port):
+        """T048-U1-RV1 F2: sin puerto propio no se rebootea el mic de OTRA room."""
+        other_room = FakeBusDev(7, (5, 3), address=4)
+        bus = _Bus(monkeypatch, [[other_room]])
+        c = XvfController(usb_port=usb_port)
+        assert c.reboot() == XvfRebootResult(XvfRebootOutcome.NO_DEVICE)
+        assert other_room.transfers == []
+        assert bus.calls == 0  # ni siquiera se busca
+        assert c.wait_reenumerated(4, 5.0, sleep=lambda _s: None) is False
+        assert c._dev is None and bus.calls == 0
+
     def test_reboot_without_pyusb_fails_open(self, monkeypatch):
         monkeypatch.setitem(sys.modules, "usb.core", None)
         c = XvfController(usb_port="7-5.3")

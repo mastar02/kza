@@ -24,7 +24,7 @@ import pytest
 from src.audio.microphone_status import UsbInventory, UsbMicrophone, read_usb_microphones
 from src.audio.owned_input import OwnedInputStream
 from src.audio.xvf_controller import XvfController, XvfRebootOutcome, XvfRebootResult
-from src.audio.xvf_recovery import XvfRebootPolicy
+from src.audio.xvf_recovery import REBOOT_DEFERRAL_ALERT_S, XvfRebootPolicy
 from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
 
 LOGGER = "src.pipeline.multi_room_audio_loop"
@@ -298,6 +298,28 @@ class TestRebootFlow:
         assert ctrl._dev is reborn
 
 
+    async def test_controller_without_its_own_port_never_reboots_another_room(
+            self, tmp_path, monkeypatch, caplog):
+        """T048-U1-RV1 F2: no fallback to the room's mic port for an unbound controller."""
+        bus = _FakeUsbBus(monkeypatch)
+        cocina_mic = bus.add(7, (5, 3), address=4)  # first XVF3800 on the bus
+        living_mic = bus.add(1, (2, 3), address=9)
+        ctrl = XvfController(usb_port=None, read_timeout_ms=50, max_retries=2)
+        rig = _Rig(tmp_path, living_ctrl=ctrl)
+        sd_patch, resolve_patch = rig.patches()
+        with sd_patch, resolve_patch, caplog.at_level(logging.INFO, logger=LOGGER):
+            await rig.start()
+            rig.fail_recoveries(2)
+            rig.loop._recover_dead_streams(["living"])
+            await rig.settle()
+            await rig.stop()
+        assert cocina_mic.transfers == [] and living_mic.transfers == []
+        assert rig.loop._xvf_reboot_budget.reboots_in_window("living") == 0
+        assert any("no XVF controller bound to its mic port; firmware reboot unavailable" in m
+                   for m in _messages(caplog))
+        assert rig.loop._streams["living"] in rig.streams  # ordinary recovery kept
+
+
 class _FakeUsbDevice:
     def __init__(self, bus, ports, address, on_reboot):
         self.bus, self.port_numbers, self.address = bus, ports, address
@@ -478,9 +500,14 @@ class TestNeverDuringActivity:
             rig.fail_recoveries(2)
             for _ in range(3):
                 rig.loop._recover_dead_streams(["living"])
-                assert rig.loop._recovery_task is None
+                await rig.settle()
             assert rig.living_ctrl.reboots == 0
-            rig.old["living"].close.assert_not_called()
+            # Meanwhile the room keeps the ordinary reopen it had before
+            # T048-U1 (RV1 F3), without cutting the other room.
+            rig.old["living"].close.assert_called_once()
+            rig.old["cocina"].close.assert_not_called()
+            assert rig.loop._streams["living"] in rig.streams
+            assert rig.loop._xvf_reboot_budget.failures("living") == 5
             deferred = [m for m in _messages(caplog) if "XVF firmware reboot deferred" in m]
             assert deferred == [f"[audio-watchdog] living: XVF firmware reboot deferred ({blocker})"]
             rig.cocina.listening = False
@@ -491,6 +518,107 @@ class TestNeverDuringActivity:
             await rig.settle()
             await rig.stop()
         assert rig.living_ctrl.reboots == 1
+
+    async def test_a_deferral_that_never_ends_is_reported_once_as_an_error(self, tmp_path, caplog):
+        """T048-U1-RV1 F3: an activity flag stuck on must not hide a dead room."""
+        rig = _Rig(tmp_path)
+        rig.follow_up.is_active = True  # never clears
+        sd_patch, resolve_patch = rig.patches()
+        with sd_patch, resolve_patch, caplog.at_level(logging.INFO, logger=LOGGER):
+            await rig.start()
+            rig.fail_recoveries(2)
+            rig.loop._recover_dead_streams(["living"])
+            await rig.settle()
+            rig.clock[0] += REBOOT_DEFERRAL_ALERT_S - 1.0
+            rig.loop._recover_dead_streams(["living"])
+            await rig.settle()
+            assert not [r for r in caplog.records if r.levelno >= logging.ERROR
+                        and "deferred for" in r.getMessage()]
+            for _ in range(3):
+                rig.clock[0] += 60.0
+                rig.loop._recover_dead_streams(["living"])
+                await rig.settle()
+            await rig.stop()
+        assert rig.living_ctrl.reboots == 0
+        errors = [r.getMessage() for r in caplog.records
+                  if r.levelno >= logging.ERROR and "deferred for" in r.getMessage()]
+        assert errors == [
+            f"[audio-watchdog] living: XVF firmware reboot deferred for "
+            f"{REBOOT_DEFERRAL_ALERT_S + 59.0:.0f}s (conversation); capture is still dead and "
+            "only the ordinary reopen runs; check whether that activity is stuck"
+        ]
+
+    @pytest.mark.parametrize("activity", ["command", "response"])
+    async def test_activity_starting_during_reboot_is_not_cut_by_the_post_reboot_refresh(
+            self, tmp_path, caplog, activity):
+        """T048-U1-RV1 F1: the post-reboot catalog refresh checks the activity again.
+
+        The reboot takes seconds; a wake or a response that starts meanwhile
+        must keep its capture in every other room. The refresh happens once
+        the activity ends, through the room's reopen waiter.
+        """
+        rig = _Rig(tmp_path)
+        handler = MagicMock()
+        handler.is_responding = False
+        rig.loop.attach_response_handler(handler)
+
+        def reboot_while_activity_starts():
+            rig.renumber_living(8)
+            if activity == "command":
+                rig.cocina.listening = True
+            else:
+                handler.is_responding = True
+        rig.living_ctrl.on_reboot = reboot_while_activity_starts
+        sd_patch, resolve_patch = rig.patches()
+        with sd_patch, resolve_patch, caplog.at_level(logging.INFO, logger=LOGGER):
+            await rig.start()
+            rig.fail_recoveries(2)
+            rig.loop._recover_dead_streams(["living"])
+            await rig.settle()
+            # The refresh was declined: nothing else was cut and the room waits.
+            rig.old["cocina"].close.assert_not_called()
+            assert rig.loop._streams["cocina"] is rig.old["cocina"]
+            assert rig.sd._terminate.call_count == 0
+            assert rig.loop._is_awaiting_reopen("living")
+            assert rig.living_ctrl.writes  # the reboot still retuned the device
+            rig.cocina.listening = False
+            handler.is_responding = False
+            await _until(lambda: rig.living.device_index == rig.index(8))
+            await _until(lambda: rig.loop._recovery_task is None
+                         and "cocina" in rig.loop._streams)
+            await rig.stop()
+        messages = _messages(caplog)
+        assert any(f"refresh after the XVF firmware reboot deferred ({activity})" in m
+                   for m in messages)
+        # The cut happens only after the activity ended, never skipped mid-way.
+        assert not any("refresh skipped" in m for m in messages)
+        assert rig.sd._terminate.call_count == 1
+        rig.old["cocina"].close.assert_called_once()
+        assert rig.living_ctrl.reboots == 1
+
+    @pytest.mark.parametrize("activity", ["command", "conversation", "response"])
+    async def test_catalog_refresh_declines_before_retiring_any_room(self, tmp_path, caplog, activity):
+        """T048-U1-RV1 F1: _recover_streams(catalog_refresh=True) never cuts under activity."""
+        rig = _Rig(tmp_path)
+        if activity == "command":
+            rig.cocina.listening = True
+        elif activity == "conversation":
+            rig.follow_up.is_active = True
+        else:
+            handler = MagicMock()
+            handler.is_responding = True
+            rig.loop.attach_response_handler(handler)
+        sd_patch, resolve_patch = rig.patches()
+        with sd_patch, resolve_patch, caplog.at_level(logging.INFO, logger=LOGGER):
+            await rig.start()
+            await rig.loop._recover_streams(["living"], catalog_refresh=True)
+            awaiting = rig.loop._is_awaiting_reopen("living")
+            await rig.stop()
+        rig.old["living"].close.assert_not_called()
+        rig.old["cocina"].close.assert_not_called()
+        assert rig.sd._terminate.call_count == 0
+        assert not awaiting  # Living's stream is still open: no waiter needed
+        assert any(f"deferred ({activity}) before any capture cut" in m for m in _messages(caplog))
 
     async def test_activity_starting_after_admission_cancels_the_reboot(self, tmp_path):
         rig = _Rig(tmp_path)
@@ -600,6 +728,29 @@ class TestTuningOnReenumeration:
         rig.loop._xvf_rebooting.discard("living")
         await self._publish(rig, self._inventory(self._living(5)))
         assert rig.living_ctrl.writes == []  # the change was already recorded
+
+    async def test_inventory_after_own_reboot_does_not_retune_again(self, tmp_path):
+        """T048-U1-RV1 F4: the reboot records the new device as the baseline."""
+        rig = _Rig(tmp_path)
+        device_dir = tmp_path / _Rig.LIVING_PORT
+        device_dir.mkdir()
+        (device_dir / "devnum").write_text("4\n")
+        rig.living_ctrl.on_reboot = lambda: (device_dir / "devnum").write_text("5\n")
+        await self._publish(rig, self._inventory(self._living(4)))  # baseline
+        sd_patch, resolve_patch = rig.patches()
+        with sd_patch, resolve_patch:
+            await rig.start()
+            rig.fail_recoveries(2)
+            rig.loop._recover_dead_streams(["living"])
+            await rig.settle()
+            assert len(rig.living_ctrl.writes) == 2  # the reboot's own retune
+            # The next poll sees the device the reboot already retuned.
+            await self._publish(rig, self._inventory(self._living(5)))
+            assert len(rig.living_ctrl.writes) == 2
+            # A later real replug is still noticed.
+            await self._publish(rig, self._inventory(self._living(6)))
+            assert len(rig.living_ctrl.writes) == 4
+            await rig.stop()
 
     async def test_tuning_disabled_means_no_writes_on_replug(self, tmp_path):
         rig = _Rig(tmp_path, tuning={"apply_on_start": False, "params": {"PP_AGCMAXGAIN": [16.0]}})
