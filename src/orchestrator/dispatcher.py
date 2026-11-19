@@ -89,6 +89,7 @@ from src.reminders.voice_request import (
     period_hours,
 )
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
+from src.world.weather import INDOOR_TEMPERATURE_UNSUPPORTED, is_indoor_temperature_question
 
 logger = get_logger(__name__)
 
@@ -726,6 +727,25 @@ class RequestDispatcher:
         "temperatura afuera", "grados hay afuera", "grados hace",
         "llueve", "va a llover", "lloviendo",
         "pronóstico", "pronostico",
+        # T037-U2: future and "el tiempo" forms of the explicit questions
+        # ("¿qué tiempo va a hacer el sábado?", "¿cómo está el tiempo?").
+        # Review T037-U2-RV4: only inside a question frame. Unqualified,
+        # "cuánto tiempo va a hacer falta", "¿cómo está el tiempo del
+        # temporizador?" and "¿a qué hora va a estar el clima prendido?"
+        # (HVAC) were weather; "el tiempo de <algo>" is also checked against
+        # _TIEMPO_OF_SOMETHING_RE below.
+        "qué tiempo va a hacer", "que tiempo va a hacer",
+        "cómo va a estar el clima", "como va a estar el clima",
+        "cómo va a estar el tiempo", "como va a estar el tiempo",
+        "cómo está el tiempo", "como esta el tiempo",
+        # Fix verification T037-U2-FV1: the narrowed keyword lost the
+        # mixed-accent transcriptions the old "está el tiempo" caught.
+        "como está el tiempo", "cómo esta el tiempo",
+        # Review T037-U2-RV2: the future temperature question. Explicit (not
+        # a fragment): the subject is the temperature, never a command, and a
+        # thermostat command ("poné la temperatura en 22") has none of these.
+        "temperatura va a hacer", "grados va a hacer",
+        "temperatura de mañana", "temperatura de manana",
         # Finding 3 (review 2026-08-04): sin esto, una pregunta como "¿tengo
         # que prender el clima o hace calor afuera?" no matcheaba ningún
         # WEATHER_KEYWORDS y caía al loop de DOMOTICS_KEYWORDS de abajo, que
@@ -733,6 +753,7 @@ class RequestDispatcher:
         # incorrecto. "hace calor"/"hace frío" son vocabulario de clima
         # genérico, no colisionan con ningún comando de domótica.
         "hace calor", "hace frío", "hace frio",
+        "va a hacer calor", "va a hacer frío", "va a hacer frio",
     ]
 
     # Subconjunto de WEATHER_KEYWORDS que son FRAGMENTOS DE CLÁUSULA, no
@@ -749,8 +770,19 @@ class RequestDispatcher:
     # aunque "prende" matchee como substring de "prender".
     WEATHER_CLAUSE_FRAGMENTS = frozenset({
         "hace calor", "hace frío", "hace frio",
+        "va a hacer calor", "va a hacer frío", "va a hacer frio",
         "llueve", "va a llover", "lloviendo",
     })
+
+    # Review T037-U2-RV4: "el tiempo de(l) <algo>" is the weather only when
+    # <algo> is a day or a period ("el tiempo de mañana", "del sábado", "del
+    # fin de semana"); "el tiempo del temporizador" is a duration. Applied to
+    # the "el tiempo" keywords only, on accent-free text.
+    _TIEMPO_OF_SOMETHING_RE = re.compile(
+        r"\bel tiempo del? (?!(?:hoy|manana|pasado|esta|este|fin|finde|proxim\w*"
+        r"|la (?:manana|tarde|noche|semana)"
+        r"|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b)"
+    )
 
     # Marcadores de no-imperativo (Finding I1, review PR #15). El veto de
     # WEATHER_CLAUSE_FRAGMENTS de arriba asume que "fragmento + verbo
@@ -909,6 +941,9 @@ class RequestDispatcher:
         self.weather_entity = weather_entity
         self.home_capabilities = home_capabilities
         self.room_namespace = room_namespace if room_namespace is not None else RoomNamespace(())
+        # Room words an indoor temperature question can name (T037-U2): the
+        # configured catalog plus the grammar's spoken aliases.
+        self._indoor_room_words = frozenset(ROOM_ALIASES) | self.room_namespace.rooms
         self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier()
         self.timer_manager = timer_manager
         self.timer_fallback_zone = timer_fallback_zone
@@ -1092,6 +1127,14 @@ class RequestDispatcher:
             result = self._answer_clock(text)
             self._stats["fast_path"] += 1
 
+        elif path == PathType.FAST_HOUSEHOLD:
+            # Only _classify_request's indoor temperature question lands here
+            # (T037-U2): an honest refusal with zero effects until T037-U4.
+            logger.info("[Weather] indoor temperature question refused (household state, T037-U4)")
+            result = self._household_refusal(PathType.FAST_HOUSEHOLD, "indoor_temperature",
+                                             INDOOR_TEMPERATURE_UNSUPPORTED, TaskStatus.UNSUPPORTED)
+            self._stats["fast_path"] += 1
+
         else:
             # Slow path - encolar para LLM
             result = await self._slow_path(
@@ -1140,6 +1183,21 @@ class RequestDispatcher:
         # upstream turn_on/turn_off guess never turns a question into an action.
         if parse_clock_query(text_lower, self._clock_wake_words) is not None:
             return PathType.FAST_CLOCK, Priority.HIGH
+
+        # T037-U2: a temperature question about a room or the inside of the
+        # house is household state (T037-U4), never the outdoor weather
+        # entity, the 7B or an action. Like the clock it precedes the
+        # service_filter shortcut; a thermostat command ("bajá la temperatura
+        # del living") is not a question and keeps its path.
+        # Accepted (review T037-U2-RV5): a turn that is both a command and an
+        # indoor temperature question ("subí el aire del living, qué
+        # temperatura hay en el living?") and that the compound detector does
+        # not claim gets this refusal and the command is not run. Zero
+        # effects and an honest answer; the user repeats the command. Letting
+        # an upstream turn_on/turn_off win instead would act on a turn that
+        # carries a question, the phantom-action risk this ordering avoids.
+        if is_indoor_temperature_question(text_lower, self._indoor_room_words):
+            return PathType.FAST_HOUSEHOLD, Priority.HIGH
 
         if service_filter in ("turn_on", "turn_off"):
             return PathType.FAST_DOMOTICS, Priority.HIGH
@@ -1197,8 +1255,11 @@ class RequestDispatcher:
             # probablemente es: una pregunta u observación sin "?"
             # transcrita.
             non_command_hint = any(h in text_lower for h in self._NON_COMMAND_HINTS)
+            tiempo_of_something = bool(self._TIEMPO_OF_SOMETHING_RE.search(_strip_accents(text_lower)))
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
+                    if tiempo_of_something and "el tiempo" in keyword:
+                        continue
                     if (not is_question and domotics_verb
                             and keyword in self.WEATHER_CLAUSE_FRAGMENTS
                             and not non_command_hint):
@@ -2459,23 +2520,39 @@ class RequestDispatcher:
         by position; 'forecast_date_alignment' is observed only when exactly one
         entry matched. Neither branch substitutes another entity or uses an
         unclocked cache.
-        """
-        from src.world.weather import (NO_DATA, NO_FORECAST, ForecastAlignment,
-                                       describe_current, describe_forecast, forecast_target_date)
 
-        text_lower = text.lower()
-        dia = ("pasado mañana" if "pasado mañana" in text_lower or "pasado manana" in text_lower
-               else "mañana" if "mañana" in text_lower or "manana" in text_lower else None)
+        The day comes from :func:`parse_weather_horizon` (T037-U2, user answer
+        Q23): "esta/por la/a la mañana" is today; today in the future tense
+        ("¿va a llover hoy?") reads today's forecast entry and in the present
+        ("¿qué tiempo hace?") the current conditions; a weekday is a forecast
+        day by date. An unsupported horizon or several days are refused before
+        any read, never answered with the current conditions.
+        """
+        from src.world.weather import (NO_DATA, NO_FORECAST, NO_FORECAST_HORIZON, ONE_DAY_AT_A_TIME,
+                                       ForecastAlignment, HorizonKind, describe_current, describe_forecast,
+                                       forecast_target_date, parse_weather_horizon)
+
+        horizon = parse_weather_horizon(text)
+        if horizon.kind in (HorizonKind.UNSUPPORTED, HorizonKind.SEVERAL_DAYS):
+            logger.info("Weather horizon refused before any read (horizon=%s)", horizon.kind.value)
+            unsupported = horizon.kind is HorizonKind.UNSUPPORTED
+            return self._household_refusal(
+                PathType.FAST_WEATHER, "weather", NO_FORECAST_HORIZON if unsupported else ONE_DAY_AT_A_TIME,
+                TaskStatus.UNSUPPORTED if unsupported else TaskStatus.NEEDS_INPUT)
+        forecasting = horizon.kind is HorizonKind.FORECAST
+        dia: str | None = None
         clock = self.home_capabilities.now if self.home_capabilities is not None else self.household_clock.now_utc
         attempted = clock()
-        source = ObservationSource.HA_FORECAST if dia else ObservationSource.HA_STATES
+        source = ObservationSource.HA_FORECAST if forecasting else ObservationSource.HA_STATES
         observation = Observation.from_read(source, available=False, observed_at=None,
             ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted)
         alignment: ForecastAlignment | None = None
+        answered = False
         try:
-            if dia:
+            if forecasting:
                 zone = self.household_clock.zone  # built once in the household clock's constructor
-                target = forecast_target_date(dia, attempted, zone)
+                target = forecast_target_date(horizon, attempted, zone)
+                dia = horizon.spoken_day((target - attempted.astimezone(zone).date()).days)
                 payload = await self.ha.call_service_with_response(
                     "weather", "get_forecasts", self.weather_entity,
                     {"type": "daily"}, timeout=WEATHER_FORECAST_TIMEOUT_S)
@@ -2491,6 +2568,7 @@ class RequestDispatcher:
                         unobserved_fields=("issued_at",) if answer.aligned
                         else ("issued_at", "forecast_date_alignment"))
                     response = answer.text
+                    answered = answer.aligned and response != NO_FORECAST
                 else:
                     observation = Observation.from_read(source, available=False, observed_at=None,
                         ttl_s=STATE_OBSERVATION_TTL_S, attempted_at=attempted,
@@ -2517,6 +2595,7 @@ class RequestDispatcher:
                 observation = observation.as_of(now)
                 entity = next((value for value in states.states if value.get("entity_id") == self.weather_entity), None) if observation.current(now) else None
                 response = describe_current(entity)
+                answered = response != NO_DATA
                 observation = replace(observation,
                     state=ObservationState.PARTIAL if observation.state is ObservationState.FRESH else observation.state,
                     unobserved_fields=tuple(sorted(set(observation.unobserved_fields) | {"measurement_time"})))
@@ -2524,7 +2603,7 @@ class RequestDispatcher:
         except Exception as error:
             logger.warning("Weather read unavailable (entity=%s, horizon=%s): %s",
                            self.weather_entity, dia, type(error).__name__)
-            response, success = NO_DATA, False
+            response, success, answered = NO_DATA, False, False
 
         # Observabilidad (review PR #14, 2026-08-06): un weather_entity mal
         # configurado o una lectura actual no disponible degradan TODOS a
@@ -2539,7 +2618,7 @@ class RequestDispatcher:
         # al usuario escuchando NADA. El bloque está protegido para reforzar
         # la garantía anti-mudo: si observabilidad falla, se loguea y listo.
         try:
-            if success and response in (NO_DATA, NO_FORECAST):
+            if success and not answered:
                 self._stats["weather_no_data"] += 1
                 now = time.monotonic()
                 if now - self._last_weather_nodata_warn > _WEATHER_NODATA_WARN_INTERVAL_S:
@@ -2569,7 +2648,7 @@ class RequestDispatcher:
         return DispatchResult(
             path=PathType.FAST_WEATHER, priority=priority,
             success=success, response=response, intent="weather", observation=observation,
-            outcome=TaskOutcome(TaskStatus.COMPLETED if success and response not in (NO_DATA, NO_FORECAST) else TaskStatus.FAILED),
+            outcome=TaskOutcome(TaskStatus.COMPLETED if success and answered else TaskStatus.FAILED),
         )
 
     def _extract_list_name(self, text: str) -> str | None:
