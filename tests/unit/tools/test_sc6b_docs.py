@@ -151,6 +151,15 @@ def test_the_owner_compaction_runbook_keeps_the_recompute_with_w8_b_caveat():
     assert "(paso 6 y «Presupuesto de bajada» en el runbook del modo release)" in flat
 
 
+def test_the_sc0b_copy_duration_points_to_the_sc6b_measurement():
+    """SC6B-B-M1-RV3: the SC-0b paragraph (145-146 s) tells the reader that SC-6b measured 163-165 s."""
+    text = DEPLOYMENT.read_text()
+    paragraph = _flat(text.split("\nDuración y espacio (SC-0 y SC-0b", 1)[1].split("\n\n", 1)[0])
+    assert "desde SC-0b tarda 145-146 s" in paragraph
+    assert ("SC-6b midió la misma copia (plan + start) en 163–165 s el 2026-11-19: ese es el T_copy que usan el "
+            "presupuesto de bajada y la fórmula de N (ver «Medición de bajada y disco (SC-6b)»)") in paragraph
+
+
 def test_deployment_carries_the_per_path_table_and_the_accepted_overrun():
     text = DEPLOYMENT.read_text()
     n_rule = _bullet(text, "**N del modo release (SC4A-N14).**")

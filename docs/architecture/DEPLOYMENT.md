@@ -2439,7 +2439,11 @@ Duración y espacio (SC-0 y SC-0b, medidos en el servidor como `yo`, CPU, con
 un estado sintético de producción de 154 MB: `events.db` 93 MB, `ambient.db`
 60 MB). La copia (`compact plan` + `compact start`) tardaba 290-292 s; desde
 SC-0b tarda 145-146 s (dos muestras: plan 10 s; start 135 s, con snapshot
-42 s, materialización 74 s, autorización 3,5 s y activación 3,2 s). La
+42 s, materialización 74 s, autorización 3,5 s y activación 3,2 s). Con el
+código del modo release (head c70a8c20) y el mismo estado de 154 MB, SC-6b
+midió la misma copia (plan + start) en 163–165 s el 2026-11-19: ese es el
+T_copy que usan el presupuesto de bajada y la fórmula de N (ver «Medición de
+bajada y disco (SC-6b)»). La
 ganancia viene de la representación, no de quitar controles: la autoridad de
 H se captura una vez por contenido y se reutiliza sólo si es idéntico todo lo
 que la captura lee (el contenido de cada base SQLite con su `-wal`, `-shm` y
