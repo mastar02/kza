@@ -426,6 +426,54 @@ class TestProcessCommandLegacy:
 
 
 @pytest.mark.asyncio
+class TestLegacyRoutineOutcome:
+    """T033-U1-RV4: the legacy routine handlers (stage 7, until T033-U4) report a TaskOutcome.
+
+    They return no evidence of a stored or executed change: a reply they mark
+    successful is UNCERTAIN, never COMPLETED; a refusal is FAILED.
+    """
+
+    @staticmethod
+    def _router(**overrides):
+        from src.routines.voice_routines import VoiceRoutineService
+
+        cp = MagicMock()
+        cp.process_command = AsyncMock(return_value=_make_cmd_result(text="nexa algo rutinario"))
+        # The read-only service is wired as in main; "algo rutinario" is not a routine question.
+        return _build_router(command_processor=cp, orchestrator_enabled=False,
+                             voice_routines=VoiceRoutineService(), **overrides)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("success, status", [(True, "uncertain"), (False, "failed")])
+    async def test_voice_routine_handler_result_carries_an_outcome(self, success, status):
+        handler = MagicMock()
+        handler.handle = AsyncMock(return_value={"handled": True, "success": success, "response": "legacy"})
+        manager = MagicMock()
+        manager.handle = AsyncMock(side_effect=AssertionError("RoutineManager reached"))
+        router = self._router(voice_routine_handler=handler, routine_manager=manager)
+
+        result = await router.process_command(np.zeros(16000, dtype=np.float32))
+
+        assert (result["intent"], result["response"]) == ("routine", "legacy")
+        assert result["outcome"]["status"] == status and result["task_completed"] is False
+        handler.handle.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("success, status", [(True, "uncertain"), (False, "failed")])
+    async def test_routine_manager_result_carries_an_outcome(self, success, status):
+        handler = MagicMock()
+        handler.handle = AsyncMock(return_value={"handled": False})
+        manager = MagicMock()
+        manager.handle = AsyncMock(return_value={"handled": True, "success": success, "response": "legacy"})
+        router = self._router(voice_routine_handler=handler, routine_manager=manager)
+
+        result = await router.process_command(np.zeros(16000, dtype=np.float32))
+
+        assert (result["intent"], result["response"]) == ("routine", "legacy")
+        assert result["outcome"]["status"] == status and result["task_completed"] is False
+        manager.handle.assert_awaited_once()
+
+
 class TestFeedbackDetection:
     """Test feedback phrase detection."""
 
