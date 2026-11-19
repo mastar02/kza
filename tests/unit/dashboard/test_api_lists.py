@@ -503,6 +503,24 @@ async def test_task_routes_without_their_manager_are_unavailable_with_an_outcome
     await api.stop()
 
 
+@pytest.mark.parametrize('body,detail', [
+    ({**SHARED_REMINDER, 'trigger_at': 253_370_764_800.0}, 'invalid_trigger_at'),  # 9999-01-01Z is excluded
+    ({**SHARED_REMINDER, 'text': ''}, None),
+    ({**SHARED_REMINDER, 'recurrence': 'monthly:0'}, None),  # next_trigger cannot place day 0
+    ({**SHARED_REMINDER, 'recurrence': 'monthly:32'}, None),
+], ids=['trigger-at-bound', 'empty-text', 'monthly-0', 'monthly-32'])
+async def test_a_reminder_at_the_edge_of_each_bound_is_refused_without_a_row(tasks_graph, body, detail):
+    """T035-U1-FV: each RV1 bound is exclusive where it says so; nothing is written."""
+    graph = tasks_graph
+    before = await snapshot(graph)
+    response = await graph.client.post('/api/reminders', headers=graph.headers['visitor'], json=body)
+    assert response.status_code == 422, response.text
+    if detail is not None:
+        assert response.json()['detail'] == detail
+        assert response.json()['outcome']['persistence'] == 'not_written'
+    assert await snapshot(graph) == before
+
+
 @pytest.mark.parametrize('recurrence', ['daily', 'weekdays', 'weekly:1', 'weekly:7', 'monthly:1', 'monthly:31'])
 async def test_every_recurrence_the_scheduler_walks_is_accepted_and_reads_back(tasks_graph, recurrence):
     """T035-U1-RV1: the recurrence bound refuses only what the scheduler cannot walk."""
