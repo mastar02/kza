@@ -284,7 +284,7 @@ async def test_stop_cancels_and_awaits_every_warning_and_ring():
     assert len(_manager_tasks()) == 3 and timers.get_status()["delivery_tasks"] == 2
     await timers.stop()
     assert _manager_tasks() == [] and timers.running is False
-    assert (timers._deliveries, timers._rings, timers._update_task) == ({}, {}, None)
+    assert (timers._deliveries, timers._rings, timers._update_task.done()) == ({}, {}, True)
     assert [e[1] for e in output.events].count("cut") == 2
     spoken = len(output.events)
     await clock.advance(300)

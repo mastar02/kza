@@ -296,7 +296,7 @@ class NamedTimerManager:
         is spoken.
         """
         self._running = False
-        task, self._update_task = self._update_task, None
+        task = self._update_task  # kept, done, after stop (lifecycle checks read it)
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
