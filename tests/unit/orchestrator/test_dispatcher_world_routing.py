@@ -778,7 +778,8 @@ async def test_today_forecast_missing_is_named_not_replaced_by_current(dispatche
     "cómo está el tiempo",
 ])
 async def test_present_tense_about_today_reads_current_conditions(dispatcher_with_async_ha, text):
-    d = _frozen(dispatcher_with_async_ha)
+    # Current conditions need no forecast date: the typed snapshot carries its own clock.
+    d = dispatcher_with_async_ha
     d.ha.call_service_with_response = AsyncMock(side_effect=AssertionError("forecast read"))
     d.ha.get_state_snapshot = AsyncMock(return_value=weather_snapshot(
         {"state": "cloudy", "attributes": {"temperature": 17}}))

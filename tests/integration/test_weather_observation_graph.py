@@ -234,8 +234,7 @@ async def test_each_horizon_through_the_application(leaves, tmp_path, monkeypatc
                 assert 'source_observation' not in result
 
 
-async def test_present_tense_this_morning_reads_current_conditions_through_the_application(leaves, tmp_path,
-                                                                                          monkeypatch):
+async def test_present_tense_this_morning_reads_current_conditions_through_the_application(leaves, tmp_path):
     transport = TaskTransport()
     weather(transport)
     transport.forecast_payload = {'service_response': {WEATHER: {'forecast': [TODAY, TOMORROW]}}}
@@ -244,7 +243,6 @@ async def test_present_tense_this_morning_reads_current_conditions_through_the_a
         config['home_assistant']['weather_entity'] = WEATHER
         async with AsyncExitStack() as stack:
             graph = await build_application(config, shutdown=stack, factories=leaves)
-            monkeypatch.setattr(graph.home_capabilities, '_clock', lambda: FROZEN)
             graph.models.stt.text = 'qué tiempo hace esta mañana'
             result = await graph.pipeline.process_command(event())
             assert result['intent'] == 'weather' and '22 grados' in result['response']
