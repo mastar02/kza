@@ -16,7 +16,7 @@ compiled CLI run as a subprocess:
 - every archive comes from scripts/build_runtime.py: R1's stand-in X4 (this
   tree at controller epoch 4), R2 = X5 (this tree), R2' = X5R2 (revision 2),
   X5R3 (revision 3, the hotfix of (12)), X5C and X5R2C (one controller-closure
-  comment: an equal pair with another digest) and the 63ea8d3 legacy artifact
+  comment: an equal pair with another digest) and the e9669ec legacy artifact
   (L4's slot in (8)); the schema-contract NEWs of (7) are X5/X5R2 with only
   ``release.json``'s ``schema_contract`` rewritten to 2 (what the checks read);
 - the stand-in for kza-voice is a real unit of this account's user manager
@@ -94,7 +94,7 @@ SMOKE = 10  # N of the first transition (runbook: N = 10 with T0)
 REVISION_1 = b"\nCONTROLLER_REVISION = 1\n"
 FUTURE = b"from __future__ import annotations\n"
 OWNER_COMPACTION = "src/memory/owner_compaction.py"
-LEGACY = "63ea8d3"
+LEGACY = launcher.LEGACY_CONTAINER_COMMIT  # R1E: the e9669ec container production serves
 STATUS = (*real.STATUS, "InvocationID")
 RESTART_SECONDS = 10.0  # managed.conf RestartSec
 CLEANUPS: list[dict] = []
@@ -1086,7 +1086,7 @@ def test_07_09_schema_contract_and_revision_refusals(builds, tmp_path, systemd, 
 # --- (8) a delegation record written after T0 -------------------------------------------------------------
 
 def _legacy_slot(world: World, builds: dict) -> None:
-    """slots/legacy: the 63ea8d3 runtime (its archive extracted) and a state with config/ and data/."""
+    """slots/legacy: the e9669ec runtime (its archive extracted) and a state with config/ and data/."""
     runtime = world.root / "slots" / "legacy" / "runtime"
     with tarfile.open(builds["legacy"]["archive"]) as bundle:
         bundle.extractall(runtime, filter="data")

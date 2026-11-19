@@ -121,7 +121,19 @@ _PROBE_ENVIRONMENT = ("LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "SQLITE_TMPDIR")
 GLIBC_TUNABLES_ENV = "GLIBC_TUNABLES"
 HEAP_HYGIENE_TUNABLES = (("glibc.malloc.perturb", "165"), ("glibc.malloc.tcache_count", "0"))
 UNINSTALL_PHRASE = "revivir datos borrados"
-LEGACY_COMMITS = ("b0866e8", "63ea8d3")
+# The legacy roles by commit: the frozen state slot (b0866e8) and the container 'current' serves at the
+# window. Since 2026-10-29 that container is e9669ec (voice-loading publication; user decision
+# batch_g_questions_20261118 "R1 base", which supersedes P5's 63ea8d3).
+LEGACY_STATE_COMMIT = "b0866e8"
+LEGACY_CONTAINER_COMMIT = "e9669ec"
+# The only legacy runtime L4 (uninstall-launcher) and the aborts may serve again: the e9669ec container
+# (user decision r1e_questions_20261118 R1E-Q2/Q4/Q5, "L4 targets only e9669ec"). Any other commit
+# refuses with runtime_admission_uninstall_legacy_commit: the b0866e8 slot's own runtime and the
+# superseded 63ea8d3 container included.
+LEGACY_COMMITS = (LEGACY_CONTAINER_COMMIT,)
+# The adoption (dry run, W2, W4's re-check) requires exactly this release in the container: the full
+# commit, not the 7-hex prefix L4 and the aborts match (review R1E-RV3).
+LEGACY_CONTAINER_RELEASE = "e9669ec1edb101ca6b190ef8df09314e1ac63562"
 # Q5 retirement of the frozen b0866e8 state (U3b-0e5, P7=B): admission/legacy-retirement/
 # intent-<plan>.json before the deletion, retired-<plan>.json after it. Both name the slots
 # that leave L4 eligibility; uninstall-launcher and adoption-abort refuse them.
@@ -2957,7 +2969,7 @@ def verify_legacy_links(runtime: Path, state: Path) -> None:
     """The rollback-target link check (design v3 7, review N4a).
 
     Every link directly inside the legacy slot's runtime and state (the
-    63ea8d3 container is five of them) must resolve, through every hop, to
+    e9669ec container is five of them) must resolve, through every hop, to
     an existing target; config and data must resolve to directories. A
     dangling, looping or missing target refuses with
     runtime_admission_uninstall_legacy_state, so L4 never renders a

@@ -14,9 +14,9 @@ autoriza la ventana.
   revisados y ensayados (T-A17):
   - la comprobación de enlaces del destino de rollback (`_verify_legacy_slot`
     rechaza un enlace del contenedor roto o colgante);
-  - el retiro Q5 del estado b0866e8 (registro inmutable que saca 63ea8d3 y
-    b0866e8 de L4; excluye `/home/kza/kza/models`, `/home/kza/kza/.venv` y el
-    slot R1).
+  - el retiro Q5 del estado b0866e8 (registro inmutable que saca de L4 el
+    contenedor de e9669ec, b0866e8 y los slots de 63ea8d3 y 2c5adb4; excluye
+    `/home/kza/kza/models`, `/home/kza/kza/.venv` y el slot R1).
 - Estado (2026-11-15): esta compuerta está cumplida. Los dos están
   implementados en U3b-0e5 (`retire-legacy-state` y `_verify_legacy_slot`),
   revisados y ensayados:
@@ -57,20 +57,62 @@ autoriza la ventana.
   revisiones del lado de desarrollo previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`), y el visto bueno visual del panel
   de R1-B2 sigue con el usuario. Si algo de lo que queda cambia código, R1
   se vuelve a construir y a fijar.
+- R1E (2026-11-18, decisión `batch_g_questions_20261118`, «R1 base»): adoptar
+  el contenedor de e9669ec cambia código de ejecución. R1 se reconstruyó
+  primero desde `695708ac40a101ccbeadd008ff3fd2fe01c4ed5b` (sha256
+  `d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba`,
+  `/home/yo/projects/releases-r1/r1-695708a.tar.gz`), que no se fijó: la
+  revisión independiente de R1E (ronda 1, `r1e/evidence.json`,
+  `review_round_1`) pidió cambios, y dos de ellos (R1E-RV3 y R1E-RV4) cambian
+  código de ejecución. R1 se reconstruyó desde
+  `d045156bd8922c5c6f2b6364827a314a5bc50da0` (rama `r1e` sobre 357dcb5,
+  época 4), dos veces en el server y una en la Mac, con resultado idéntico:
+  sha256 `b2205650f045ece0058c05db02b03c5bdb6523e4ad8b229fbbcd702685133990`,
+  en `/home/yo/projects/releases-r1/r1-d045156.tar.gz` (con
+  `SHA256SUMS-d045156`). «Archivo R1 fijado» pasó a ese archivo hasta R1E-2.
+  `r1-357dcb5.tar.gz` y `r1-695708a.tar.gz` quedan al lado con sus nombres:
+  no se transfieren ni se usan.
+- R1E-2 (2026-11-18, decisiones `r1e_questions_20261118`, R1E-Q1 a R1E-Q5):
+  el día 14 retira además los tres `*-report.json`, las diez copias de las
+  14:48 y los slots de 63ea8d3 y 2c5adb4, y L4 sólo sirve el contenedor de
+  e9669ec. Cambia `scripts/adoption_commands.py` y
+  `scripts/managed_launcher.py`, así que R1 se reconstruyó desde
+  `7752570fb0e4812c5888770111eb2da59d12877a` (rama `r1e`, época 4), dos veces en el
+  server y una en la Mac, con resultado idéntico: sha256
+  `bec0b82dbfaf4c13af543e5cab7bb81315550d8f2136cd9c948dae34131dc3ce`, en
+  `/home/yo/projects/releases-r1/r1-7752570.tar.gz` (con
+  `SHA256SUMS-7752570`). «Archivo R1 fijado» pasó a ese archivo.
+  `r1-d045156.tar.gz` queda al lado con su nombre: no se transfiere ni se usa.
+- Un R1 anterior a R1E (357dcb5) no sirve con `C` en e9669ec, y no lo
+  rechaza en todos los pasos: deja pasar ese contenedor en la corrida de
+  prueba, W1b, W2 y el commit de W4, y W-abort-1 salta la comprobación del
+  destino de rollback. Sólo W-abort-2, L4 y Q5 lo rechazan. Por eso esta
+  condición no queda escrita sólo acá: `test_r1e_the_pinned_r1_admits_the_runbook_container`
+  (`tests/unit/tools/test_sc6a_docs.py`) falla si el commit fijado no adopta
+  el contenedor de las dos líneas `C=`, y
+  `test_r1e2_the_pinned_r1_retires_production_s_day14_layout` falla si no
+  trae el alcance del día 14 de R1E-2 (un R1 de d045156 rechaza el día 14
+  con la forma de producción).
+- **No programar la ventana** antes de la revisión independiente de R1E-2
+  (con este re-fijado) y de la suite batch sobre ella. T-A17 ya corre el día
+  14 compilado con la forma de producción hasta el retiro completo, y
+  después L4 rechaza los cuatro slots (`r1e/evidence.json`, `r1e2_round`).
 - Después quedan los pasos del operador. Este runbook no autoriza ni programa
   la ventana: la programa el usuario, como operador de `kza`. Antes, el
   usuario registra la autorización de la ventana y los ids P1=D y L4 («Antes
   de la ventana»); el operador transfiere a `kza` el archivo fijado
-  (`r1-357dcb5.tar.gz`) y lo verifica con «Archivo R1 fijado». En la ventana, en W7 el usuario aplica el drop-in
+  (`r1-7752570.tar.gz`) y lo verifica con «Archivo R1 fijado». En la ventana, en W7 el usuario aplica el drop-in
   sudo y lo verifica en lectura, y en W8 se mide el arranque real hasta READY
   (la aplicación con sus modelos, que los ensayos no cargan).
 - **Paso del día 14**: el borrado Q5 corre desde DÍA 0 + 14 × 24 h (DÍA 0 = el
   sello de cierre de W9, el `ended_at` de esa corrida; Q1 = A). Borra el estado
-  de b0866e8 y sus diez copias SQLite del 2026-10-29 (Q2 = A). Responsable: el
+  de b0866e8 con sus tres informes, sus veinte copias SQLite del 2026-10-29
+  (Q2 = A y R1E-Q1) y los slots de 63ea8d3 y 2c5adb4 (R1E-Q2/Q4/Q5); alcance
+  en «Día 14». Responsable: el
   usuario, como operador de `kza`; la autorización ya está registrada (P7 = B,
   `u3b_0e5_retirement`). En W10 se anota en el handoff la fecha exacta y el
-  responsable. Hasta ese momento sólo vale L4 hacia 63ea8d3 (decisión
-  registrada y frase); después no hay rollback no gestionado y `/home/kza/kza`
+  responsable. Hasta ese momento sólo vale L4 hacia el contenedor de e9669ec
+  (decisión registrada y frase); después no hay rollback no gestionado y `/home/kza/kza`
   no es un destino (Q3 = A).
 
 R1 se construye desde un árbol que ya contiene U3b-0c (decisión
@@ -109,7 +151,14 @@ igual) y el pin pasó a ese archivo. El de 81ed568 quedó al lado, renombrado
 RR2-1 de la re-revisión cambió `src/memory/capture_recorders.py`: R1 se
 reconstruyó otra vez igual desde 357dcb5 y el pin pasó a ese archivo. El de
 c6462e5 quedó al lado, renombrado `r1-c6462e5.tar.gz.superseded-rr2-1`: no se
-transfiere ni se usa.
+transfiere ni se usa. R1E (adoptar el contenedor de e9669ec) y la ronda 1 de
+su revisión cambiaron código de ejecución: R1 se reconstruyó igual desde
+d045156 y el pin pasó a ese archivo. Los de 357dcb5 y 695708a quedaron al
+lado sin renombrar (`r1-357dcb5.tar.gz`, `r1-695708a.tar.gz`): no se
+transfieren ni se usan. R1E-2 (alcance del día 14 y L4 sólo hacia e9669ec)
+cambió código de ejecución: R1 se reconstruyó igual desde 7752570 y el pin
+pasó a ese archivo. El de d045156 quedó al lado sin renombrar
+(`r1-d045156.tar.gz`): no se transfiere ni se usa.
 
 Después de R1 no hay transiciones gestionadas (ningún arreglo de código) hasta
 que exista el modo release; el único rollback es L4 durante sus 14 días. Ver
@@ -129,8 +178,20 @@ y `{"refused": <código>}` en estos casos:
 
 ```bash
 PY=/home/kza/kza/.venv/bin/python
-C=release_20261029T174830709997Z_63ea8d3
+C=release_20261029T185008966364Z_e9669ec
 ```
+
+`$C` es el contenedor que sirve `current` desde el 2026-10-29 15:50 (e9669ec,
+la publicación de carga de voces). Así lo decidió el usuario el 2026-11-18
+(`batch_g_questions_20261118`, «R1 base»), en reemplazo de la premisa de P5
+(63ea8d3). El contenedor anterior,
+`release_20261029T174830709997Z_63ea8d3`, sigue en `slots/` con los
+mismos cinco enlaces hasta el día 14, que lo retira. L4 sólo sirve el
+contenedor de e9669ec (decisión R1E-Q2/Q4/Q5 del 2026-11-18):
+`uninstall-launcher` rechaza el de 63ea8d3, el runtime propio de b0866e8 y el
+slot de 2c5adb4 con `runtime_admission_uninstall_legacy_commit`. Si `$C` no es la release de
+e9669ec, la corrida de prueba y W2 rechazan
+`runtime_admission_adoption_container_commit` antes de escribir nada.
 
 `$R1` (el árbol extraído, con U3b-0c y SC-2, época 4) y `$ST` se definen
 recién en «Extraer R1 verificado», en un directorio nuevo, justo después de
@@ -139,15 +200,17 @@ archivo verificado, nunca una ruta relativa ni otra copia.
 
 ### Archivo R1 fijado (paso obligatorio antes de W1)
 
-R1 se construyó bajo `yo` con `scripts/build_runtime.py` desde 357dcb5, dos
+R1 se construyó bajo `yo` con `scripts/build_runtime.py` desde 7752570, dos
 veces y con resultado idéntico byte a byte, y aquí se fija su sha256 y su
 commit (SC-6a lo había fijado desde 81ed568; se re-fijó desde c6462e5 después
-de R1-B1/R1-B2 y desde 357dcb5 después del arreglo RR2-1 de la re-revisión).
+de R1-B1/R1-B2, desde 357dcb5 después del arreglo RR2-1 de la re-revisión,
+desde d045156 en R1E, después de la ronda 1 de su revisión independiente, y
+desde 7752570 en R1E-2).
 El valor vive en un commit de documentación posterior al commit construido: un
 archivo no puede contener su propio hash, y el archivo no incluye `docs/`.
 El archivo queda bajo `yo` en el server, en
-`/home/yo/projects/releases-r1/r1-357dcb5.tar.gz` (modo 0600, directorio
-0700, con su `SHA256SUMS`). Llevarlo a `kza` es parte de la release y lo hace
+`/home/yo/projects/releases-r1/r1-7752570.tar.gz` (modo 0600, directorio
+0700, con su `SHA256SUMS-7752570`). Llevarlo a `kza` es parte de la release y lo hace
 el operador; esa copia transferida es la que se verifica aquí.
 
 Antes de extraer `$R1`, antes de la corrida de prueba y otra vez justo antes
@@ -155,8 +218,8 @@ de W1, correr exactamente:
 
 ```bash
 R1_ARCHIVE=<ruta del r1.tar.gz transferido>
-R1_SHA256=c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24
-R1_COMMIT=357dcb57816834a9f4bfffb9bb5357ebd13d926e
+R1_SHA256=bec0b82dbfaf4c13af543e5cab7bb81315550d8f2136cd9c948dae34131dc3ce
+R1_COMMIT=7752570fb0e4812c5888770111eb2da59d12877a
 if [ "$(sha256sum "$R1_ARCHIVE" | cut -d' ' -f1)" = "$R1_SHA256" ]; then echo "R1 fijado: OK"; else echo "R1 distinto del fijado: DETENER"; false; fi
 ```
 
@@ -471,9 +534,40 @@ intérprete del ensayo).
 
 Desde DÍA 0 + 14 × 24 h exactas («día 14», decisión Q1 = A), nunca antes: el
 comando lo rechaza (`runtime_admission_legacy_retire_too_early`, con
-`eligible_from`). Borra el estado del slot de b0866e8 y las diez bases de
-`backups/$C/databases/` (Q2 = A). Después no hay rollback no gestionado y
-`/home/kza/kza` no es un destino (Q3 = A).
+`eligible_from`). Después no hay rollback no gestionado y `/home/kza/kza` no
+es un destino (Q3 = A).
+
+Alcance (decisiones Q2 = A y `r1e_questions_20261118`, R1E-2), en este orden y
+en un solo paso, desde una intención inmutable:
+
+1. `slots/release_20261028T145442Z_b0866e8/state`, el estado congelado;
+2. los tres informes del 2026-10-28 junto a él, en
+   `slots/release_20261028T145442Z_b0866e8/`: `activation-report.json`,
+   `live-report.json` y `prepare-report.json` (R1E-Q3: revisados sólo
+   leyendo el 2026-11-18, sin datos personales). Sólo esos tres nombres y
+   sólo como archivos regulares; cualquier otra entrada junto a `runtime/` y
+   `state/` rechaza `runtime_admission_legacy_retire_slot_unexpected`;
+3. las diez bases de `backups/$C/databases/` (15:50) y las diez de
+   `backups/release_20261029T174830709997Z_63ea8d3/databases/` (14:48): las
+   veinte copias del mismo estado (R1E-Q1). Cada conjunto tiene que ser el
+   revisado (diez SQLite con nombres del `data/` congelado);
+4. el slot `release_20261029T174830709997Z_63ea8d3` entero (su runtime y los
+   cinco enlaces de su `state/` al estado de b0866e8 y a los modelos), y el
+   slot `release_20261028T144002Z_2c5adb4` entero (un runtime y una copia más
+   vieja del estado) (R1E-Q2/Q4/Q5). Cada uno se reconoce por su nombre
+   exacto y el commit completo de su `runtime/release.json`; el de 63ea8d3 no
+   puede tener en `state/` nada que no sea un enlace. Otra forma rechaza
+   `runtime_admission_legacy_retire_superseded` (con el slot en `problems`);
+   si uno ya no está, el plan lo anota como ausente.
+
+Quedan: el `runtime/` de b0866e8, el contenedor de e9669ec (sólo enlaces), los
+`release.conf`, `config` y `.env` junto a cada conjunto de bases, y
+`backups/release_20261028T144002Z_2c5adb4` (el respaldo de `/home/kza/kza`
+del 2026-10-28). El registro nombra en `ineligible_slots` los cuatro slots
+(e9669ec, b0866e8, 63ea8d3 y 2c5adb4): L4 los rechaza a todos con
+`runtime_admission_uninstall_legacy_retired`. Con los slots de 63ea8d3 y
+2c5adb4 retirados, el primer plan del modo release (R2) ya no los rechaza
+como copias sin prueba (`release_unproven_copy`).
 
 El día 14 se corre en una sesión nueva de `kza`, no en la de la ventana: el
 `$ST` extraído en «Extraer R1 verificado» no sobrevive a la sesión de la
@@ -484,7 +578,7 @@ controlador instalado, al empezar:
 
 ```bash
 PY=/home/kza/kza/.venv/bin/python
-C=release_20261029T174830709997Z_63ea8d3
+C=release_20261029T185008966364Z_e9669ec
 ST="$PY -I -B /home/kza/releases/controller/current/scripts/stage_runtime.pyc --root /home/kza/releases --offline"
 ```
 
@@ -501,17 +595,20 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
    L4 sirvió en ese período necesitan una decisión nueva del usuario.
 1. El mismo día, antes de la corrida de prueba, quitar la estrofa de la
    consola vieja de `console-logrotate.conf`. Mientras exista, el retiro
-   rechaza `referenced:logrotate`. Su texto exacto se escribió en el server
+   rechaza `referenced:logrotate`, con la ruta entre comillas o sin ellas.
+   Su texto exacto se escribió en el server
    el 2026-10-28 y no está en Git: es el bloque que empieza en la línea con
    la ruta de la consola bajo `/home/kza/releases/slots/` (la de
-   `state/logs/console.log`) y termina en su `}`. Según el runbook del
-   2026-10-28 tiene esta forma (horario, 24 rotaciones, `maxage 1`,
-   `copytruncate`):
+   `state/logs/console.log`) y termina en su `}`. En producción (lectura del
+   2026-11-18) la ruta va entre comillas dobles y es la del slot de b0866e8;
+   tiene esta forma (horario, 24 rotaciones, `maxage 1`, `copytruncate`):
    ```
-   /home/kza/releases/slots/<slot>/state/logs/console.log {
+   "/home/kza/releases/slots/release_20261028T145442Z_b0866e8/state/logs/console.log" {
        hourly
        rotate 24
        maxage 1
+       missingok
+       notifempty
        copytruncate
        ...
    }
@@ -532,13 +629,24 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
    ```bash
    $ST retire-legacy-state --decision <id P7> --container-slot $C --dry-run
    ```
-   Tiene que decir `"eligible": true` y listar diez nombres en
-   `backups.databases`. Anotar `plan_sha256`.
+   Tiene que decir `"eligible": true`, listar diez nombres en
+   `backups.databases` y diez en `superseded_backups.databases`, los tres
+   informes en `slot_reports.names` y los dos slots en `superseded_slots`
+   (`"exists": true`, con el commit). Anotar `plan_sha256`.
+   - Si alguno de los dos slots de `superseded_slots` o `superseded_backups`
+     dice `"exists": false`, o hay menos de diez nombres en
+     `backups.databases` o en `superseded_backups.databases`, parar y avisar
+     al usuario antes de `--confirm`. El comando tolera la ausencia (la anota
+     en el plan y en el registro), pero en producción (lectura del
+     2026-11-18) están las tres entradas: que falte una sólo puede venir de
+     un cambio manual no registrado.
    - `referenced:<qué>`: `problems` lista todo lo que todavía apunta a los
-     slots de b0866e8 o 63ea8d3 o a esas bases. Corregirlo antes de seguir. No
-     borrar a mano.
-   - `backups_set`: el respaldo no es el conjunto revisado (diez SQLite de ese
+     slots de b0866e8, e9669ec, 63ea8d3 o 2c5adb4 o a esas bases. Corregirlo
+     antes de seguir. No borrar a mano.
+   - `backups_set`: un respaldo no es el conjunto revisado (diez SQLite de ese
      estado). Parar y avisar.
+   - `slot_unexpected` o `superseded`: un slot no tiene la forma revisada.
+     Parar y avisar; no borrar a mano.
    - `scan`: un directorio del estado vivo desapareció durante el recorrido.
      Repetir, o correrla con el servicio detenido.
 3. Retiro:
@@ -553,12 +661,17 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
    - Comprobar sólo leyendo. No probar L4 con `uninstall-launcher`: si el retiro
      no hubiera ocurrido, ese comando cambiaría la unidad a L4.
      ```bash
-     ls /home/kza/releases/admission/legacy-retirement/      # intent-<plan>.json y retired-<plan>.json
-     ls -d /home/kza/releases/slots/release_20261028T145442Z_b0866e8/state \
-           /home/kza/releases/backups/$C/databases           # ambos: No such file or directory
-     ls /home/kza/releases/backups/$C                        # quedan release.conf, config y .env
+     R=/home/kza/releases
+     ls $R/admission/legacy-retirement/                     # intent-<plan>.json y retired-<plan>.json
+     ls -d $R/slots/release_20261028T145442Z_b0866e8/state \
+           $R/backups/$C/databases \
+           $R/backups/release_20261029T174830709997Z_63ea8d3/databases \
+           $R/slots/release_20261029T174830709997Z_63ea8d3 \
+           $R/slots/release_20261028T144002Z_2c5adb4      # todos: No such file or directory
+     ls $R/slots/release_20261028T145442Z_b0866e8           # queda sólo runtime
+     ls $R/backups/$C $R/backups/release_20261029T174830709997Z_63ea8d3   # release.conf, config y .env
      ```
-     Con ese registro, `uninstall-launcher` rechaza los dos slots con
+     Con ese registro, `uninstall-launcher` rechaza los cuatro slots con
      `runtime_admission_uninstall_legacy_retired` (ensayado en T-A17).
 4. Si se corta (corte de luz, SIGKILL), repetir el mismo comando con el mismo
    id y el mismo `--confirm`: termina desde
@@ -618,7 +731,7 @@ postergaría; si esa respuesta cambiara, no ejecutarlo.
   desde que existe una intención Q5 rechaza `legacy_retired`. Usarlo bloquea
   el retiro (`l4_used`) hasta una decisión nueva del usuario.
 - Los dos aborts y L4 comprueban primero los enlaces del contenedor de
-  63ea8d3: si alguno cuelga, rechazan `runtime_admission_uninstall_legacy_state`
+  e9669ec: si alguno cuelga, rechazan `runtime_admission_uninstall_legacy_state`
   sin cambiar nada.
 - **Después de que W8 empezó**: la activación de W8 deja un head `selection`
   aunque todavía no haya ticket, y `adoption-abort` rechaza

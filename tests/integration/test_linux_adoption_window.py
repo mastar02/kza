@@ -21,11 +21,19 @@ in-process 0e2/0e3/0e5 tests only simulated is real here:
   models and devices a rehearsal must not touch.
 
 The legacy fixture is production-shaped (tests/mocks/adoption_legacy, written
-by b0866e8's own code): the 63ea8d3 container (its runtime is the compiled
-63ea8d3 artifact), hooks.enabled true, audit.db with text, the legacy events
-table with markers, metrics files, LoRA adapters, the three unresolved
-literal targets, a hot -journal, the symlink container and the 2026-10-29
-backups. The legacy service itself is never started (it would load models):
+by b0866e8's own code): the e9669ec container (its runtime is the compiled
+e9669ec artifact, the release production serves since 2026-10-29), hooks.enabled
+true, audit.db with text, the legacy events table with markers, metrics
+files, LoRA adapters, the three unresolved literal targets, a hot -journal,
+the symlink container (with its runtime's config/data/.env links; its five
+state links absolute, as in production) and both 2026-10-29 backup sets (14:48
+and 15:50), and, from W0 on, production's other legacy entries: the superseded
+63ea8d3 container (absolute state links), the 2c5adb4 slot, the b0866e8 slot's
+own runtime and its three report files (reviews R1E-RV2, R1E2-RV-2). On that
+layout day 14's
+Q5 retires all of them in one step (user decisions R1E-Q1..Q3, R1E-2) and
+L4 refuses every legacy slot afterwards.
+The legacy service itself is never started (it would load models):
 W1's stop is a real ``systemctl stop`` of an inactive unit.
 
 Skipped only off Linux, without a running user manager, or as root or the
@@ -92,6 +100,11 @@ REPO = Path(__file__).resolve().parents[2]
 WRAPPER = REPO / "tests" / "mocks" / "compiled_stage.py"
 TEMPLATE = REPO / "systemd" / "kza-voice.service.d" / "managed.conf.template"
 CONTAINER, LEGACY = fixture.C_SLOT, fixture.B_SLOT
+OLDER_SLOT = "release_20261028T144002Z_2c5adb4"  # production's 2026-10-28 slot (runtime + an older state copy)
+B_REPORTS = ("activation-report.json", "live-report.json", "prepare-report.json")  # beside the b0866e8 state
+C63_COMMIT = "63ea8d319b50506cc37ba73df1e41c87a41054cf"  # the reviewed release commits (R1E-2)
+OLDER_COMMIT = "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012"
+B_COMMIT = "b0866e8db01fd934ff3e6c483cca07d94168a9dc"  # the b0866e8 slot's own runtime (production, 2026-10-28)
 P1 = "u3b-0e-P1-D-rehearsal-0e4"
 WINDOW = "r1-window-rehearsal-0e4"
 P7 = "u3b-0e5-P7-B-rehearsal-0e4"
@@ -110,7 +123,7 @@ CLEANUPS: list[dict] = []
 
 @pytest.fixture(scope="module")
 def built(tmp_path_factory):
-    """R1 (HEAD plus this working tree) and the 63ea8d3 legacy artifact, both by scripts/build_runtime.py."""
+    """R1 (HEAD plus this working tree) and the e9669ec legacy artifact, both by scripts/build_runtime.py."""
     if not fixture.available():
         pytest.fail("the legacy commits are missing from this clone")
     base = tmp_path_factory.mktemp("0e4-artifacts")
@@ -124,9 +137,9 @@ def built(tmp_path_factory):
     manifest = build_runtime(clone, archive, revision)
     assert manifest["controller_epoch"] == 4
     r1_seconds = time.monotonic() - started
-    legacy = base / "63ea8d3.tar.gz"
-    legacy_manifest = build_runtime(clone, legacy, "63ea8d3")
-    assert legacy_manifest["git_commit"].startswith("63ea8d3")
+    legacy = base / "e9669ec.tar.gz"
+    legacy_manifest = build_runtime(clone, legacy, launcher.LEGACY_CONTAINER_COMMIT)
+    assert legacy_manifest["git_commit"] == "e9669ec1edb101ca6b190ef8df09314e1ac63562"
     extracted = base / "r1"
     with tarfile.open(archive) as bundle:
         bundle.extractall(extracted, filter="data")
@@ -316,9 +329,17 @@ class Window:
         runtime = self.root / "slots" / CONTAINER / "runtime"
         with tarfile.open(built["legacy"]) as bundle:
             bundle.extractall(runtime, filter="data")
+        for name in ("config", "data", ".env"):  # production's container runtime links (review R1E-RV2)
+            os.symlink(Path("..") / "state" / name, runtime / name)
         os.chmod(runtime, 0o700)
+        # Production's container state links are absolute (read-only recon 2026-11-18, review R1E2-RV-2):
+        # config/data/.env/logs into the b0866e8 state, models to the checkout's models.
+        for name, target in self._state_links().items():
+            os.unlink(self.layout.container / name)
+            os.symlink(target, self.layout.container / name)
         (self.root / "current").symlink_to(Path("slots") / CONTAINER / "runtime")
         self._backups()
+        self._production_slots()
         self.layout.code_index.mkdir(exist_ok=True)
         self.r1_stage = built["r1_stage"]
         self.controller = self.root / "controller" / "current" / "scripts" / "stage_runtime.pyc"
@@ -348,6 +369,57 @@ class Window:
         for relative in databases[:commands.LEGACY_BACKUP_DATABASES]:
             (backup / "databases" / relative).parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(data / relative, backup / "databases" / relative)
+        # R1E: production also keeps the 14:48 publication's set of the same ten (backups/<63ea8d3 slot>).
+        shutil.copytree(backup, self.root / "backups" / fixture.C63_SLOT, symlinks=True)
+
+    def _state_links(self) -> dict[str, Path]:
+        """A production container's five absolute state links: into the b0866e8 state, and the models."""
+        links: dict[str, Path] = {name: self.root / "slots" / LEGACY / "state" / name
+                                  for name in ("config", "data", ".env", "logs")}
+        links["models"] = self.models
+        return links
+
+    def _production_slots(self) -> None:
+        """Production's other legacy entries from W0 on (read-only recon 2026-11-18, reviews R1E-RV2 and
+        R1E2-RV-2): the superseded 63ea8d3 container (the same five absolute state links into b0866e8 and the
+        checkout's models, and its runtime's relative config/data/.env links), the 2026-10-28 2c5adb4 slot
+        (a runtime and an older state copy, its models link absolute), and in the b0866e8 slot its own
+        runtime (release b0866e8, relative config/data/.env links into its state) and the three report
+        files beside its state."""
+        superseded = self.root / "slots" / fixture.C63_SLOT
+        (superseded / "runtime").mkdir(parents=True)
+        (superseded / "runtime" / "release.json").write_text(json.dumps(
+            {"git_commit": C63_COMMIT, "files": {}}))
+        (superseded / "state").mkdir()
+        for name, target in self._state_links().items():
+            os.symlink(target, superseded / "state" / name)
+        for name in ("config", "data", ".env"):
+            os.symlink(Path("..") / "state" / name, superseded / "runtime" / name)
+        os.chmod(superseded / "runtime", 0o700)
+        legacy_runtime = self.root / "slots" / LEGACY / "runtime"
+        for name in ("scripts", "src", "tools"):
+            (legacy_runtime / name).mkdir(parents=True)
+        (legacy_runtime / "src" / "main.pyc").write_bytes(b"b0866e8 pyc")
+        (legacy_runtime / "release.json").write_text(json.dumps({"git_commit": B_COMMIT, "files": {}}))
+        os.chmod(legacy_runtime / "release.json", 0o600)
+        for name in ("config", "data", ".env"):
+            os.symlink(Path("..") / "state" / name, legacy_runtime / name)
+        os.chmod(legacy_runtime, 0o700)
+        older = self.root / "slots" / OLDER_SLOT
+        for name in ("runtime", "state"):
+            (older / name).mkdir(parents=True, mode=0o700)
+        (older / "runtime" / "release.json").write_text(json.dumps({"git_commit": OLDER_COMMIT,
+                                                                     "files": {}}))
+        for name in ("config", "data", ".env"):
+            os.symlink(Path("..") / "state" / name, older / "runtime" / name)
+        for name in ("config", "data", "logs"):
+            (older / "state" / name).mkdir()
+        shutil.copyfile(self.layout.legacy_state / "config" / "settings.yaml", older / "state" / "config" / "settings.yaml")
+        shutil.copyfile(self.layout.legacy_state / "data" / "events.db", older / "state" / "data" / "events.db")
+        (older / "state" / ".env").write_text("CONFIG_PATH=config/settings.yaml\n")
+        os.symlink(self.models, older / "state" / "models")
+        for name in B_REPORTS:
+            (self.root / "slots" / LEGACY / name).write_text('{"release_id": "rehearsal"}\n')
 
     def llm_env(self, lora: str = "--verbose") -> None:
         (self.units_dir / "llm-fast.env").write_text(f"MODEL_DIR={self.models}\nLORA_ARGS=\"{lora}\"\n")
@@ -801,28 +873,71 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     os.rename(aside, w.layout.legacy_state)
     assert code == 78 and refused["refused"] == "runtime_admission_uninstall_legacy_state", refused
     assert {path.name: path.read_bytes() for path in systemd.dropin_dir(w.voice).iterdir()} == unit_files
+    # R1E: the superseded 63ea8d3 container (there since W0, as in production) is no L4 target.
+    code, _out, refused = w.launcher_cli("uninstall-launcher", "--unit-dir", str(systemd.dropin_dir(w.voice)),
+                                         "--user-decision", L4, "--phrase", launcher.UNINSTALL_PHRASE,
+                                         "--legacy-slot", fixture.C63_SLOT)
+    assert code == 78 and refused["refused"] == "runtime_admission_uninstall_legacy_commit", refused
+    assert {path.name: path.read_bytes() for path in systemd.dropin_dir(w.voice).iterdir()} == unit_files
     due = 14 * DAY + 3600
-    # Day 14 runs in a new session from the installed controller, as the runbook defines $ST (RR-1).
+    # Day 14 runs in a new session from the installed controller, as the runbook defines $ST (RR-1). On
+    # production's layout Q5 retires, in one step (user decisions R1E-Q1..Q3, R1E-2): the frozen b0866e8
+    # state and the three report files beside it, both 2026-10-29 backup sets (twenty databases), the
+    # 63ea8d3 container (its links into the frozen state) and the 2c5adb4 slot. Kept, byte for byte: the
+    # b0866e8 slot's own runtime, the e9669ec container and the release.conf/config/.env beside both backup
+    # sets (review R1E2-RV-2: production's b0866e8 slot has a runtime, so it ends as ['runtime']).
+    def beside() -> dict:
+        return {slot: {name: tree_manifest(w.root / "backups" / slot / name) if (
+            w.root / "backups" / slot / name).is_dir() else (w.root / "backups" / slot / name).read_bytes()
+            for name in ("release.conf", "config", ".env")} for slot in (CONTAINER, fixture.C63_SLOT)}
+    kept = {"container": tree_manifest(w.root / "slots" / CONTAINER), "beside": beside(),
+            "r1": tree_manifest(w.root / "slots" / "r1" / "runtime"),
+            "b_runtime": tree_manifest(w.root / "slots" / LEGACY / "runtime")}
+    assert kept["b_runtime"]["release.json"][6] is not None and kept["b_runtime"]["data"][5] == "../state/data"
     code, dry, refused = w.stage("retire-legacy-state", "--decision", P7, "--container-slot", CONTAINER,
                                  "--dry-run", pyc=w.controller, wall_offset=due, step="q5_dry_run")
-    assert code == 0 and dry["eligible"] is True, (dry, refused)
-    assert len(dry["backups"]["databases"]) == 10
-    code, q5, refused = w.stage("retire-legacy-state", "--decision", P7, "--container-slot", CONTAINER,
-                                "--confirm", dry["plan_sha256"], pyc=w.controller, wall_offset=due,
-                                step="q5_confirm")
-    assert code == 0, refused
-    assert not os.path.lexists(w.layout.legacy_state)
-    for slot in (CONTAINER, LEGACY):
+    assert code == 0 and refused is None, (dry, refused)
+    assert dry["eligible"] is True and dry["target_slot"] == LEGACY
+    assert dry["ineligible_slots"] == sorted([CONTAINER, LEGACY, fixture.C63_SLOT, OLDER_SLOT])
+    assert dry["slot_reports"]["names"] == list(B_REPORTS)
+    assert len(dry["backups"]["databases"]) == len(dry["superseded_backups"]["databases"]) == 10
+    assert dry["superseded_slots"][fixture.C63_SLOT]["links"] == 8
+    assert dry["superseded_slots"][OLDER_SLOT]["exists"] is True
+    assert not launcher.legacy_retirement_directory(w.root).exists()  # the dry run writes nothing
+    code, retired_q5, refused = w.stage("retire-legacy-state", "--decision", P7, "--container-slot", CONTAINER,
+                                        "--confirm", dry["plan_sha256"], pyc=w.controller, wall_offset=due,
+                                        step="q5_retire")
+    assert code == 0 and refused is None, (retired_q5, refused)
+    assert retired_q5["resumed"] is False and retired_q5["plan_sha256"] == dry["plan_sha256"]
+    assert not os.path.lexists(w.layout.legacy_state) and os.listdir(w.root / "slots" / LEGACY) == ["runtime"]
+    for slot in (CONTAINER, fixture.C63_SLOT):
+        assert not os.path.lexists(w.root / "backups" / slot / "databases")
+    assert not os.path.lexists(w.root / "slots" / fixture.C63_SLOT)
+    assert not os.path.lexists(w.root / "slots" / OLDER_SLOT)
+    assert {"container": tree_manifest(w.root / "slots" / CONTAINER), "beside": beside(),
+            "r1": tree_manifest(w.root / "slots" / "r1" / "runtime"),
+            "b_runtime": tree_manifest(w.root / "slots" / LEGACY / "runtime")} == kept
+    record = json.loads((w.root / "admission" / retired_q5["record"]).read_text())
+    assert record["kind"] == "legacy_state_retired" and len(record["removed"]) == 8
+    # Afterwards L4 refuses every legacy slot with the record, and nothing in the unit directory changes.
+    for slot in (CONTAINER, LEGACY, fixture.C63_SLOT, OLDER_SLOT):
         code, _out, refused = w.launcher_cli("uninstall-launcher", "--unit-dir", str(systemd.dropin_dir(w.voice)),
                                              "--user-decision", L4, "--phrase", launcher.UNINSTALL_PHRASE,
                                              "--legacy-slot", slot)
-        assert code == 78 and refused["refused"] == "runtime_admission_uninstall_legacy_retired", refused
-        assert refused["problems"] == [q5["record"]]
+        assert code == 78 and refused["refused"] == "runtime_admission_uninstall_legacy_retired", (slot, refused)
     assert {path.name: path.read_bytes() for path in systemd.dropin_dir(w.voice).iterdir()} == unit_files
+    code, _again, refused = w.stage("retire-legacy-state", "--decision", P7, "--container-slot", CONTAINER,
+                                    "--dry-run", pyc=w.controller, wall_offset=due)
+    assert code == 78 and refused["refused"] == "runtime_admission_legacy_retire_already_retired", refused
     shown, _seconds = w.start_managed()  # the managed service is unaffected
     assert shown["ActiveState"] == "active", (shown, w.managed_console()[-4000:])
     assert w.stop_managed()[0].returncode == 0 and w.head()["status"] == "closed"
-    evidence["q5"] = {"record": q5["record"], "databases": len(dry["backups"]["databases"])}
+    evidence["q5"] = {"retired": True, "record": retired_q5["record"], "removed": len(record["removed"]),
+                      "ineligible_slots": record["ineligible_slots"],
+                      "backups": {"databases": retired_q5["backups"]["databases"],
+                                  "superseded": len(record["superseded_backups"]["databases"])},
+                      "l4_after": "runtime_admission_uninstall_legacy_retired",
+                      "superseded_l4_before": "runtime_admission_uninstall_legacy_commit"}
 
     # T-A5 / T-C8 (restore after a crash): each restore over the adopted state is refused by automatic R-b
     # under real systemd; the operator's read-only 'adopt --dry-run' names the family.

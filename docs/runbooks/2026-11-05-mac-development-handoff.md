@@ -592,7 +592,7 @@ dashboard raíz (`/index.html`, `dashboard.js`, `style.css`), el enlace
 "Micrófonos y diagnóstico" y `#additional-tools`. Con `dashboard.home.enabled`
 falso, `/` responde 404 con una página que nombra esa opción. Evidencia en
 `data/autonomous-roadmap-20261102/t040-t041/u4-evidence.json`. La release
-instalada (slot activo 63ea8d3) no tiene `legacy.html`: sus vistas heredadas son
+instalada (slot activo e9669ec desde el 2026-10-29 15:50) no tiene `legacy.html`: sus vistas heredadas son
 `/home/` y la grilla raíz `/index.html`, y las conserva hasta la próxima release.
 Revisión independiente: `u4-independent-review.json` (accept_with_changes). Abierto:
 F3, los controles de una entidad se deshabilitan un instante porque la observación
@@ -761,7 +761,7 @@ U3b-0e: adopción del estado de producción como primer estado gestionado.
   - los LoRA se retiran en la ventana;
   - `audit.db` y la tabla `events` vieja no se llevan, y la auditoría queda apagada en R1;
   - los borrados a medias quedan anotados como pendientes;
-  - la vuelta atrás es a 63ea8d3; sin frase solo antes de la primera corrida gestionada;
+  - la vuelta atrás es al runtime que sirve hoy (63ea8d3 según P5; desde R1E, 2026-11-18, el contenedor de e9669ec); sin frase solo antes de la primera corrida gestionada;
   - la copia vieja se retira 14 días después del primer cierre limpio;
   - los limpiadores faltantes van después de R1 (0d4b).
 - Orden: 0d4a → 0e1 → 0e2 → 0e3 → 0e4 (Linux) → 0e5 (Q5 + chequeo del destino de vuelta, antes de agendar R1).
@@ -884,7 +884,7 @@ Siguiente:
 - Medir el tiempo de compactación una vez sobre una copia del estado de producción antes de la primera corrida real (recomendado por la revisión), y en la ventana de R1 leer `units.templates_scanned` y `units.tolerated_unresolved` del `compact plan` real.
 
 `U3b-0e5` (rama `u3b-0e5`, sobre la cabeza de 0e3): preparación de P7.
-- `retire-legacy-state` (Q5) borra el estado congelado de b0866e8 y sus diez copias SQLite del 2026-10-29 (`backups/<63ea8d3>/databases`, Q2 = A), y saca 63ea8d3 y b0866e8 de L4 con un registro inmutable. Se escribe una intención antes del primer borrado, para que un corte se complete repitiendo el comando. Rechaza si L4 se usó desde la adopción.
+- `retire-legacy-state` (Q5) borra el estado congelado de b0866e8 y sus diez copias SQLite del 2026-10-29 (`backups/<contenedor>/databases`, Q2 = A; desde R1E el contenedor es e9669ec), y saca el contenedor y b0866e8 de L4 con un registro inmutable. Desde R1E-2 (2026-11-18) borra además los tres `*-report.json` junto al estado, las otras diez copias (`backups/<63ea8d3>/databases`) y los slots de 63ea8d3 y 2c5adb4, que también salen de L4 (ver «R1E-2»). Se escribe una intención antes del primer borrado, para que un corte se complete repitiendo el comando. Rechaza si L4 se usó desde la adopción.
 - `_verify_legacy_slot` resuelve cada enlace del destino de rollback. La usan `uninstall-launcher` y los dos `adoption-abort`.
 - DEPLOYMENT: hueco de privacidad acotado a los almacenes mapeados (0d4a F1), sección del retiro Q5 y la época 2 del controlador (0e3 F14).
 - **Plazo P7, con responsable**: DÍA 0 es el sello de cierre de W9. L4 vale hasta DÍA 0 + 14 × 24 h, y desde ese momento corre el retiro (Q1 = A: «día 14» son 14 × 24 h). Responsable: el usuario, como operador de `kza`, con la autorización ya registrada (P7 = B y `u3b_0e5_retirement`). Fecha exacta: se anota aquí en W10 (todavía no hay ventana). Después no hay rollback no gestionado, y `/home/kza/kza` no es un destino de rollback (Q3 = A).
@@ -1132,7 +1132,8 @@ sobre `26de262`, sin integrar ni subir. Evidencia:
   lado de desarrollo previas a la ventana están hechas. La suite batch completa sobre 51fbc43 pasó en la Mac y en el server (`u3b/full-51fbc43/RESULT.md`); si algo posterior cambia código, R1 se vuelve a construir y a fijar. El visto bueno visual del panel de R1-B2 sigue con
   el usuario. Después quedan los
   pasos del operador: registrar la autorización de la ventana y los ids
-  P1=D y L4, transferir a `kza` el R1 fijado (`r1-357dcb5.tar.gz`) y
+  P1=D y L4, transferir a `kza` el R1 fijado (`r1-7752570.tar.gz`, desde
+  R1E-2; ver «R1E-2») y
   verificarlo, el drop-in sudo de W7 y el arranque real hasta READY de W8.
   La ventana la programa el usuario, como operador.
 
@@ -1997,6 +1998,96 @@ en la ventana de SC-6b. R3: un controlador anterior a Q3 con un slot de Q3
 lo cierra el triple del controlador (límite 7 en DEPLOYMENT y nota en el
 runbook del modo release). R4: redacción («nunca contenido anterior»).
 Detalle en la evidencia (`review_round_1`).
+
+## R1E — R1 adopta el contenedor de e9669ec (2026-11-18)
+
+Decisión del usuario `batch_g_questions_20261118`, «R1 base»: producción
+sirve `release_20261029T185008966364Z_e9669ec` desde el 2026-10-29
+15:50, no `release_20261029T174830709997Z_63ea8d3`. R1 se adapta a e9669ec y
+reemplaza la premisa de P5.
+
+- Código (rama `r1e` desde 357dcb5, unida a la línea de recovery):
+  - `LEGACY_STATE_COMMIT = "b0866e8"` y `LEGACY_CONTAINER_COMMIT = "e9669ec"`.
+    L4 y los dos aborts rechazan cualquier otro commit, también 63ea8d3
+    (`runtime_admission_uninstall_legacy_commit`).
+  - La corrida de prueba y W2 rechazan un contenedor que no sea la release
+    de e9669ec (`runtime_admission_adoption_container_commit`). Si la release
+    del contenedor cambia después de W2, el commit de W4 rechaza con
+    `runtime_admission_adoption_plan_mismatch:current`, porque el plan ya
+    no coincide.
+  - W-abort-1 corre la comprobación del destino de rollback sobre todo
+    `current` no gestionado, en vez de saltarla si el commit no estaba en la
+    lista.
+- Runbook de R1 y DEPLOYMENT: `C` es el slot de e9669ec (ventana y día 14) y
+  el alcance del día 14 quedó escrito.
+- Las decisiones que faltaban antes del día 14 y de R2 (las diez copias de
+  las 14:48, el slot de 63ea8d3, los tres `*-report.json` y los slots 63ea8d3 y
+  2c5adb4 frente a `release_unproven_copy`) las tomó el usuario el 2026-11-18;
+  ver «R1E-2».
+- R1 reconstruido primero desde `695708ac40a101ccbeadd008ff3fd2fe01c4ed5b`
+  (sha256 `d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba`,
+  `r1-695708a.tar.gz`); no se fijó.
+- Revisión independiente de R1E, ronda 1: «changes_needed», seis hallazgos
+  (R1E-RV1 a RV6), uno por commit:
+  - RV3: la adopción exige el commit completo del contenedor
+    (`LEGACY_CONTAINER_RELEASE`), no un prefijo de 7;
+  - RV4: Q5 lee la ruta de logrotate entre comillas, como la escribió
+    producción;
+  - RV5: un test de L4 por `uninstall_launcher` hacia b0866e8 y e9669ec;
+  - RV2: T-A17 corre con la forma de producción desde W0 (slots 63ea8d3 y
+    2c5adb4, los tres `*-report.json`, los enlaces del runtime del
+    contenedor), y el día 14 rechaza dos veces sin borrar nada;
+  - RV1: la condición del pin es un test
+    (`test_r1e_the_pinned_r1_admits_the_runbook_container`). Un R1 de
+    357dcb5 deja pasar el contenedor de e9669ec en la corrida de prueba,
+    W1b, W2 y el commit de W4, y W-abort-1 salta su comprobación; sólo
+    W-abort-2, L4 y Q5 lo rechazan (no «los dos aborts», como decía el
+    resumen anterior);
+  - RV6: redacción (W4).
+- R1 re-fijado desde `d045156bd8922c5c6f2b6364827a314a5bc50da0` (época 4):
+  dos veces en el server y una en la Mac, idénticas, sha256
+  `b2205650f045ece0058c05db02b03c5bdb6523e4ad8b229fbbcd702685133990`, en
+  `/home/yo/projects/releases-r1/r1-d045156.tar.gz` con `SHA256SUMS-d045156`.
+  `r1-357dcb5.tar.gz`, `r1-695708a.tar.gz` y el `SHA256SUMS` de 357dcb5
+  quedan intactos. Ese pin lo reemplazó R1E-2 (abajo).
+- Evidencia: `data/autonomous-roadmap-20261102/r1e/` (recon y
+  `evidence.json`).
+
+## R1E-2 — día 14 con la forma de producción, L4 sólo hacia e9669ec (2026-11-18)
+
+Decisiones del usuario `r1e_questions_20261118` (R1E-Q1 a R1E-Q5):
+
+- Código (rama `r1e`, época 4, unida a la línea de recovery):
+  - `LEGACY_COMMITS = (LEGACY_CONTAINER_COMMIT,)`: L4 y los dos aborts sólo
+    sirven el contenedor de e9669ec; el runtime propio de b0866e8, 63ea8d3 y
+    2c5adb4 rechazan `runtime_admission_uninstall_legacy_commit`.
+  - El retiro Q5 del día 14 (`legacy_targets`) borra, en un paso y desde una
+    intención inmutable: el estado de b0866e8; sus tres `*-report.json`
+    (R1E-Q3: revisados sólo leyendo como `kza`, nombres de claves y clases de
+    valor, sin datos personales; eximidos por nombre exacto y sólo como
+    archivos regulares); las diez bases de `backups/<e9669ec>/databases` y las
+    diez de `backups/<63ea8d3>/databases` (R1E-Q1); y los slots enteros de
+    63ea8d3 y 2c5adb4 (R1E-Q2/Q4/Q5), cada uno por nombre exacto y commit
+    completo de su `release.json` (otra forma:
+    `runtime_admission_legacy_retire_superseded`).
+  - `ineligible_slots` nombra los cuatro slots; cualquier otra entrada junto
+    al estado de b0866e8 sigue rechazando `slot_unexpected`; un resume con
+    otros destinos rechaza `intent_mismatch`.
+- T-A17 corre el día 14 compilado con la forma de producción desde W0 hasta
+  el retiro completo, y después L4 rechaza los cuatro slots con
+  `legacy_retired`.
+- R2: después del día 14 el primer plan del modo release ya no ve
+  `release_unproven_copy` para 63ea8d3 ni 2c5adb4
+  (`test_r1e2_after_day_14_r2_s_first_release_plan_finds_no_unproven_copy`).
+- Runbook de R1 y DEPLOYMENT: alcance del día 14, comprobaciones y L4.
+- R1 re-fijado desde `7752570fb0e4812c5888770111eb2da59d12877a` (época 4): dos veces
+  en el server y una en la Mac, idénticas, sha256
+  `bec0b82dbfaf4c13af543e5cab7bb81315550d8f2136cd9c948dae34131dc3ce`, en
+  `/home/yo/projects/releases-r1/r1-7752570.tar.gz` con `SHA256SUMS-7752570`.
+  Los archivos anteriores quedan intactos. No se programa la ventana antes de
+  la revisión independiente de R1E-2 y de la suite batch.
+- Evidencia: `data/autonomous-roadmap-20261102/r1e/evidence.json`
+  (`r1e2_round`).
 
 ## Prompt para la sesión nueva
 

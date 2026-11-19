@@ -92,8 +92,8 @@ colección (por ejemplo un nombre parecido como `user_memories_v0`,
 - **Nada no probado dentro de la raíz**: `backups/` (salvo las copias
   catalogadas, ver arriba), `logs/`, `deployments/`,
   `dashboard-proxy/`, `controller/`, archivos de release, `console-logrotate.conf`,
-  slots sin prueba (por ejemplo, el contenedor de enlaces de 63ea8d3 o el slot
-  de b0866e8), restos `.prepare-*` sin registro. Se listan por nombre y tipo
+  slots sin prueba (por ejemplo, los contenedores de enlaces de e9669ec y
+  63ea8d3 o el slot de b0866e8), restos `.prepare-*` sin registro. Se listan por nombre y tipo
   (sin abrirlos) en la «lista intacta», y el operador la reconoce por su
   digest. El retiro de b0866e8 es el de Q5, no éste.
 

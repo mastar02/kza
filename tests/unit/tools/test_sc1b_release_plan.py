@@ -445,7 +445,7 @@ def test_release_plan_refuses_an_unproven_copy_under_slots_but_not_the_legacy_sl
     unproven = "runtime_admission_compaction_release_unproven_copy"
     plan = lambda: cw.plan(root, x5["archive"])  # noqa: E731
     both = ["slots/legacy_b0866e8", "slots/old"]
-    for name in ("old", "legacy_b0866e8"):  # R1's 63ea8d3 container and its b0866e8 legacy-state slot
+    for name in ("old", "legacy_b0866e8"):  # R1's e9669ec container and its b0866e8 legacy-state slot
         (root / "slots" / name / "state" / "data").mkdir(parents=True)
         (root / "slots" / name / "state" / "data" / "x.txt").write_text("CANARY-UNPROVEN")
     witness = cw.witness(root)

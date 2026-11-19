@@ -81,7 +81,7 @@ def test_day14_defines_its_commands_from_the_installed_controller():
     completion-status do; DEPLOYMENT's «Cómo se corre» does the same."""
     text = r1_runbook.runbook_text()
     assert r1_runbook.day14_block(text).splitlines() == [
-        r1_runbook.RUNBOOK_PY, "C=release_20261029T174830709997Z_63ea8d3", CONTROLLER_ST]
+        r1_runbook.RUNBOOK_PY, "C=release_20261029T185008966364Z_e9669ec", CONTROLLER_ST]
     section = text.split(r1_runbook.DAY14_HEADING, 1)[1].split("\n## ", 1)[0]
     assert section.index(CONTROLLER_ST) < section.index("\n0. ") < section.index("$ST retire-legacy-state")
     flat = " ".join(section.split())
@@ -146,6 +146,16 @@ def test_the_superseded_archives_are_recorded_not_pinned():
     handoff = " ".join((REPO / "docs/runbooks/2026-11-05-mac-development-handoff.md").read_text().split())
     assert "El runbook de R1 lo fija y exige" not in handoff
     assert "El runbook de R1 lo fijó hasta ese re-fijado" in handoff
+    # R1E: 357dcb5's archive and the unpinned first R1E build stay beside the pin under their own names.
+    unpinned = {"357dcb57816834a9f4bfffb9bb5357ebd13d926e": "c5305d588a228aca445489b90c00a2b11165d24f8fa1078ad19a68fbe9630a24",
+                "695708ac40a101ccbeadd008ff3fd2fe01c4ed5b": "d6e5a21aea71dd576fc4afa34821eed2a93c013c439ef4b37334d6856b7e1dba",
+                "d045156bd8922c5c6f2b6364827a314a5bc50da0": "b2205650f045ece0058c05db02b03c5bdb6523e4ad8b229fbbcd702685133990"}  # R1E-2: d045156
+    assert pin["R1_COMMIT"] not in unpinned and pin["R1_SHA256"] not in unpinned.values()
+    for relative in ("docs/runbooks/2026-11-13-r1-adoption-window.md", "docs/architecture/DEPLOYMENT.md",
+                     "docs/runbooks/2026-11-05-mac-development-handoff.md"):
+        flat = " ".join((REPO / relative).read_text().split())
+        assert "r1-357dcb5.tar.gz" in flat and "r1-695708a.tar.gz" in flat, relative
+        assert "r1-d045156.tar.gz" in flat, relative
 
 
 def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_user():
@@ -164,7 +174,7 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
                       "/home/yo/projects/runs/sc6a"):
         assert reference in gate, reference
     assert "Este runbook no autoriza ni programa la ventana: la programa el usuario, como operador de `kza`." in gate
-    for step in ("W7", "drop-in sudo", "arranque real hasta READY", "`r1-357dcb5.tar.gz`"):
+    for step in ("W7", "drop-in sudo", "arranque real hasta READY", "`r1-7752570.tar.gz`"):
         assert step in gate, step
     open_reviews = ("re-revisión de la ronda de arreglos de SC-6a", "cbb509c", "9ec7d95",
                     "revisión independiente de la ronda 1 de arreglos de R1-B1/R1-B2",
@@ -210,3 +220,75 @@ def test_the_scheduling_gate_states_what_is_done_and_leaves_scheduling_to_the_us
     assert "Sin integrar ni subir" not in r5v1 and "integrada en `recovery/production-2026-10-25` con el merge `c6462e5`" in r5v1
     for claim in ("ventana programada", "ventana autorizada", "la ventana está programada"):
         assert claim not in gate.lower(), claim
+
+
+def test_r1e_the_container_is_e9669ec_and_day14_retires_production_s_legacy_entries():
+    """R1E (batch_g_questions_20261118 "R1 base"): both C= lines name the slot 'current' serves since
+    2026-10-29 15:50. R1E-2 (r1e_questions_20261118): L4 serves only e9669ec, and day 14 retires the
+    frozen state with its three report files, both backup sets and the 63ea8d3 and 2c5adb4 slots."""
+    text = r1_runbook.runbook_text()
+    assert re.findall(r"(?m)^C=(\S+)$", text) == ["release_20261029T185008966364Z_e9669ec"] * 2
+    flat = " ".join(text.split())
+    for needle in ("runtime_admission_adoption_container_commit", "runtime_admission_uninstall_legacy_commit",
+                   "runtime_admission_legacy_retire_slot_unexpected", "runtime_admission_legacy_retire_superseded",
+                   "runtime_admission_uninstall_legacy_retired", "R1E-Q1", "R1E-Q2/Q4/Q5", "R1E-Q3",
+                   "`activation-report.json`", "`live-report.json`", "`prepare-report.json`",
+                   "`backups/release_20261029T174830709997Z_63ea8d3/databases/`", "`backups/$C/databases/`",
+                   "el slot `release_20261029T174830709997Z_63ea8d3` entero",
+                   "slot `release_20261028T144002Z_2c5adb4` entero", "veinte copias",
+                   "L4 sólo sirve el contenedor de e9669ec", "`release_unproven_copy`",
+                   "$R/slots/release_20261028T144002Z_2c5adb4 # todos: No such file or directory",
+                   # R1E2-RV-1: an absent entry on day 14 stops the operator before --confirm
+                   'dice `"exists": false`, o hay menos de diez nombres en `backups.databases` o en '
+                   '`superseded_backups.databases`, parar y avisar al usuario antes de `--confirm`'):
+        assert needle in flat, needle
+    for stale in ("L4 hacia 63ea8d3", "contenedor de 63ea8d3", "Falta que el usuario confirme",
+                  "hacen falta además dos decisiones del usuario", "los dos slots con"):
+        assert stale not in flat, stale
+
+
+def test_r1e_the_pinned_r1_admits_the_runbook_container():
+    """Review R1E-RV1: the scheduling gate is this test, not a sentence. The pinned R1 commit's own code
+    must adopt the container both C= lines name: its LEGACY_CONTAINER_COMMIT is their commit suffix, its
+    LEGACY_CONTAINER_RELEASE the full commit with that prefix, and its adoption_commands.py refuses any
+    other container release (runtime_admission_adoption_container_commit). An R1 from before R1E (357dcb5)
+    lets an e9669ec container through the dry run, W1b, W2 and the W4 commit, and W-abort-1 skips its
+    rollback check, so pinning it beside C=e9669ec fails here."""
+    text = r1_runbook.runbook_text()
+    containers = re.findall(r"(?m)^C=(\S+)$", text)
+    assert len(containers) == 2 and len(set(containers)) == 1, containers
+    suffix = containers[0].rsplit("_", 1)[1]
+    assert re.fullmatch(r"[0-9a-f]{7}", suffix), containers
+    commit = r1_runbook.pinned(text)["R1_COMMIT"]
+    launcher = _git("show", commit + ":scripts/managed_launcher.py")
+    commands = _git("show", commit + ":scripts/adoption_commands.py")
+    assert launcher.returncode == 0 and commands.returncode == 0, (launcher.stderr, commands.stderr)
+    assert re.findall(r'(?m)^LEGACY_CONTAINER_COMMIT = "([0-9a-f]+)"$', launcher.stdout) == [suffix]
+    release = re.findall(r'(?m)^LEGACY_CONTAINER_RELEASE = "([0-9a-f]{40})"$', launcher.stdout)
+    assert len(release) == 1 and release[0].startswith(suffix), release
+    assert "runtime_admission_adoption_container_commit" in commands.stdout
+    assert "commit != launcher.LEGACY_CONTAINER_RELEASE" in commands.stdout
+
+
+def test_r1e2_the_pinned_r1_retires_production_s_day14_layout():
+    """R1E-2 (r1e_questions_20261118): the pinned R1 commit's own code carries the day-14 scope the
+    runbook describes (the three report names, the 63ea8d3 and 2c5adb4 slots by exact name and full commit,
+    the superseded check) and serves L4 only to the e9669ec container. The d045156 pin (review round 1)
+    refuses that layout on day 14 and fails here."""
+    text = r1_runbook.runbook_text()
+    commit = r1_runbook.pinned(text)["R1_COMMIT"]
+    launcher = _git("show", commit + ":scripts/managed_launcher.py")
+    commands = _git("show", commit + ":scripts/adoption_commands.py")
+    assert launcher.returncode == 0 and commands.returncode == 0, (launcher.stderr, commands.stderr)
+    assert re.findall(r"(?m)^LEGACY_COMMITS = (.+)$", launcher.stdout) == ["(LEGACY_CONTAINER_COMMIT,)"]
+    assert re.findall(r"(?m)^LEGACY_SLOT_REPORTS = (.+)$", commands.stdout) == [
+        '("activation-report.json", "live-report.json", "prepare-report.json")']
+    assert re.findall(r"(?m)^LEGACY_SUPERSEDED_CONTAINER = (.+)$", commands.stdout) == [
+        '("release_20261029T174830709997Z_63ea8d3", "63ea8d319b50506cc37ba73df1e41c87a41054cf")']
+    assert re.findall(r"(?m)^LEGACY_OLDER_SLOT = (.+)$", commands.stdout) == [
+        '("release_20261028T144002Z_2c5adb4", "2c5adb4f3825e94bff86ef5ccff4e1391a1bc012")']
+    assert "runtime_admission_legacy_retire_superseded" in commands.stdout
+    flat = " ".join(text.split())
+    for name in ("release_20261029T174830709997Z_63ea8d3", "release_20261028T144002Z_2c5adb4",
+                 "activation-report.json", "live-report.json", "prepare-report.json"):
+        assert name in flat, name

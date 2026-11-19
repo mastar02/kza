@@ -128,7 +128,7 @@ class Units:
 
 
 class World:
-    """One production-shaped root: the two legacy slots, 'current' on 63ea8d3, the checkout's models."""
+    """One production-shaped root: the two legacy slots, 'current' on e9669ec, the checkout's models."""
 
     def __init__(self, base: Path, tree: Path, artifacts: dict, **build) -> None:
         self.base = base
@@ -136,7 +136,8 @@ class World:
         self.root = base / "legacy" / "releases"
         runtime = self.root / "slots" / CONTAINER / "runtime"
         runtime.mkdir(mode=0o700)  # Production mode; 0o700 holds under any umask.
-        (runtime / "release.json").write_text(json.dumps({"git_commit": "63ea8d3" + "0" * 33, "files": {}}))
+        (runtime / "release.json").write_text(json.dumps({"git_commit": launcher.LEGACY_CONTAINER_RELEASE,
+                                                          "files": {}}))
         (self.root / "current").symlink_to(Path("slots") / CONTAINER / "runtime")
         self.scratch = base / "tmpfs"
         self.scratch.mkdir(mode=0o700)
@@ -2117,3 +2118,116 @@ def test_a_loaded_template_that_names_the_models_must_be_listed(adapter_world):
     with pytest.raises(commands.CommandRefusal,
                        match="^runtime_admission_retire_unit_not_listed:kza-lora-sync@.service$"):
         world.retire()
+
+
+# --- R1E: the legacy container is e9669ec (user decision batch_g_questions_20261118 "R1 base") ------
+
+SUPERSEDED = "63ea8d3" + "0" * 33  # the 2026-10-29 14:48 container 'current' left at 15:50
+
+
+def _container_release(world: World, value) -> None:
+    """Rewrite the container runtime's release.json (``value`` None: an unreadable file)."""
+    path = world.root / "slots" / CONTAINER / "runtime" / "release.json"
+    path.write_text("{" if value is None else json.dumps(value))
+
+
+def test_r1e_the_legacy_commits_are_the_state_slot_and_the_e9669ec_container():
+    assert launcher.LEGACY_STATE_COMMIT == "b0866e8" and launcher.LEGACY_CONTAINER_COMMIT == "e9669ec"
+    assert launcher.LEGACY_COMMITS == ("e9669ec",)  # R1E-2: L4 and the aborts serve only the container
+    assert launcher.LEGACY_CONTAINER_RELEASE == "e9669ec1edb101ca6b190ef8df09314e1ac63562"
+    assert launcher.LEGACY_CONTAINER_RELEASE.startswith(launcher.LEGACY_CONTAINER_COMMIT)
+    assert CONTAINER == "release_20261029T185008966364Z_e9669ec"
+
+
+@pytest.mark.parametrize("release", [
+    {"git_commit": SUPERSEDED, "files": {}},
+    {"git_commit": "b0866e8" + "0" * 33, "files": {}},  # the state slot's commit is not the container's
+    {"git_commit": "2c5adb4" + "0" * 33, "files": {}},
+    {"files": {}},
+    {"git_commit": 7, "files": {}},
+    [],
+    None,
+    # Review R1E-RV3: the exact commit, not a prefix or a substring of it.
+    {"git_commit": "e9669ec" + "0" * 33, "files": {}},
+    {"git_commit": "e9669ec1edb101ca6b190ef8df09314e1ac6356", "files": {}},
+    {"git_commit": "e9669ec", "files": {}},
+    {"git_commit": "e96" + "1" * 37, "files": {}},
+    {"git_commit": "0" * 33 + "e9669ec", "files": {}},
+    {"git_commit": "e9669ec1edb101ca6b190ef8df09314e1ac63562 ", "files": {}},
+], ids=["63ea8d3", "b0866e8", "unlisted", "no_commit", "not_text", "not_object", "unreadable",
+        "same_prefix_other_commit", "one_hex_short", "short_prefix", "three_hex_prefix", "substring",
+        "trailing_space"])
+def test_r1e_dry_run_and_prepare_refuse_a_container_that_is_not_e9669ec(world, release):
+    """'current' on the named container slot is not enough: its release must be the e9669ec container,
+    git_commit exactly launcher.LEGACY_CONTAINER_RELEASE (the World's own release passes)."""
+    _container_release(world, release)
+    code, report = world.dry_run()
+    assert code == 78 and "runtime_admission_adoption_container_commit" in report["problems"]
+    assert report["current"] == "other"
+    slots = sorted(os.listdir(world.root / "slots"))
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_container_commit$"):
+        world.prepare()
+    assert sorted(os.listdir(world.root / "slots")) == slots
+    directory = stage.adoption_directory(world.root)
+    assert not directory.is_dir() or not [name for name in os.listdir(directory) if name.startswith("plan-")]
+
+
+def test_r1e_commit_refuses_a_container_release_changed_after_prepare(world):
+    prepared = world.prepare()
+    world.install_controller()
+    _container_release(world, {"git_commit": SUPERSEDED, "files": {}})
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_plan_mismatch:current$"):
+        world.commit(prepared["plan_sha256"])
+    assert world.head() is None and os.readlink(world.root / "current") == f"slots/{CONTAINER}/runtime"
+
+
+@pytest.mark.parametrize("commit, code", [
+    ("e9669ec" + "0" * 33, None),
+    ("b0866e8" + "0" * 33, "runtime_admission_uninstall_legacy_commit"),  # R1E-2: L4 targets only e9669ec
+    (SUPERSEDED, "runtime_admission_uninstall_legacy_commit"),
+    ("2c5adb4" + "0" * 33, "runtime_admission_uninstall_legacy_commit"),
+])
+def test_r1e_l4_and_the_aborts_roll_back_only_to_the_listed_legacy_commits(world, commit, code):
+    """The rollback target (L4, both aborts): only e9669ec (user decision R1E-Q2/Q4/Q5); b0866e8's own
+    runtime and the superseded 63ea8d3 refuse."""
+    _container_release(world, {"git_commit": commit, "files": {}})
+    if code is None:
+        assert launcher._verify_legacy_slot(world.root, CONTAINER, launcher.LEGACY_COMMITS)[2] == commit
+        commands.rollback_target(world.root, CONTAINER)
+        return
+    with pytest.raises(launcher.LauncherRefusal, match="^" + code + "$"):
+        launcher._verify_legacy_slot(world.root, CONTAINER, launcher.LEGACY_COMMITS)
+    with pytest.raises(commands.CommandRefusal, match="^" + code + "$"):
+        commands.rollback_target(world.root, CONTAINER)
+
+
+@pytest.mark.parametrize("release, code", [
+    ({"git_commit": SUPERSEDED, "files": {}}, "runtime_admission_uninstall_legacy_commit"),
+    ({"git_commit": "2c5adb4" + "0" * 33, "files": {}}, "runtime_admission_uninstall_legacy_commit"),
+    ({"git_commit": "2c5adb4" + "0" * 33, "files": {}, "controller_epoch": "4"},
+     "runtime_admission_uninstall_legacy_commit"),
+    (None, "runtime_admission_uninstall_legacy_slot"),
+], ids=["63ea8d3", "unlisted", "epoch_not_int", "unreadable"])
+def test_r1e_abort_prepared_never_skips_the_rollback_check_on_an_unlisted_legacy_current(world, release, code):
+    """W-abort-1 before the commit: 'current' still serves a legacy release, whatever its commit, so the
+    rollback-target check runs and refuses what L4 could not serve; nothing changes."""
+    world.prepare()
+    _container_release(world, release)
+    slots = sorted(os.listdir(world.root / "slots"))
+    with pytest.raises(commands.CommandRefusal, match="^" + code + "$"):
+        commands.adoption_abort_prepared(world.root, slot="r1", manager=world.units)
+    assert sorted(os.listdir(world.root / "slots")) == slots and world.units.enabled == []
+    assert os.readlink(world.root / "current") == f"slots/{CONTAINER}/runtime"
+
+
+def test_r1e_abort_prepared_skips_the_rollback_check_only_on_a_managed_current(world):
+    """After the commit 'current' serves a managed release (an integer controller_epoch): the legacy
+    check is not this command's, so even an unlisted container leaves the leftover path to its own codes."""
+    world.adopt()
+    release = json.loads((world.root / "slots" / "r1" / "runtime" / "release.json").read_text())
+    assert type(release["controller_epoch"]) is int
+    _container_release(world, {"git_commit": "2c5adb4" + "0" * 33, "files": {}})
+    assert commands._legacy_release(world.root, "r1") is False
+    assert commands._legacy_release(world.root, CONTAINER) is True
+    with pytest.raises(commands.CommandRefusal, match="^runtime_admission_adoption_nothing_prepared$"):
+        commands.adoption_abort_prepared(world.root, slot="r2", manager=world.units)

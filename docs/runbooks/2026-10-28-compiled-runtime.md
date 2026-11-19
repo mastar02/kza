@@ -1,7 +1,7 @@
 # Runtime compilado y actualizaciones de código
 
-El servicio y el dashboard ejecutan `release_20261029T174830709997Z_63ea8d3` bajo
-`kza`. Los artefactos se construyen y prueban como `yo`; no se desarrolla, compila
+El servicio y el dashboard ejecutan `release_20261029T185008966364Z_e9669ec` bajo
+`kza` desde el 2026-10-29 15:50 (verificado sólo leyendo el 2026-11-18). Los artefactos se construyen y prueban como `yo`; no se desarrolla, compila
 ni instalan dependencias en producción. La instalación original del 28 y la
 actualización del 29 fueron solicitadas por el usuario antes de completar el
 roadmap.
@@ -44,10 +44,15 @@ Si hay que reconstruirlo, hacerlo bajo `yo` y transferir sólo el bytecode y sus
 recursos verificados. El rollback histórico al checkout original, al final de
 este documento, corresponde a la instalación del 28.
 
-## Mejora de carga de muestras — preparada 2026-10-29
+## Mejora de carga de muestras — instalada 2026-10-29
 
-La mejora está construida y probada, pendiente de ejecución por el operador.
-El runtime activo sigue siendo `63ea8d3`. El nuevo artefacto corresponde a
+El operador la publicó el 2026-10-29 a las 15:50 (-03): `current` apunta a
+`slots/release_20261029T185008966364Z_e9669ec/runtime` y el registro
+es `/home/kza/releases/deployments/voice-loading-e9669ec.json` (estado `active`,
+`previous_runtime` = el runtime de 63ea8d3, diez respaldos SQLite en
+`/home/kza/releases/backups/release_20261029T185008966364Z_e9669ec/`).
+Esto se comprobó el 2026-11-18 sólo leyendo (R1E). El texto que sigue es el
+procedimiento tal como se preparó. El artefacto corresponde a
 `e9669ec1edb101ca6b190ef8df09314e1ac63562`; cambia sólo `voice-view.js` y
 `voice-channel.js` dentro de la aplicación. El reproductor queda antes de la
 lista, se desplaza a la vista al seleccionar audio y muestra «Cargando audio…»
@@ -106,7 +111,9 @@ continúa y HA conserva su reconexión acotada existente. No se verificaron
 
 ## Archivos y logs
 
-- Slot activo: `/home/kza/releases/slots/release_20261029T174830709997Z_63ea8d3/`.
+- Slot activo: `/home/kza/releases/slots/release_20261029T185008966364Z_e9669ec/` (el de
+  63ea8d3, `release_20261029T174830709997Z_63ea8d3`, sigue presente con los
+  mismos enlaces; no es destino de L4 desde R1E).
 - `runtime`: bytecode y assets verificados; `release.json` contiene el commit y
   los hashes. Los enlaces `config`, `data` y `.env` apuntan al estado del slot.
 - `state`: contenedor de enlaces a los recursos privados canónicos del slot del
