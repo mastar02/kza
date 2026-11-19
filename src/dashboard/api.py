@@ -26,7 +26,7 @@ from src.core.observation import Observation, ObservationReason, ObservationSour
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
-from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_admin, require_dashboard_access, require_dashboard_session, session_guard
+from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session, session_guard
 from src.dashboard.authority import DashboardAuthority, DashboardPermission
 from src.home_assistant.control_policy import HomeActor
 from src.lists.list_store import OwnerType
