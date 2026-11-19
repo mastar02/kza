@@ -374,3 +374,30 @@ async def test_compound_turns_naming_the_routines_keep_the_household_veto(leaves
             assert result["success"] is False and result["response"] == ""
             assert reads == []
             assert observed["service_calls"] == 0
+
+
+@pytest.mark.parametrize("text", [
+    "¿qué hay en la lista de rutinas?",
+    "mostrame la lista de rutinas que hay en la casa",
+])
+async def test_other_household_queries_naming_the_routines_keep_the_household_veto(leaves, tmp_path, monkeypatch,
+                                                                                    text):
+    """T033-U1b-FV1: only a claim of the routine family skips the household veto. A shared-list query (R1, family
+    list) that names the routines is also accepted by VoiceRoutineService.claims, yet over unvetoed_max_words it
+    meets the 7B on a clear own wake; a rejecting 7B ends it silently with no read or action."""
+    async with offline_home() as (url, observed):
+        async with AsyncExitStack() as stack:
+            graph, veto = await graph_with_rejecting_7b(stack, tmp_path, url, leaves)
+            router = graph.pipeline.request_router
+            household = router.household_intents.classify(text)
+            assert (household.family.value, household.operation.value) == ("list", "query")
+            assert router.voice_routines.claims(text)
+            assert len(text.split()) > router.household_intents.settings.unvetoed_max_words
+            reads = count_reads(monkeypatch, graph.routine_scheduler.store)
+            graph.models.stt.text = text
+            result = await graph.pipeline.process_command(captured(**OWN_WAKE))
+            assert veto.classify.await_count == 1
+            assert result["intent"] == "llm_rejected:household"
+            assert result["success"] is False and result["response"] == ""
+            assert reads == []
+            assert observed["service_calls"] == 0
