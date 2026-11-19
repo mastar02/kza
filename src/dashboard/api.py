@@ -9,6 +9,7 @@ from contextvars import Context
 from dataclasses import dataclass
 import json
 import logging
+import math
 import os
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
@@ -211,20 +212,26 @@ REMINDER_RECURRENCE_PATTERN = r"^(daily|weekdays|weekly:[1-7]|monthly:([1-9]|[12
 class ReminderCreateModel(BaseModel):
     """A shared or private reminder; the owner comes from the session (T035-U1).
 
-    Every household session may write one, so the time is a finite positive
-    epoch below ``REMINDER_TRIGGER_MAX`` and the recurrence is one the
-    scheduler can walk; anything else is refused (422) before a row exists.
+    Every household session may write one, so the text is bounded and the
+    recurrence is one the scheduler can walk (422 here). ``trigger_at`` is
+    checked by the route (``_valid_trigger_at``): a validation error would echo
+    a non-finite input, which no JSON response can carry.
     """
 
     model_config = ConfigDict(extra="forbid")
     text: str = Field(min_length=1, max_length=500)
-    trigger_at: float = Field(gt=0, lt=REMINDER_TRIGGER_MAX, allow_inf_nan=False)
+    trigger_at: float
     recurrence: str | None = Field(default=None, max_length=16, pattern=REMINDER_RECURRENCE_PATTERN)
     ha_actions: list[dict] | None = None
     scope: ReminderScope = ReminderScope.PRIVATE
 
 
 _NO_STORE = {"Cache-Control": "no-store"}
+
+
+def _valid_trigger_at(value: float) -> bool:
+    """A finite positive epoch before ``REMINDER_TRIGGER_MAX`` (T035-U1-RV1)."""
+    return math.isfinite(value) and 0 < value < REMINDER_TRIGGER_MAX
 
 
 @dataclass(frozen=True)
@@ -1046,6 +1053,8 @@ class DashboardAPI:
             tasks = TaskScope.of(principal)
             if not self.reminder_manager:
                 return _task_error(503, "Reminders not configured", write=True, handled=False)
+            if not _valid_trigger_at(data.trigger_at):
+                return _task_error(422, "invalid_trigger_at", write=True)
             shared = data.scope is ReminderScope.SHARED
             if not shared and tasks.person is None:
                 return _task_error(403, "personal_session_required", write=True)
