@@ -843,11 +843,14 @@ class RevocationGeneration:
     """Content-free in-memory fence over the ledger's revocation state (T044-U1).
 
     ``projection_revision`` moves in the same critical section as every change of
-    the state read by ``sources_available``/``facts_available``: committed and
-    pending conversation deletions, fact receipts, pending fact ids and the
-    authority's availability. A delivered view stamped with it retires on any
-    erasure, pending revocation or authority transition, even when none of its
-    own sources changed. It carries no id, content or count.
+    the state read by ``sources_available``/``facts_available`` that can deny
+    what was available: a new committed or pending conversation deletion, a
+    removed or changed fact receipt, a newly pending change to a published
+    receipt, and every transition of the authority's availability. A delivered
+    view stamped with it retires on any erasure, pending revocation or authority
+    transition, even when none of its own sources changed. A new receipt or a
+    cleared pending set only admits more, so it keeps every view (T044-U1-RV6).
+    It carries no id, content or count.
     """
 
     __slots__ = ("projection_revision", "__weakref__")
@@ -883,7 +886,8 @@ class FactLedger:
         self._lock = threading.RLock()
         self._db: sqlite3.Connection | None = None
         # T044-U1: set before any delivery exists; every later assignment of the
-        # revocation state below advances it (see _revocation_changed).
+        # revocation state below that can deny a reader advances it
+        # (see _pending_revoked and _published_revoked).
         self.revocations = RevocationGeneration()
         self._authority_available = False
         self._lifecycle_generation = 0
@@ -1154,7 +1158,7 @@ class FactLedger:
                     self._pending_fact_ids = frozenset(key for key in self._fact_receipts.keys() | receipts.keys()
                         if self._fact_receipts.get(key) != receipts.get(key))
                     self._pending_conversations = deleted - self._deleted_conversations
-                    self._revocation_changed(previous, (self._pending_fact_ids, self._pending_conversations))
+                    self._pending_revoked(previous)
                     self._pending_deleted_times = {key: deleted_times[key] for key in self._pending_conversations}
                     self._publish_revocation_admission()
                 if guard is not None:
@@ -1165,7 +1169,7 @@ class FactLedger:
                     self._fact_receipts = receipts
                     self._deleted_times = deleted_times
                     self._deleted_conversations = deleted
-                    self._revocation_changed(previous, (receipts, deleted))
+                    self._published_revoked(previous)
             except BaseException:
                 clear_pending = False
                 try:
@@ -1176,7 +1180,7 @@ class FactLedger:
                     self._fact_receipts = self._read_fact_receipts(self._db)
                     self._deleted_times = dict(self._db.execute("SELECT conversation_id, deleted_at FROM conversation_tombstones"))
                     self._deleted_conversations = frozenset(self._deleted_times)
-                    self._revocation_changed(previous, (self._fact_receipts, self._deleted_conversations))
+                    self._published_revoked(previous)
                     clear_pending = True
                 finally:
                     if clear_pending:
@@ -1186,16 +1190,33 @@ class FactLedger:
                 if clear_pending:
                     self._clear_pending()
 
-    def _revocation_changed(self, previous: tuple, current: tuple) -> None:
-        """Advance the revocation generation when an assignment changed its value."""
-        if previous != current:
+    def _pending_revoked(self, previous: tuple[frozenset[str], frozenset[str]]) -> None:
+        """Advance when the new pending sets deny a reader that was admitted.
+
+        A newly pending deletion always does. A newly pending fact id does only
+        when it has a published receipt: an id without one already fails
+        ``facts_available``, so a brand-new fact revokes nothing.
+        """
+        if (self._pending_conversations - previous[1]
+                or any(key in self._fact_receipts for key in self._pending_fact_ids - previous[0])):
+            self.revocations.advance()
+
+    def _published_revoked(self, previous: tuple[dict[str, FactDependency], frozenset[str]]) -> None:
+        """Advance when published receipts or deletions deny a reader that was admitted.
+
+        A receipt that was removed or changed (revision or expiry) and a new
+        deletion revoke; a new receipt or a deletion set that only shrank
+        (rollback re-read) admits more and keeps every delivered view valid.
+        """
+        receipts, deleted = previous
+        if (self._deleted_conversations - deleted
+                or any(self._fact_receipts.get(key) != receipt for key, receipt in receipts.items())):
             self.revocations.advance()
 
     def _clear_pending(self) -> None:
-        previous = self._pending_fact_ids, self._pending_conversations
+        # Clearing the pending sets only admits again what they denied: no advance.
         self._pending_fact_ids = self._pending_conversations = frozenset()
         self._pending_deleted_times = {}
-        self._revocation_changed(previous, (self._pending_fact_ids, self._pending_conversations))
 
     def _queue(self, db, fact_id: str, revision: int, operation: str) -> None:
         if operation == 'delete':
@@ -2580,9 +2601,9 @@ class FactLedger:
                 self.erasures.ensure_operation(db, conversation_id, actor)
                 ids = [r[0] for r in db.execute("SELECT DISTINCT fact_id FROM fact_sources WHERE conversation_id=?", (conversation_id,))]
                 deleted = sum(self._delete(db, fact_id, DeletionKind.FACT_DELETED) for fact_id in ids)
-            previous = self._deleted_conversations
+            previous = self._fact_receipts, self._deleted_conversations
             self._deleted_conversations = self._deleted_conversations | {conversation_id}
-            self._revocation_changed(previous, self._deleted_conversations)
+            self._published_revoked(previous)
             return deleted
 
     def expire(self) -> int:

@@ -825,7 +825,28 @@ async def test_every_revocation_assignment_site_advances_the_generation(tmp_path
             with ledger._transaction() as db:
                 db.execute('SELECT 1')
         assert not moved(read)  # A transaction that revokes nothing keeps every view.
-        fact = ledger.store('Synthetic fact','fact',.9,(source,))
+        stored = []
+        # A new receipt (and its pending id, then the cleared pending set) admits more: no move.
+        assert not moved(lambda:stored.append(ledger.store('Synthetic fact','fact',.9,(source,))))
+        fact = stored[0]
+        other = MemorySource(str(uuid4()),str(uuid4()),clock.now-1,clock.now+3600,MemoryOrigin.VOICE)
+        kept = ledger.store('Synthetic kept fact','fact',.9,(other,))
+        calls = []
+        def guard():
+            calls.append(True)
+            if len(calls)==4:  # After the pending assignment, before commit.
+                raise RuntimeError('synthetic commit failure')
+        def pending_then_rollback():
+            with ledger._transaction(guard) as db:
+                db.execute('UPDATE facts SET revision=revision+1 WHERE id=?',(kept.id,))
+                ledger._authority_version += 1
+        before = generation.projection_revision
+        with pytest.raises(RuntimeError):
+            pending_then_rollback()
+        # The pending change to a published receipt denies readers once; the rollback
+        # re-read finds the receipt unchanged and clearing the pending set admits again.
+        assert len(calls)==4 and generation.projection_revision==before+1
+        assert ledger.facts_available((ledger._fact_receipts[kept.id],))
         assert moved(lambda:ledger.delete_fact(fact.id,reviewer))  # Receipts and pending fact ids.
         seen = []
         observer = Observer(seen,generation)
@@ -877,7 +898,10 @@ async def test_a_revocation_state_change_alone_retires_query_pages_but_not_the_p
             fences = voices.ledger.groups.projection_revision,voices.ledger.projection_revision
             generation = privacy.ledger.revocations.projection_revision
             other = MemorySource(str(uuid4()),str(uuid4()),clock.now-1,clock.now+3600,MemoryOrigin.VOICE)
-            await privacy.acall(privacy.ledger.store,'Synthetic unrelated fact','fact',.9,(other,))
+            unrelated = await privacy.acall(privacy.ledger.store,'Synthetic unrelated fact','fact',.9,(other,))
+            # A new receipt revokes nothing: the page stays (RV6).
+            assert privacy.ledger.revocations.projection_revision==generation
+            await privacy.acall(privacy.ledger.delete_fact,unrelated.id,MemoryReviewer('synthetic-admin'))
             assert privacy.ledger.revocations.projection_revision>generation
             assert (voices.ledger.groups.projection_revision,voices.ledger.projection_revision)==fences
             async with asyncio.timeout(3):
