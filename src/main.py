@@ -55,6 +55,7 @@ from src.llm.reasoner import LLMReasoner, FastRouter
 from src.routines.routine_manager import RoutineManager
 from src.routines.factory import build_routine_scheduler
 from src.routines.routine_scheduler import RoutineScheduler
+from src.routines.voice_routines import VoiceRoutineService
 from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.voice_resolver import HomeVoiceResolver
@@ -877,6 +878,11 @@ async def build_application(
 
     # Routine Manager
     routine_manager = RoutineManager(ha_client, chroma, llm)
+    # T033-U1: read-only voice routines over the persistent scheduler. The
+    # scheduler is built after the orchestrator and the RequestRouter (it needs
+    # the shared Casa services), so both receive this one service now and the
+    # scheduler is bound below, once _initialize_routines returns.
+    voice_routines = VoiceRoutineService()
 
     # Fast Router (GPU 2) - para clasificación rápida con KV-Cache
     router_config = config.get("router", {})
@@ -1866,6 +1872,7 @@ async def build_application(
             timer_manager=voice_services.features.timer_manager,
             # T030-U1 R1: ring zone of a timer without an origin room (shared-notice zone).
             timer_fallback_zone=timer_fallback_zone(config, getattr(voice_services.features, "voice_delivery", None)),
+            voice_routines=voice_routines,
             # Plan #2 OpenClaw
             compactor=compactor,
             persister=persister,
@@ -1979,6 +1986,7 @@ async def build_application(
         wake_verifier=wake_verifier,
         household_clock=household_clock,
         household_intents=household_intents,
+        voice_routines=voice_routines,
     )
 
     shutdown.push_async_callback(request_router.aclose)
@@ -2063,6 +2071,8 @@ async def build_application(
         config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown, start=False,
         household_clock=household_clock,
     )
+    # T033-U1 late binding: the router and the orchestrator read this one scheduler.
+    voice_routines.bind_scheduler(routine_scheduler)
 
     if dashboard_authority is not None:
         await dashboard_authority.initialize()

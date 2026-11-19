@@ -37,6 +37,7 @@ from src.orchestrator.dispatcher import has_domotics_action_verb
 from src.pipeline.earcon_gate import should_play_earcon
 from src.pipeline.post_wake_endpoint import CaptureTrigger
 from src.pipeline.wake_verification import WakeVerifier
+from src.routines.voice_routines import VoiceRoutineService
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
 from src.memory.voice_phrase import VERIFICATION_REPLY
@@ -314,6 +315,7 @@ class RequestRouter:
         wake_verifier: WakeVerifier | None = None,
         household_clock: HouseholdClock | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
+        voice_routines: VoiceRoutineService | None = None,
     ):
         """
         Initialize RequestRouter with injected dependencies.
@@ -359,6 +361,9 @@ class RequestRouter:
             household_intents: Household intent classifier (P3-F2), the same
                 instance the dispatcher uses; None builds one with the default
                 settings and this router's wake words.
+            voice_routines: Read-only voice routines (T033-U1), the same
+                instance the orchestrator's dispatcher uses; main binds its
+                scheduler after construction. None keeps the legacy handlers.
         """
         # Core pipeline components
         self.command_processor = command_processor
@@ -390,6 +395,7 @@ class RequestRouter:
         self.features = features
         self.voice_routine_handler = voice_routine_handler
         self.routines = routine_manager
+        self.voice_routines = voice_routines
 
         # Configuration
         self.vector_search_threshold = vector_search_threshold
@@ -1867,6 +1873,20 @@ class RequestRouter:
 
         # 7. Check routine (new system with VoiceRoutineHandler)
         t_routine = time.perf_counter()
+
+        # T033-U1: a routine question is read from the scheduler store, never from
+        # the legacy Chroma index; detection reads only the words of the turn.
+        routine_query = self.voice_routines.detect(text) if self.voice_routines is not None else None
+        if routine_query is not None:
+            read = await self.voice_routines.answer(routine_query)
+            result["timings"]["routine_check"] = (time.perf_counter() - t_routine) * 1000
+            result["intent"] = "routine"
+            result["response"] = read.response
+            result["success"] = read.outcome.task_completed
+            result["_task_outcome"] = read.outcome
+            await self._speak_response(result["response"])
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
 
         # Try the new voice handler first (more complete)
         if self.voice_routine_handler:

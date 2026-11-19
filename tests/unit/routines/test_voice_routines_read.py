@@ -11,11 +11,14 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.core.task_outcome import TaskStatus
+from src.orchestrator.dispatcher import PathType
 from src.routines.models import ActionStatus, RoutineActionResult, RunStatus, parse_routine_spec
 from src.routines.routine_manager import RoutineManager
 from src.routines.routine_scheduler import RoutineScheduler
 from src.routines.routine_store import RoutineStore
 from src.routines.voice_routines import RoutineReadKind, RoutineReadQuery, VoiceRoutineService, name_key
+from tests.mocks.c02_matrix import effects
+from tests.mocks.household_dispatch import CountedLeaves
 
 READS = ("list_all", "get", "get_run", "get_latest_run", "get_run_by_occurrence")
 WRITES = ("save", "delete", "claim_run", "mark_action_sending", "record_action", "finish_run",
@@ -264,3 +267,92 @@ async def test_scheduler_is_bound_once(routines):
     with pytest.raises(ValueError, match="routine_scheduler_already_bound"):
         service.bind_scheduler(RoutineScheduler(MagicMock(), store=MagicMock()))
     assert service.scheduler is scheduler
+
+
+# ---------------------------------------------------------------- dispatcher
+
+
+@pytest.fixture
+async def leaves(tmp_path):
+    counted = CountedLeaves(tmp_path)
+    await counted.start()
+    yield counted
+    await counted.close()
+
+
+NON_ROUTINE_TURNS = [
+    "cuando juega Peñarol", "cuándo es el cumpleaños de Ana", "algo rutinario, pará", "apagá la luz del living",
+    "qué tiempo hace", "qué recordatorios tengo", "agregá leche a la lista de compras", "qué listas hay",
+    "poné un timer de 5 minutos", "ejecutá la rutina buenas noches", "desactivá la rutina de la noche",
+    "creá una rutina que apague las luces", "explicame la relatividad",
+]
+
+
+async def test_non_routine_turns_never_read_the_routine_store(leaves, routines):
+    scheduler, store = routines
+    await store.save(spec("Buenas noches"), actor="admin")
+    counted = CountedStore(store)
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    for text in NON_ROUTINE_TURNS:
+        result = await dispatcher.dispatch(user_id="unknown", text=text)
+        assert result.intent != "routine" or result.outcome.status is TaskStatus.UNSUPPORTED, text
+    assert counted.calls == []
+
+
+async def test_cuando_questions_no_longer_route_to_routines(leaves, routines):
+    scheduler, _ = routines
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    for text in ("cuando juega peñarol", "cuándo es el cumpleaños de ana", "cuando llega el pedido"):
+        assert dispatcher._classify_request(text)[0] is not PathType.FAST_ROUTINE
+        before = leaves.snapshot()
+        result = await dispatcher.dispatch(user_id="unknown", text=text)
+        assert result.path is not PathType.FAST_ROUTINE
+        assert leaves.effects(before) == effects(cloud_calls=1)
+
+
+@pytest.mark.parametrize("text", ["qué rutinas hay", "¿cuáles son mis rutinas?", "decime las rutinas"])
+async def test_claimed_and_unclaimed_list_questions_read_the_store_with_an_outcome(leaves, routines, text):
+    scheduler, store = routines
+    await store.save(spec("Buenas noches"), actor="admin")
+    counted = CountedStore(store)
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.intent) == (PathType.FAST_ROUTINE, "routine")
+    assert result.response == "Hay una rutina: Buenas noches."
+    assert result.outcome.status is TaskStatus.COMPLETED and result.success
+    assert counted.writes() == 0 and counted.reads() == 2
+    # Read-only: no HA send, no legacy routine handler, no vector search, no cloud.
+    assert leaves.effects(before) == effects()
+    leaves.chroma.list_routines.assert_not_called()
+
+
+async def test_unclaimed_consult_reads_the_store_and_never_the_legacy_handler(leaves, routines):
+    scheduler, store = routines
+    routine = await store.save(spec("Riego"), actor="admin")
+    await run_with(store, routine.routine_id, RunStatus.SKIPPED)
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    text = "¿cómo salió la rutina riego?"
+    assert dispatcher.household_intents.classify(text) is None
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert (result.path, result.intent) == (PathType.FAST_ROUTINE, "routine")
+    assert result.response == ("La rutina Riego está activada y no tiene horario: se ejecuta solo cuando se pide. "
+                               "La última vez no se ejecutó porque no se cumplían sus condiciones.")
+    assert result.outcome.status is TaskStatus.COMPLETED and "routine" in result.timings
+    assert leaves.effects(before) == effects()
+    assert leaves.routines.method_calls == []
+
+
+async def test_unknown_routine_name_is_needs_input_not_completion(leaves, routines):
+    scheduler, _ = routines
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    result = await dispatcher.dispatch(user_id="unknown", text="¿cómo salió la rutina riego?")
+    assert result.path is PathType.FAST_ROUTINE and not result.success
+    assert result.outcome.status is TaskStatus.NEEDS_INPUT
+
+
+async def test_without_the_service_the_claimed_query_keeps_its_honest_refusal(leaves):
+    result = await leaves.dispatcher().dispatch(user_id="unknown", text="qué rutinas hay")
+    assert result.response == "Todavía no manejo rutinas por voz. Podés verlas desde la web."
+    assert result.outcome.status is TaskStatus.UNSUPPORTED

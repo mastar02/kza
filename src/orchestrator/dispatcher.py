@@ -78,6 +78,7 @@ from src.orchestrator.priority_queue import (
 )
 from src.reminders.reminder_manager import CancelMatch, CancelResolution
 from src.reminders.reminder_store import ReminderScope
+from src.routines.voice_routines import RoutineReadKind, RoutineReadQuery, VoiceRoutineService
 from src.timers.named_timers import NamedTimerManager
 from src.timers.voice_commands import TimerVoiceCommands
 from src.world.household_time import CLOCK_UNAVAILABLE, describe_clock, parse_clock_query
@@ -867,6 +868,7 @@ class RequestDispatcher:
         household_intents: HouseholdIntentClassifier | None = None,
         timer_manager: NamedTimerManager | None = None,
         timer_fallback_zone: str | None = None,
+        voice_routines: VoiceRoutineService | None = None,
     ):
         """
         Args:
@@ -915,6 +917,10 @@ class RequestDispatcher:
                 habitación de origen (la de los avisos compartidos, el living;
                 ``main.timer_fallback_zone``). None: ese temporizador se rechaza
                 en vez de confirmarse sin poder sonar (T030-U1 R1).
+            voice_routines: Lectura por voz de las rutinas persistentes
+                (T033-U1), la misma instancia que usa el RequestRouter y cuyo
+                scheduler main vincula después (late binding). None conserva
+                las respuestas honestas de "todavía no".
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -947,6 +953,7 @@ class RequestDispatcher:
         self.household_intents = household_intents if household_intents is not None else HouseholdIntentClassifier()
         self.timer_manager = timer_manager
         self.timer_fallback_zone = timer_fallback_zone
+        self.voice_routines = voice_routines
         self._timers = TimerVoiceCommands(timer_manager)
         # T037-U3-R1: the dispatch text still carries the wake pre-roll, often
         # heard as an alias; strip the same wake terms the rest of the NLU does.
@@ -1435,6 +1442,21 @@ class RequestDispatcher:
                                 effect=EffectState.NOT_OBSERVED),
         )
 
+    async def _routine_read(self, query: RoutineReadQuery, timings: dict | None = None) -> DispatchResult:
+        """Answer a routine question from the scheduler store (T033-U1).
+
+        Read-only: nothing is run, changed or sent. The result carries the
+        read's TaskOutcome (COMPLETED, NEEDS_INPUT for an unknown or ambiguous
+        name, FAILED when the store is unavailable).
+        """
+        t0 = time.perf_counter()
+        read = await self.voice_routines.answer(query)
+        timings = dict(timings or {})
+        timings["routine"] = (time.perf_counter() - t0) * 1000
+        return DispatchResult(path=PathType.FAST_ROUTINE, priority=Priority.MEDIUM,
+                              success=read.outcome.task_completed, response=read.response, intent="routine",
+                              timings=timings, outcome=read.outcome)
+
     async def _dispatch_household(self, household: HouseholdIntent, text: str, *, user_id: str,
                                   zone_id: str | None, origin_room: str | None = None,
                                   choice_key: tuple[str, str | None] | None = None) -> DispatchResult:
@@ -1489,7 +1511,12 @@ class RequestDispatcher:
                                                TaskStatus.NEEDS_INPUT)
             return await self._fast_list_path(text, user_id, zone_id, household=household)
         if family is HouseholdFamily.ROUTINE:
-            # T033 has not landed: no routine runs, stops or changes by voice yet.
+            if operation is HouseholdOperation.QUERY and self.voice_routines is not None:
+                # T033-U1: a claimed routine question reads the scheduler store; one
+                # without a recognizable name lists every routine.
+                return await self._routine_read(self.voice_routines.detect(text)
+                                                or RoutineReadQuery(RoutineReadKind.LIST))
+            # T033-U2/U3 have not landed: no routine runs, stops or changes by voice yet.
             if operation in (HouseholdOperation.STOP, HouseholdOperation.DISABLE, HouseholdOperation.CANCEL):
                 response = "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."
             elif household.reason == "new_routine":
@@ -1737,6 +1764,11 @@ class RequestDispatcher:
                 logger.warning(f"Router fallo, pasando a slow path: {e}")
 
         if path == PathType.FAST_ROUTINE:
+            # T033-U1: a routine question is answered from the scheduler store,
+            # never from the legacy Chroma index; detection reads only the words.
+            query = self.voice_routines.detect(text) if self.voice_routines is not None else None
+            if query is not None:
+                return await self._routine_read(query, timings)
             # P3-F2 review F5 (user answer Q15: routine proposals are extracted
             # only locally): an unclaimed creation phrase never reaches
             # RoutineManager._handle_create, which sends the request and the
@@ -2835,6 +2867,7 @@ class MultiUserOrchestrator:
         household_intents: HouseholdIntentClassifier | None = None,
         timer_manager: NamedTimerManager | None = None,
         timer_fallback_zone: str | None = None,
+        voice_routines: VoiceRoutineService | None = None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -2863,6 +2896,8 @@ class MultiUserOrchestrator:
                 Forwarded to RequestDispatcher.
             timer_fallback_zone: Ring zone of a timer without an origin room
                 (T030-U1 R1). Forwarded to RequestDispatcher.
+            voice_routines: Read-only voice routines (T033-U1), shared with the
+                RequestRouter. Forwarded to RequestDispatcher.
         """
         self._hooks = hooks  # plan #3 OpenClaw — exposed for log_hook_stats()
         # Componentes principales
@@ -2946,6 +2981,7 @@ class MultiUserOrchestrator:
             household_intents=household_intents,
             timer_manager=timer_manager,
             timer_fallback_zone=timer_fallback_zone,
+            voice_routines=voice_routines,
         )
 
         self._running = False
