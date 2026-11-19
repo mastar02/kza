@@ -180,6 +180,12 @@ class Availability:
 def availability() -> Availability:
     """Check this host for the rehearsals (not Linux with a running user manager -> a reason), with details.
 
+    Callers never decide on ``reason`` themselves: a real-systemd module uses
+    :func:`module_mark` (the one rule, which fails under
+    :data:`REQUIRE_VARIABLE`); the former ``unavailable()`` that modules put
+    in their own ``skipif`` is gone (review RSG-R1), and
+    tests/unit/tools/test_real_systemd_required.py checks every caller.
+
     Never as root or as the production account (review U3b-0e4 F6): the
     rehearsal units and their daemon-reloads would land in that manager,
     and a reload drops kza-voice's start extension. ``probe`` records what
@@ -220,11 +226,6 @@ def availability() -> Availability:
     if probe["state"] not in ("running", "degraded"):
         return Availability("U3b-0e4 rehearsals need a running user systemd manager", probe)
     return Availability(None, probe)
-
-
-def unavailable() -> str | None:
-    """Why the rehearsals cannot run here, or None (see :func:`availability`)."""
-    return availability().reason
 
 
 def required() -> bool:

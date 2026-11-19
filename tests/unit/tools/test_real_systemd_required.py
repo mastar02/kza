@@ -10,8 +10,10 @@ reach a real user manager.
 """
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -76,7 +78,7 @@ def test_a_degraded_manager_still_runs(host, monkeypatch):
 
 def test_a_timed_out_probe_is_a_skip_without_the_variable(host):
     host.answer = subprocess.TimeoutExpired(["systemctl"], 10)
-    assert real_systemd.unavailable() == STALLED
+    assert real_systemd.availability().reason == STALLED
     assert real_systemd.skip_reason() == STALLED
     mark = real_systemd.module_mark()
     assert mark.args == (True,) and mark.kwargs["reason"] == STALLED
@@ -180,3 +182,138 @@ def test_the_probe_runs_once_per_module_mark(host):
     host.answer = ("starting\n", 1, "")
     real_systemd.module_mark()
     assert len(host.calls) == 1  # was two probes per module (skipif condition and reason), up to 20 s
+
+
+# Every caller goes through module_mark (review RSG-R1) -----------------------------------------------
+
+TESTS = Path(__file__).resolve().parents[2]
+HELPER = "tests.mocks.real_systemd"
+# Unit tests of the helper itself: they simulate the host or a private XDG_RUNTIME_DIR, never a real manager.
+HELPER_UNIT_TESTS = {"tests/unit/tools/test_real_systemd_required.py", "tests/unit/tools/test_real_systemd_lock.py"}
+REAL_SYSTEMD_MODULES = {
+    "tests/integration/test_linux_adoption_window.py", "tests/integration/test_linux_compaction_units.py",
+    "tests/integration/test_linux_managed_launcher.py", "tests/integration/test_linux_owner_compaction.py",
+    "tests/integration/test_linux_sc6b_measurements.py", "tests/integration/test_linux_sc6b_release_rehearsal.py",
+}
+
+
+def _helper_names(tree: ast.Module) -> tuple[set[str], list[str]]:
+    """The names a module binds to the helper module, and the helper names it imports one by one."""
+    aliases: set[str] = set()
+    direct: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "tests.mocks":
+            aliases |= {alias.asname or alias.name for alias in node.names if alias.name == "real_systemd"}
+        elif isinstance(node, ast.ImportFrom) and node.module == HELPER:
+            direct += [alias.name for alias in node.names]
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == HELPER:
+                    aliases.add(alias.asname or alias.name)
+    return aliases, direct
+
+
+def _imported_modules(tree: ast.Module) -> set[str]:
+    found = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom) and node.module}
+    found |= {node.module + "." + alias.name for node in ast.walk(tree)
+              if isinstance(node, ast.ImportFrom) and node.module for alias in node.names}
+    return found | {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+
+
+def _dotted(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return _dotted(node.value) + "." + node.attr
+    return ""
+
+
+def caller_violations(source: str, *, real_systemd_dependency: bool = False) -> list[str]:
+    """What keeps a module from going through :func:`real_systemd.module_mark`, empty when nothing.
+
+    A module that imports the helper (or a real-systemd module, for its
+    fixtures) must have a module-level ``pytestmark`` that calls
+    ``real_systemd.module_mark()`` (alone or in a list), import the helper
+    as a module, and never read ``availability``/``skip_reason`` itself: a
+    ``skipif`` of its own would skip silently under KZA_REQUIRE_REAL_SYSTEMD=1.
+    """
+    tree = ast.parse(source)
+    aliases, direct = _helper_names(tree)
+    if not aliases and not direct and not real_systemd_dependency:
+        return []
+    problems = [f"imports {name} from {HELPER} instead of the module" for name in direct]
+    read: dict[str, int] = {}
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute) and _dotted(node.value) in aliases
+                and node.attr in ("availability", "unavailable", "skip_reason", "Availability")):
+            read[node.attr] = min(read.get(node.attr, node.lineno), node.lineno)
+    problems += [f"line {line}: reads real_systemd.{attr} instead of module_mark()"
+                 for attr, line in sorted(read.items(), key=lambda item: (item[1], item[0]))]
+    marks = [node.value for node in tree.body if isinstance(node, ast.Assign)
+             and any(isinstance(target, ast.Name) and target.id == "pytestmark" for target in node.targets)]
+    marks += [node.value for node in tree.body if isinstance(node, ast.AnnAssign)
+              and isinstance(node.target, ast.Name) and node.target.id == "pytestmark" and node.value]
+    calls = [call for mark in marks for call in ([mark] + list(getattr(mark, "elts", [])))
+             if isinstance(call, ast.Call) and _dotted(call.func) in {alias + ".module_mark" for alias in aliases}
+             and not call.args and not call.keywords]
+    if not calls:
+        problems.append("no module-level pytestmark = real_systemd.module_mark()")
+    return problems
+
+
+def _tree_callers() -> dict[str, list[str]]:
+    sources = {path.relative_to(TESTS.parent).as_posix(): path.read_text(encoding="utf-8")
+               for path in sorted(TESTS.rglob("*.py"))}
+    trees = {name: ast.parse(text) for name, text in sources.items()}
+    callers = {name for name, tree in trees.items() if any(_helper_names(tree))}
+    callers -= HELPER_UNIT_TESTS | {"tests/mocks/real_systemd.py"}
+    as_modules = {name[:-3].replace("/", ".") for name in callers}
+    dependents = {name for name, tree in trees.items()
+                  if name not in callers and _imported_modules(tree) & as_modules}
+    return {name: caller_violations(sources[name], real_systemd_dependency=name in dependents)
+            for name in sorted(callers | dependents)}
+
+
+def test_every_real_systemd_module_goes_through_module_mark():
+    found = _tree_callers()
+    assert set(found) == REAL_SYSTEMD_MODULES  # a new caller is listed here once it passes the check below
+    assert {name: problems for name, problems in found.items() if problems} == {}
+
+
+OLD_PATTERN = """
+import pytest
+from tests.mocks import real_systemd
+pytestmark = pytest.mark.skipif(real_systemd.availability().reason is not None,
+                                reason=real_systemd.availability().reason or "")
+"""
+
+
+@pytest.mark.parametrize("source, expected", [
+    (OLD_PATTERN, ["reads real_systemd.availability", "no module-level pytestmark"]),
+    (OLD_PATTERN.replace("availability().reason", "unavailable()"),
+     ["reads real_systemd.unavailable", "no module-level pytestmark"]),
+    ("from tests.mocks import real_systemd\nx = real_systemd.UserSystemd\n", ["no module-level pytestmark"]),
+    ("from tests.mocks import real_systemd\ndef f():\n    pytestmark = real_systemd.module_mark()\n",
+     ["no module-level pytestmark"]),
+    ("import pytest\nfrom tests.mocks import real_systemd\npytestmark = [real_systemd.module_mark(),\n"
+     "    pytest.mark.skipif(real_systemd.skip_reason() is not None, reason='x')]\n",
+     ["reads real_systemd.skip_reason"]),
+    ("from tests.mocks.real_systemd import UserSystemd, module_mark\npytestmark = module_mark()\n",
+     ["imports UserSystemd from", "imports module_mark from", "no module-level pytestmark"]),
+    ("import tests.mocks.real_systemd as rs\npytestmark = rs.module_mark()\n", []),
+    ("from tests.mocks import real_systemd as rs\nimport pytest\n"
+     "pytestmark = [rs.module_mark(), pytest.mark.skipif(True, reason='opt-in')]\n", []),
+    ("import pytest\nfrom tests.mocks import compaction_world\n", []),
+])
+def test_the_caller_check_catches_the_old_pattern(source, expected):
+    problems = caller_violations(source)
+    assert len(problems) == len(expected)
+    for problem, fragment in zip(problems, expected):
+        assert fragment in problem
+
+
+def test_a_module_borrowing_real_systemd_fixtures_needs_the_mark_too():
+    borrowed = "from tests.integration.test_linux_managed_launcher import systemd  # noqa: F401\n"
+    assert caller_violations(borrowed, real_systemd_dependency=True) == [
+        "no module-level pytestmark = real_systemd.module_mark()"]
+    assert caller_violations(borrowed) == []

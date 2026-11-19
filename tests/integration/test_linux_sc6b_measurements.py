@@ -6,7 +6,8 @@ Not a functional rehearsal: it measures, so it runs **alone, in a solo
 window** (no other pytest of any account, no other compiled rehearsal, the
 server otherwise idle) and only when asked: it is skipped unless
 ``KZA_SC6B_MEASURE=1`` (and skipped like the rehearsals off Linux, without a
-user manager, or as root or kza). Suggested command (server, as yo, own clone)::
+user manager, or as root or kza: real_systemd.module_mark; a collection error
+instead under KZA_REQUIRE_REAL_SYSTEMD=1). Suggested command (server, as yo, own clone)::
 
     KZA_SC6B_MEASURE=1 KZA_0E4_EVIDENCE=<evidence dir> nohup taskset -c 24-47 \\
         .venv/bin/python -m pytest -p no:cacheprovider -v \\
