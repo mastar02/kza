@@ -794,6 +794,7 @@ Integrados y publicados hasta `2ad44c0` (2026-11-13):
 - Suite por tanda en `2ad44c0`, en la Mac y en el server: verde salvo una prueba sensible a carga en la Mac (`u3b/full-linux-fixes/RESULT.md`). En el server, a2b tardó 1399 s; partirla antes de la próxima tanda allí.
 
 Pruebas en el server: el usuario autorizó correrlas allí como `yo` y detener servicios si hace falta (`server_test_runs`). El checkout anterior de `yo` lo había borrado la limpieza del 2026-11-09; el nuevo está en `/home/yo/projects/kza`, con venv Linux y runner `/home/yo/projects/runs/run-server.sh`.
+El runner exporta `KZA_REQUIRE_REAL_SYSTEMD=1` (RSG, 2026-11-19): si el systemd de usuario no está disponible (sonda `is-system-running` vencida a los 10 s o en otro estado, sin `XDG_RUNTIME_DIR` o `systemctl`, root o `kza`), cada módulo real-systemd falla en la colección nombrando la razón y la sonda en lugar de saltarse (`tests/mocks/real_systemd.py`, `module_mark`); sin la variable, se sigue saltando.
 
 `U3b-0e4` (`8d89cf9`..`440617e`): ensayos compilados en Linux real, en el server como `yo`, con el systemd de usuario real. Las unidades son de prueba (`kza-rehearsal-*`) y se barren al terminar. Están en `tests/integration/test_linux_managed_launcher.py` y `test_linux_adoption_window.py`; corren sólo en Linux con systemd de usuario, de a un módulo por vez.
 - Defectos de producto encontrados y corregidos:

@@ -45,15 +45,25 @@ writes its pid, cwd and test into that file, and a waiter logs it every
 minute it waits and records those reports in its evidence (AWR-R4); the
 wait has no deadline of its own. A copy of the
 code from before this lock does not take it and is still not isolated.
+
+Every real-systemd module takes ``pytestmark = real_systemd.module_mark()``
+(:func:`skip_reason`, RSG 2026-11-19): off Linux, without a running user
+manager or as root/kza it is skipped, unless ``KZA_REQUIRE_REAL_SYSTEMD=1``
+(exported by the server batch runner), which turns every such reason into a
+collection error naming it and the probe. On 2026-11-19 a stalled manager
+timed out the 10 s ``is-system-running`` probe and whole modules were
+skipped in a server batch: a green run that had not run them.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 import fcntl
 import json
 import logging
 import os
 from pathlib import Path
+import pwd
 import re
 import secrets
 import shutil
@@ -61,6 +71,8 @@ import subprocess
 import sys
 import threading
 import time
+
+import pytest
 
 PRODUCTION_NAMES = ("kza-voice", "kza-llm-fast", "kza-code-index", "kza-llm-ik")
 ROLES = {"kza-voice.service": "voice", "kza-llm-fast.service": "llm-fast",
@@ -153,35 +165,102 @@ def manager_lock():
 
 
 FORBIDDEN_ACCOUNTS = ("kza",)  # production runs in kza's user manager: never rehearse there
+REQUIRE_VARIABLE = "KZA_REQUIRE_REAL_SYSTEMD"  # "1" (the server batch runner): a missing manager fails the run
+PROBE_TIMEOUT_SECONDS = 10  # the is-system-running probe; a stalled manager fails it, it is not widened
 
 
-def unavailable() -> str | None:
-    """Why the rehearsals cannot run here (not Linux with a running user manager), or None.
+@dataclass
+class Availability:
+    """Whether the rehearsals can run here: ``reason`` None when they can, and what was checked."""
+
+    reason: str | None
+    probe: dict = field(default_factory=dict)
+
+
+def availability() -> Availability:
+    """Check this host for the rehearsals (not Linux with a running user manager -> a reason), with details.
 
     Never as root or as the production account (review U3b-0e4 F6): the
     rehearsal units and their daemon-reloads would land in that manager,
-    and a reload drops kza-voice's start extension.
+    and a reload drops kza-voice's start extension. ``probe`` records what
+    the check saw (platform, account, XDG_RUNTIME_DIR, systemctl, and the
+    ``systemctl --user is-system-running`` result or its timeout), so a
+    failure under :data:`REQUIRE_VARIABLE` names it.
     """
+    probe: dict = {"platform": sys.platform}
     if not sys.platform.startswith("linux"):
-        return "U3b-0e4 rehearsals need Linux with a user systemd manager"
-    import pwd
+        return Availability("U3b-0e4 rehearsals need Linux with a user systemd manager", probe)
     try:
         account = pwd.getpwuid(os.getuid()).pw_name
     except KeyError:
         account = ""
+    probe.update(uid=os.getuid(), account=account)
     if os.getuid() == 0 or account in FORBIDDEN_ACCOUNTS:
-        return "U3b-0e4 rehearsals never run as root or as the production account"
+        return Availability("U3b-0e4 rehearsals never run as root or as the production account", probe)
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime or not os.path.isdir(runtime) or shutil.which("systemctl") is None:
-        return "U3b-0e4 rehearsals need a user systemd manager (XDG_RUNTIME_DIR, systemctl)"
+    systemctl = shutil.which("systemctl")
+    probe.update(xdg_runtime_dir=runtime, xdg_runtime_dir_is_dir=bool(runtime) and os.path.isdir(runtime),
+                 systemctl=systemctl)
+    if not runtime or not os.path.isdir(runtime) or systemctl is None:
+        return Availability("U3b-0e4 rehearsals need a user systemd manager (XDG_RUNTIME_DIR, systemctl)", probe)
+    command = ["systemctl", "--user", "is-system-running"]
+    probe.update(command=command, timeout_seconds=PROBE_TIMEOUT_SECONDS)
+    started = time.monotonic()
     try:
-        state = subprocess.run(["systemctl", "--user", "is-system-running"], capture_output=True, text=True,
-                               timeout=10, stdin=subprocess.DEVNULL).stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        state = ""
-    if state not in ("running", "degraded"):
-        return "U3b-0e4 rehearsals need a running user systemd manager"
-    return None
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=PROBE_TIMEOUT_SECONDS,
+                                   stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        probe.update(timed_out=True, state="")
+    except OSError as error:
+        probe.update(error=f"{error.__class__.__name__}: {error}", state="")
+    else:
+        probe.update(timed_out=False, state=completed.stdout.strip(), returncode=completed.returncode,
+                     stderr=completed.stderr.strip()[-500:])
+    probe["seconds"] = round(time.monotonic() - started, 2)
+    if probe["state"] not in ("running", "degraded"):
+        return Availability("U3b-0e4 rehearsals need a running user systemd manager", probe)
+    return Availability(None, probe)
+
+
+def unavailable() -> str | None:
+    """Why the rehearsals cannot run here, or None (see :func:`availability`)."""
+    return availability().reason
+
+
+def required() -> bool:
+    """Whether :data:`REQUIRE_VARIABLE` is ``1``: a missing manager is then a failure, never a skip."""
+    return os.environ.get(REQUIRE_VARIABLE) == "1"
+
+
+def failure_message(found: Availability) -> str:
+    """The text a required run fails with: the variable, the reason and the probe."""
+    return (f"{REQUIRE_VARIABLE}=1 and the real-systemd rehearsals cannot run: {found.reason}; "
+            f"probe: {json.dumps(found.probe, sort_keys=True, default=str)}")
+
+
+def skip_reason() -> str | None:
+    """The one rule for every real-systemd caller: None (run), a skip reason, or a failure.
+
+    Without :data:`REQUIRE_VARIABLE` the reason of :func:`availability` is a
+    skip reason (the Mac, ad-hoc runs). With it, any reason fails the run
+    through ``pytest.fail`` instead: a stalled manager whose probe timed out
+    (2026-11-19) is then a loud failure, not a silently skipped module. Root
+    and the production account stay refused (the rehearsals never run there)
+    and fail the same way. Raised at import (via :func:`module_mark`), it is
+    a collection error naming the reason and the probe.
+    """
+    found = availability()
+    if found.reason is None:
+        return None
+    if required():
+        pytest.fail(failure_message(found), pytrace=False)
+    return found.reason
+
+
+def module_mark() -> pytest.MarkDecorator:
+    """``pytestmark`` for a real-systemd module: skip, run, or fail under :func:`skip_reason`'s rule."""
+    reason = skip_reason()
+    return pytest.mark.skipif(reason is not None, reason=reason or "available")
 
 
 _SHIM = r'''#!{python} -I
@@ -461,9 +540,11 @@ def sweep_stale() -> dict:
     Called once per module before any rehearsal of that module exists. It
     runs under the manager lock, which every live :class:`UserSystemd`
     holds, so every rehearsal unit found belongs to a run that is gone, not
-    to a concurrent copy's live rehearsal (BB-2).
+    to a concurrent copy's live rehearsal (BB-2). Without a manager it
+    sweeps nothing, or fails under ``KZA_REQUIRE_REAL_SYSTEMD=1``
+    (:func:`skip_reason`).
     """
-    if unavailable() is not None:
+    if skip_reason() is not None:
         return {"swept": [], "paths": []}
     with manager_lock() as (waited, reports):
         return dict(_sweep(), lock_wait_seconds=round(waited, 2), lock_wait_reports=reports)

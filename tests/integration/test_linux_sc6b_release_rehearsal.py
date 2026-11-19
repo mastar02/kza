@@ -48,7 +48,8 @@ per-part times, informative only) and one log per step under
 concurrent rehearsal wait), under nohup.
 
 Skipped off Linux, without a running user manager, or as root or kza
-(real_systemd.unavailable).
+(real_systemd.module_mark; a collection error
+instead under KZA_REQUIRE_REAL_SYSTEMD=1).
 """
 from __future__ import annotations
 
@@ -83,8 +84,7 @@ from tests.mocks import sc4b_states
 from tests.mocks.epoch4 import edited_commit, epoch4_commit, epoch4_in_process
 from tests.unit.tools.test_sc1b_release_plan import _QUEUE as _QUEUE_IN_PROCESS, _k_retry
 
-pytestmark = pytest.mark.skipif(real_systemd.unavailable() is not None,
-                                reason=real_systemd.unavailable() or "available")
+pytestmark = real_systemd.module_mark()
 
 REPO = Path(__file__).resolve().parents[2]
 RUNBOOK = REPO / "docs" / "runbooks" / "2026-11-17-release-mode.md"

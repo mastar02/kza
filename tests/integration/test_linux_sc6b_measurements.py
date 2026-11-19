@@ -76,7 +76,7 @@ from tests.mocks import real_systemd
 from tools.sc0.compaction_timing import FreeSampler, Sampler, _tree_bytes, grow_snippet
 
 pytestmark = [
-    pytest.mark.skipif(real_systemd.unavailable() is not None, reason=real_systemd.unavailable() or "available"),
+    real_systemd.module_mark(),
     pytest.mark.skipif(os.environ.get("KZA_SC6B_MEASURE") != "1",
                        reason="SC-6b final measurements: run alone in a solo window with KZA_SC6B_MEASURE=1"),
 ]
