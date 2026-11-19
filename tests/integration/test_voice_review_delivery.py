@@ -843,3 +843,25 @@ class Observer:
 
     def pending(self,conversations):
         self.seen.append((self.start,self.generation.projection_revision))
+
+
+async def test_a_revocation_state_change_alone_retires_query_pages_but_not_the_plain_list(tmp_path,dashboard_auth):
+    """The fence is the fact ledger's revocation generation, not the group or profile revision."""
+    async with web_graph(tmp_path) as (privacy,_,voices,clock,bus), voice_api(voices,bus) as api:
+        await capture(voices,clock)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app),base_url='http://testserver') as client, \
+                ready_browser(bus,version=3) as peer:
+            headers = {**dashboard_auth,'X-KZA-Live-Connection':peer.connection}
+            listed = (await client.get('/api/voices',headers=headers)).json()['snapshot']
+            page = (await client.post(QUERY,json=query_body(),headers=headers)).json()['snapshot']
+            fences = voices.ledger.groups.projection_revision,voices.ledger.projection_revision
+            generation = privacy.ledger.revocations.projection_revision
+            other = MemorySource(str(uuid4()),str(uuid4()),clock.now-1,clock.now+3600,MemoryOrigin.VOICE)
+            await privacy.acall(privacy.ledger.store,'Synthetic unrelated fact','fact',.9,(other,))
+            assert privacy.ledger.revocations.projection_revision>generation
+            assert (voices.ledger.groups.projection_revision,voices.ledger.projection_revision)==fences
+            async with asyncio.timeout(3):
+                control = await peer.outgoing.get()
+            assert control['channel']=='voices:captures' and control['payload']['event_ids']==[page['event_id']]
+            state = next(state for state in bus._retention._states.values() if state.browser.connection==peer.connection)
+            assert state.snapshots[listed['event_id']].available(privacy.ledger,clock.now)
