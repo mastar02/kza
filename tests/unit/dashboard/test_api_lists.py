@@ -284,7 +284,7 @@ async def test_task_route_role_scope_matrix(tasks_graph, entry, method, path, bo
         assert text not in response.text
 
 
-def test_matrix_is_tagged_for_c02():
+async def test_matrix_is_tagged_for_c02():
     entries = [param.values[0] for param in MATRIX]
     assert len({entry.id for entry in entries}) == len(entries)
     assert {entry.layer for entry in entries} == {'web'} and {entry.unit for entry in entries} == {'T035-U1'}
@@ -436,9 +436,8 @@ async def test_authority_withdrawn_before_commit_writes_nothing(tasks_graph, mon
     finally:
         release.set()
     response = await pending
-    assert response.status_code == 403
-    assert response.json()['outcome'] == {**response.json()['outcome'], 'status': 'failed',
-                                          'persistence': 'not_written'}
+    # A withdrawn session receives only the fixed delivery denial, never a receipt or content.
+    assert response.status_code == 403 and response.json() == {'detail': 'dashboard_session_retired'}
     monkeypatch.setattr(store._work, 'write', original)
     assert measured(graph, before, await snapshot(graph)) == effects()
 
