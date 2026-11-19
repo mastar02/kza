@@ -516,3 +516,17 @@ async def test_a_legacy_shared_reminder_naming_a_person_stays_shared(tasks_graph
     for session in ('ana', 'beto', 'home'):
         rows = (await graph.client.get('/api/reminders', headers=graph.headers[session])).json()
         assert [row['scope'] for row in rows if row['id'] == legacy.id] == ['shared'], session
+
+
+async def test_a_legacy_shared_list_never_names_its_recorded_owner(tasks_graph):
+    """T035-U1-RV4: an older shared list with an owner_id is shown with owner_id null to every session."""
+    graph = tasks_graph
+    legacy = await graph.lists.create_list('LEGADO_COMPARTIDO', OwnerType.SHARED, 'beto')
+    for session in ('operator', 'home', 'visitor', 'ana', 'beto'):
+        response = await graph.client.get('/api/lists', headers=graph.headers[session])
+        rows = [row for row in response.json() if row['id'] == legacy.id]
+        assert rows == [{'id': legacy.id, 'name': 'LEGADO_COMPARTIDO', 'owner_type': 'shared', 'owner_id': None}]
+        if session != 'beto':  # beto's own list legitimately names beto
+            assert 'beto' not in response.text, session
+    personal = (await graph.client.get('/api/lists?scope=personal', headers=graph.headers['beto'])).json()
+    assert [row['id'] for row in personal] == [graph.seeded.B.id]
