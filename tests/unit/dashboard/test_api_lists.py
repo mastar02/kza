@@ -268,6 +268,17 @@ MATRIX = (
          None, 'reminder', 'unauthorized_effect', task_status=None, note='pydantic string_pattern_mismatch'),
     _web('C02-REM-0725', 'ana', 'POST', '/api/reminders', {**PRIVATE_REMINDER, 'text': 'x' * 501}, 422, None,
          'reminder', 'unauthorized_effect', task_status=None, note='pydantic string_too_long'),
+    # T035-U1-RV2: a write route refuses a client owner in the query string too.
+    _web('C02-LST-0722', 'ana', 'POST', '/api/lists?user_id=beto', PRIVATE_LIST, 422, 'user_id_not_accepted',
+         'list', 'unauthorized_effect'),
+    _web('C02-LST-0723', 'ana', 'POST', '/api/lists/{A}/items?user_id=beto', {'text': 'pan'}, 422,
+         'user_id_not_accepted', 'list', 'unauthorized_effect'),
+    _web('C02-LST-0724', 'ana', 'DELETE', '/api/lists/{A}/items/{a1}?owner=beto', None, 422,
+         'unexpected_query_parameter', 'list', 'unauthorized_effect'),
+    _web('C02-REM-0726', 'home', 'POST', '/api/reminders?user_id=ana', SHARED_REMINDER, 422, 'user_id_not_accepted',
+         'reminder', 'unauthorized_effect'),
+    _web('C02-REM-0727', 'ana', 'DELETE', '/api/reminders/{RA}?user_id=ana', None, 422, 'user_id_not_accepted',
+         'reminder', 'unauthorized_effect'),
 )
 
 

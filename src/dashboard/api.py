@@ -274,13 +274,13 @@ def _task_error(status_code: int, detail: str, *, write: bool, handled: bool = T
                         headers=_NO_STORE)
 
 
-def _query_rejection(request: Request, *allowed: str) -> JSONResponse | None:
-    """Reject a client-chosen owner and any unknown query parameter (422)."""
+def _query_rejection(request: Request, *allowed: str, write: bool = False) -> JSONResponse | None:
+    """Reject a client-chosen owner and any unknown query parameter (422), on reads and writes."""
     names = set(request.query_params)
     if "user_id" in names:
-        return _task_error(422, "user_id_not_accepted", write=False)
+        return _task_error(422, "user_id_not_accepted", write=write)
     if names - set(allowed):
-        return _task_error(422, "unexpected_query_parameter", write=False)
+        return _task_error(422, "unexpected_query_parameter", write=write)
     return None
 
 
@@ -932,6 +932,8 @@ class DashboardAPI:
         async def create_list(data: ListCreateModel, request: Request,
                               principal: DashboardPrincipal = Depends(require_dashboard_session)):
             """A shared list, or a personal list of the session person."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
             tasks = TaskScope.of(principal)
             if not self.list_manager:
                 return _task_error(503, "Lists not configured", write=True, handled=False)
@@ -968,6 +970,8 @@ class DashboardAPI:
         async def add_list_item(list_id: str, data: ListItemCreateModel, request: Request,
                                 principal: DashboardPrincipal = Depends(require_dashboard_session)):
             """Add an item to one list in the session scope."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
             tasks = TaskScope.of(principal)
             if not self.list_manager:
                 return _task_error(503, "Lists not configured", write=True, handled=False)
@@ -986,6 +990,8 @@ class DashboardAPI:
         async def delete_list_item(list_id: str, item_id: str, request: Request,
                                    principal: DashboardPrincipal = Depends(require_dashboard_session)):
             """Remove an item of one list in the session scope."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
             tasks = TaskScope.of(principal)
             if not self.list_manager:
                 return _task_error(503, "Lists not configured", write=True, handled=False)
@@ -1028,6 +1034,8 @@ class DashboardAPI:
         async def create_reminder(data: ReminderCreateModel, request: Request,
                                   principal: DashboardPrincipal = Depends(require_dashboard_session)):
             """A shared household reminder, or a private one of the session person."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
             tasks = TaskScope.of(principal)
             if not self.reminder_manager:
                 return _task_error(503, "Reminders not configured", write=True, handled=False)
@@ -1051,6 +1059,8 @@ class DashboardAPI:
         async def delete_reminder(reminder_id: str, request: Request,
                                   principal: DashboardPrincipal = Depends(require_dashboard_session)):
             """Cancel one active reminder in the session scope; its home actions never run."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
             tasks = TaskScope.of(principal)
             if not self.reminder_manager:
                 return _task_error(503, "Reminders not configured", write=True, handled=False)
