@@ -250,15 +250,21 @@ class TestRebootFlow:
     async def test_renumbered_card_requests_the_catalog_refresh(self, tmp_path, caplog):
         rig = _Rig(tmp_path)
         rig.living_ctrl.on_reboot = lambda: rig.renumber_living(8)
+        # The late-microphone waiter would first confirm a new gap for this
+        # long; the reboot already knows the card is new and refreshes now.
+        rig.loop._watchdog_backoff_max_s = 60.0
         sd_patch, resolve_patch = rig.patches()
         with sd_patch, resolve_patch, caplog.at_level(logging.INFO, logger=LOGGER):
             await rig.start()
             rig.fail_recoveries(2)
             rig.loop._recover_dead_streams(["living"])
             await rig.settle()
+            refreshes_by_the_reboot = rig.sd._terminate.call_count
+            awaiting = rig.loop._is_awaiting_reopen("living")
             await rig.stop()
 
         assert rig.living_ctrl.reboots == 1
+        assert refreshes_by_the_reboot == 1 and not awaiting
         assert rig.sd._terminate.call_count == 1 and rig.sd._initialize.call_count == 1
         assert rig.living.device_index == rig.index(8)
         assert rig.loop._streams["living"] in rig.streams
