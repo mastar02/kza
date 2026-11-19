@@ -643,6 +643,26 @@ async def test_query_page_envelope_count_room_options_and_metadata_only_rows(tmp
             assert sorted(str(row['room_id']) for row in listed['rows'])==['Cocina sintetica','None','None','Sala sintetica']
 
 
+async def test_an_empty_page_never_carries_a_non_zero_count(tmp_path,dashboard_auth):
+    """An empty page has no ticket, so a count of revocable off-page rows never leaves with it."""
+    async with web_graph(tmp_path) as (_,_,voices,clock,bus), voice_api(voices,bus) as api:
+        for _ in range(3):
+            await capture(voices,clock,room='Sala sintetica')
+        # The digest covers only the filters: a valid cursor positioned after every row of the window.
+        filters = voice_ledger_module.VoiceCaptureFilter(None,None,None,None,None,None,False)
+        cursor = voice_ledger_module.capture_query_cursor(0.0,'vf_'+'0'*64,filters.digest())
+        direct = await voices.acall(voices.ledger.query_captures,filters,cursor,ACTOR)
+        assert direct.rows==[] and direct.summary.matching_count==3 and direct.summary.scan_complete
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app),base_url='http://testserver') as client, \
+                ready_browser(bus,version=3) as peer:
+            headers = {**dashboard_auth,'X-KZA-Live-Connection':peer.connection}
+            response = await client.post(QUERY,json=query_body(cursor=cursor),headers=headers)
+            document = response.json()
+            assert response.status_code==200 and document['snapshot'] is None and document['next_cursor'] is None
+            assert document['empty_page']=={'matching_count':None,'scan_complete':True,'count_observed_at':clock.now}
+            assert 'Sala' not in response.text
+
+
 async def test_off_page_erasure_retires_the_filtered_response_and_its_count(tmp_path,dashboard_auth):
     async with web_graph(tmp_path) as (_,owner,voices,clock,bus), voice_api(voices,bus) as api:
         made = [await capture(voices,clock) for _ in range(60)]
