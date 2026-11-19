@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.core.task_outcome import PersistenceState, TaskStatus
+from src.core.task_outcome import EffectState, PersistenceState, TaskStatus
 from src.nlu.household_intents import HouseholdOperation, classify_household_intent
-from src.timers.named_timers import NamedTimerManager, TimerState
+from src.timers.named_timers import RING_FOLLOW_UP_S, NamedTimerManager, RingDelivery, TimerState
 from src.timers.voice_commands import (
     ALARM_CLARIFY,
     NO_ACTIVE,
@@ -20,8 +20,22 @@ from src.timers.voice_commands import (
 )
 
 
+class FrozenClock:
+    """Monotonic time that moves only when a test moves it."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
 class FrozenTimerManager(NamedTimerManager):
-    """A started manager whose tick never advances: remaining times stay exact while a test reads them."""
+    """A started manager whose clock and tick never advance on their own: remaining times stay exact."""
+
+    def __init__(self, **kwargs) -> None:
+        self.frozen = FrozenClock()
+        super().__init__(clock=self.frozen, **kwargs)
 
     async def _update_loop(self):
         await asyncio.Event().wait()
@@ -317,7 +331,7 @@ async def test_plural_noun_cancels_every_timer(manager, text):
 async def test_unnamed_timer_keeps_its_original_duration_as_name_after_time_passes(manager):
     """T030-U1 R6 (reviewer mutant V19): named by duration_seconds, never by what is left."""
     timer = manager.create_timer("", 300)
-    timer.remaining_seconds = 120  # three minutes went by (the frozen manager never ticks on its own)
+    manager.frozen.now += 180  # three minutes went by (T030-U2: the time left follows the deadline)
     paused = await say(TimerVoiceCommands(manager), "pausá el timer")
     assert paused.response == "Pausé el temporizador de 5 minutos; le quedan 2 minutos."
     resumed = await say(TimerVoiceCommands(manager), "seguí el timer de 5 minutos")
@@ -404,3 +418,176 @@ async def test_a_matching_timer_or_a_creation_is_not_flagged(manager, text):
     commands = TimerVoiceCommands(manager)
     await say(commands, "poné un temporizador de 3 minutos")
     assert not (await say(commands, text)).no_match
+
+
+# ---------------------------------------------------------------- T030-U2: the ring and the voice stop
+
+
+async def _ring(manager: FrozenTimerManager, timer) -> None:
+    """Make ``timer`` due now and let its ring start (it then waits in the gap between repetitions)."""
+    timer.deadline = manager.frozen.now
+    manager._tick()
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert timer.state is TimerState.COMPLETED and manager.ringing_timers() == [timer]
+
+
+@pytest.mark.parametrize("text", ["pará el timer", "apagá el timer", "cancelá el timer", "apagá la alarma",
+                                  "desactivá el temporizador", "pará el timer de la pasta"])
+async def test_a_stop_while_a_timer_rings_silences_it_and_touches_no_other_timer(manager, text):
+    """C02-TIM-0007: the ring stops (no repeat), the running timer is not cancelled, nothing to store."""
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 600)
+    await _ring(manager, pasta)
+    rings = manager.tts.await_count
+    reply = await say(TimerVoiceCommands(manager), text)
+    assert reply.response == "Paré el temporizador de pasta."
+    assert (reply.outcome.status, reply.outcome.persistence) == (TaskStatus.COMPLETED, PersistenceState.NOT_REQUIRED)
+    assert reply.outcome.observation_scope == "software_state" and not reply.no_match
+    assert (pasta.ring, pasta.state, salsa.state) == (RingDelivery.STOPPED, TimerState.COMPLETED, TimerState.RUNNING)
+    assert manager.ringing_timers() == [] and manager.get_status()["delivery_tasks"] == 0
+    await asyncio.sleep(0)
+    assert manager.tts.await_count == rings
+
+
+async def test_a_stop_naming_another_timer_cancels_that_one_and_the_ring_goes_on(manager):
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 600)
+    await _ring(manager, pasta)
+    reply = await say(TimerVoiceCommands(manager), "pará el timer de la salsa")
+    assert reply.response == "Cancelé el temporizador de salsa."
+    assert salsa.state is TimerState.CANCELLED and manager.ringing_timers() == [pasta]
+
+
+async def test_cancel_all_while_one_rings_silences_it_and_cancels_the_rest(manager):
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 600)
+    await _ring(manager, pasta)
+    reply = await say(TimerVoiceCommands(manager), "cancelá todos los timers")
+    assert reply.response == "Cancelé el temporizador de salsa."
+    assert (pasta.ring, salsa.state) == (RingDelivery.STOPPED, TimerState.CANCELLED)
+    assert manager.ringing_timers() == []
+
+
+@pytest.mark.parametrize(("ended_ago", "silenced"), [(10.0, True), (RING_FOLLOW_UP_S + 1, False)])
+async def test_the_stop_that_follows_a_barge_in_names_that_ring(manager, ended_ago, silenced):
+    """The barge-in already cut the ring; the command heard right after must not cancel another timer."""
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 600)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += ended_ago
+    reply = await say(TimerVoiceCommands(manager), "pará el timer")
+    if silenced:
+        # Review T030-U2-RV1: the barge-in cut it, so this stop changed nothing and does not claim it did.
+        assert reply.response == "Listo, el temporizador de pasta ya no suena." and salsa.state is TimerState.RUNNING
+        assert (reply.outcome.status, reply.outcome.persistence, reply.outcome.effect) == (
+            TaskStatus.COMPLETED, PersistenceState.NOT_REQUIRED, EffectState.NOT_REQUIRED)
+    else:
+        assert reply.response == "Cancelé el temporizador de salsa." and salsa.state is TimerState.CANCELLED
+    assert pasta.ring is RingDelivery.STOPPED
+
+
+@pytest.mark.parametrize("stop", ["cancelá el timer de la pasta", "pará el timer de pasta", "cancelá el timer"])
+async def test_a_stop_naming_a_timer_created_after_the_cut_ring_cancels_the_new_one(manager, stop):
+    """Review T030-U2-RV1: the pasta ring is cut by a barge-in, a new pasta is set; the next stop is about the
+    new pasta (it would otherwise ring after KZA said 'Paré'), not the silent ring."""
+    commands = TimerVoiceCommands(manager)
+    old = manager.create_timer("pasta", 300)
+    await _ring(manager, old)
+    assert await manager.stop_ring(old.timer_id)  # same receipt as a barge-in cut (STOPPED)
+    assert old.ring is RingDelivery.STOPPED and old.ring_ended_at == manager.frozen.now
+    manager.frozen.now += 2.0
+    created = await say(commands, "poné un timer de pasta de 10 minutos")
+    assert created.response == "Temporizador de pasta en marcha: 10 minutos."
+    (new,) = [t for t in manager.get_all_timers() if t.state is TimerState.RUNNING]
+    manager.frozen.now += 5.0
+    reply = await say(commands, stop)
+    assert reply.response == "Cancelé el temporizador de pasta."
+    assert (reply.outcome.status, reply.outcome.effect) == (TaskStatus.COMPLETED, EffectState.OBSERVED)
+    assert (new.state, old.state, old.ring) == (TimerState.CANCELLED, TimerState.COMPLETED, RingDelivery.STOPPED)
+
+
+async def test_a_cut_ring_older_than_every_running_timer_is_still_the_follow_up(manager):
+    """The C02-TIM-0007 follow-up survives the RV1 rule: salsa existed before the ring, so it is not cancelled."""
+    salsa = manager.create_timer("salsa", 600)
+    manager.frozen.now += 1.0
+    pasta = manager.create_timer("pasta", 300)
+    manager.frozen.now += 1.0
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += 3.0
+    reply = await say(TimerVoiceCommands(manager), "cancelá el timer")
+    assert reply.response == "Listo, el temporizador de pasta ya no suena." and salsa.state is TimerState.RUNNING
+
+
+async def test_a_newer_timer_with_another_name_does_not_end_the_named_cut_ring_follow_up(manager):
+    """RV1 rule counts only newer timers the stop also names: a salsa set after the cut pasta ring is not 'pasta'."""
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += 2.0
+    await say(commands, "poné un timer de salsa de 10 minutos")
+    (salsa,) = [t for t in manager.get_all_timers() if t.state is TimerState.RUNNING]
+    manager.frozen.now += 2.0
+    reply = await say(commands, "pará el timer de pasta")
+    assert reply.response == "Listo, el temporizador de pasta ya no suena." and salsa.state is TimerState.RUNNING
+    assert (reply.outcome.status, reply.outcome.effect) == (TaskStatus.COMPLETED, EffectState.NOT_REQUIRED)
+
+
+async def test_a_paused_timer_created_after_the_cut_ring_is_the_one_cancelled(manager):
+    """RV1 rule: a re-created pasta that is paused is still the timer the household now talks about."""
+    commands = TimerVoiceCommands(manager)
+    old = manager.create_timer("pasta", 300)
+    old.state, old.ring, old.ring_ended_at = TimerState.COMPLETED, RingDelivery.STOPPED, manager.frozen.now
+    manager.frozen.now += 2.0
+    await say(commands, "poné un timer de pasta de 10 minutos")
+    (new,) = [t for t in manager.get_all_timers() if t.state is TimerState.RUNNING]
+    assert manager.pause_timer(new.timer_id)
+    manager.frozen.now += 2.0
+    reply = await say(commands, "cancelá el timer de pasta")
+    assert reply.response == "Cancelé el temporizador de pasta." and new.state is TimerState.CANCELLED
+
+
+@pytest.mark.parametrize("receipt", [RingDelivery.DELIVERED, RingDelivery.RING_FAILED, RingDelivery.UNDELIVERED])
+@pytest.mark.parametrize("text", ["cancelá el timer", "pará el timer"])
+async def test_a_ring_that_ended_on_its_own_opens_no_follow_up(manager, receipt, text):
+    """Review T030-U2-RV2: only a ring the household cut (STOPPED) is named by the next stop; after a ring
+    that played out or failed, the stop cancels the running timer and never claims 'Paré'."""
+    pasta = manager.create_timer("pasta", 300)
+    salsa = manager.create_timer("salsa", 600)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, receipt, manager.frozen.now
+    manager.frozen.now += 10.0
+    reply = await say(TimerVoiceCommands(manager), text)
+    assert reply.response == "Cancelé el temporizador de salsa." and salsa.state is TimerState.CANCELLED
+    assert (reply.outcome.status, reply.outcome.persistence) == (TaskStatus.COMPLETED, PersistenceState.VOLATILE)
+    assert pasta.ring is receipt
+
+
+async def test_a_stop_after_a_ring_that_played_out_with_nothing_running_is_not_a_false_stop(manager):
+    """Review T030-U2-RV2: nothing sounds and nothing runs, so nothing is claimed."""
+    pasta = manager.create_timer("pasta", 300)
+    pasta.state, pasta.ring, pasta.ring_ended_at = TimerState.COMPLETED, RingDelivery.DELIVERED, manager.frozen.now
+    manager.frozen.now += 5.0
+    reply = await say(TimerVoiceCommands(manager), "pará el timer")
+    assert (reply.response, reply.outcome.status, reply.no_match) == (NO_ACTIVE, TaskStatus.NEEDS_INPUT, True)
+
+
+async def test_a_ring_nobody_heard_is_said_once_in_the_next_query(manager):
+    """A failed ring is never a silent completion (T030-U2)."""
+    commands = TimerVoiceCommands(manager)
+    pasta = manager.create_timer("pasta", 300)
+    pasta.state, pasta.ring = TimerState.COMPLETED, RingDelivery.UNDELIVERED
+    heard = manager.create_timer("arroz", 300)
+    heard.state, heard.ring = TimerState.COMPLETED, RingDelivery.DELIVERED
+    manager.create_timer("", 90)
+    first = await say(commands, "qué timers hay")
+    assert first.response == ("El temporizador de pasta terminó, pero no pude avisarlo. "
+                              "Al temporizador de 1 minuto y 30 segundos, faltan 1 minuto y 30 segundos.")
+    assert first.outcome.status is TaskStatus.COMPLETED
+    second = await say(commands, "qué timers hay")
+    assert second.response == "Al temporizador de 1 minuto y 30 segundos, faltan 1 minuto y 30 segundos."
+    partial = manager.create_timer("té", 300)
+    partial.state, partial.ring = TimerState.COMPLETED, RingDelivery.RING_FAILED
+    manager.cancel_timer(manager.get_all_timers()[2].timer_id)
+    only = await say(commands, "¿cuánto le falta al timer?")
+    assert (only.response, only.no_match) == (f"El temporizador de té terminó, pero no pude avisarlo. {NO_ACTIVE}",
+                                              False)

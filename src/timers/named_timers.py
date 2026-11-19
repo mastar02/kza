@@ -7,19 +7,30 @@ Múltiples timers simultáneos con nombres descriptivos para cocina y más.
 "¿Cuánto falta para la pasta?"
 "Cancela el timer de la salsa"
 "¿Qué timers tengo?"
+
+Runtime (T030-U2): a running timer keeps a deadline on a monotonic clock (the
+default event loop's clock) plus its wall-clock ``ends_at``; the remaining time
+is always computed from the deadline, never decremented per tick. Warnings and
+the ring run in tasks owned by the manager, off the tick loop, so a ring that
+speaks for seconds never delays another timer. A ring stops when the household
+silences it (voice stop or barge-in), and its outcome is a delivery receipt
+(``RingDelivery``) beside the unchanged ``TimerState`` (design schema_v2_draft:
+ring delivery is not a timer state). ``stop()`` cancels and awaits every
+delivery task. Timers stay volatile until SCHEMA-V2 (T030-U3).
 """
 
 import asyncio
+import inspect
 import logging
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Callable
+from typing import Awaitable, Callable
 from enum import StrEnum
 import uuid
 
-from src.core.voice_delivery import invoke_voice_callback
+from src.core.voice_delivery import DeliveryState, ResponseResult, ResponseStage, VoiceDeliveryError, invoke_voice_callback
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.timers.voice_request import format_duration
 
@@ -29,6 +40,17 @@ logger = logging.getLogger(__name__)
 # for timers of 2 minutes or less (they ring soon enough on their own).
 TIME_LEFT_WARNING_S = 60
 NO_WARNING_UP_TO_S = 120
+
+# Longest sleep of the tick loop; it wakes earlier for the next warning or deadline.
+TICK_S = 0.5
+# The ring: the same sentence up to three times, two seconds apart (T030-U1 behaviour).
+RING_REPEATS = 3
+RING_GAP_S = 2.0
+# A warning found this late (the loop was stalled) would name a wrong time left: it is skipped.
+WARNING_STALE_S = 5.0
+# A stop command this soon after the household cut a ring (barge-in, receipt STOPPED) still names
+# that ring, so it never falls through to cancelling another running timer (voice_commands).
+RING_FOLLOW_UP_S = 30.0
 
 
 def warning_thresholds(
@@ -55,9 +77,37 @@ class TimerState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class RingDelivery(StrEnum):
+    """Delivery receipt of a timer's ring (not a timer state; design schema_v2_draft).
+
+    PENDING: not due yet. RINGING: the ring task is speaking or waiting between
+    repetitions. DELIVERED: at least one repetition played completely.
+    STOPPED: the household silenced it (voice stop, or a barge-in cut a
+    repetition whose audio had started). RING_FAILED: the output broke after
+    its audio may have started, or the delivery could not be verified.
+    UNDELIVERED: no repetition produced any audio.
+    """
+
+    PENDING = "pending"
+    RINGING = "ringing"
+    DELIVERED = "delivered"
+    STOPPED = "stopped"
+    RING_FAILED = "ring_failed"
+    UNDELIVERED = "undelivered"
+
+
+RING_NOT_HEARD = frozenset({RingDelivery.RING_FAILED, RingDelivery.UNDELIVERED})
+
+
 @dataclass
 class NamedTimer:
-    """Un timer con nombre"""
+    """Un timer con nombre.
+
+    While RUNNING the timer owns ``deadline`` (seconds on ``clock``) and
+    ``ends_at`` (epoch seconds on ``wall_clock``); ``remaining_seconds`` is
+    derived from the deadline. While paused, cancelled or completed it keeps
+    the seconds that were left and has no deadline.
+    """
     timer_id: str
     name: str                          # "pasta", "salsa", "huevos"
     duration_seconds: int              # Duración total
@@ -67,7 +117,6 @@ class NamedTimer:
 
     # Estado
     state: TimerState = TimerState.RUNNING
-    remaining_seconds: float = 0
     started_at: datetime | None = None
     completed_at: datetime | None = None
 
@@ -75,13 +124,48 @@ class NamedTimer:
     announce_at: list[int] | None = None  # Seconds-left warnings; None -> warning_thresholds(duration)
     repeat: bool = False               # ¿Repetir automáticamente?
 
+    # Runtime (T030-U2)
+    ring: RingDelivery = RingDelivery.PENDING
+    ring_reported: bool = False        # A ring that was not heard was already said in a query
+    deadline: float | None = field(default=None, repr=False)
+    ends_at: float | None = None
+    clock: Callable[[], float] = field(default=time.monotonic, repr=False, compare=False)
+    wall_clock: Callable[[], float] = field(default=time.time, repr=False, compare=False)
+    warned: set[int] = field(default_factory=set, repr=False, compare=False)
+    ring_ended_at: float | None = field(default=None, repr=False, compare=False)
+    created_mono: float = field(default=0.0, init=False, repr=False, compare=False)  # on ``clock``
+    _left: float = field(default=0.0, init=False, repr=False, compare=False)
+
     def __post_init__(self):
-        if self.remaining_seconds == 0:
-            self.remaining_seconds = self.duration_seconds
         if self.started_at is None:
             self.started_at = datetime.now()
+        self.created_mono = self.clock()
         if self.announce_at is None:
             self.announce_at = warning_thresholds(self.duration_seconds)
+        self._left = float(self.duration_seconds)
+        # Marks at or above the whole duration were never crossed going down: never spoken.
+        self.warned = {mark for mark in self.announce_at if mark >= self.duration_seconds}
+        if self.state is TimerState.RUNNING and self.deadline is None:
+            self._arm(self._left)
+
+    def _arm(self, seconds: float) -> None:
+        """Run for ``seconds`` from now: deadline on the monotonic clock, ends_at on the wall clock."""
+        self.deadline = self.clock() + seconds
+        self.ends_at = self.wall_clock() + seconds
+
+    def _freeze(self, *, keep_ends_at: bool = False) -> None:
+        """Keep what is left and drop the deadline (pause, cancel, completion)."""
+        self._left = self.remaining_seconds
+        self.deadline = None
+        if not keep_ends_at:
+            self.ends_at = None
+
+    @property
+    def remaining_seconds(self) -> float:
+        """Seconds left: from the deadline while running, else what was left when it stopped."""
+        if self.state is TimerState.RUNNING and self.deadline is not None:
+            return max(0.0, self.deadline - self.clock())
+        return self._left
 
     @property
     def elapsed_seconds(self) -> float:
@@ -150,11 +234,30 @@ class NamedTimerManager:
         self,
         tts_callback: Callable[[str, str], None] = None,  # (text, zone_id)
         max_timers: int = 20,
-        default_announce_intervals: list[int] = None
+        default_announce_intervals: list[int] = None,
+        clock: Callable[[], float] | None = None,
+        wall_clock: Callable[[], float] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
     ):
+        """Create the manager.
+
+        Args:
+            tts_callback: Voice output ``(text, zone_id)``; the application passes
+                ``LocalVoiceDelivery.aspeak``, whose ``ResponseResult`` is the ring receipt.
+            max_timers: Most running timers at once.
+            default_announce_intervals: Seconds-left warning marks for long timers.
+            clock: Monotonic seconds for deadlines (default ``time.monotonic``, the
+                default event loop's clock).
+            wall_clock: Epoch seconds for ``ends_at`` (default ``time.time``).
+            sleep: Awaitable sleep for the tick loop and the gap between ring
+                repetitions (default ``asyncio.sleep``); tests pass a virtual clock.
+        """
         self.tts = tts_callback
         self.max_timers = max_timers
         self.default_announce = list(default_announce_intervals or [TIME_LEFT_WARNING_S])
+        self._clock = clock or time.monotonic
+        self._wall_clock = wall_clock or time.time
+        self._sleep = sleep or asyncio.sleep
 
         # Timers activos
         self._timers: dict[str, NamedTimer] = {}
@@ -162,6 +265,10 @@ class NamedTimerManager:
         # Task de actualización
         self._update_task: asyncio.Task | None = None
         self._running = False
+
+        # Owned delivery tasks: warnings and rings, by timer id (T030-U2).
+        self._deliveries: dict[asyncio.Task, str] = {}
+        self._rings: dict[str, asyncio.Task] = {}
 
         # Callbacks
         self._on_timer_complete: Callable[[NamedTimer], None] | None = None
@@ -185,61 +292,122 @@ class NamedTimerManager:
         logger.info("Timer manager iniciado")
 
     async def stop(self):
-        """Detener el manager"""
+        """Stop ticking, then cancel and await every warning and ring task.
+
+        After it returns no task of this manager is pending and nothing more
+        is spoken.
+        """
         self._running = False
-        if self._update_task:
-            self._update_task.cancel()
-            try:
-                await self._update_task
-            except asyncio.CancelledError:
-                pass
+        task = self._update_task  # kept, done, after stop (lifecycle checks read it)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        deliveries = list(self._deliveries)
+        for delivery in deliveries:
+            delivery.cancel()
+        if deliveries:
+            await asyncio.gather(*deliveries, return_exceptions=True)
         logger.info("Timer manager detenido")
 
     async def _update_loop(self):
-        """Loop de actualización de timers"""
-        last_update = time.time()
-
+        """Tick on deadlines; sleep until the next warning or deadline, at most ``TICK_S``."""
         while self._running:
+            wait = TICK_S
             try:
-                await asyncio.sleep(0.5)  # Actualizar cada 500ms
+                wait = self._tick()
+            except Exception as error:
+                logger.error("Timer tick failed: %s", type(error).__name__)
+            await self._sleep(wait)
 
-                now = time.time()
-                elapsed = now - last_update
-                last_update = now
+    def _tick(self) -> float:
+        """Fire due warnings and completions; return the seconds until the next mark (<= TICK_S).
 
-                # Actualizar timers activos
-                for timer_id, timer in list(self._timers.items()):
-                    if timer.state != TimerState.RUNNING:
-                        continue
+        Nothing here awaits: warnings and rings start as owned tasks, so a
+        ring never delays the deadlines of the other timers.
+        """
+        now = self._clock()
+        for timer in list(self._timers.values()):
+            if timer.state is not TimerState.RUNNING or timer.deadline is None:
+                continue
+            left = timer.deadline - now
+            for mark in sorted(timer.announce_at, reverse=True):
+                if mark in timer.warned or left > mark:
+                    continue
+                timer.warned.add(mark)
+                if left <= 0 or mark - left > WARNING_STALE_S:
+                    logger.debug("Timer warning skipped id=%s seconds_left=%d", timer.timer_id, mark)
+                    continue
+                self._spawn(timer, self._warn(timer, mark))
+            if left <= 0:
+                self._complete(timer)
+        return self._next_wait(self._clock())
 
-                    old_remaining = timer.remaining_seconds
-                    timer.remaining_seconds -= elapsed
+    def _next_wait(self, now: float) -> float:
+        wait = TICK_S
+        for timer in self._timers.values():
+            if timer.state is not TimerState.RUNNING or timer.deadline is None:
+                continue
+            left = timer.deadline - now
+            wait = min(wait, left)
+            for mark in timer.announce_at:
+                if mark not in timer.warned and left > mark:
+                    wait = min(wait, left - mark)
+        return max(0.0, wait)
 
-                    # Verificar anuncios
-                    for threshold in timer.announce_at:
-                        if old_remaining > threshold >= timer.remaining_seconds:
-                            await self._announce_warning(timer, threshold)
+    def _complete(self, timer: NamedTimer) -> None:
+        """Mark a due timer COMPLETED and start its ring task (re-arm a repeating one)."""
+        due = timer.deadline
+        timer.state = TimerState.COMPLETED
+        timer.completed_at = datetime.now()
+        timer._freeze(keep_ends_at=True)
+        timer._left = 0.0
+        logger.info("Timer due id=%s", timer.timer_id)
+        previous = self._rings.pop(timer.timer_id, None)
+        if previous is not None:
+            previous.cancel()
+        self._rings[timer.timer_id] = self._spawn(timer, self._announce_complete(timer))
+        if self._on_timer_complete:
+            try:
+                self._on_timer_complete(timer)
+            except Exception as error:
+                logger.error("Timer completion callback failed: %s", type(error).__name__)
+        if timer.repeat:
+            # Next round from the old deadline, so a repeating timer never drifts.
+            timer.state = TimerState.RUNNING
+            timer.started_at = datetime.now()
+            timer.deadline = due + timer.duration_seconds
+            timer.ends_at = (timer.ends_at or self._wall_clock()) + timer.duration_seconds
+            timer.warned = {mark for mark in timer.announce_at if mark >= timer.duration_seconds}
 
-                    # Verificar completado
-                    if timer.remaining_seconds <= 0:
-                        timer.remaining_seconds = 0
-                        timer.state = TimerState.COMPLETED
-                        timer.completed_at = datetime.now()
-                        await self._announce_complete(timer)
+    def _spawn(self, timer: NamedTimer, coroutine) -> asyncio.Task:
+        """Start an owned delivery task for ``timer``; ``stop()`` cancels and awaits it."""
+        task = asyncio.create_task(coroutine)
+        self._deliveries[task] = timer.timer_id
 
-                        if self._on_timer_complete:
-                            self._on_timer_complete(timer)
+        def finished(done: asyncio.Task) -> None:
+            self._deliveries.pop(done, None)
+            if self._rings.get(timer.timer_id) is done:
+                del self._rings[timer.timer_id]
+            if not done.cancelled() and done.exception() is not None:
+                logger.error("Timer delivery task failed: %s", type(done.exception()).__name__)
 
-                        # Repetir si está configurado
-                        if timer.repeat:
-                            timer.remaining_seconds = timer.duration_seconds
-                            timer.state = TimerState.RUNNING
-                            timer.started_at = datetime.now()
+        task.add_done_callback(finished)
+        return task
 
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error en timer loop: {e}")
+    def _cancel_deliveries(self, timer_id: str) -> None:
+        """Cancel this timer's warning and ring tasks (no audio after a cancellation)."""
+        for task, owner in list(self._deliveries.items()):
+            if owner == timer_id:
+                task.cancel()
+
+    async def _warn(self, timer: NamedTimer, seconds_left: int) -> None:
+        """One owned warning; a failed delivery is logged, never retried (the ring follows)."""
+        try:
+            await self._announce_warning(timer, seconds_left)
+        except VoiceDeliveryError as error:
+            logger.warning("Timer warning undelivered id=%s reason=%s", timer.timer_id, error)
+        except Exception as error:
+            logger.warning("Timer warning failed id=%s error=%s", timer.timer_id, type(error).__name__)
 
     # ==================== Comandos de Voz ====================
 
@@ -362,7 +530,9 @@ class NamedTimerManager:
             created_at=datetime.now(),
             zone_id=zone_id,
             user_id=user_id,
-            announce_at=warning_thresholds(duration, self.default_announce)
+            announce_at=warning_thresholds(duration, self.default_announce),
+            clock=self._clock,
+            wall_clock=self._wall_clock,
         )
 
         self._timers[timer.timer_id] = timer
@@ -415,10 +585,9 @@ class NamedTimerManager:
         # Cancelar todos
         if "todos" in text or "all" in text:
             count = 0
-            for timer in self._timers.values():
+            for timer in list(self._timers.values()):
                 if timer.state == TimerState.RUNNING:
-                    timer.state = TimerState.CANCELLED
-                    count += 1
+                    count += self.cancel_timer(timer.timer_id)
             return {
                 "handled": True,
                 "response": f"Cancelé {count} timers" if count else "No hay timers activos",
@@ -428,7 +597,7 @@ class NamedTimerManager:
         if name:
             timer = self._find_timer_by_name(name)
             if timer and timer.state == TimerState.RUNNING:
-                timer.state = TimerState.CANCELLED
+                self.cancel_timer(timer.timer_id)
                 return {
                     "handled": True,
                     "response": f"Timer {timer.name} cancelado",
@@ -444,7 +613,7 @@ class NamedTimerManager:
         running = [t for t in self._timers.values() if t.state == TimerState.RUNNING]
         if running:
             timer = max(running, key=lambda t: t.created_at)
-            timer.state = TimerState.CANCELLED
+            self.cancel_timer(timer.timer_id)
             return {
                 "handled": True,
                 "response": f"Timer {timer.name} cancelado",
@@ -463,7 +632,7 @@ class NamedTimerManager:
             timer = running[0] if running else None
 
         if timer and timer.state == TimerState.RUNNING:
-            timer.state = TimerState.PAUSED
+            self.pause_timer(timer.timer_id)
             return {
                 "handled": True,
                 "response": f"Timer {timer.name} pausado con {timer.format_remaining()} restantes",
@@ -482,8 +651,7 @@ class NamedTimerManager:
             timer = paused[0] if paused else None
 
         if timer and timer.state == TimerState.PAUSED:
-            timer.state = TimerState.RUNNING
-            timer.started_at = datetime.now()
+            self.resume_timer(timer.timer_id)
             return {
                 "handled": True,
                 "response": f"Timer {timer.name} reanudado, faltan {timer.format_remaining()}",
@@ -599,16 +767,122 @@ class NamedTimerManager:
         if self.tts:
             await invoke_voice_callback(self.tts, message, timer.zone_id)
 
-    async def _announce_complete(self, timer: NamedTimer):
-        """Anunciar timer completado"""
+    async def _announce_complete(self, timer: NamedTimer) -> RingDelivery:
+        """Ring: the sentence up to ``RING_REPEATS`` times, ``RING_GAP_S`` apart; keep its receipt.
+
+        Each repetition's ``ResponseResult`` is inspected (not hidden behind
+        ``invoke_voice_callback``). A repetition cut after its audio started
+        (barge-in) ends the ring as STOPPED; one cancelled before any audio
+        (swept from the output queue) is not heard and the ring goes on; a
+        failure ends it. Cancelling the task (voice stop, a cancelled repeating
+        timer, ``stop()``) cuts the audio of the repetition in progress.
+
+        Returns:
+            The final receipt, also left on ``timer.ring``.
+        """
         message = f"¡Terminó el temporizador {_describe(timer)}!"
         logger.info("Timer complete id=%s", timer.timer_id)
+        current = asyncio.current_task()
+        timer.ring = RingDelivery.RINGING
+        heard = cut = broke = False
+        try:
+            for repetition in range(RING_REPEATS):
+                if repetition:
+                    await self._sleep(RING_GAP_S)
+                played = await self._ring_once(message, timer.zone_id)
+                if played == "heard":
+                    heard = True
+                elif played == "cut":
+                    cut = True
+                    break
+                elif played == "swept":
+                    continue
+                else:
+                    broke = played == "partial"
+                    break
+            receipt = (RingDelivery.STOPPED if cut else RingDelivery.DELIVERED if heard
+                       else RingDelivery.RING_FAILED if broke else RingDelivery.UNDELIVERED)
+        except asyncio.CancelledError:
+            if self._rings.get(timer.timer_id, current) is current and timer.ring is RingDelivery.RINGING:
+                timer.ring = RingDelivery.DELIVERED if heard else RingDelivery.UNDELIVERED
+            timer.ring_ended_at = self._clock()
+            logger.info("Timer ring cancelled id=%s receipt=%s", timer.timer_id, timer.ring.value)
+            raise
+        if self._rings.get(timer.timer_id, current) is current and timer.ring is RingDelivery.RINGING:
+            timer.ring = receipt
+        timer.ring_ended_at = self._clock()
+        if timer.ring in RING_NOT_HEARD:
+            logger.warning("Timer ring not heard id=%s receipt=%s", timer.timer_id, timer.ring.value)
+        else:
+            logger.info("Timer ring finished id=%s receipt=%s", timer.timer_id, timer.ring.value)
+        return timer.ring
 
-        if self.tts:
-            # Anunciar 3 veces para asegurar que se escuche
-            for _ in range(3):
-                await invoke_voice_callback(self.tts, message, timer.zone_id)
-                await asyncio.sleep(2)
+    async def _ring_once(self, message: str, zone_id: str) -> str:
+        """Speak one repetition and classify it: heard, cut, swept, partial or not_started.
+
+        Mapping (design notice_semantics.delivery_mapping, applied to a ring):
+        success -> heard; CANCELLED after output may have started -> cut (the
+        household silenced it); CANCELLED before any output -> swept; any other
+        failure or a post-queue timeout after output may have started -> partial;
+        before any output -> not_started; an output that refused the route
+        (VoiceDeliveryError) -> not_started; another exception -> partial
+        (unverified). A legacy callback without a ResponseResult keeps the
+        ``invoke_voice_callback`` convention: only ``False`` is a failure.
+        """
+        callback = self.tts
+        if callback is None:
+            logger.warning("Timer ring has no voice output")
+            return "not_started"
+        try:
+            if inspect.iscoroutinefunction(callback):
+                result = await callback(message, zone_id)
+            else:
+                result = await asyncio.to_thread(callback, message, zone_id)
+                if inspect.isawaitable(result):
+                    result = await result
+        except VoiceDeliveryError as error:
+            logger.warning("Timer ring refused by the output: %s", error)
+            return "not_started"
+        except Exception as error:
+            logger.warning("Timer ring delivery unverified: %s", type(error).__name__)
+            return "partial"
+        if not isinstance(result, ResponseResult):
+            return "not_started" if result is False else "heard"
+        if result.success:
+            return "heard"
+        started = result.spoken_segments > 0 or result.output_started
+        if result.delivery is DeliveryState.CANCELLED:
+            return "cut" if started else "swept"
+        if result.delivery is DeliveryState.TIMED_OUT and result.timeout_stage is not ResponseStage.QUEUE:
+            started = True
+        logger.warning("Timer ring repetition failed: delivery=%s", result.delivery.value)
+        return "partial" if started else "not_started"
+
+    # ==================== Ring control ====================
+
+    def ringing_timers(self, within_s: float = 0.0) -> list[NamedTimer]:
+        """Timers whose ring is sounding, or ended less than ``within_s`` seconds ago, oldest first."""
+        now = self._clock()
+        found = [t for t in self._timers.values()
+                 if t.timer_id in self._rings
+                 or (within_s > 0 and t.ring_ended_at is not None and now - t.ring_ended_at < within_s)]
+        return sorted(found, key=lambda t: t.created_at)
+
+    async def stop_ring(self, timer_id: str) -> bool:
+        """Silence a timer's ring now: no further repetition, the one playing is cut.
+
+        Returns:
+            True when a ring was sounding (its receipt is then STOPPED).
+        """
+        task = self._rings.get(timer_id)
+        timer = self._timers.get(timer_id)
+        if task is None or task.done() or timer is None:
+            return False
+        timer.ring = RingDelivery.STOPPED
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        logger.info("Timer ring stopped id=%s", timer_id)
+        return True
 
     # ==================== API ====================
 
@@ -627,7 +901,9 @@ class NamedTimerManager:
             created_at=datetime.now(),
             zone_id=zone_id,
             user_id=user_id,
-            announce_at=warning_thresholds(duration_seconds, self.default_announce)
+            announce_at=warning_thresholds(duration_seconds, self.default_announce),
+            clock=self._clock,
+            wall_clock=self._wall_clock,
         )
         self._timers[timer.timer_id] = timer
         return timer
@@ -653,7 +929,9 @@ class NamedTimerManager:
         timer = self._timers.get(timer_id)
         if timer is None or timer.state not in (TimerState.RUNNING, TimerState.PAUSED):
             return False
+        timer._freeze()
         timer.state = TimerState.CANCELLED
+        self._cancel_deliveries(timer_id)
         return True
 
     def pause_timer(self, timer_id: str) -> bool:
@@ -661,6 +939,7 @@ class NamedTimerManager:
         timer = self._timers.get(timer_id)
         if timer is None or timer.state is not TimerState.RUNNING:
             return False
+        timer._freeze()
         timer.state = TimerState.PAUSED
         return True
 
@@ -669,6 +948,7 @@ class NamedTimerManager:
         timer = self._timers.get(timer_id)
         if timer is None or timer.state is not TimerState.PAUSED:
             return False
+        timer._arm(timer._left)
         timer.state = TimerState.RUNNING
         timer.started_at = datetime.now()
         return True
@@ -679,7 +959,7 @@ class NamedTimerManager:
         to_remove = [
             tid for tid, t in self._timers.items()
             if t.state in [TimerState.COMPLETED, TimerState.CANCELLED]
-            and t.created_at < cutoff
+            and t.created_at < cutoff and tid not in self._rings
         ]
         for tid in to_remove:
             del self._timers[tid]
@@ -706,4 +986,8 @@ class NamedTimerManager:
             "active": sum(1 for t in self._timers.values() if t.state == TimerState.RUNNING),
             "paused": sum(1 for t in self._timers.values() if t.state == TimerState.PAUSED),
             "completed": sum(1 for t in self._timers.values() if t.state == TimerState.COMPLETED),
+            "ringing": len(self._rings),
+            # Rings nobody heard (T030-U2): never counted as a delivered completion.
+            "ring_not_heard": sum(1 for t in self._timers.values() if t.ring in RING_NOT_HEARD),
+            "delivery_tasks": len(self._deliveries),
         }

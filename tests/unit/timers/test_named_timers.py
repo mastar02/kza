@@ -66,12 +66,10 @@ def test_unnamed_timer_never_matches_a_legacy_name_lookup():
     assert timers._find_timer_by_name("") is None
 
 
-async def test_ring_and_warning_name_the_timer_by_label_or_duration(monkeypatch):
+async def test_ring_and_warning_name_the_timer_by_label_or_duration():
     spoken = AsyncMock()
-    timers = NamedTimerManager(tts_callback=spoken)
-    import src.timers.named_timers as module
-    # Only this module's view of asyncio: the ring's 2 s spacing is skipped, the event loop is untouched.
-    monkeypatch.setattr(module, "asyncio", SimpleNamespace(sleep=AsyncMock()))
+    # The ring's 2 s spacing goes through the injected sleep (T030-U2), so it is skipped here.
+    timers = NamedTimerManager(tts_callback=spoken, sleep=AsyncMock())
     await timers._announce_complete(timers.create_timer("", 300, zone_id="zone_hall"))
     await timers._announce_complete(timers.create_timer("pasta", 300))
     await timers._announce_warning(timers.create_timer("", 90), 30)
@@ -100,7 +98,10 @@ async def test_legacy_create_and_ring_logs_carry_no_label(caplog):
         await timers._announce_complete(result["timer"])
     assert result["timer"].name == "pastilla"
     assert [r for r in caplog.records if r.levelno >= logging.INFO and "pastilla" in r.getMessage()] == []
-    assert len([r for r in caplog.records if r.levelno >= logging.INFO]) == 3
+    # create, warning, ring start, and (T030-U2) the ring receipt: no voice output, so nobody heard it.
+    assert len([r for r in caplog.records if r.levelno >= logging.INFO]) == 5
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == [
+        "Timer ring has no voice output", f"Timer ring not heard id={result['timer'].timer_id} receipt=undelivered"]
 
 
 # T030-U1-Q4 (user answer 2026-11-17): one "le queda 1 minuto" warning; none at 2 minutes or less.
@@ -140,25 +141,24 @@ def test_a_manager_with_custom_intervals_uses_them_for_long_timers_only():
     assert timers.handle_voice_command("pon un timer arroz 2 minutos")["timer"].announce_at == []
 
 
-async def test_ticking_speaks_only_the_one_minute_warning_then_rings(monkeypatch):
+async def test_ticking_speaks_only_the_one_minute_warning_then_rings():
     """Real update loop on a fake clock: 3 min and 1 h 30 s warn once at 1 minute, 2 min never; all three ring."""
-    import src.timers.named_timers as module
     spoken = AsyncMock()
-    timers = NamedTimerManager(tts_callback=spoken)
-    warned = []
-    timers.on_timer_warning(lambda timer, seconds_left: warned.append((timer.duration_seconds, seconds_left)))
     clock = [1000.0]
     ticks = [0]
 
     async def fake_sleep(_seconds):
+        # Coarse 5 s steps (the T030-U1 harness); T030-U2 deadlines make the step size irrelevant.
         clock[0] += 5
         ticks[0] += 1
         assert ticks[0] < 5000, "timers never finished"
-        if not timers.get_active_timers():
+        await asyncio.sleep(0)
+        if not timers.get_active_timers() and not timers._deliveries:
             timers._running = False
 
-    monkeypatch.setattr(module, "time", SimpleNamespace(time=lambda: clock[0]))
-    monkeypatch.setattr(module, "asyncio", SimpleNamespace(sleep=fake_sleep, CancelledError=asyncio.CancelledError))
+    timers = NamedTimerManager(tts_callback=spoken, clock=lambda: clock[0], sleep=fake_sleep)
+    warned = []
+    timers.on_timer_warning(lambda timer, seconds_left: warned.append((timer.duration_seconds, seconds_left)))
     timers.create_timer("", 180, zone_id="zone_hall")
     timers.create_timer("salsa", 120, zone_id="zone_hall")
     timers.create_timer("arroz", 3630, zone_id="zone_hall")

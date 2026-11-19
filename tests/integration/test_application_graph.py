@@ -372,6 +372,44 @@ async def test_orchestrated_twin_reaches_the_main_timer_and_shared_pcm_output(le
             search.assert_not_awaited()
 
 
+async def test_stop_by_voice_while_the_timer_rings_on_the_shared_output(leaves, monkeypatch, tmp_path):
+    """C02-TIM-0007 (T030-U2) on the real graph: the ring reaches the PCM output, 'pará el timer' silences it,
+    nothing is left that could ring again, and the timer state is not touched (it already completed)."""
+    import src.tts.piper_tts as output_module
+    from src.timers.named_timers import RingDelivery, TimerState
+
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, "sd", backend)
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            features = graph.voice_services.features
+            timers = features.timer_manager
+            await features.start()
+            graph.models.stt.text = "poné un timer de 1 segundo"
+            created = await graph.pipeline.process_command(_timer_turn())
+            assert (created["path"], created["success"]) == ("fast_timer", True)
+            (timer,) = timers.get_all_timers()
+            ring = "¡Terminó el temporizador de 1 segundo!"
+            for _ in range(100):
+                if ring in graph.models.tts.texts:
+                    break
+                await asyncio.sleep(0.05)
+            assert ring in graph.models.tts.texts and timers.ringing_timers() == [timer]
+            heard = len(backend.heard())
+            assert heard > 0
+            graph.models.stt.text = "pará el timer"
+            stopped = await graph.pipeline.process_command(_timer_turn())
+            assert (stopped["intent"], stopped["path"], stopped["task_completed"]) == ("timer", "fast_timer", True)
+            assert stopped["outcome"]["persistence"] == "not_required"
+            assert graph.models.tts.texts[-1] == "Paré el temporizador de 1 segundo."
+            assert (timer.state, timer.ring) == (TimerState.COMPLETED, RingDelivery.STOPPED)
+            assert timers.ringing_timers() == [] and timers.get_status()["delivery_tasks"] == 0
+            assert graph.models.tts.texts.count(ring) == 1
+            assert observations["service_calls"] == 0
+
+
 async def test_replay_t010_bare_temporizador_phrase_creates_a_timer(leaves, monkeypatch, tmp_path):
     """T010 graph-third.log:80-83: 'temporizador de 5 minutos' reached vector search; now it is a timer."""
     async with offline_home() as (url, observations):
