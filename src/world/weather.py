@@ -121,7 +121,16 @@ _UNSUPPORTED_HORIZON_RE = re.compile(
 )
 # Future-tense cues: with no day word, or with today's, the question is about
 # today's forecast entry rather than the current conditions (user answer Q23).
-_FORECAST_CUE_RE = re.compile(r"\b(?:va|van) a\b|\bpronostico\b|\b(?:llovera|hara|estara)\b")
+_FORECAST_CUE_RE = re.compile(r"\b(?:va|van) a\b|\bpronostico\b|\b(?:llovera|hara|habra|estara)\b")
+# T037-U2b (fix verification FV-L1): third-person preterite of the weather
+# verbs (estar, ser, hacer, llover, haber, nevar). With a plain weekday
+# ("estuvo lloviendo el sábado", "cuál fue el pronóstico del sábado") the
+# question is about a day that already passed, never the coming one. The
+# imperfect ("cuál era el pronóstico del sábado") is left out on purpose: it
+# often asks again for a forecast already given for the coming day.
+_PAST_TENSE_WORDS = frozenset({
+    "estuvo", "estuvieron", "fue", "fueron", "hizo", "hicieron", "llovio", "hubo", "nevo",
+})
 # "mañana" after these words is the morning ("esta/por la/a la mañana"), not tomorrow.
 _MORNING_PREVIOUS = frozenset({"esta", "la", "pasado"})
 _TODAY_PERIODS = frozenset({"manana", "tarde", "noche"})
@@ -130,6 +139,13 @@ _TODAY_PERIODS = frozenset({"manana", "tarde", "noche"})
 _TEMPERATURE_QUESTION_RE = re.compile(
     r"\b(?:que|cual es la|cuanta) temperatura\b|\bcuantos grados\b"
     r"|\b(?:temperatura|grados) (?:hay|hace|tiene|marca)\b|\besta la temperatura\b"
+    # T037-U2b: every future form WEATHER_KEYWORDS routes to weather must meet
+    # the indoor check too (review T037-U2b-RV1), with or without "qué" or
+    # "cuántos" before it. "la temperatura de/para mañana" is a noun phrase a
+    # command can also govern; the dispatcher checks its room after its
+    # command guards (names_indoor_place).
+    r"|\b(?:temperatura|grados) (?:hara|habra|(?:va|van) a (?:hacer|haber))\b"
+    r"|\bva a ser la temperatura\b"
 )
 # A room right after "afuera/fuera" ("afuera de la cocina") is outside, not
 # the room (review T037-U2-RV5).
@@ -193,6 +209,8 @@ def parse_weather_horizon(text: str) -> WeatherHorizon:
     * Today (said or implied) is current conditions unless the question is in
       the future ("va a llover", "pronóstico"), which asks for today's entry.
     * Two different days in one question are several days.
+    * A plain weekday with a preterite weather verb ("estuvo lloviendo el
+      sábado") is a past day and unsupported (T037-U2b).
 
     Args:
         text: Utterance already routed to the weather path.
@@ -222,6 +240,8 @@ def parse_weather_horizon(text: str) -> WeatherHorizon:
         return WeatherHorizon(HorizonKind.SEVERAL_DAYS)
     day = next(iter(days), ("offset", 0))
     if day[0] == "weekday":
+        if not day[2] and _PAST_TENSE_WORDS.intersection(words):
+            return WeatherHorizon(HorizonKind.UNSUPPORTED)
         return WeatherHorizon(HorizonKind.FORECAST, weekday=day[1], next_week=day[2])
     if day[1] == 0 and not _FORECAST_CUE_RE.search(joined):
         return WeatherHorizon(HorizonKind.CURRENT)
@@ -243,6 +263,22 @@ def is_indoor_temperature_question(text: str, room_words: Iterable[str] = ()) ->
     plain = normalize(text)
     if not _TEMPERATURE_QUESTION_RE.search(plain):
         return False
+    return names_indoor_place(plain, room_words)
+
+
+def names_indoor_place(text: str, room_words: Iterable[str] = ()) -> bool:
+    """True when the utterance places itself in a room or inside the house.
+
+    The location half of :func:`is_indoor_temperature_question`, for callers
+    that already know the turn asks about a temperature ("la temperatura de
+    mañana en el living", review T037-U2b-RV1). A room after "afuera/fuera"
+    is outside.
+
+    Args:
+        text: Utterance in any case, accents or punctuation.
+        room_words: Room ids and aliases, compared accent-free.
+    """
+    plain = normalize(text)
     rooms = {normalize(word) for word in room_words if isinstance(word, str)} | _GENERIC_INDOOR_PLACES
     if any(match.group(1) in rooms for match in _ROOM_PLACE_RE.finditer(plain)):
         return True

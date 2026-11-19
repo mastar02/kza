@@ -376,6 +376,7 @@ def _day_ahead(offset):
     ("va a llover", _day_ahead(0)),
     ("cuál es el pronóstico", _day_ahead(0)),
     ("qué tiempo va a hacer esta noche", _day_ahead(0)),
+    ("qué temperatura habrá hoy", _day_ahead(0)),  # T037-U2b: "habrá" is future
     ("va a llover hoy a la tarde", _day_ahead(0)),
     # Named days.
     ("va a llover mañana", _day_ahead(1)),
@@ -428,6 +429,23 @@ def _day_ahead(offset):
     ("estuvo lloviendo el pasado sábado", UNSUPPORTED),
     ("estuvo lloviendo la pasada semana", UNSUPPORTED),
     ("va a llover el pasado mes", UNSUPPORTED),
+    # T037-U2b (FV-L1): a preterite weather verb with a plain weekday is a past day.
+    ("estuvo lloviendo el sábado", UNSUPPORTED),
+    ("cuál fue el pronóstico del sábado", UNSUPPORTED),
+    ("¿llovió el martes?", UNSUPPORTED),
+    ("qué tiempo hizo el domingo", UNSUPPORTED),
+    # Review T037-U2b-RV4: each preterite form in _PAST_TENSE_WORDS.
+    ("cómo estuvieron las temperaturas el lunes", UNSUPPORTED),
+    ("cuáles fueron las temperaturas del domingo", UNSUPPORTED),
+    ("cuántos grados hicieron el jueves", UNSUPPORTED),
+    ("qué temperatura hubo el sábado", UNSUPPORTED),
+    ("¿nevó el martes?", UNSUPPORTED),
+    # ... but not the imperfect, a coming weekday, or no weekday at all.
+    ("cuál era el pronóstico del sábado", WeatherHorizon(HorizonKind.FORECAST, weekday=5)),
+    ("cuál fue el pronóstico del sábado que viene",
+     WeatherHorizon(HorizonKind.FORECAST, weekday=5, next_week=True)),
+    ("estuvo lloviendo", CURRENT),
+    ("va a llover el sábado", WeatherHorizon(HorizonKind.FORECAST, weekday=5)),
     # A future day after a past-looking word stays a forecast day.
     ("va a llover el lunes, pasado mañana", SEVERAL),
     # Two different days in one question.
@@ -493,6 +511,7 @@ ROOM_WORDS = ("living", "cocina", "escritorio", "sala", "cuarto")
     "qué temperatura hay en la pieza",
     "qué temperatura hay adentro",
     "qué temperatura hay en casa",
+    "cuál va a ser la temperatura del living mañana",  # T037-U2b: future form
 ])
 def test_room_or_house_temperature_questions_are_indoor(text):
     assert is_indoor_temperature_question(text, ROOM_WORDS)

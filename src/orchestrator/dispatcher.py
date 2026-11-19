@@ -95,7 +95,7 @@ from src.reminders.voice_request import (
     period_hours,
 )
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
-from src.world.weather import INDOOR_TEMPERATURE_UNSUPPORTED, is_indoor_temperature_question
+from src.world.weather import INDOOR_TEMPERATURE_UNSUPPORTED, is_indoor_temperature_question, names_indoor_place
 
 logger = get_logger(__name__)
 
@@ -752,6 +752,17 @@ class RequestDispatcher:
         # thermostat command ("poné la temperatura en 22") has none of these.
         "temperatura va a hacer", "grados va a hacer",
         "temperatura de mañana", "temperatura de manana",
+        # T037-U2b (fix verification FV-L2): the other future temperature
+        # questions ("¿qué temperatura hará mañana?", "¿cuántos grados van a
+        # hacer?", "¿qué temperatura va a haber?", "¿cuál va a ser la
+        # temperatura?", "¿cuál es la temperatura para mañana?"). The subject
+        # is still the temperature; "para" is tied to the day so "la
+        # temperatura para el living" never reaches the outdoor entity.
+        "temperatura hará", "temperatura hara", "temperatura habrá", "temperatura habra",
+        "grados hará", "grados hara", "grados habrá", "grados habra",
+        "grados van a hacer", "temperatura va a haber", "grados va a haber", "grados van a haber",
+        "va a ser la temperatura",
+        "temperatura para mañana", "temperatura para manana",
         # Finding 3 (review 2026-08-04): sin esto, una pregunta como "¿tengo
         # que prender el clima o hace calor afuera?" no matcheaba ningún
         # WEATHER_KEYWORDS y caía al loop de DOMOTICS_KEYWORDS de abajo, que
@@ -783,11 +794,57 @@ class RequestDispatcher:
     # Review T037-U2-RV4: "el tiempo de(l) <algo>" is the weather only when
     # <algo> is a day or a period ("el tiempo de mañana", "del sábado", "del
     # fin de semana"); "el tiempo del temporizador" is a duration. Applied to
-    # the "el tiempo" keywords only, on accent-free text.
+    # the "el tiempo" keywords only, on accent-free text. T037-U2b (fix
+    # verification FV-L4): a place outside ("el tiempo de afuera") and "el
+    # tiempo del día (de hoy)" are the weather too.
     _TIEMPO_OF_SOMETHING_RE = re.compile(
-        r"\bel tiempo del? (?!(?:hoy|manana|pasado|esta|este|fin|finde|proxim\w*"
+        r"\bel tiempo del? (?!(?:hoy|manana|pasado|esta|este|fin|finde|proxim\w*|afuera|fuera|dia"
         r"|la (?:manana|tarde|noche|semana)"
         r"|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b)"
+    )
+
+    # T037-U2b (fix verification FV-L3): "la temperatura de/para <día>" is
+    # also the object of a thermostat schedule ("programá la temperatura de
+    # mañana en 20"). With one of these setting verbs right before the noun
+    # the turn is a command, question mark or not, and those keywords do not
+    # route it to weather: it keeps the path it had before T037-U2. Only
+    # verbs absent from DOMOTICS_KEYWORDS: poné/subí/bajá/cambiá already
+    # fall under _DOMOTICS_CLIMATE_ADJACENCY_RE, and "¿baja la temperatura
+    # mañana?" can be a question about the weather.
+    _TEMPERATURE_OF_DAY_KEYWORDS = frozenset({
+        "temperatura de mañana", "temperatura de manana",
+        "temperatura para mañana", "temperatura para manana",
+    })
+    # Review T037-U2b-RV3: the Rioplatense request forms too, the voseo
+    # present ("¿me programás la temperatura de mañana?") and the subjunctive
+    # ("quiero que ajustes ..."), a value before the noun ("programá a 20 la
+    # temperatura de mañana") and the noun first with an enclitic "la" ("la
+    # temperatura de mañana programala en 20"). Review T037-U2b-RV4: only
+    # "temperatura" is the object; every filtered keyword names it, so
+    # "grados" here was dead code. Fix verification T037-U2b-FV1: "te" right
+    # before the verb is "fijarse", asking to look it up ("¿te fijás la
+    # temperatura de mañana?"), not a setting; Whisper may put a comma after
+    # the noun phrase ("la temperatura de mañana, programala en 20").
+    _CLIMATE_SETTING_STEMS = r"(?:programa|configura|ajusta|fija|establece|setea|regula|deja|mantene)"
+    _CLIMATE_SETTING_COMMAND_RE = re.compile(
+        r"(?<!\bte )\b(?:" + _CLIMATE_SETTING_STEMS + r"(?:r?(?:me|le|nos)?|s)"
+        r"|(?:programe|configure|ajuste|fije|establezca|setee|regule|deje|mantenga)s?|manten)"
+        r"\s+(?:(?:a|en)\s+\d+\s+)?(?:el|la|los|las)?\s*temperatura\b"
+        r"|\btemperatura (?:de|para) manana,?\s+" + _CLIMATE_SETTING_STEMS + r"r?(?:me|nos)?la\b"
+    )
+
+    # Review T037-U2b-RV2: "la temperatura del termostato / del aire" (with
+    # or without "de mañana" in between) is a climate device's setpoint,
+    # never the outdoor forecast. With a device noun right after the
+    # temperature noun, the "temperatura" keywords do not route to weather and
+    # the turn keeps the path it had before T037-U2b. "aire libre" is
+    # outside and is not a device. Fix verification T037-U2b-FV2: "en el
+    # termostato" places the reading on the device too, and "la calefa" is
+    # the everyday Rioplatense "calefacción".
+    _DEVICE_TEMPERATURE_RE = re.compile(
+        r"\btemperatura (?:(?:de|para) (?:hoy|manana) )?(?:del?|de la|de los|de las|en el|en la) "
+        r"(?:termostato|aire(?! libre)|acondicionado|calefaccion|calefa|calefactor|clima|estufa|caldera"
+        r"|radiador|split)\b"
     )
 
     # Marcadores de no-imperativo (Finding I1, review PR #15). El veto de
@@ -1277,10 +1334,25 @@ class RequestDispatcher:
             # transcrita.
             non_command_hint = any(h in text_lower for h in self._NON_COMMAND_HINTS)
             tiempo_of_something = bool(self._TIEMPO_OF_SOMETHING_RE.search(_strip_accents(text_lower)))
+            setting_command = bool(self._CLIMATE_SETTING_COMMAND_RE.search(_strip_accents(text_lower)))
+            device_temperature = bool(self._DEVICE_TEMPERATURE_RE.search(_strip_accents(text_lower)))
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
                     if tiempo_of_something and "el tiempo" in keyword:
                         continue
+                    if setting_command and keyword in self._TEMPERATURE_OF_DAY_KEYWORDS:
+                        continue
+                    if device_temperature and "temperatura" in keyword:
+                        continue
+                    # Review T037-U2b-RV1: "la temperatura de/para mañana en
+                    # el living" is the room's temperature, never the outdoor
+                    # entity. Checked here, after the command guards, so
+                    # "programá/poné la temperatura de mañana del living en
+                    # 20" keeps its command path; the verb forms ("hará",
+                    # "va a haber") meet the indoor check at the top.
+                    if (keyword in self._TEMPERATURE_OF_DAY_KEYWORDS
+                            and names_indoor_place(text_lower, self._indoor_room_words)):
+                        return PathType.FAST_HOUSEHOLD, Priority.HIGH
                     if (not is_question and domotics_verb
                             and keyword in self.WEATHER_CLAUSE_FRAGMENTS
                             and not non_command_hint):

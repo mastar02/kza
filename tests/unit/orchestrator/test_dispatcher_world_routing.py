@@ -12,7 +12,8 @@ from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.dispatcher import PathType, Priority, RequestDispatcher
 from src.orchestrator.priority_queue import PriorityRequestQueue
 from src.world.weather import (DEFAULT_ENTITY, INDOOR_TEMPERATURE_UNSUPPORTED, NO_DATA, NO_FORECAST,
-                               NO_FORECAST_HORIZON, ONE_DAY_AT_A_TIME)
+                               NO_FORECAST_HORIZON, ONE_DAY_AT_A_TIME, HorizonKind, WeatherHorizon,
+                               parse_weather_horizon)
 from src.home_assistant.ha_client import HAStatesSnapshot
 
 
@@ -161,6 +162,11 @@ def test_domotics_climate_adjacency_guard_finding_3(dispatcher, text, expected):
 def test_non_climate_commands_with_weather_clause_stay_domotics(dispatcher, text):
     path, _ = dispatcher._classify_request(text)
     assert path == PathType.FAST_DOMOTICS
+
+
+def test_temperature_of_day_keywords_are_weather_keywords():
+    # T037-U2b: the setting-verb guard only filters keywords that exist.
+    assert RequestDispatcher._TEMPERATURE_OF_DAY_KEYWORDS <= set(RequestDispatcher.WEATHER_KEYWORDS)
 
 
 def test_weather_clause_fragments_is_a_subset_of_weather_keywords():
@@ -770,6 +776,11 @@ async def test_weekday_outside_the_forecast_is_named_and_never_current(dispatche
     ("cuántos grados va a hacer el sábado", "El sábado: lloviendo fuerte, entre 6 y 12 grados."),
     ("cuál es la temperatura de mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
     ("qué temperatura va a hacer", "Hoy: soleado, entre 10 y 20 grados."),
+    # T037-U2b (FV-L2).
+    ("qué temperatura hará mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
+    ("cuántos grados van a hacer mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
+    ("cuál va a ser la temperatura mañana", "Mañana: lluvioso, entre 9 y 18 grados."),
+    ("qué temperatura habrá el sábado", "El sábado: lloviendo fuerte, entre 6 y 12 grados."),
 ])
 async def test_future_temperature_questions_answer_the_forecast_day(dispatcher_with_async_ha, text, spoken):
     """Review T037-U2-RV2: routed to FAST_WEATHER and answered by date, never the reasoner."""
@@ -827,6 +838,9 @@ async def test_present_tense_about_today_reads_current_conditions(dispatcher_wit
     # Fix verification T037-U2-FV2.
     ("va a llover el día 25", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
     ("estuvo lloviendo el pasado sábado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    # T037-U2b (FV-L1): past tense with a plain weekday.
+    ("estuvo lloviendo el sábado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
+    ("cuál fue el pronóstico del sábado", NO_FORECAST_HORIZON, TaskStatus.UNSUPPORTED),
 ])
 async def test_unsupported_horizons_are_refused_without_any_read(dispatcher_with_async_ha, text, spoken, status):
     d = _no_current_read(_frozen(dispatcher_with_async_ha))
@@ -956,3 +970,218 @@ def test_tiempo_and_clima_outside_a_weather_question_frame_are_not_weather(dispa
 def test_tiempo_questions_about_a_day_stay_weather(dispatcher, text):
     path, _ = dispatcher._classify_request(text)
     assert path is PathType.FAST_WEATHER
+
+
+# ---------------------------------------------------------------------------
+# T037-U2b: follow-up of the T037-U2 fix verification (FV-L1..L4). One table:
+# the phrasings that change and the neighbours that must keep their path.
+# The horizon column is checked for every FAST_WEATHER row; None elsewhere.
+# FV-L1 rows (past tense with a plain weekday) are horizon-only: their path
+# was already FAST_WEATHER through "lloviendo"/"pronóstico".
+# ---------------------------------------------------------------------------
+
+_SAT = WeatherHorizon(HorizonKind.FORECAST, weekday=5)
+
+
+def _ahead(offset):
+    return WeatherHorizon(HorizonKind.FORECAST, offset=offset)
+
+
+@pytest.mark.parametrize(("text", "path", "horizon"), [
+    # FV-L2: more future temperature phrasings reach FAST_WEATHER with the horizon rules.
+    ("qué temperatura hará mañana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuántos grados van a hacer mañana", PathType.FAST_WEATHER, _ahead(1)),
+    ("qué temperatura va a haber mañana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuál va a ser la temperatura mañana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuál es la temperatura para mañana", PathType.FAST_WEATHER, _ahead(1)),
+    ("qué temperatura habrá el sábado", PathType.FAST_WEATHER, _SAT),
+    ("¿qué temperatura habrá hoy?", PathType.FAST_WEATHER, _ahead(0)),
+    ("cuántos grados hará pasado mañana", PathType.FAST_WEATHER, _ahead(2)),
+    ("cuantos grados van a haber el domingo que viene", PathType.FAST_WEATHER,
+     WeatherHorizon(HorizonKind.FORECAST, weekday=6, next_week=True)),
+    # Neighbours: the indoor future question stays household state, never the outdoor entity.
+    ("cuál va a ser la temperatura del living mañana", PathType.FAST_HOUSEHOLD, None),
+    ("qué temperatura habrá en la cocina mañana", PathType.FAST_HOUSEHOLD, None),
+    # Neighbours: existing future temperature questions keep their path and horizon.
+    ("qué temperatura va a hacer mañana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuál es la temperatura de mañana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuántos grados va a hacer el sábado", PathType.FAST_WEATHER, _SAT),
+    ("fijate qué temperatura va a hacer mañana", PathType.FAST_WEATHER, _ahead(1)),
+    # FV-L3: an imperative climate verb on "la temperatura de/para <día>" is a
+    # command, never weather; it keeps the path it had before T037-U2.
+    ("programá la temperatura de mañana en 20", PathType.SLOW_LLM, None),
+    ("programa la temperatura de manana en 20", PathType.SLOW_LLM, None),
+    ("ajustá la temperatura de mañana a 22", PathType.SLOW_LLM, None),
+    ("dejá la temperatura de mañana en 20", PathType.SLOW_LLM, None),
+    ("configurá la temperatura para mañana en 21", PathType.SLOW_LLM, None),
+    ("¿podés programar la temperatura de mañana en 20?", PathType.SLOW_LLM, None),
+    ("programame la temperatura de mañana en 19", PathType.SLOW_LLM, None),
+    # Neighbours: thermostat verbs the domotics guard already owns.
+    ("poné la temperatura de mañana en 20", PathType.FAST_DOMOTICS, None),
+    ("poné la temperatura en 22", PathType.FAST_DOMOTICS, None),
+    ("bajá la temperatura del living", PathType.FAST_DOMOTICS, None),
+    # FV-L4: "el tiempo de afuera" and "el tiempo del día de hoy" are the weather again.
+    ("cómo está el tiempo de afuera", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.CURRENT)),
+    ("cómo está el tiempo del día de hoy", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.CURRENT)),
+    ("¿cómo va a estar el tiempo del día de mañana?", PathType.FAST_WEATHER, _ahead(1)),
+    # Neighbours: "tiempo" as a duration stays out of the weather path.
+    ("cómo está el tiempo del temporizador", PathType.SLOW_LLM, None),
+    ("cómo está el tiempo de cocción", PathType.SLOW_LLM, None),
+    ("cuánto tiempo va a hacer falta", PathType.SLOW_LLM, None),
+    # FV-L1: past tense with a plain weekday is refused, never the coming day.
+    ("estuvo lloviendo el sábado", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.UNSUPPORTED)),
+    ("cuál fue el pronóstico del sábado", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.UNSUPPORTED)),
+    ("¿estuvo lloviendo el martes?", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.UNSUPPORTED)),
+    # Neighbours: future or imperfect forms keep the coming weekday; no day keeps today.
+    ("va a llover el sábado", PathType.FAST_WEATHER, _SAT),
+    ("cuál es el pronóstico del sábado", PathType.FAST_WEATHER, _SAT),
+    ("cuál era el pronóstico del sábado", PathType.FAST_WEATHER, _SAT),
+    ("estuvo lloviendo", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.CURRENT)),
+    ("cuál fue el pronóstico del sábado que viene", PathType.FAST_WEATHER,
+     WeatherHorizon(HorizonKind.FORECAST, weekday=5, next_week=True)),
+    ("estuvo lloviendo el sábado pasado", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.UNSUPPORTED)),
+])
+def test_t037_u2b_follow_up_routing_table(dispatcher, text, path, horizon):
+    assert dispatcher._classify_request(text.lower())[0] is path
+    if path is PathType.FAST_WEATHER:
+        assert parse_weather_horizon(text) == horizon
+
+
+# Review T037-U2b-RV1: every temperature form WEATHER_KEYWORDS routes to the
+# weather path meets the indoor check, question word or not. Keywords that
+# already say "afuera" are about outside.
+_TEMPERATURE_FORM_KEYWORDS = sorted(
+    k for k in RequestDispatcher.WEATHER_KEYWORDS
+    if ("temperatura" in k or "grados" in k) and "afuera" not in k
+)
+
+
+@pytest.mark.parametrize("keyword", _TEMPERATURE_FORM_KEYWORDS)
+def test_each_temperature_keyword_about_a_room_is_household(dispatcher, keyword):
+    path, _ = dispatcher._classify_request(f"{keyword} en el living")
+    assert path is PathType.FAST_HOUSEHOLD
+
+
+@pytest.mark.parametrize(("text", "path"), [
+    # Reviewer probes: FAST_WEATHER with the outdoor forecast before the fix.
+    ("temperatura hará en el dormitorio mañana", PathType.FAST_HOUSEHOLD),
+    ("grados habrá en la pieza el sábado", PathType.FAST_HOUSEHOLD),
+    ("decime la temperatura para mañana del living", PathType.FAST_HOUSEHOLD),
+    # The same gap in the T037-U2 keywords.
+    ("la temperatura de mañana en el living", PathType.FAST_HOUSEHOLD),
+    ("grados va a hacer en la cocina mañana", PathType.FAST_HOUSEHOLD),
+    ("cuál es la temperatura de mañana en casa", PathType.FAST_HOUSEHOLD),
+    # Neighbours: commands on a room's temperature for tomorrow keep their path.
+    ("programá la temperatura de mañana del living en 20", PathType.SLOW_LLM),
+    ("poné la temperatura de mañana del living en 20", PathType.FAST_DOMOTICS),
+    # Neighbours: outside, or no place at all, stays the weather.
+    ("la temperatura de mañana afuera de la cocina", PathType.FAST_WEATHER),
+    ("temperatura hará mañana", PathType.FAST_WEATHER),
+    ("decime la temperatura para mañana", PathType.FAST_WEATHER),
+])
+def test_temperature_keywords_with_a_place_keep_the_room_off_the_outdoor_entity(dispatcher, text, path):
+    assert dispatcher._classify_request(text.lower())[0] is path
+
+
+@pytest.mark.parametrize(("text", "path"), [
+    # Review T037-U2b-RV2: a climate device's temperature is never the
+    # outdoor forecast; these keep the path they had before T037-U2b.
+    ("cuál va a ser la temperatura del termostato mañana", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura del aire mañana", PathType.SLOW_LLM),
+    ("a cuánto va a ser la temperatura del aire acondicionado", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura de la calefacción", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura de la caldera mañana", PathType.SLOW_LLM),
+    ("cuál es la temperatura de mañana del termostato", PathType.SLOW_LLM),
+    ("cuál es la temperatura para mañana de la estufa", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura del split", PathType.SLOW_LLM),
+    # Fix verification T037-U2b-FV2: "en el <device>" and "la calefa".
+    ("cuál va a ser la temperatura en el termostato mañana", PathType.SLOW_LLM),
+    ("cuál es la temperatura de mañana en el termostato", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura de la calefa mañana", PathType.SLOW_LLM),
+    ("cuál va a ser la temperatura en el aire libre mañana", PathType.FAST_WEATHER),
+    # Neighbours: outside, a room, or no complement keep their path.
+    ("qué temperatura va a hacer al aire libre mañana", PathType.FAST_WEATHER),
+    ("cuál va a ser la temperatura mañana", PathType.FAST_WEATHER),
+    ("cuál va a ser la temperatura del sábado", PathType.FAST_WEATHER),
+    ("cuál va a ser la temperatura del living mañana", PathType.FAST_HOUSEHOLD),
+    ("bajá la temperatura del aire", PathType.FAST_DOMOTICS),
+])
+def test_device_temperature_questions_never_read_the_forecast(dispatcher, text, path):
+    assert dispatcher._classify_request(text.lower())[0] is path
+
+
+@pytest.mark.parametrize("text", [
+    # Review T037-U2b-RV3: voseo present and subjunctive request forms of a
+    # setting verb on "la temperatura de/para mañana" are commands.
+    "¿me ajustás la temperatura para mañana a 22?",
+    "¿me programás la temperatura de mañana en 20?",
+    "me programás la temperatura de mañana en 20",
+    "¿me dejás la temperatura de mañana en 20?",
+    "¿me configurás la temperatura de mañana en 21?",
+    "¿me fijás la temperatura de mañana en 20?",
+    "¿me regulás la temperatura de mañana a 19?",
+    "¿me seteás la temperatura para mañana en 22?",
+    "¿me establecés la temperatura de mañana en 20?",
+    "¿me mantenés la temperatura de mañana en 20?",
+    "quiero que programes la temperatura de mañana en 20",
+    "necesito que ajustes la temperatura de mañana a 22",
+    "quiero que configures la temperatura para mañana en 21",
+    "quiero que dejes la temperatura de mañana en 20",
+    "quiero que fijes la temperatura de mañana en 20",
+    "quiero que regules la temperatura de mañana a 19",
+    "quiero que setees la temperatura de mañana en 22",
+    "quiero que establezcas la temperatura de mañana en 20",
+    "quiero que mantengas la temperatura de mañana en 20",
+    # Value before the noun, and the noun first with an enclitic "la".
+    "programá a 20 la temperatura de mañana",
+    # Fix verification T037-U2b-FV3: the value with "en" too.
+    "programá en 20 la temperatura de mañana",
+    "la temperatura de mañana programala en 20",
+    # Fix verification T037-U2b-FV1: a comma after the noun phrase.
+    "la temperatura de mañana, programala en 20",
+    "la temperatura para mañana, ajustala a 22",
+    # Imperatives not in the T037-U2b table.
+    "fijá la temperatura de mañana en 20",
+    "establecé la temperatura de mañana en 20",
+    "seteá la temperatura de mañana en 22",
+    "regulá la temperatura de mañana a 19",
+    "mantené la temperatura de mañana en 20",
+    "mantén la temperatura de mañana en 20",
+])
+def test_setting_request_forms_on_tomorrows_temperature_are_not_weather(dispatcher, text):
+    assert dispatcher._classify_request(text.lower())[0] is PathType.SLOW_LLM
+
+
+@pytest.mark.parametrize("text", [
+    # Neighbours: asking for tomorrow's temperature with another verb.
+    "¿me decís la temperatura de mañana?",
+    "fijate la temperatura de mañana",
+    "decime la temperatura para mañana",
+    # Fix verification T037-U2b-FV1: "te fijás" is "fijarse", look it up.
+    "¿te fijás la temperatura de mañana?",
+    "¿te fijás la temperatura para mañana?",
+    "quiero que te fijes la temperatura de mañana",
+])
+def test_asking_for_tomorrows_temperature_stays_weather(dispatcher, text):
+    assert dispatcher._classify_request(text.lower())[0] is PathType.FAST_WEATHER
+
+
+@pytest.mark.parametrize(("text", "path", "horizon"), [
+    # Review T037-U2b-RV4: the STT often drops accents; the unaccented
+    # future keywords route the same way.
+    ("que temperatura hara manana", PathType.FAST_WEATHER, _ahead(1)),
+    ("que temperatura habra manana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuantos grados hara manana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuantos grados habra el sabado", PathType.FAST_WEATHER, _SAT),
+    # "el tiempo de fuera" is outside, like "de afuera".
+    ("cómo está el tiempo de fuera", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.CURRENT)),
+    # The setting-verb guard only drops "la temperatura de/para mañana": a
+    # negated setting verb next to another temperature question stays weather.
+    ("no ajustes la temperatura todavía, ¿qué temperatura va a hacer mañana?", PathType.FAST_WEATHER,
+     _ahead(1)),
+    # The device guard (RV2) leaves "el aire libre" to the weather.
+    ("cuál va a ser la temperatura del aire libre mañana", PathType.FAST_WEATHER, _ahead(1)),
+])
+def test_t037_u2b_review_routing_rows(dispatcher, text, path, horizon):
+    assert dispatcher._classify_request(text.lower())[0] is path
+    assert parse_weather_horizon(text) == horizon
