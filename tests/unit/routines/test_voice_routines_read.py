@@ -124,6 +124,8 @@ NOT_ROUTINE_READS = [
     "automatizá las luces del living", "cambiá la rutina riego", "renombrá la rutina riego",
     # A routine noun without a question.
     "rutina buenas noches", "la rutina riego",
+    # "a ver" is a lead, not a read verb: an execution with no read cue at all.
+    "a ver, ejecutá la rutina riego",
 ]
 
 # T033-U1-RV2: "rutina" as everyday vocabulary after an indefinite determiner or a
@@ -169,6 +171,21 @@ def test_uncued_consults_are_not_always_answered(text, key):
 
 @pytest.mark.parametrize("text", NOT_ROUTINE_READS)
 def test_other_turns_are_not_routine_reads(text):
+    assert VoiceRoutineService.detect(text) is None
+
+
+# T033-U1-RV5: a read cue (yes/no head, read verb) does not make a turn a read when a
+# create/run/change/stop verb precedes the noun; T033-U2 execution relies on this boundary.
+BLOCKED_READS = [
+    "¿se puede apagar la rutina riego?", "decime si podés ejecutar la rutina riego",
+    "contame y ejecutá la rutina riego", "¿hay que desactivar la rutina riego?",
+    "quiero saber si podés borrar la rutina riego",
+    "¿tenés que cambiar la rutina de la mañana?", "decime cuándo pausar las rutinas",
+]
+
+
+@pytest.mark.parametrize("text", BLOCKED_READS)
+def test_a_blocking_verb_before_the_noun_overrides_a_read_cue(text):
     assert VoiceRoutineService.detect(text) is None
 
 
