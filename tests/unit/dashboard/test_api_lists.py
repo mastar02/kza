@@ -253,6 +253,21 @@ MATRIX = (
          'dashboard_permission_denied', 'reminder', 'unauthorized_effect', task_status=None),
     _web('C02-REM-0719', 'none', 'DELETE', '/api/reminders/{RT}', None, 401, 'auth required', 'reminder',
          'unauthorized_effect', task_status=None),
+    # T035-U1-RV1: a time or recurrence the scheduler cannot hold is refused before any row exists.
+    _web('C02-REM-0720', 'visitor', 'POST', '/api/reminders', {**SHARED_REMINDER, 'trigger_at': 1e300}, 422, None,
+         'reminder', 'unauthorized_effect', task_status=None, note='pydantic less_than'),
+    _web('C02-REM-0721', 'visitor', 'POST', '/api/reminders',
+         '{"text": "Cerrar la puerta", "trigger_at": Infinity, "scope": "shared"}', 422, None, 'reminder',
+         'unauthorized_effect', task_status=None, note='pydantic finite_number'),
+    _web('C02-REM-0722', 'visitor', 'POST', '/api/reminders',
+         '{"text": "Cerrar la puerta", "trigger_at": NaN, "scope": "shared"}', 422, None, 'reminder',
+         'unauthorized_effect', task_status=None, note='pydantic finite_number'),
+    _web('C02-REM-0723', 'home', 'POST', '/api/reminders', {**SHARED_REMINDER, 'trigger_at': -1e300}, 422, None,
+         'reminder', 'unauthorized_effect', task_status=None, note='pydantic greater_than'),
+    _web('C02-REM-0724', 'home', 'POST', '/api/reminders', {**SHARED_REMINDER, 'recurrence': 'weekly:9'}, 422,
+         None, 'reminder', 'unauthorized_effect', task_status=None, note='pydantic string_pattern_mismatch'),
+    _web('C02-REM-0725', 'ana', 'POST', '/api/reminders', {**PRIVATE_REMINDER, 'text': 'x' * 501}, 422, None,
+         'reminder', 'unauthorized_effect', task_status=None, note='pydantic string_too_long'),
 )
 
 
@@ -263,8 +278,12 @@ async def test_task_route_role_scope_matrix(tasks_graph, entry, method, path, bo
     target = path.format(**{key: getattr(seeded, key).id for key in ('S', 'A', 'B', 's1', 'a1', 'b1', 'RS', 'RT',
                                                                       'RA', 'RB', 'RF')})
     before = await snapshot(graph)
-    response = await graph.client.request(method, target, json=body,
-                                          headers=graph.headers[entry.conditions['session']])
+    headers = graph.headers[entry.conditions['session']]
+    if isinstance(body, str):  # a raw JSON body (Infinity, NaN) that httpx would not encode
+        response = await graph.client.request(method, target, content=body,
+                                              headers={**headers, 'Content-Type': 'application/json'})
+    else:
+        response = await graph.client.request(method, target, json=body, headers=headers)
     after = await snapshot(graph)
     assert response.status_code == entry.conditions['http_status'], response.text
     payload = response.json()
@@ -454,3 +473,16 @@ async def test_task_routes_without_their_manager_are_unavailable_with_an_outcome
             assert response.json()['outcome']['persistence'] == ('not_required' if method == 'GET'
                                                                  else 'not_written')
     await api.stop()
+
+
+@pytest.mark.parametrize('recurrence', ['daily', 'weekdays', 'weekly:1', 'weekly:7', 'monthly:1', 'monthly:31'])
+async def test_every_recurrence_the_scheduler_walks_is_accepted_and_reads_back(tasks_graph, recurrence):
+    """T035-U1-RV1: the recurrence bound refuses only what the scheduler cannot walk."""
+    graph = tasks_graph
+    headers = graph.headers['visitor']
+    created = await graph.client.post('/api/reminders', headers=headers,
+                                      json={**SHARED_REMINDER, 'recurrence': recurrence})
+    assert created.status_code == 200 and created.json()['outcome']['persistence'] == 'committed'
+    listed = await graph.client.get('/api/reminders', headers=headers)
+    assert listed.status_code == 200
+    assert {row['id']: row['recurrence'] for row in listed.json()}[created.json()['id']] == recurrence

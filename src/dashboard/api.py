@@ -201,13 +201,25 @@ def _notice_counts(entries) -> dict:
             "uncertain": sum(entry.status == "uncertain" for entry in entries)}
 
 
+# Exclusive upper bound of a web reminder time: 9999-01-01T00:00:00Z. Any later
+# epoch cannot be formatted or advanced on the household calendar (T035-U1-RV1).
+REMINDER_TRIGGER_MAX = 253_370_764_800.0
+# The recurrences parse_recurrence and next_trigger can walk (weekday 1..7, month day 1..31).
+REMINDER_RECURRENCE_PATTERN = r"^(daily|weekdays|weekly:[1-7]|monthly:([1-9]|[12][0-9]|3[01]))$"
+
+
 class ReminderCreateModel(BaseModel):
-    """A shared or private reminder; the owner comes from the session (T035-U1)."""
+    """A shared or private reminder; the owner comes from the session (T035-U1).
+
+    Every household session may write one, so the time is a finite positive
+    epoch below ``REMINDER_TRIGGER_MAX`` and the recurrence is one the
+    scheduler can walk; anything else is refused (422) before a row exists.
+    """
 
     model_config = ConfigDict(extra="forbid")
-    text: str
-    trigger_at: float
-    recurrence: str | None = None
+    text: str = Field(min_length=1, max_length=500)
+    trigger_at: float = Field(gt=0, lt=REMINDER_TRIGGER_MAX, allow_inf_nan=False)
+    recurrence: str | None = Field(default=None, max_length=16, pattern=REMINDER_RECURRENCE_PATTERN)
     ha_actions: list[dict] | None = None
     scope: ReminderScope = ReminderScope.PRIVATE
 
