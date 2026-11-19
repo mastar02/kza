@@ -497,3 +497,22 @@ async def test_every_recurrence_the_scheduler_walks_is_accepted_and_reads_back(t
     listed = await graph.client.get('/api/reminders', headers=headers)
     assert listed.status_code == 200
     assert {row['id']: row['recurrence'] for row in listed.json()}[created.json()['id']] == recurrence
+
+
+async def test_a_legacy_shared_reminder_naming_a_person_stays_shared(tasks_graph):
+    """T035-U1-RV3: the old admin route could store a shared reminder with user_id set to a person.
+
+    The ?scope= filter keeps it out of that person's personal view, and the
+    default view lists it once, as a shared reminder.
+    """
+    graph = tasks_graph
+    legacy = await graph.reminders.create('ana', 'COMPARTIDO_LEGADO', time.time() + 5400,
+                                          scope=ReminderScope.SHARED)
+    ana = graph.headers['ana']
+    personal = (await graph.client.get('/api/reminders?scope=personal', headers=ana)).json()
+    assert [row['id'] for row in personal] == [graph.seeded.RA.id]
+    shared = (await graph.client.get('/api/reminders?scope=shared', headers=ana)).json()
+    assert [row['scope'] for row in shared if row['id'] == legacy.id] == ['shared']
+    for session in ('ana', 'beto', 'home'):
+        rows = (await graph.client.get('/api/reminders', headers=graph.headers[session])).json()
+        assert [row['scope'] for row in rows if row['id'] == legacy.id] == ['shared'], session
