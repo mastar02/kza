@@ -671,3 +671,32 @@ async def test_clean_close_persists_sample_expiration_without_http_synchronizati
         assert replacement.resolve(credential.token).sample(selection.fingerprint_id) is None
     finally:
         await replacement.aclose()
+
+
+async def test_web_session_rule_reads_the_carrier_and_not_only_the_session_flag(authority):
+    """T044-U1 (F5): a kzas_ token sent as a bearer is a session lease, but not a cookie web session."""
+    from starlette.requests import Request
+
+    from src.dashboard.auth import web_session_requested
+
+    service, _, root = authority
+    operator = await issue(authority, Role.OPERATOR, subject="synthetic-operator")
+    cookie = await service.login(operator.token)
+    shared = await service.login(root[0])
+
+    def request(lease, authorization=None):
+        headers = [] if authorization is None else [(b"authorization", authorization.encode())]
+        return Request({"type": "http", "method": "POST", "path": "/api/voices/captures/query", "headers": headers,
+                        "query_string": b"", "kza.dashboard_lease": lease})
+
+    assert web_session_requested(request(service.resolve(None, cookie.token))) is True
+    # QC: a cookie session opened with the shared token is an admin web session until T013.
+    legacy_cookie = service.resolve(None, shared.token)
+    assert legacy_cookie.principal.subject == "dashboard-admin" and web_session_requested(request(legacy_cookie))
+    as_bearer = service.resolve("Bearer " + cookie.token)
+    assert as_bearer.session is True and web_session_requested(request(as_bearer, "Bearer " + cookie.token)) is False
+    credential = service.resolve("Bearer " + operator.token)
+    assert web_session_requested(request(credential, "Bearer " + operator.token)) is False
+    legacy = service.resolve(root[0])
+    assert web_session_requested(request(legacy, root[0])) is False
+    assert web_session_requested(request(None)) is False

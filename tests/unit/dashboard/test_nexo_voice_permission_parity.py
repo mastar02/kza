@@ -155,3 +155,18 @@ def test_the_views_mapping_keeps_voice_inside_the_existing_views():
     source = (ROOT / "src/dashboard/frontend/home/nexo/state.js").read_text(encoding="utf-8")
     assert "mymemory: ['memory:own:read']" in source and "voices: ['voices:read', 'voices:review']" in source
     assert "voice-attribution" not in source and "myvoice" not in source
+
+
+def test_capture_query_post_is_an_explicit_read_and_review_route():
+    """T044-U1 (F3): the filtered query is a read in a POST body, not a review-only write."""
+    query = set(_route_permissions(Request(scope("POST", "/api/voices/captures/query"))))
+    assert query == {"voices:read", "voices:review"}
+    # The search part (admin:manage, web session) lives in the handler: the body is invisible here.
+    assert "admin:manage" not in query
+    assert set(_route_permissions(Request(scope("GET", "/api/voices/captures/query")))) == {"voices:read"}
+    # QB: the transcript read has exactly the review's route permission.
+    identity = "vf_" + "a" * 64
+    assert (set(_route_permissions(Request(scope("GET", f"/api/voices/captures/{identity}/transcript"))))
+            == set(_route_permissions(Request(scope("GET", f"/api/voices/captures/{identity}/review")))) == {"voices:read"})
+    # Every other voice write keeps the review-only default.
+    assert set(_route_permissions(Request(scope("POST", "/api/voices/captures/search")))) == {"voices:review"}

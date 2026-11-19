@@ -4,10 +4,13 @@ from collections.abc import Callable
 import base64
 from dataclasses import dataclass,field
 import hashlib
+import hmac
 import json
 import math
+import secrets
 import sqlite3
 import struct
+import unicodedata
 from uuid import UUID,uuid4
 from weakref import ref
 
@@ -23,12 +26,127 @@ from src.users.voice_capture_metadata import (
     encode_audio_metadata, encode_transcript_metadata,
 )
 from src.users.voice_groups import VoiceGroups
-from src.users.voice_projection import VoiceProjection
+from src.users.voice_projection import VoiceProjection,VoiceQuerySummary
 from src.users.voice_people import VoicePersonLinks
 from src.dashboard.live_retention_types import RevisionSet,RevisionStamp
 
 
 MAX_REVIEW_SOURCE_BYTES = 262144
+
+# T044-U1: filtered captures query and the admin-only transcript search.
+QUERY_CHUNK_ROWS = 128
+QUERY_PAGE_ROWS = 50
+QUERY_SCAN_CAPACITY = 4096
+SEARCH_MAX_ROWS = 512
+SEARCH_MAX_BYTES = 2*1024*1024
+ROOM_OPTIONS_MAX = 32
+QUERY_WINDOW_MAX_S = 172800+300
+QUERY_CLOCK_SKEW_S = 300
+QUERY_TEXT_MAX_CHARS = 64
+QUERY_TEXT_MAX_TERMS = 8
+GROUP_STATES = ('suggested','manual','unknown')
+ASSOCIATIONS = ('suggested','unknown')
+# Per-process key: a cursor never carries a reversible fingerprint of the
+# filters or query, and the cursors of a previous process stop matching.
+_QUERY_CURSOR_KEY = secrets.token_bytes(32)
+# A room id joins every captures row (QA); a malformed stored value reads as unknown.
+_ROOM_SQL = '''(SELECT r.room_id FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id
+    AND typeof(r.room_id)='text' AND length(r.room_id) BETWEEN 1 AND 128) AS room_id'''
+_CAPTURE_COLUMNS = '''v.id,v.model_key,v.created_at,v.expires_at,v.duration_s,v.sources_json,
+    v.suggested_profile,v.suggested_revision,v.similarity,
+    EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id) AS review_available,
+    (SELECT r.room_id IS NULL FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id) AS room_unrecorded,
+    '''+_ROOM_SQL
+
+
+def normalize_voice_text(value: str) -> str:
+    """Accent-, case- and spacing-insensitive form shared by a query and a transcript.
+
+    Casefolding comes after the compatibility decomposition ('℡' -> 'TEL' ->
+    'tel'), and the decomposition runs again on the casefolded text, so the
+    result is a fixed point: normalising it again changes nothing.
+    """
+    decomposed = unicodedata.normalize('NFKD',value)
+    folded = ''.join(char for char in decomposed if not unicodedata.combining(char)).casefold()
+    decomposed = unicodedata.normalize('NFKD',folded)
+    return ' '.join(''.join(char for char in decomposed if not unicodedata.combining(char)).split())
+
+
+def _room_value(value) -> str | None:
+    if type(value) is not str or not 1<=len(value)<=128 or any(ord(char)<32 or ord(char)==127 for char in value):
+        return None
+    return value
+
+
+@dataclass(frozen=True,repr=False)
+class VoiceCaptureFilter:
+    """Validated filters of one captures query; ``text`` is the normalised admin search.
+
+    The representation is the default object one: filter values and the query
+    never reach a log line, an exception or a cursor in clear.
+    """
+
+    room_kind: str | None
+    room_id: str | None
+    since: float | None
+    until: float | None
+    group_state: str | None
+    association: str | None
+    listenable_only: bool
+    text: str | None = None
+
+    def __post_init__(self) -> None:
+        if (self.room_kind not in (None,'room','unrecorded')
+                or (self.room_kind=='room') != (self.room_id is not None)
+                or self.room_id is not None and _room_value(self.room_id) is None
+                or (self.since is None) != (self.until is None)
+                or self.since is not None and (type(self.since) not in (int,float) or type(self.until) not in (int,float)
+                    or not math.isfinite(self.since) or not math.isfinite(self.until)
+                    or not 0<=self.since<self.until or self.until-self.since>QUERY_WINDOW_MAX_S)
+                or self.group_state not in (None,*GROUP_STATES) or self.association not in (None,*ASSOCIATIONS)
+                or type(self.listenable_only) is not bool
+                or self.text is not None and (type(self.text) is not str or normalize_voice_text(self.text)!=self.text
+                    or not 2<=len(self.text)<=QUERY_TEXT_MAX_CHARS or len(self.text.split())>QUERY_TEXT_MAX_TERMS)):
+            raise ValueError('invalid_voice_query')
+
+    @property
+    def search(self) -> bool:
+        """Whether this request is the admin-only transcript search."""
+        return self.text is not None
+
+    def digest(self) -> str:
+        """HMAC of the canonical filters (and query) under the per-process key; 32 hex."""
+        canonical = json.dumps([self.room_kind,self.room_id,self.since,self.until,self.group_state,
+            self.association,self.listenable_only,self.text],ensure_ascii=False,separators=(',',':'))
+        return hmac.new(_QUERY_CURSOR_KEY,canonical.encode(),hashlib.sha256).hexdigest()[:32]
+
+
+def capture_query_cursor(created_at: float, identity: str, digest: str) -> str:
+    """'vc2_' + created_at (big-endian double) + fingerprint hash + filter digest."""
+    return 'vc2_'+struct.pack('>d',created_at).hex()+'_'+identity[3:]+'_'+digest
+
+
+def capture_query_position(cursor: str) -> tuple[float,str,str]:
+    """Decode a 'vc2_' cursor into (created_at, fingerprint id, filter digest)."""
+    if (type(cursor) is not str or len(cursor)!=118 or not cursor.startswith('vc2_')
+            or cursor[20]!='_' or cursor[85]!='_'
+            or any(char not in '0123456789abcdef' for char in cursor[4:20]+cursor[21:85]+cursor[86:])):
+        raise ValueError('invalid_voice_cursor')
+    created_at = struct.unpack('>d',bytes.fromhex(cursor[4:20]))[0]
+    if not math.isfinite(created_at) or created_at<0:
+        raise ValueError('invalid_voice_cursor')
+    return created_at,'vf_'+cursor[21:85],cursor[86:]
+
+
+@dataclass
+class _QueryScan:
+    """Positions and liveness deadlines of matched rows; never transcripts."""
+
+    matches: list = field(default_factory=list)
+    rooms: dict = field(default_factory=dict)
+    full_window: bool = True
+    complete: bool = False
+    resume: tuple | None = None
 
 
 @dataclass(frozen=True)
@@ -225,36 +343,48 @@ class VoiceLedger:
                 if self._live(row,confirmed=True)}
             captures = []
             group_cache = {}
-            query = '''SELECT v.id,v.model_key,v.created_at,v.expires_at,v.duration_s,v.sources_json,
-                v.suggested_profile,v.suggested_revision,v.similarity,
-                EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id) AS review_available
-                FROM voice_fingerprints v'''
+            query = 'SELECT '+_CAPTURE_COLUMNS+' FROM voice_fingerprints v'
             params = ()
             if position is not None:
                 query += ' WHERE v.created_at<? OR (v.created_at=? AND v.id<?)'
                 params = position[0], position[0], position[1]
             page = db.execute(query + ' ORDER BY v.created_at DESC,v.id DESC LIMIT 101', params).fetchall()
             for row in page[:100]:
-                if not self._live(row):
-                    continue
-                group = self.groups.metadata(db,row['id'],cache=group_cache)
-                if group is None:
-                    continue
-                suggestion = profiles.get(row['suggested_profile'])
-                if suggestion is not None and suggestion['revision']!=row['suggested_revision']:
-                    suggestion = None
-                captures.append({'id':row['id'],**group[0],'created_at':row['created_at'],
-                    'expires_at':row['expires_at'],'duration_s':row['duration_s'],'model_key':row['model_key'],
-                    'capture_ids':[source.capture_id for source in self._sources(row['sources_json'])],
-                    'review_available':bool(row['review_available']),
-                    'suggested_profile':suggestion['id'] if suggestion is not None else None,
-                    'similarity':row['similarity'] if suggestion is not None else None,
-                    'association':'suggested' if suggestion is not None else 'unknown'})
+                item = self._capture_item(db,row,profiles,group_cache)
+                if item is not None:
+                    captures.append(item[0])
             return {'observed_at':self.ledger.clock(),'fingerprints':captures,
                 'profiles':[self._profile(row) for row in profiles.values()],
                 'automatic_grouping_accepted':False,'legacy_policy':'excluded_pending_inventory',
                 'recognition_grants_permissions':False,'similarity_metric':'cosine_not_identity_probability',
                 'next_cursor':self._capture_cursor(page[99]) if len(page)>100 else None}
+
+    def _capture_item(self, db, row, profiles, group_cache) -> tuple[dict,float] | None:
+        """One live captures row and its liveness deadline, or None (the snapshot predicate)."""
+        if not self._live(row):
+            return None
+        group = self.groups.metadata(db,row['id'],cache=group_cache)
+        if group is None:
+            return None
+        suggestion = profiles.get(row['suggested_profile'])
+        if suggestion is not None and suggestion['revision']!=row['suggested_revision']:
+            suggestion = None
+        sources = self._sources(row['sources_json'])
+        related = self._sources(suggestion['sources_json']) if suggestion is not None else ()
+        # The first moment this row stops passing the live predicate by the clock
+        # alone (the envelope expiry rule); revocations are fenced separately.
+        deadline = min([row['expires_at'],group[0]['group_expires_at'],
+            *[source.expires_at for source in (*sources,*group[1])],
+            *[dep.expires_at for source in (*sources,*group[1],*related)
+                for dep in source.fact_dependencies if dep.expires_at is not None]])
+        return {'id':row['id'],**group[0],'created_at':row['created_at'],
+            'expires_at':row['expires_at'],'duration_s':row['duration_s'],'model_key':row['model_key'],
+            'capture_ids':[source.capture_id for source in sources],
+            'review_available':bool(row['review_available']),
+            'room_id':_room_value(row['room_id']),
+            'suggested_profile':suggestion['id'] if suggestion is not None else None,
+            'similarity':row['similarity'] if suggestion is not None else None,
+            'association':'suggested' if suggestion is not None else 'unknown'},deadline
 
     def review_capture(self, identity: str, actor: VoiceReviewer) -> dict:
         """Return one listening sample only while its original raw sources live."""
@@ -310,6 +440,10 @@ class VoiceLedger:
                 raise LookupError('voice_capture_unavailable')
             row['transcript'] = row['transcript'].decode('utf-8')
             row['room_id'] = None if row['room_id'] is None else row['room_id'].decode('utf-8')
+            # A restored malformed room (length or control characters) never crosses
+            # the boundary: the review and its text variant share this rule (RV7).
+            if row['room_id'] is not None and _room_value(row['room_id']) is None:
+                raise ValueError('invalid_voice_review_capture')
             audio_metadata = (None if row['audio_metadata_json'] is None
                 else row['audio_metadata_json'].decode('utf-8'))
             transcript_metadata = (None if row['transcript_metadata_json'] is None
@@ -358,17 +492,386 @@ class VoiceLedger:
         if invalid:
             raise LookupError('voice_capture_unavailable')
 
+    def transcript_capture(self, identity: str, actor: VoiceReviewer) -> dict:
+        """QB: one sample's transcript and room, under the review's admission, never its audio.
+
+        The SQL admission is review_capture's, written as predicates so the WAV
+        blob is never selected. Only the non-audio parts of the review document
+        are validated (the WAV content check needs the audio).
+        """
+        if type(actor) is not VoiceReviewer or not actor.subject:
+            raise PermissionError('voice_review_denied')
+        if (type(identity) is not str or len(identity)!=67 or not identity.startswith('vf_')
+                or any(char not in '0123456789abcdef' for char in identity[3:])):
+            raise ValueError('invalid_voice_capture_id')
+        data = row = transcript = room = provenance = span = truncated = metadata = document = None
+        invalid = denied = unavailable = False
+        try:
+            actor.require_current()
+            with self.ledger._transaction() as db:
+                actor.require_current()
+                row = db.execute('''SELECT CAST(v.sources_json AS BLOB) AS sources_json,v.expires_at,
+                    CAST(r.transcript AS BLOB) AS transcript,
+                    CAST(r.room_id AS BLOB) AS room_id,r.duration_s,r.clip_duration_s,
+                    CAST(r.transcript_metadata_json AS BLOB) AS transcript_metadata_json
+                    FROM voice_capture_reviews r
+                    JOIN voice_fingerprints v ON v.id=r.fingerprint_id WHERE v.id=?
+                    AND typeof(v.sources_json)='text'
+                    AND length(CAST(v.sources_json AS BLOB)) BETWEEN 1 AND ?
+                    AND typeof(v.expires_at) IN ('integer','real')
+                    AND v.expires_at>=0 AND v.expires_at<=1.7976931348623157e308
+                    AND typeof(r.audio_wav)='blob'
+                    AND length(r.audio_wav) BETWEEN 25644 AND 192044
+                    AND typeof(r.transcript)='text'
+                    AND length(CAST(r.transcript AS BLOB))<=32768
+                    AND (r.room_id IS NULL OR (typeof(r.room_id)='text'
+                        AND length(CAST(r.room_id AS BLOB)) BETWEEN 1 AND 512))
+                    AND typeof(r.duration_s) IN ('integer','real') AND r.duration_s BETWEEN 0.8 AND 30.0
+                    AND typeof(r.clip_duration_s) IN ('integer','real')
+                    AND r.clip_duration_s BETWEEN 0.8 AND 6.0 AND r.clip_duration_s<=r.duration_s
+                    AND (r.audio_metadata_json IS NULL OR
+                        (typeof(r.audio_metadata_json)='text' AND length(CAST(r.audio_metadata_json AS BLOB)) BETWEEN 1 AND ?))
+                    AND (r.transcript_metadata_json IS NULL OR
+                        (typeof(r.transcript_metadata_json)='text' AND length(CAST(r.transcript_metadata_json AS BLOB)) BETWEEN 1 AND ?))''',
+                    (identity,MAX_REVIEW_SOURCE_BYTES,MAX_METADATA_BYTES,MAX_METADATA_BYTES)).fetchone()
+                if row is None:
+                    raise LookupError('voice_capture_unavailable')
+                row = dict(row)
+                row['sources_json'] = row['sources_json'].decode('utf-8')
+                if not self._live(row):
+                    raise LookupError('voice_capture_unavailable')
+            actor.require_current()
+            if not self._live(row):
+                raise LookupError('voice_capture_unavailable')
+            transcript = row['transcript'].decode('utf-8')
+            room = None if row['room_id'] is None else row['room_id'].decode('utf-8')
+            # The review's room rule (RV7): a malformed restored room makes the sample unavailable.
+            if (len(transcript)>8192 or room is not None and _room_value(room) is None
+                    or type(row['duration_s']) not in (int,float) or not .8<=row['duration_s']<=30
+                    or type(row['clip_duration_s']) not in (int,float)
+                    or not .8<=row['clip_duration_s']<=min(6.,row['duration_s'])):
+                raise ValueError('invalid_voice_review_capture')
+            metadata = (None if row['transcript_metadata_json'] is None
+                else row['transcript_metadata_json'].decode('utf-8'))
+            provenance,span,truncated = decode_transcript_metadata(metadata)
+            if provenance is not None and (span.start_frame!=0 or span.end_frame!=provenance.frame_count):
+                raise ValueError('invalid_voice_review_capture')
+            metadata = encode_transcript_metadata(provenance,span,truncated)
+            document = None if metadata is None else json.loads(metadata)
+            actor.require_current()
+            data = {'id':identity,'observed_at':self.ledger.clock(),'expires_at':row['expires_at'],
+                'transcript':transcript,'room_id':room,'duration_s':row['duration_s'],
+                'transcript_scope':'full_segment','transcript_metadata':document,'variant':'text'}
+            actor.require_current()
+            if not self._live(row):
+                raise LookupError('voice_capture_unavailable')
+            return data
+        except PermissionError:
+            denied = True
+        except sqlite3.Error:
+            unavailable = True
+        except (LookupError,ValueError,TypeError,KeyError,AttributeError,OverflowError,RecursionError):
+            invalid = True
+        finally:
+            data = row = transcript = room = provenance = span = truncated = metadata = document = None
+        if denied:
+            raise PermissionError('voice_review_denied')
+        if unavailable:
+            raise RuntimeError('voice_capture_unavailable')
+        if invalid:
+            raise LookupError('voice_capture_unavailable')
+
     @staticmethod
     def _profile(row):
         return {'id':row['id'],'name':row['name'],'revision':row['revision'],
             'confirmed_at':row['confirmed_at'],'confirmed_by':row['confirmed_by'],'expires_at':None}
 
+    def _capture_rows(self, db, items, next_cursor, cursor_of, admit=None):
+        """Rebuild page rows inside one authority transaction (project()'s per-row code).
+
+        Sources are re-read, the suggestion's liveness and the group metadata are
+        rechecked against the listed revision ('voice_group_changed'), and the
+        256-source capacity cuts the page with next_cursor after the last kept row.
+        ``admit`` (query only) drops a row whose rebuilt association no longer matches.
+        """
+        rows,sources,extra,associated = [],set(),set(),set()
+        group_cache = {}
+        for index,item in enumerate(items):
+            if index==50:
+                next_cursor = cursor_of(rows[-1])
+                break
+            original = self._sources(db.execute('SELECT sources_json FROM voice_fingerprints WHERE id=?',(item['id'],)).fetchone()[0])
+            parent = None
+            related = ()
+            if item['suggested_profile']:
+                parent = db.execute('SELECT id,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE id=?',(item['suggested_profile'],)).fetchone()
+                if parent is not None and self._live(parent,confirmed=True):
+                    related = self._sources(parent['sources_json'])
+                else:
+                    item = dict(item,suggested_profile=None,similarity=None,association='unknown')
+            if admit is not None and not admit(item):
+                continue
+            group = self.groups.metadata(db,item['id'],cache=group_cache)
+            if (group is None or group[0]['group_id']!=item['group_id']
+                    or group[0]['group_revision']!=item['group_revision']):
+                raise LookupError('voice_group_changed')
+            original = tuple(set(original) | set(group[1]))
+            candidate = sources | extra | set(original) | set(related)
+            if len(candidate)>256 or sum(len(source.fact_dependencies) for source in candidate)>256:
+                if rows:
+                    next_cursor = cursor_of(rows[-1])
+                    break
+                # An unrepresentable hint is an abstention, never
+                # an association with silently dropped parents.
+                item = dict(item,suggested_profile=None,similarity=None,association='unknown')
+                related = ()
+                if len(set(original))>256 or sum(len(source.fact_dependencies) for source in original)>256:
+                    raise ValueError('voice_capture_source_capacity')
+                if admit is not None and not admit(item):
+                    continue
+            sources.update(original)
+            extra.update(related)
+            if related:
+                associated.add((parent['id'],parent['revision']))
+            rows.append(item)
+        return rows,sources,extra,associated,next_cursor
+
+    @staticmethod
+    def _query_where(filters: VoiceCaptureFilter, *, room: bool) -> tuple[list[str],list]:
+        """SQL filters on existing columns, applied in each chunk before its LIMIT."""
+        clauses,params = [],[]
+        if filters.since is not None:
+            clauses.append('v.created_at>=? AND v.created_at<?')
+            params += [filters.since,filters.until]
+        if room and filters.room_kind=='room':
+            clauses.append('EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id AND r.room_id=?)')
+            params.append(filters.room_id)
+        elif room and filters.room_kind=='unrecorded':
+            clauses.append('EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id AND r.room_id IS NULL)')
+        if filters.group_state is not None:
+            clauses.append('''EXISTS(SELECT 1 FROM voice_group_members m JOIN voice_groups g ON g.id=m.group_id
+                WHERE m.fingerprint_id=v.id AND g.state=?)''')
+            params.append(filters.group_state)
+        if filters.listenable_only or filters.search:
+            # Only rows with a review row carry a transcript; others never match a search.
+            clauses.append('EXISTS(SELECT 1 FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id)')
+        return clauses,params
+
+    @staticmethod
+    def _query_admits(filters: VoiceCaptureFilter, item: dict, *, room: bool, unrecorded) -> bool:
+        """The Python half of the filters, after the unchanged live predicate."""
+        return ((filters.group_state is None or item['group_state']==filters.group_state)
+            and (filters.association is None or item['association']==filters.association)
+            and (not filters.listenable_only or item['review_available'] is True)
+            and (not room or filters.room_kind is None
+                or filters.room_kind=='room' and item['room_id']==filters.room_id
+                or filters.room_kind=='unrecorded' and unrecorded==1))
+
+    def _query_fences(self) -> tuple[int,int,int]:
+        return (self.groups.projection_revision,self.projection_revision,self.ledger.revocations.projection_revision)
+
+    def _query_scan(self, filters: VoiceCaptureFilter, position: tuple | None, actor: VoiceReviewer) -> _QueryScan:
+        """Chunked newest-first scan; the authority transaction is never held across chunks.
+
+        Filters-only requests read the whole window (bounded by the fingerprint
+        capacity) with the room predicate applied per row, so the same scan
+        yields room options without the room filter. A search reads the whole
+        window when its SQL-filtered size fits the budget, else it resumes from
+        the cursor until a page of matches or the budget.
+        """
+        scan = _QueryScan()
+        clauses,params = self._query_where(filters,room=filters.search)
+        if filters.search:
+            with self.ledger._transaction() as db:
+                actor.require_current()
+                where = ' WHERE '+' AND '.join(clauses) if clauses else ''
+                total,size = db.execute('''SELECT COUNT(*),COALESCE(SUM(length(CAST(r.transcript AS BLOB))),0)
+                    FROM voice_fingerprints v JOIN voice_capture_reviews r ON r.fingerprint_id=v.id'''+where,params).fetchone()
+            # The aggregate ignores _live: it only chooses the mode and is never reported.
+            scan.full_window = total<=SEARCH_MAX_ROWS and size<=SEARCH_MAX_BYTES
+        terms = tuple(filters.text.split()) if filters.search else ()
+        columns = _CAPTURE_COLUMNS
+        if filters.search:
+            columns += ''',(SELECT CAST(r.transcript AS BLOB) FROM voice_capture_reviews r WHERE r.fingerprint_id=v.id
+                AND typeof(r.transcript)='text' AND length(CAST(r.transcript AS BLOB))<=32768) AS transcript'''
+        anchor = None if scan.full_window else position
+        read = spent = 0
+        while True:
+            limit = QUERY_CHUNK_ROWS
+            if filters.search:
+                limit = min(limit,SEARCH_MAX_ROWS-read)
+            elif read>=QUERY_SCAN_CAPACITY+QUERY_CHUNK_ROWS:
+                return scan  # More rows than the capacity allows: never a complete count.
+            chunk_clauses,chunk_params = list(clauses),list(params)
+            if anchor is not None:
+                chunk_clauses.append('(v.created_at<? OR (v.created_at=? AND v.id<?))')
+                chunk_params += [anchor[0],anchor[0],anchor[1]]
+            where = ' WHERE '+' AND '.join(chunk_clauses) if chunk_clauses else ''
+            if limit<=0:
+                # The row budget is spent: the window is complete only if nothing is left in it.
+                with self.ledger._transaction() as db:
+                    actor.require_current()
+                    left = db.execute('SELECT 1 FROM voice_fingerprints v'+where+' LIMIT 1',chunk_params).fetchone()
+                scan.complete = left is None
+                scan.resume = None if left is None else anchor
+                return scan
+            candidates,budget_stop = [],False
+            with self.ledger._transaction() as db:
+                actor.require_current()
+                profiles = {row['id']:row for row in db.execute('''SELECT id,name,revision,sources_json,confirmed_at,
+                    confirmed_by,deleted_at FROM voice_profiles WHERE deleted_at IS NULL''') if self._live(row,confirmed=True)}
+                group_cache = {}
+                chunk = db.execute('SELECT '+columns+' FROM voice_fingerprints v'+where
+                    +' ORDER BY v.created_at DESC,v.id DESC LIMIT ?',(*chunk_params,limit)).fetchall()
+                fetched = len(chunk)
+                for row in chunk:
+                    if filters.search:
+                        size = len(row['transcript']) if type(row['transcript']) is bytes else 0
+                        if spent+size>SEARCH_MAX_BYTES:
+                            budget_stop = True
+                            break
+                        spent += size
+                    read += 1
+                    anchor = (row['created_at'],row['id'])
+                    item = self._capture_item(db,row,profiles,group_cache)
+                    if item is None or not self._query_admits(filters,item[0],room=False,unrecorded=None):
+                        continue
+                    if not filters.search and item[0]['room_id'] is not None:
+                        room = item[0]['room_id']
+                        scan.rooms[room] = max(scan.rooms.get(room,item[1]),item[1])
+                    if not self._query_admits(filters,item[0],room=True,unrecorded=row['room_unrecorded']):
+                        continue
+                    candidates.append((row['created_at'],row['id'],item[1],
+                        row['transcript'] if filters.search else None))
+                chunk = profiles = group_cache = None
+            actor.require_current()
+            for index,(created_at,identity,deadline,raw) in enumerate(candidates):
+                if filters.search:
+                    # Compared outside the authority transaction and dropped at once.
+                    try:
+                        text = normalize_voice_text(raw.decode('utf-8')) if type(raw) is bytes else ''
+                    except UnicodeDecodeError:
+                        text = ''
+                    matched = all(term in text for term in terms)
+                    candidates[index] = text = raw = None
+                    if not matched:
+                        continue
+                scan.matches.append((created_at,identity,deadline))
+                if not scan.full_window and len(scan.matches)>=QUERY_PAGE_ROWS:
+                    candidates = None
+                    scan.resume = (created_at,identity)
+                    return scan
+            candidates = None
+            if budget_stop:
+                scan.resume = anchor
+                return scan
+            if fetched<limit:
+                scan.complete = True
+                return scan
+
+    @staticmethod
+    def _after(match, position) -> bool:
+        """Strictly after a (created_at, id) cursor position in newest-first order."""
+        return position is None or match[0]<position[0] or match[0]==position[0] and match[1]<position[1]
+
+    def _query_page(self, filters: VoiceCaptureFilter, position, digest: str, scan: _QueryScan, actor: VoiceReviewer):
+        """Final transaction: re-select the page with the same SQL filters and rebuild it with project()'s code."""
+        following = [match for match in scan.matches if self._after(match,position)]
+        page = following[:QUERY_PAGE_ROWS]
+        if len(following)>QUERY_PAGE_ROWS:
+            next_position = page[-1][:2]
+        elif not scan.complete and scan.resume is not None and self._after(scan.resume,position):
+            next_position = scan.resume
+        else:
+            next_position = None
+        def cursor_of(row):
+            return capture_query_cursor(row['created_at'],row['id'],digest)
+        next_cursor = None if next_position is None else capture_query_cursor(*next_position,digest)
+        clauses,params = self._query_where(filters,room=True)
+        with self.ledger._transaction() as db:
+            actor.require_current()
+            items = []
+            if page:
+                profiles = {row['id']:row for row in db.execute('''SELECT id,name,revision,sources_json,confirmed_at,
+                    confirmed_by,deleted_at FROM voice_profiles WHERE deleted_at IS NULL''') if self._live(row,confirmed=True)}
+                group_cache = {}
+                selected = db.execute('SELECT '+_CAPTURE_COLUMNS+' FROM voice_fingerprints v WHERE v.id IN ('
+                    +','.join('?'*len(page))+')'+''.join(' AND '+clause for clause in clauses)
+                    +' ORDER BY v.created_at DESC,v.id DESC',(*[match[1] for match in page],*params)).fetchall()
+                for row in selected:
+                    item = self._capture_item(db,row,profiles,group_cache)
+                    if item is not None and self._query_admits(filters,item[0],room=True,unrecorded=row['room_unrecorded']):
+                        items.append(item[0])
+                selected = profiles = group_cache = None
+            def admit(item):
+                return self._query_admits(filters,item,room=False,unrecorded=None)
+            rows,sources,extra,associated,next_cursor = self._capture_rows(db,items,next_cursor,cursor_of,admit)
+            observed = self.ledger.clock()
+            expiry = min([*[source.expires_at for source in sources],*[dep.expires_at for source in extra
+                for dep in source.fact_dependencies if dep.expires_at is not None]],default=observed+300)
+            fences = self._query_fences()
+            revision = RevisionSet((RevisionStamp(ref(self.groups),fences[0]),RevisionStamp(ref(self),fences[1]),
+                RevisionStamp(ref(self.ledger.revocations),fences[2])))
+            actor.require_current()
+            projection = VoiceProjection(rows,tuple(sources),observed,expiry,'voices:captures',next_cursor,
+                revision=revision,associated_profiles=tuple(sorted(associated)),activity_sources=tuple(extra))
+            return projection,fences
+
+    def query_captures(self, filters: VoiceCaptureFilter, cursor: str | None, actor: VoiceReviewer) -> VoiceProjection:
+        """T044-U1: a filtered captures page with a live count; ``filters.text`` is the admin search.
+
+        Rows are the captures metadata set only. The count and room options use
+        the live predicate at the final observed_at and are withheld when a
+        group, profile or revocation fence moved during the scan twice.
+        """
+        if type(actor) is not VoiceReviewer:
+            raise PermissionError('voice_review_denied')
+        if type(filters) is not VoiceCaptureFilter:
+            raise ValueError('invalid_voice_query')
+        VoiceCaptureFilter.__post_init__(filters)
+        actor.require_current()
+        digest = filters.digest()
+        position = None
+        if cursor is not None:
+            created_at,identity,bound = capture_query_position(cursor)
+            if not hmac.compare_digest(bound,digest):
+                raise ValueError('voice_cursor_filter_mismatch')
+            position = (created_at,identity)
+        scan = projection = None
+        try:
+            for _ in range(2):
+                before = self._query_fences()
+                scan = self._query_scan(filters,position,actor)
+                projection,after = self._query_page(filters,position,digest,scan,actor)
+                if after==before:
+                    break
+                scan.complete = False
+            else:
+                scan.complete = False
+            observed = projection.observed_at
+            count = count_expires = options = options_expires = None
+            if scan.full_window and scan.complete:
+                live = [match[2] for match in scan.matches if match[2]>observed]
+                count = len(live)
+                count_expires = min(live,default=None)
+                if not filters.search:
+                    rooms = sorted(room for room,deadline in scan.rooms.items() if deadline>observed)[:ROOM_OPTIONS_MAX]
+                    options = tuple(rooms)
+                    options_expires = min((scan.rooms[room] for room in rooms),default=None)
+            projection.summary = VoiceQuerySummary(count,count is not None,count_expires,options,options_expires)
+            actor.require_current()
+            return projection
+        finally:
+            scan = None
+
     def project(self, kind: str, cursor: str | None, actor: VoiceReviewer, include_person: bool = False,
-                person_id: str | None = None) -> VoiceProjection:
+                person_id: str | None = None, *, variant: str = 'audio') -> VoiceProjection:
         """Separate raw capture lists from source-linked permanent profile labels."""
         if type(actor) is not VoiceReviewer:
             raise PermissionError('voice_review_denied')
         actor.require_current()
+        if variant not in ('audio','text') or variant=='text' and kind!='review':
+            raise ValueError('invalid_voice_projection')
         if type(include_person) is not bool or include_person and kind != 'profiles':
             raise ValueError('invalid_voice_person_projection')
         if person_id is not None and (not include_person or type(person_id) is not str
@@ -379,7 +882,7 @@ class VoiceLedger:
         rows = sources = snapshot = data = result = page = row = original = person_fence = person_links = link = None
         try:
             if kind=='review':
-                data = self.review_capture(cursor,actor)
+                data = self.transcript_capture(cursor,actor) if variant=='text' else self.review_capture(cursor,actor)
                 with self.ledger._transaction() as db:
                     source_row = db.execute('SELECT sources_json FROM voice_fingerprints WHERE id=?',(cursor,)).fetchone()
                     if source_row is None:
@@ -433,43 +936,8 @@ class VoiceLedger:
                         RevisionSet((RevisionStamp(ref(self),self.projection_revision),person_fence)) if person_fence is not None
                         else RevisionStamp(ref(self),self.projection_revision))
                 else:
-                    rows,sources,extra,associated = [],set(),set(),set()
-                    group_cache = {}
-                    next_cursor = snapshot['next_cursor']
-                    for index,item in enumerate(snapshot['fingerprints']):
-                        if index==50:
-                            next_cursor = self._capture_cursor(rows[-1])
-                            break
-                        original = self._sources(db.execute('SELECT sources_json FROM voice_fingerprints WHERE id=?',(item['id'],)).fetchone()[0])
-                        parent = None
-                        related = ()
-                        if item['suggested_profile']:
-                            parent = db.execute('SELECT id,revision,sources_json,confirmed_at,confirmed_by,deleted_at FROM voice_profiles WHERE id=?',(item['suggested_profile'],)).fetchone()
-                            if parent is not None and self._live(parent,confirmed=True):
-                                related = self._sources(parent['sources_json'])
-                            else:
-                                item = dict(item,suggested_profile=None,similarity=None,association='unknown')
-                        group = self.groups.metadata(db,item['id'],cache=group_cache)
-                        if (group is None or group[0]['group_id']!=item['group_id']
-                                or group[0]['group_revision']!=item['group_revision']):
-                            raise LookupError('voice_group_changed')
-                        original = tuple(set(original) | set(group[1]))
-                        candidate = sources | extra | set(original) | set(related)
-                        if len(candidate)>256 or sum(len(source.fact_dependencies) for source in candidate)>256:
-                            if rows:
-                                next_cursor = self._capture_cursor(rows[-1])
-                                break
-                            # An unrepresentable hint is an abstention, never
-                            # an association with silently dropped parents.
-                            item = dict(item,suggested_profile=None,similarity=None,association='unknown')
-                            related = ()
-                            if len(set(original))>256 or sum(len(source.fact_dependencies) for source in original)>256:
-                                raise ValueError('voice_capture_source_capacity')
-                        sources.update(original)
-                        extra.update(related)
-                        if related:
-                            associated.add((parent['id'],parent['revision']))
-                        rows.append(item)
+                    rows,sources,extra,associated,next_cursor = self._capture_rows(
+                        db,snapshot['fingerprints'],snapshot['next_cursor'],self._capture_cursor)
                     observed = self.ledger.clock()
                     expiry = min([*[source.expires_at for source in sources],*[dep.expires_at for source in extra
                         for dep in source.fact_dependencies if dep.expires_at is not None]],default=observed+300)

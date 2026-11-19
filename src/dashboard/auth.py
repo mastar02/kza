@@ -122,6 +122,17 @@ def session_guard(request: HTTPConnection, permissions: frozenset[str] = frozens
     return lambda: lease.current(permissions)
 
 
+def web_session_requested(request: HTTPConnection) -> bool:
+    """A cookie web session: a session lease resolved with no Authorization header.
+
+    ``DashboardLease.session`` names the token kind, not its carrier: a ``kzas_``
+    session token sent as a bearer also resolves as a session, and resolve()
+    never falls back to the cookie when the header is present (T044-U1, F5).
+    """
+    lease = current_lease(request)
+    return lease is not None and lease.session is True and "authorization" not in request.headers
+
+
 def voice_person_scope_requested(request: HTTPConnection) -> bool:
     """Recognize the closed metadata surface that requires extra server permission."""
     path,method = request.url.path,request.scope.get('method','GET')
@@ -163,6 +174,10 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
             or path.startswith("/api/evaluation/samples/") and path.count("/") == 4)):
         return frozenset({DashboardPermission.EVALUATION_READ})
     if path == "/api/voices" or path.startswith("/api/voices/"):
+        # T044-U1: the filtered captures query is a read carried in a POST body;
+        # its admin-only search part is enforced in the handler (F30).
+        if path == "/api/voices/captures/query" and method == "POST":
+            return frozenset({DashboardPermission.VOICES_READ, DashboardPermission.VOICES_REVIEW})
         # U3b-4a-2: resuming a suspended profile is a review plus administration act.
         if (not read and path.startswith("/api/voices/profiles/") and path.endswith("/attribution/resume")
                 and path.count("/") == 6):
