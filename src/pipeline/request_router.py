@@ -617,13 +617,20 @@ class RequestRouter:
         producer that could act on 'activa' (T033-U1-RV1).
 
         Returns:
-            True when the turn was a routine question and has been answered.
+            True when the turn was a routine question and has been answered;
+            False for any other turn, and for a consult the read declined
+            (no saved routine by that name and no state, run or schedule cue:
+            "¿qué rutina de skincare me recomendás?", T033-U1-RV2), which
+            continues as it did before this service existed.
         """
         query = self.voice_routines.detect(text) if self.voice_routines is not None else None
         if query is None:
             return False
         started = time.perf_counter()
         read = await self.voice_routines.answer(query)
+        if read.declined:
+            logger.info("[Routines] voice consult declined: no saved routine named and no routine cue")
+            return False
         result["timings"]["routine_check"] = (time.perf_counter() - started) * 1000
         result["intent"] = "routine"
         result["response"] = read.response
@@ -941,7 +948,7 @@ class RequestRouter:
             # T033-U1-RV1: the legacy path answers a routine question itself
             # (_try_routine_read, before every producer), so the gate's
             # exemption for it stands.
-            if self.voice_routines is not None and self.voice_routines.detect(text) is not None:
+            if self.voice_routines is not None and self.voice_routines.claims(text):
                 return gate_decision
         except Exception as e:  # fail-open like the gate: never drop voice control on an internal bug
             logger.error(f"[LegacyHouseholdDrop] error (keeping the gate decision): {e}")

@@ -202,8 +202,8 @@ class CommandAcceptanceGate:
             claimed.family is HouseholdFamily.ROUTINE and claimed.reason == "new_routine")
 
     def _routine_read(self, text: str) -> bool:
-        """Whether the turn is a read-only routine question (T033-U1-RV1)."""
-        return self._voice_routines is not None and self._voice_routines.detect(text) is not None
+        """Whether the turn is a routine question the read always answers (T033-U1-RV1/RV2)."""
+        return self._voice_routines is not None and self._voice_routines.claims(text)
 
     def _hard_reason(self, text: str) -> str | None:
         """Return the first matching hard rule name, or None. Migrated from _is_noise_text."""

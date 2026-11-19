@@ -1456,15 +1456,26 @@ class RequestDispatcher:
                                 effect=EffectState.NOT_OBSERVED),
         )
 
-    async def _routine_read(self, query: RoutineReadQuery, timings: dict | None = None) -> DispatchResult:
+    async def _routine_read(self, query: RoutineReadQuery, timings: dict | None = None, *,
+                            unclaimed: bool = False) -> DispatchResult | None:
         """Answer a routine question from the scheduler store (T033-U1).
 
         Read-only: nothing is run, changed or sent. The result carries the
         read's TaskOutcome (COMPLETED, NEEDS_INPUT for an unknown or ambiguous
         name, FAILED when the store is unavailable).
+
+        Args:
+            query: The detected question.
+            timings: Timings collected so far.
+            unclaimed: The turn was routed here by its words, not claimed by
+                the household layer: a consult the read declines (T033-U1-RV2)
+                returns None so the caller passes the turn on.
         """
         t0 = time.perf_counter()
         read = await self.voice_routines.answer(query)
+        if unclaimed and read.declined:
+            logger.info("[Routines] voice consult declined: no saved routine named and no routine cue")
+            return None
         timings = dict(timings or {})
         timings["routine"] = (time.perf_counter() - t0) * 1000
         return DispatchResult(path=PathType.FAST_ROUTINE, priority=Priority.MEDIUM,
@@ -1782,7 +1793,16 @@ class RequestDispatcher:
             # never from the legacy Chroma index; detection reads only the words.
             query = self.voice_routines.detect(text) if self.voice_routines is not None else None
             if query is not None:
-                return await self._routine_read(query, timings)
+                read = await self._routine_read(query, timings, unclaimed=True)
+                if read is not None:
+                    return read
+                # T033-U1-RV2: no saved routine by that name and no state, run or
+                # schedule cue ("¿qué rutina de skincare me recomendás?"): a general
+                # question that mentions "rutina" goes to the conversation path,
+                # never to the legacy routine handlers or a domotics producer.
+                return await self._slow_path(
+                    text=text, user_id=user_id, user_name="Hogar", zone_id=zone_id, priority=Priority.LOW,
+                    on_response=None, timeout=self.response_timeout_s, context_key=context_key)
             # P3-F2 review F5 (user answer Q15: routine proposals are extracted
             # only locally): an unclaimed creation phrase never reaches
             # RoutineManager._handle_create, which sends the request and the

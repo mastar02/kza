@@ -84,6 +84,8 @@ LIST_TEXTS = [
     "¿la rutina se ejecutó?", "¿qué rutina se ejecutó hoy?",
     # T033-U1-RV3: a complement that starts with a verb is a predicate, not a name.
     "¿qué rutina corre a las 7?", "¿qué rutina apaga las luces?", "¿qué automatización prende la luz del living?",
+    # T033-U1-RV2: an indefinite determiner after an existence question still lists.
+    "¿tengo alguna rutina para la noche?", "¿existen algunas rutinas?",
     # The legacy RoutineManager list phrases now read the scheduler store.
     *RoutineManager.LIST_PATTERNS,
 ]
@@ -124,6 +126,20 @@ NOT_ROUTINE_READS = [
     "rutina buenas noches", "la rutina riego",
 ]
 
+# T033-U1-RV2: "rutina" as everyday vocabulary after an indefinite determiner or a
+# qualifying adjective is about routines in general, never a saved one.
+GENERAL_ROUTINE_TEXTS = [
+    "¿cuál es una buena rutina de ejercicios?", "¿cuál es la mejor rutina de skincare?",
+    "decime una rutina de ejercicios para la espalda", "contame una rutina de estiramiento",
+    "¿cuáles son buenas rutinas de ejercicio?", "mostrame una rutina de yoga", "¿qué es una rutina?",
+]
+
+# Consults without a state, run or schedule cue: answered only when the name is saved.
+UNCUED_CONSULTS = [
+    ("¿qué rutina de skincare me recomendás?", "skincare"), ("¿qué hago en mi rutina de ejercicios?", "ejercicios"),
+    ("¿cuál es mi rutina de la mañana?", "manana"),
+]
+
 
 @pytest.mark.parametrize("text", LIST_TEXTS)
 def test_routine_list_questions_are_detected(text):
@@ -135,6 +151,20 @@ def test_routine_consult_questions_carry_the_heard_name(text, key):
     query = VoiceRoutineService.detect(text)
     assert query is not None and query.kind is RoutineReadKind.CONSULT
     assert key in query.names
+    # Each asks about a saved routine's state, runs or schedule: answered even for an unknown name.
+    assert query.cued and query.always_answered and VoiceRoutineService.claims(text)
+
+
+@pytest.mark.parametrize("text", GENERAL_ROUTINE_TEXTS)
+def test_general_routine_vocabulary_is_not_a_routine_read(text):
+    assert VoiceRoutineService.detect(text) is None and not VoiceRoutineService.claims(text)
+
+
+@pytest.mark.parametrize(("text", "key"), UNCUED_CONSULTS)
+def test_uncued_consults_are_not_always_answered(text, key):
+    query = VoiceRoutineService.detect(text)
+    assert query is not None and query.kind is RoutineReadKind.CONSULT and query.names[-1].startswith(key)
+    assert not query.cued and not query.always_answered and not VoiceRoutineService.claims(text)
 
 
 @pytest.mark.parametrize("text", NOT_ROUTINE_READS)
@@ -236,6 +266,7 @@ async def test_unknown_and_ambiguous_names_ask_without_reading_receipts(routines
     unknown = await service.answer(VoiceRoutineService.detect("¿cómo salió la rutina riego?"))
     assert unknown.response == "No encontré una rutina con ese nombre. Podés preguntarme qué rutinas hay."
     assert unknown.outcome.status is TaskStatus.NEEDS_INPUT and not unknown.outcome.task_completed
+    assert not unknown.declined  # 'salió' asks about a saved routine's run
     ambiguous = await service.answer(VoiceRoutineService.detect("¿cómo salió la rutina buenas noches?"))
     assert ambiguous.response == ("Hay 2 rutinas con ese nombre: Buenas noches y BUENAS NOCHES. "
                                   "¿Cuál querés consultar?")
@@ -450,3 +481,70 @@ async def test_a_named_routine_and_a_predicate_complement_are_read_as_heard(rout
         listed = await service.answer(VoiceRoutineService.detect(text))
         assert listed.response == "Hay 2 rutinas: Riego y Buenas noches.", text
         assert listed.outcome.status is TaskStatus.COMPLETED
+
+
+# ---------------------------------------------------------------- RV2: general questions that mention "rutina"
+
+
+async def test_an_uncued_consult_is_declined_only_when_no_saved_routine_matches(routines):
+    scheduler, store = routines
+    await store.save(spec("Rutina de la mañana"), actor="admin")
+    service = VoiceRoutineService(scheduler)
+    known = await service.answer(VoiceRoutineService.detect("¿cuál es mi rutina de la mañana?"))
+    assert known.outcome.status is TaskStatus.COMPLETED and not known.declined
+    assert known.response.startswith("La rutina Rutina de la mañana está activada")
+    unknown = await service.answer(VoiceRoutineService.detect("¿qué hago en mi rutina de ejercicios?"))
+    assert unknown.declined and unknown.outcome.status is TaskStatus.NEEDS_INPUT
+
+
+@pytest.mark.parametrize("text", ["¿qué rutina de skincare me recomendás?", "¿qué hago en mi rutina de ejercicios?"])
+async def test_general_questions_about_routines_go_to_the_conversation_path(leaves, routines, text):
+    """T033-U1-RV2: at base these reached the real RoutineManager, which handled none of them, and the
+    slow path answered. A consult with no saved name and no routine cue is passed on to the slow
+    path, never to the legacy handler; it never hears 'No encontré una rutina con ese nombre'."""
+    scheduler, store = routines
+    await store.save(spec("Riego"), actor="admin")
+    leaves.routines.handle.return_value = {"handled": False}
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    assert dispatcher.household_intents.classify(text) is None
+    counted = CountedStore(store)
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert result.path is PathType.SLOW_LLM and result.intent == "conversation", text
+    assert result.response == "Respuesta del modelo."
+    assert leaves.effects(before) == effects(cloud_calls=1)
+    assert counted.writes() == 0
+
+
+async def test_a_claimed_unknown_name_still_asks(leaves, routines):
+    """The household layer claimed the turn as a routine question: it is answered, never passed on."""
+    scheduler, _ = routines
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    text = "decime la rutina de ejercicios"
+    claimed = dispatcher.household_intents.classify(text)
+    assert claimed is not None and claimed.family.value == "routine"
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert result.response == "No encontré una rutina con ese nombre. Podés preguntarme qué rutinas hay."
+    assert result.outcome.status is TaskStatus.NEEDS_INPUT and leaves.cloud.await_count == 0
+
+
+def test_gate_exemption_is_only_for_reads_that_are_always_answered():
+    """A declinable consult with an action word keeps the non-immediate rule (it may reach
+    other paths once declined)."""
+    text = "¿qué rutina de luces apaga el living?"
+    assert VoiceRoutineService.detect(text) is not None and not VoiceRoutineService.claims(text)
+    decision = CommandAcceptanceGate(voice_routines=VoiceRoutineService()).evaluate(text)
+    assert (decision.accept, decision.reason) == (False, "non_immediate:information_request")
+
+
+async def test_an_indefinite_routine_question_keeps_its_base_path_without_reading_the_store(leaves, routines):
+    scheduler, store = routines
+    await store.save(spec("Riego"), actor="admin")
+    leaves.routines.handle.return_value = {"handled": False}
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
+    counted = CountedStore(store)
+    result = await dispatcher.dispatch(user_id="unknown", text="¿cuál es una buena rutina de ejercicios?")
+    # Base: FAST_ROUTINE -> RoutineManager.handle (not handled) -> slow path.
+    assert (result.path, result.response) == (PathType.SLOW_LLM, "Respuesta del modelo.")
+    leaves.routines.handle.assert_awaited_once()
+    assert counted.calls == []

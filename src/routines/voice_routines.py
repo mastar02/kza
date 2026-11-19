@@ -100,6 +100,22 @@ _STATE_ADJECTIVES = frozenset({"activa", "activo", "activada", "activado", "acti
                                "desactivado", "desactivadas", "habilitada", "habilitado", "deshabilitada",
                                "deshabilitado", "andando", "corriendo", "funcionando", "programada", "programado",
                                "pausada", "pausado"})
+# T033-U1-RV2: "rutina" is everyday Spanish ("una buena rutina de ejercicios", "la
+# mejor rutina de skincare"). An indefinite determiner or a qualifying adjective
+# just before the noun makes the turn about routines in general, never a saved
+# one; only an existence question ("¿hay alguna rutina?") still lists them.
+_INDEFINITES = frozenset({"una", "un", "unas", "unos", "alguna", "algun", "algunas", "algunos", "otra", "otro",
+                          "otras", "otros", "cualquier", "cierta", "ciertas"})
+_QUALIFIERS = frozenset({"buena", "buen", "buenas", "buenos", "mejor", "mejores", "linda", "lindas", "perfecta",
+                         "ideal", "recomendada", "recomendadas", "tipica", "clasica", "sana", "simple"})
+_EXISTENCE_HEADS = frozenset({"hay", "tengo", "tenemos", "tenes", "tiene", "tienen", "existe", "existen"})
+# Words that tie a consult to a saved routine's state, runs or schedule. A consult
+# without one whose name matches no saved routine is not a routine question
+# ("¿qué rutina de skincare me recomendás?"): callers that did not get it from the
+# household layer pass it on instead of answering that the name is unknown.
+_ROUTINE_CUES = _STATUS_AFTER | _STATE_ADJECTIVES | frozenset({
+    "corre", "ejecuta", "ejecutando", "arranca", "inicia", "hace", "anda", "funciona", "sale", "dispara", "hora",
+    "horario", "horarios", "estado", "ultima", "ultimo", "ejecucion", "ejecuciones"})
 _SUBJECT_DETERMINERS = frozenset({"la", "el", "las", "los", "mi", "mis", "nuestra", "nuestras"})
 # Leading words ignored when two names are compared ("la rutina de la mañana" ~ "Mañana").
 _NAME_LEADS = frozenset({"la", "el", "los", "las", "de", "del", "mi", "mis", "rutina", "rutinas",
@@ -138,10 +154,19 @@ class RoutineReadQuery:
         kind: List every routine, or consult one by name.
         names: CONSULT only: the heard name candidates, longest first, each
             already normalized as a comparison key.
+        cued: CONSULT only: the turn asks about a saved routine's state, runs
+            or schedule ("¿está activa ...?", "¿cómo salió ...?", "¿a qué hora
+            corre ...?"), so an unknown name is still a routine question.
     """
 
     kind: RoutineReadKind
     names: tuple[str, ...] = ()
+    cued: bool = False
+
+    @property
+    def always_answered(self) -> bool:
+        """Whether ``answer`` never declines this query (a list, or a cued consult)."""
+        return self.kind is RoutineReadKind.LIST or self.cued
 
 
 @dataclass(frozen=True)
@@ -164,11 +189,17 @@ class RoutineReadResult:
         outcome: COMPLETED for an answer read from the store; NEEDS_INPUT for
             an unknown or ambiguous name; FAILED when the store is unavailable.
         entries: The catalog rows the answer was built from.
+        declined: An uncued consult named no saved routine: the turn may be
+            a general question that mentions "rutina" (T033-U1-RV2). A caller
+            that routed it here by its words passes it on (conversation
+            path); the household layer, which claimed it, answers
+            ``response`` (NEEDS_INPUT).
     """
 
     response: str
     outcome: TaskOutcome
     entries: tuple[RoutineCatalogEntry, ...] = ()
+    declined: bool = False
 
 
 def legacy_routine_outcome(success: bool) -> TaskOutcome:
@@ -338,12 +369,17 @@ class VoiceRoutineService:
                 or (set(before) <= _SUBJECT_DETERMINERS and _states_after(words[noun + 1:])))
         if not asks:
             return None
+        if any(word in _INDEFINITES for word in before[-2:]) or before[-1:] and before[-1] in _QUALIFIERS:
+            # T033-U1-RV2: routines in general, not a saved one.
+            if before[0] in _EXISTENCE_HEADS:
+                return RoutineReadQuery(RoutineReadKind.LIST)
+            return None
         if words[noun] in _PLURAL_NOUNS:
             return RoutineReadQuery(RoutineReadKind.LIST)
         names = _name_candidates(words[noun + 1:])
         if not names:
             return RoutineReadQuery(RoutineReadKind.LIST)
-        return RoutineReadQuery(RoutineReadKind.CONSULT, names)
+        return RoutineReadQuery(RoutineReadKind.CONSULT, names, cued=bool(_ROUTINE_CUES & set(words)))
 
     async def catalog(self) -> tuple[RoutineCatalogEntry, ...]:
         """Read every saved routine and its latest receipt, in the web catalog's order.
@@ -356,6 +392,18 @@ class VoiceRoutineService:
             raise RuntimeError("routine_scheduler_unavailable")
         routines = await scheduler.get_all_routines()
         return tuple([await self._entry(scheduler, routine) for routine in routines])
+
+    @staticmethod
+    def claims(text: str) -> bool:
+        """Whether ``answer`` will answer this turn whatever the store holds.
+
+        True for a detected list, or a consult that asks about a saved
+        routine's state, runs or schedule. The command gate's non-immediate
+        exemption is limited to these turns, so a declined consult never gets
+        further than it would without this service (T033-U1-RV2).
+        """
+        query = VoiceRoutineService.detect(text)
+        return query is not None and query.always_answered
 
     @staticmethod
     async def _entry(scheduler, routine: ScheduledRoutine) -> RoutineCatalogEntry:
@@ -380,7 +428,7 @@ class VoiceRoutineService:
         try:
             if query.kind is RoutineReadKind.LIST:
                 return await self._list(scheduler)
-            return await self._consult(scheduler, query.names)
+            return await self._consult(scheduler, query.names, query.cued)
         except Exception:
             # Store errors may carry private paths or names: keep only the class.
             logger.warning("[Routines] voice read failed")
@@ -400,7 +448,7 @@ class VoiceRoutineService:
         head = "Hay una rutina" if len(entries) == 1 else f"Hay {len(entries)} rutinas"
         return RoutineReadResult(f"{head}: {_join(spoken)}.", TaskOutcome(TaskStatus.COMPLETED), entries)
 
-    async def _consult(self, scheduler, names: tuple[str, ...]) -> RoutineReadResult:
+    async def _consult(self, scheduler, names: tuple[str, ...], cued: bool) -> RoutineReadResult:
         routines = await scheduler.get_all_routines()
         matches: list[ScheduledRoutine] = []
         for key in names:
@@ -410,7 +458,7 @@ class VoiceRoutineService:
         logger.info("[Routines] voice consult: %d matches", len(matches))
         logger.debug("[Routines] voice consult names: %s", names)
         if not matches:
-            return RoutineReadResult(_NOT_FOUND, TaskOutcome(TaskStatus.NEEDS_INPUT))
+            return RoutineReadResult(_NOT_FOUND, TaskOutcome(TaskStatus.NEEDS_INPUT), declined=not cued)
         if len(matches) > 1:
             shown = [routine.spec.name for routine in matches[:_MAX_CANDIDATES]]
             return RoutineReadResult(

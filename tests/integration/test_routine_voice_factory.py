@@ -186,3 +186,21 @@ async def test_routine_state_questions_reach_the_read_in_the_real_graph(leaves, 
                 if orchestrated:
                     assert result["path"] == "fast_routine", text
             assert observed["service_calls"] == 0
+
+
+async def test_general_questions_about_routines_are_not_answered_as_unknown_routines(leaves, tmp_path):
+    """T033-U1-RV2 in the legacy graph (an orchestrated slow-path turn would only wait for the
+    unstarted worker's timeout; the dispatcher test covers it with a stubbed cloud)."""
+    async with offline_home() as (url, observed):
+        config = offline_config(tmp_path, url)
+        config["orchestrator"]["enabled"] = False
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            await seed(graph)
+            for text in ("¿cuál es una buena rutina de ejercicios?", "¿qué rutina de skincare me recomendás?",
+                         "¿qué hago en mi rutina de ejercicios?"):
+                graph.models.stt.text = text
+                result = await graph.pipeline.process_command(event())
+                assert result["intent"] != "routine", text
+                assert "No encontré una rutina" not in (result["response"] or ""), text
+            assert observed["service_calls"] == 0
