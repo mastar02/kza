@@ -143,7 +143,7 @@ class VoiceResponse(Response):
                     or {row['suggested_profile'] for row in projection.rows if row['suggested_profile']}!={identity for identity,_ in projection.associated_profiles}):
                 raise ValueError('invalid_association_metadata')
             if self.kind=='review' and any(type(row) is not dict or set(row)!=REVIEW_FIELDS[self.variant]
-                    or self.variant=='text' and (row['variant']!='text' or not _room(row['room_id'])) for row in projection.rows):
+                    or not _room(row['room_id']) or self.variant=='text' and row['variant']!='text' for row in projection.rows):
                 raise ValueError('invalid_voice_review_variant')
             summary = projection.summary
             if (summary is None) != (self.query is None):

@@ -772,6 +772,29 @@ async def test_review_and_transcript_share_the_sql_admission(tmp_path,dashboard_
                 assert response.status_code==404 and 'admisión' not in response.text
 
 
+@pytest.mark.parametrize('room',["'Sala'||char(10)||'sintetica'","char(127)||'Sala sintetica'",
+    "replace(hex(zeroblob(129)),'00','x')"])
+async def test_a_malformed_stored_room_is_null_on_rows_and_unavailable_on_review_and_transcript(tmp_path,dashboard_auth,room):
+    """One rule per surface: rows read the room as unknown; audio and text reviews both withhold the sample."""
+    async with web_graph(tmp_path) as (privacy,_,voices,clock,bus), voice_api(voices,bus) as api:
+        _,identity = await capture(voices,clock,room='Sala sintetica',text='Texto con habitación dañada')
+        def corrupt():
+            with privacy.ledger._transaction() as db:
+                db.execute('UPDATE voice_capture_reviews SET room_id='+room)
+        await privacy.acall(corrupt)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=api.app),base_url='http://testserver') as client, \
+                ready_browser(bus,version=3) as peer:
+            headers = {**dashboard_auth,'X-KZA-Live-Connection':peer.connection}
+            for kind in ('review','transcript'):
+                response = await client.get('/api/voices/captures/'+identity+'/'+kind,headers=headers)
+                assert response.status_code==404 and 'dañada' not in response.text and 'Sala' not in response.text
+            snapshot = (await client.post(QUERY,json=query_body(),headers=headers)).json()['snapshot']
+            assert [(row['id'],row['room_id']) for row in snapshot['rows']]==[(identity,None)]
+            assert snapshot['room_options']==[] and snapshot['room_options_expires_at'] is None
+            listed = (await client.get('/api/voices',headers=headers)).json()['snapshot']
+            assert [row['room_id'] for row in listed['rows']]==[None]
+
+
 async def test_transcript_read_requires_review_permission(tmp_path,dashboard_auth,monkeypatch):
     async with web_graph(tmp_path) as (_,_,voices,clock,bus), voice_api(voices,bus) as api:
         _,identity = await capture(voices,clock)

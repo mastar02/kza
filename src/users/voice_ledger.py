@@ -440,6 +440,10 @@ class VoiceLedger:
                 raise LookupError('voice_capture_unavailable')
             row['transcript'] = row['transcript'].decode('utf-8')
             row['room_id'] = None if row['room_id'] is None else row['room_id'].decode('utf-8')
+            # A restored malformed room (length or control characters) never crosses
+            # the boundary: the review and its text variant share this rule (RV7).
+            if row['room_id'] is not None and _room_value(row['room_id']) is None:
+                raise ValueError('invalid_voice_review_capture')
             audio_metadata = (None if row['audio_metadata_json'] is None
                 else row['audio_metadata_json'].decode('utf-8'))
             transcript_metadata = (None if row['transcript_metadata_json'] is None
@@ -541,7 +545,8 @@ class VoiceLedger:
                 raise LookupError('voice_capture_unavailable')
             transcript = row['transcript'].decode('utf-8')
             room = None if row['room_id'] is None else row['room_id'].decode('utf-8')
-            if (len(transcript)>8192 or room is not None and not 1<=len(room)<=128
+            # The review's room rule (RV7): a malformed restored room makes the sample unavailable.
+            if (len(transcript)>8192 or room is not None and _room_value(room) is None
                     or type(row['duration_s']) not in (int,float) or not .8<=row['duration_s']<=30
                     or type(row['clip_duration_s']) not in (int,float)
                     or not .8<=row['clip_duration_s']<=min(6.,row['duration_s'])):
