@@ -66,12 +66,14 @@ async def tasks_graph(tmp_path, dashboard_auth):
         stack.push_async_callback(reminders.close)
         await reminders.initialize()
         ha, tts, scheduler_now = AsyncMock(), voice_output(), [time.time()]
+        # One household selection (the patio light) admits reminder actions and runs them.
+        home_actions = selected_actions(ha, ('light.patio',))
         scheduler = ReminderScheduler(reminders, tts, None, ha, {'output_zone': 'zone_living'},
-                                      home_actions=selected_actions(ha, ('light.patio',)),
-                                      clock=lambda: scheduler_now[0])
+                                      home_actions=home_actions, clock=lambda: scheduler_now[0])
         catalog = FakeCatalog()
         api = DashboardAPI(authority=authority, list_manager=ListManager(lists), home_catalog=catalog,
-                           reminder_manager=ReminderManager(reminders), reminder_scheduler=scheduler)
+                           reminder_manager=ReminderManager(reminders, home_actions=home_actions),
+                           reminder_scheduler=scheduler)
         stack.push_async_callback(api.stop)
         root = authority.resolve(dashboard_auth['Authorization'])
 
@@ -279,6 +281,16 @@ MATRIX = (
          'reminder', 'unauthorized_effect'),
     _web('C02-REM-0727', 'ana', 'DELETE', '/api/reminders/{RA}?user_id=ana', None, 422, 'user_id_not_accepted',
          'reminder', 'unauthorized_effect'),
+    # T035-U1-RV6: a household or visitor session attaches only selected home actions to a shared reminder.
+    _web('C02-REM-0728', 'visitor', 'POST', '/api/reminders',
+         {**SHARED_REMINDER, 'ha_actions': [{'domain': 'light', 'service': 'turn_on', 'entity_id': 'light.cocina'}]},
+         422, 'invalid_reminder_action', 'reminder', 'unauthorized_effect', note='entity outside the selection'),
+    _web('C02-REM-0729', 'visitor', 'POST', '/api/reminders',
+         {**SHARED_REMINDER, 'ha_actions': [{**ACTION, 'target': {'area_id': 'cocina'}}]}, 422,
+         'invalid_reminder_action', 'reminder', 'unauthorized_effect', note='action with an extra key'),
+    _web('C02-REM-0730', 'visitor', 'POST', '/api/reminders', {**SHARED_REMINDER, 'ha_actions': [ACTION]}, 200,
+         None, 'reminder', 'false_confirmation', task_status='completed', writes={'reminder_rows_delta': 1},
+         note='control: the selected patio light is admitted and not run at creation'),
 )
 
 
