@@ -1127,6 +1127,12 @@ class RequestRouter:
         clock_turn = self._is_clear_wake_clock_question(text, tv_signal=tv_signal, capture_trigger=capture_trigger)
         if clock_turn:
             logger.info("[Clock] clear wake, skipping the 7B veto: %r", text)
+        # T033-U1b (user answer 2026-11-19, T033-U1 routines): a routine question
+        # the read always answers skips the 7B veto under the same clear-wake rule.
+        routine_turn = not clock_turn and self._is_clear_wake_routine_question(
+            text, tv_signal=tv_signal, capture_trigger=capture_trigger)
+        if routine_turn:
+            logger.info("[Routines] clear wake, skipping the 7B veto: %r", text)
 
         # 1a-grammar. Grammar fast-path: la gramática determinística manda en
         # domótica.  Si extrae intent+entity con alta confianza, construimos
@@ -1172,7 +1178,7 @@ class RequestRouter:
         if fast_classification is not None:
             classification = fast_classification
             result["llm_classification"] = classification
-        elif self.llm_command_router is not None and not clock_turn:
+        elif self.llm_command_router is not None and not (clock_turn or routine_turn):
             t_llm = time.perf_counter()
             classification = await self._classify_command(text, room_id=room_id)
             llm_ms = (time.perf_counter() - t_llm) * 1000
@@ -1455,6 +1461,34 @@ class RequestRouter:
         if not self._has_clear_own_wake(tv_signal=tv_signal, capture_trigger=capture_trigger):
             return False
         return parse_clock_query(text, self._clock_wake_words) is not None
+
+    def _is_clear_wake_routine_question(self, text: str, *, tv_signal: bool, capture_trigger: str | None) -> bool:
+        """Whether a turn is a routine question that skips the 7B veto (T033-U1b).
+
+        User answer of 2026-11-19 (T033-U1 routines): a routine question with
+        a clear own wake skips the 7B, like the clock questions of T037-U4,
+        and with the same wake rule (``_has_clear_own_wake``); a follow-up or
+        barge-in capture keeps the veto (T037-U5). Only a question the read
+        always answers qualifies (``VoiceRoutineService.claims``: a list, or
+        a consult about a saved routine's state, runs or schedule). An uncued
+        consult can be a general question that only mentions "rutina"
+        (T033-U1-RV2) and goes to the conversation path when no saved routine
+        has that name, so it keeps the 7B gate. Words only, no I/O.
+
+        Args:
+            text: Accepted transcript of the turn.
+            tv_signal: Textual wake, ambient_strict, a low wake score or a
+                capture without its own wake (T037-U5).
+            capture_trigger: What opened this capture, or None if unknown.
+
+        Returns:
+            True when the turn goes to the dispatcher with no 7B call.
+        """
+        if self.voice_routines is None:
+            return False
+        if not self._has_clear_own_wake(tv_signal=tv_signal, capture_trigger=capture_trigger):
+            return False
+        return self.voice_routines.claims(text)
 
     def _has_clear_own_wake(self, *, tv_signal: bool, capture_trigger: str | None) -> bool:
         """Whether this capture was opened by a clear acoustic wake of its own (T037-U4, T037-U4-R1).
