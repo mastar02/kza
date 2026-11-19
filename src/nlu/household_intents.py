@@ -50,6 +50,7 @@ from src.nlu.command_grammar import (
     WAKE_TERMS,
     non_immediate_action_reason,
     parse_command,
+    security_order,
 )
 from src.nlu.home_command import parse_home_command
 
@@ -1177,10 +1178,15 @@ def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
             return clarify("deferred_part")
         if intent is not None and intent.operation is HouseholdOperation.CLARIFY:
             return clarify("unparsed_part")
-        if intent is None and _names_object(segment):
+        # T037-U6 (seed C02-CMP-0004): a lock, door or alarm-panel order is a
+        # deterministic parse its own part refuses (voice never controls
+        # them); it never reaches a domotics producer and never makes the
+        # whole compound CLARIFY.
+        security = intent is None and security_order(segment.heard) is not None
+        if intent is None and not security and _names_object(segment):
             # A household object never reaches a domotics producer as an unclaimed part.
             return clarify("unparsed_part")
-        parsed = parse_command(segment.heard) if intent is None else None
+        parsed = parse_command(segment.heard) if intent is None and not security else None
         if parsed is not None and parsed.quality != "full" and parse_home_command(segment.heard) is None:
             return clarify("unparsed_part")
         parses.append(parsed)

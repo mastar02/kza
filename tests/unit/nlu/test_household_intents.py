@@ -415,6 +415,28 @@ def test_governed_object_and_complement():
     assert (item.verb, item.complement) == ("agrega", "pan y leche a la lista de compras")
 
 
+@pytest.mark.parametrize(("text", "security"), [
+    ("apagá la luz del escritorio y abrí la cerradura", "abrí la cerradura"),
+    ("abrí la puerta y prendé la luz del living", "abrí la puerta"),
+    ("apagá la luz y cerrá la puerta con llave", "cerrá la puerta con llave"),
+    ("apagá la luz y desactivá la alarma", "desactivá la alarma"),
+    ("cerrá la persiana y abrí el portón", "abrí el portón"),
+])
+def test_security_order_is_a_parsed_part_its_own_part_refuses(text, security):
+    """T037-U6 (seed C02-CMP-0004): a lock, door or alarm-panel order never makes the compound CLARIFY.
+
+    It is an unclaimed part (no household family, never a domotics producer's: the part refuses it), and
+    the other part keeps its own grammar parse.
+    """
+    from src.nlu.command_grammar import security_order
+    intent = classify_household_intent(text)
+    assert (intent.family, intent.operation, intent.reason) == (F.COMPOUND, O.EXECUTE, None)
+    parts = {part.segment: part.intent for part in intent.parts}
+    assert security in parts and parts[security] is None
+    assert security_order(security) in ("lock", "alarm")
+    assert [security_order(part.segment) for part in intent.parts].count(None) == 1
+
+
 def test_compound_parts_in_spoken_order():
     """R5 runs before R1/R2 (user answer Q21): each part is re-classified alone."""
     timer_and_light = classify_household_intent("poné un temporizador de 5 minutos y apagá la luz")
