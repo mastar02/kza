@@ -1150,3 +1150,24 @@ def test_setting_request_forms_on_tomorrows_temperature_are_not_weather(dispatch
 ])
 def test_asking_for_tomorrows_temperature_stays_weather(dispatcher, text):
     assert dispatcher._classify_request(text.lower())[0] is PathType.FAST_WEATHER
+
+
+@pytest.mark.parametrize(("text", "path", "horizon"), [
+    # Review T037-U2b-RV4: the STT often drops accents; the unaccented
+    # future keywords route the same way.
+    ("que temperatura hara manana", PathType.FAST_WEATHER, _ahead(1)),
+    ("que temperatura habra manana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuantos grados hara manana", PathType.FAST_WEATHER, _ahead(1)),
+    ("cuantos grados habra el sabado", PathType.FAST_WEATHER, _SAT),
+    # "el tiempo de fuera" is outside, like "de afuera".
+    ("cómo está el tiempo de fuera", PathType.FAST_WEATHER, WeatherHorizon(HorizonKind.CURRENT)),
+    # The setting-verb guard only drops "la temperatura de/para mañana": a
+    # negated setting verb next to another temperature question stays weather.
+    ("no ajustes la temperatura todavía, ¿qué temperatura va a hacer mañana?", PathType.FAST_WEATHER,
+     _ahead(1)),
+    # The device guard (RV2) leaves "el aire libre" to the weather.
+    ("cuál va a ser la temperatura del aire libre mañana", PathType.FAST_WEATHER, _ahead(1)),
+])
+def test_t037_u2b_review_routing_rows(dispatcher, text, path, horizon):
+    assert dispatcher._classify_request(text.lower())[0] is path
+    assert parse_weather_horizon(text) == horizon

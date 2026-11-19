@@ -434,6 +434,12 @@ def _day_ahead(offset):
     ("cuál fue el pronóstico del sábado", UNSUPPORTED),
     ("¿llovió el martes?", UNSUPPORTED),
     ("qué tiempo hizo el domingo", UNSUPPORTED),
+    # Review T037-U2b-RV4: each preterite form in _PAST_TENSE_WORDS.
+    ("cómo estuvieron las temperaturas el lunes", UNSUPPORTED),
+    ("cuáles fueron las temperaturas del domingo", UNSUPPORTED),
+    ("cuántos grados hicieron el jueves", UNSUPPORTED),
+    ("qué temperatura hubo el sábado", UNSUPPORTED),
+    ("¿nevó el martes?", UNSUPPORTED),
     # ... but not the imperfect, a coming weekday, or no weekday at all.
     ("cuál era el pronóstico del sábado", WeatherHorizon(HorizonKind.FORECAST, weekday=5)),
     ("cuál fue el pronóstico del sábado que viene",

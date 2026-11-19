@@ -813,12 +813,14 @@ class RequestDispatcher:
     # present ("¿me programás la temperatura de mañana?") and the subjunctive
     # ("quiero que ajustes ..."), a value before the noun ("programá a 20 la
     # temperatura de mañana") and the noun first with an enclitic "la" ("la
-    # temperatura de mañana programala en 20").
+    # temperatura de mañana programala en 20"). Review T037-U2b-RV4: only
+    # "temperatura" is the object; every filtered keyword names it, so
+    # "grados" here was dead code.
     _CLIMATE_SETTING_STEMS = r"(?:programa|configura|ajusta|fija|establece|setea|regula|deja|mantene)"
     _CLIMATE_SETTING_COMMAND_RE = re.compile(
         r"\b(?:" + _CLIMATE_SETTING_STEMS + r"(?:r?(?:me|le|nos)?|s)"
         r"|(?:programe|configure|ajuste|fije|establezca|setee|regule|deje|mantenga)s?|manten)"
-        r"\s+(?:(?:a|en)\s+\d+\s+)?(?:el|la|los|las)?\s*(?:temperatura|grados)\b"
+        r"\s+(?:(?:a|en)\s+\d+\s+)?(?:el|la|los|las)?\s*temperatura\b"
         r"|\btemperatura (?:de|para) manana\s+" + _CLIMATE_SETTING_STEMS + r"r?(?:me|nos)?la\b"
     )
 
