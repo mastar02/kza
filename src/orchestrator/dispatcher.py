@@ -795,6 +795,23 @@ class RequestDispatcher:
         r"|lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b)"
     )
 
+    # T037-U2b (fix verification FV-L3): "la temperatura de/para <día>" is
+    # also the object of a thermostat schedule ("programá la temperatura de
+    # mañana en 20"). With one of these setting verbs right before the noun
+    # the turn is a command, question mark or not, and those keywords do not
+    # route it to weather: it keeps the path it had before T037-U2. Only
+    # verbs absent from DOMOTICS_KEYWORDS: poné/subí/bajá/cambiá already
+    # fall under _DOMOTICS_CLIMATE_ADJACENCY_RE, and "¿baja la temperatura
+    # mañana?" can be a question about the weather.
+    _TEMPERATURE_OF_DAY_KEYWORDS = frozenset({
+        "temperatura de mañana", "temperatura de manana",
+        "temperatura para mañana", "temperatura para manana",
+    })
+    _CLIMATE_SETTING_COMMAND_RE = re.compile(
+        r"\b(?:(?:programa|configura|ajusta|fija|establece|setea|regula|deja|mantene)r?(?:me|le|nos)?"
+        r"|manten)\s+(?:el|la|los|las)?\s*(?:temperatura|grados)\b"
+    )
+
     # Marcadores de no-imperativo (Finding I1, review PR #15). El veto de
     # WEATHER_CLAUSE_FRAGMENTS de arriba asume que "fragmento + verbo
     # domótico sin '?'" es un comando con una cláusula de justificación
@@ -1267,9 +1284,12 @@ class RequestDispatcher:
             # transcrita.
             non_command_hint = any(h in text_lower for h in self._NON_COMMAND_HINTS)
             tiempo_of_something = bool(self._TIEMPO_OF_SOMETHING_RE.search(_strip_accents(text_lower)))
+            setting_command = bool(self._CLIMATE_SETTING_COMMAND_RE.search(_strip_accents(text_lower)))
             for keyword in self.WEATHER_KEYWORDS:
                 if keyword in text_lower:
                     if tiempo_of_something and "el tiempo" in keyword:
+                        continue
+                    if setting_command and keyword in self._TEMPERATURE_OF_DAY_KEYWORDS:
                         continue
                     if (not is_question and domotics_verb
                             and keyword in self.WEATHER_CLAUSE_FRAGMENTS

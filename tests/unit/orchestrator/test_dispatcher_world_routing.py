@@ -164,6 +164,11 @@ def test_non_climate_commands_with_weather_clause_stay_domotics(dispatcher, text
     assert path == PathType.FAST_DOMOTICS
 
 
+def test_temperature_of_day_keywords_are_weather_keywords():
+    # T037-U2b: the setting-verb guard only filters keywords that exist.
+    assert RequestDispatcher._TEMPERATURE_OF_DAY_KEYWORDS <= set(RequestDispatcher.WEATHER_KEYWORDS)
+
+
 def test_weather_clause_fragments_is_a_subset_of_weather_keywords():
     # El tier de fragmentos no puede inventar keywords: si alguien saca un
     # fragmento de WEATHER_KEYWORDS y olvida el frozenset, esto lo detecta.
@@ -1001,6 +1006,13 @@ def _ahead(offset):
     ("fijate qué temperatura va a hacer mañana", PathType.FAST_WEATHER, _ahead(1)),
     # FV-L3: an imperative climate verb on "la temperatura de/para <día>" is a
     # command, never weather; it keeps the path it had before T037-U2.
+    ("programá la temperatura de mañana en 20", PathType.SLOW_LLM, None),
+    ("programa la temperatura de manana en 20", PathType.SLOW_LLM, None),
+    ("ajustá la temperatura de mañana a 22", PathType.SLOW_LLM, None),
+    ("dejá la temperatura de mañana en 20", PathType.SLOW_LLM, None),
+    ("configurá la temperatura para mañana en 21", PathType.SLOW_LLM, None),
+    ("¿podés programar la temperatura de mañana en 20?", PathType.SLOW_LLM, None),
+    ("programame la temperatura de mañana en 19", PathType.SLOW_LLM, None),
     # Neighbours: thermostat verbs the domotics guard already owns.
     ("poné la temperatura de mañana en 20", PathType.FAST_DOMOTICS, None),
     ("poné la temperatura en 22", PathType.FAST_DOMOTICS, None),
