@@ -35,8 +35,6 @@ from enum import StrEnum
 from functools import lru_cache
 from zoneinfo import ZoneInfo
 
-from src.nlu.command_grammar import security_order
-
 logger = logging.getLogger(__name__)
 
 
@@ -1010,6 +1008,18 @@ def extract_time_expression(text: str, now: datetime) -> DeferredClause:
     )
 
 
+# Home orders voice control never executes (design voice_reminder_actions: locks and alarm panels are not
+# controllable at all), named in a reminder text (review T031-U2-RV4). Accent-free, lowercase.
+_LOCK_ORDER = re.compile(
+    r"\b(?:cerr(?:a|ar|e|en|ala|alo|arla|arlo)|cierr(?:a|e|en|ala|alo)|abr(?:i|ir|a|an|ila|ilo|irla|irlo)"
+    r"|(?:des)?trab(?:a|ar|e|en|ala|alo|arla|arlo)|(?:des)?bloque(?:a|ar|e|en))\b(?:\s+\S+){0,4}?"
+    r"\s+(?:puertas?|porton(?:es)?|cerraduras?|cerrojos?|candados?|rejas?|garag(?:e|es)|garaj(?:e|es)|llave)\b"
+    r"|\b(?:ech|pas)(?:a|ar|e|ale|arle)\s+(?:la\s+)?llave\b")
+_ALARM_ORDER = re.compile(
+    r"\b(?:(?:des)?activ|(?:des)?arm|(?:des)?conect)(?:a|ar|e|en|ala|arla)\b(?:\s+\S+){0,3}?\s+alarmas?\b"
+    r"|\b(?:encend|prend)(?:e|er|ela|erla)\b(?:\s+\S+){0,3}?\s+alarmas?\b")
+
+
 def forbidden_home_order(text: str) -> str | None:
     """The kind of home order in ``text`` that voice control never executes, or ``None``.
 
@@ -1017,8 +1027,6 @@ def forbidden_home_order(text: str) -> str | None:
     and the alarm panel ("activar la alarma") are not controllable by voice at
     all. A reminder that names one is only announced, and its read-back says
     so (user answer Q9d, review T031-U2-RV4); T031-U5 refuses them as actions.
-    The patterns live in :func:`src.nlu.command_grammar.security_order`,
-    which a compound part also uses (T037-U6).
 
     Args:
         text: Reminder text or a spoken clause.
@@ -1026,7 +1034,12 @@ def forbidden_home_order(text: str) -> str | None:
     Returns:
         ``"lock"`` or ``"alarm"``, or ``None`` when no such order is named.
     """
-    return security_order(text)
+    folded = _fold(text)
+    if _LOCK_ORDER.search(folded):
+        return "lock"
+    if _ALARM_ORDER.search(folded):
+        return "alarm"
+    return None
 
 
 class VoiceRequestParser:

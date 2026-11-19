@@ -416,25 +416,14 @@ def non_immediate_action_reason(text: str) -> str | None:
         return "non_immediate:deferred"
     return None
 
-# Home orders voice control never executes (design voice_reminder_actions: locks and alarm panels are not
-# controllable at all; review T031-U2-RV4). Matched on accent-free lowercase text.
-_LOCK_ORDER = re.compile(
-    r"\b(?:cerr(?:a|ar|e|en|ala|alo|arla|arlo)|cierr(?:a|e|en|ala|alo)|abr(?:i|ir|a|an|ila|ilo|irla|irlo)"
-    r"|(?:des)?trab(?:a|ar|e|en|ala|alo|arla|arlo)|(?:des)?bloque(?:a|ar|e|en))\b(?:\s+\S+){0,4}?"
-    r"\s+(?:puertas?|porton(?:es)?|cerraduras?|cerrojos?|candados?|rejas?|garag(?:e|es)|garaj(?:e|es)|llave)\b"
-    r"|\b(?:ech|pas)(?:a|ar|e|ale|arle)\s+(?:la\s+)?llave\b")
-_ALARM_ORDER = re.compile(
-    r"\b(?:(?:des)?activ|(?:des)?arm|(?:des)?conect)(?:a|ar|e|en|ala|arla)\b(?:\s+\S+){0,3}?\s+alarmas?\b"
-    r"|\b(?:encend|prend)(?:e|er|ela|erla)\b(?:\s+\S+){0,3}?\s+alarmas?\b")
-
 
 def security_order(text: str) -> str | None:
     """The security device order in ``text`` that voice never executes, or None.
 
     Locks, doors and gates ("cerrar la puerta con llave", "abrí el portón")
-    and the alarm panel ("activá la alarma") are not controllable by voice.
-    Reminders use it through ``forbidden_home_order`` (T031-U2); a compound
-    part that names one is refused by its own part (T037-U6, seed
+    and the alarm panel ("activá la alarma") are not controllable by voice:
+    the same patterns as a reminder's ``forbidden_home_order`` (T031-U2). A
+    compound part that names one is refused by its own part (T037-U6, seed
     C02-CMP-0004).
 
     Args:
@@ -443,12 +432,10 @@ def security_order(text: str) -> str | None:
     Returns:
         ``"lock"`` or ``"alarm"``, or None when no such order is named.
     """
-    folded = "".join(unicodedata.normalize("NFD", ch.lower())[:1] or " " for ch in text)
-    if _LOCK_ORDER.search(folded):
-        return "lock"
-    if _ALARM_ORDER.search(folded):
-        return "alarm"
-    return None
+    # Lazy: the patterns live in the pure-stdlib reminder parser (review T031-U2-RV4), whose
+    # package is not loaded by the NLU layer at import time.
+    from src.reminders.voice_request import forbidden_home_order
+    return forbidden_home_order(text)
 
 
 def _is_default_light_brightness_phrase(text: str) -> bool:
