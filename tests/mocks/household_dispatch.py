@@ -8,6 +8,7 @@ boundaries are replaced by counting stubs: a call there is the effect.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
 from datetime import datetime, timedelta
@@ -168,6 +169,15 @@ class CountedLeaves:
                 timer = self.timers.create_timer(label, 600, user_id="household", zone_id="default")
                 if kind == "timer_paused":
                     self.timers.pause_timer(timer.timer_id)
+            elif name.startswith("timer_ringing:"):
+                # T030-U2: a 10-minute timer made due now; its ring (self.ring) spoke once and waits in the
+                # 2 s gap before the next repetition, so it is still ringing when the turn arrives.
+                timer = self.timers.create_timer(name.split(":", 1)[1], 600, user_id="household", zone_id="default")
+                timer.deadline = self.timers._clock()
+                self.timers._tick()
+                for _ in range(20):
+                    await asyncio.sleep(0)
+                assert self.timers.ringing_timers() == [timer] and self.ring.await_count >= 1
             elif name == "timer_running_unnamed":
                 self.timers.create_timer("", 300, user_id="household", zone_id="default")
             elif name == "feature_manager_start_failed":

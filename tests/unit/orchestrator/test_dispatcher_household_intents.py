@@ -33,11 +33,11 @@ def _refused(id_, text, family, path="fast_reminder", *, sf=None, state=None, ef
 
 
 def _timer(id_, text, outcome, persistence, spoken, *, counts=ZERO, state=None, sf=None,
-           effect_class="unauthorized_effect", seed=None, note=""):
-    """A T030-U1 timer entry on the dispatcher layer (a real, started NamedTimerManager)."""
+           effect_class="unauthorized_effect", seed=None, note="", unit="T030-U1"):
+    """A T030 timer entry on the dispatcher layer (a real, started NamedTimerManager)."""
     conditions = {k: v for k, v in (("service_filter", sf), ("state", state)) if v}
     return _d(id_, text, "timer", effect_class, outcome, "fast_timer", outcome, persistence, spoken, counts=counts,
-              conditions=conditions, unit="T030-U1", seed=seed, note=note)
+              conditions=conditions, unit=unit, seed=seed, note=note)
 
 
 CREATED = effects(timer_delta=1)
@@ -149,6 +149,12 @@ C02_DISPATCHER = tuple(_REMINDER_GRID) + (
            state="timer_running:pasta", effect_class="false_confirmation", note="no such timer: nothing cancelled"),
     _timer("C02-TIM-0117", "cancelá el timer de 5 minutos", "completed", "volatile", "readback", counts=CHANGED,
            state="timer_running_unnamed;timer_running:pasta", note="an unnamed timer is named by its duration"),
+    _timer("C02-TIM-0118", "pará el timer", "completed", "not_required", "readback",
+           state="timer_ringing:pasta;timer_running:salsa", effect_class="stale_audio", seed="C02-TIM-0007",
+           unit="T030-U2", note="the ring stops (ring_repeats_after_stop 0); the running salsa is not cancelled"),
+    _timer("C02-TIM-0119", "apagá la alarma", "completed", "not_required", "readback", sf="turn_off",
+           state="light_match;timer_ringing:pasta", effect_class="stale_audio", unit="T030-U2",
+           note="the ringing alarm is silenced; no turn_off reaches the light"),
     _timer("C02-ALM-0101", "poné una alarma de 10 minutos", "completed", "volatile", "readback", counts=CREATED,
            seed="C02-ALM-0001", note="Q4: an alarm with a duration is a timer; no alarm_control_panel call"),
     _timer("C02-ALM-0105", "cancelá la alarma", "completed", "volatile", "readback", counts=CHANGED,
@@ -711,6 +717,21 @@ async def test_timer_without_origin_rings_through_the_zone_requiring_delivery(le
         assert timer.state is TimerState.COMPLETED
     finally:
         await timers.stop()
+
+
+async def test_a_stop_while_the_timer_rings_ends_the_ring_without_repeats(leaves):
+    """C02-TIM-0007 extra.ring_repeats_after_stop = 0: no ring task is left that could speak again."""
+    dispatcher = leaves.dispatcher()
+    await leaves.apply_state(dispatcher, "timer_ringing:pasta")
+    rings = leaves.ring.await_count
+    result = await dispatcher.dispatch(user_id="unknown", text="pará el timer")
+    assert (result.path, result.success, result.response) == (PathType.FAST_TIMER, True, "Paré el temporizador de pasta.")
+    (timer,) = leaves.timers.get_all_timers()
+    assert (timer.state.value, timer.ring.value) == ("completed", "stopped")
+    assert leaves.timers.ringing_timers() == [] and leaves.timers.get_status()["delivery_tasks"] == 0
+    for _ in range(20):
+        await asyncio.sleep(0)
+    assert leaves.ring.await_count == rings
 
 
 @pytest.mark.parametrize("follow_up", ["cancelá la alarma", "apagá la alarma", "pará la alarma",
