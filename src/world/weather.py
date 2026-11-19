@@ -139,7 +139,12 @@ _TODAY_PERIODS = frozenset({"manana", "tarde", "noche"})
 _TEMPERATURE_QUESTION_RE = re.compile(
     r"\b(?:que|cual es la|cuanta) temperatura\b|\bcuantos grados\b"
     r"|\b(?:temperatura|grados) (?:hay|hace|tiene|marca)\b|\besta la temperatura\b"
-    # T037-U2b: the future form routed to weather must still meet the indoor check.
+    # T037-U2b: every future form WEATHER_KEYWORDS routes to weather must meet
+    # the indoor check too (review T037-U2b-RV1), with or without "qué" or
+    # "cuántos" before it. "la temperatura de/para mañana" is a noun phrase a
+    # command can also govern; the dispatcher checks its room after its
+    # command guards (names_indoor_place).
+    r"|\b(?:temperatura|grados) (?:hara|habra|(?:va|van) a (?:hacer|haber))\b"
     r"|\bva a ser la temperatura\b"
 )
 # A room right after "afuera/fuera" ("afuera de la cocina") is outside, not
@@ -258,6 +263,22 @@ def is_indoor_temperature_question(text: str, room_words: Iterable[str] = ()) ->
     plain = normalize(text)
     if not _TEMPERATURE_QUESTION_RE.search(plain):
         return False
+    return names_indoor_place(plain, room_words)
+
+
+def names_indoor_place(text: str, room_words: Iterable[str] = ()) -> bool:
+    """True when the utterance places itself in a room or inside the house.
+
+    The location half of :func:`is_indoor_temperature_question`, for callers
+    that already know the turn asks about a temperature ("la temperatura de
+    mañana en el living", review T037-U2b-RV1). A room after "afuera/fuera"
+    is outside.
+
+    Args:
+        text: Utterance in any case, accents or punctuation.
+        room_words: Room ids and aliases, compared accent-free.
+    """
+    plain = normalize(text)
     rooms = {normalize(word) for word in room_words if isinstance(word, str)} | _GENERIC_INDOOR_PLACES
     if any(match.group(1) in rooms for match in _ROOM_PLACE_RE.finditer(plain)):
         return True

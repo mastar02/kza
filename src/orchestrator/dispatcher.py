@@ -89,7 +89,7 @@ from src.reminders.voice_request import (
     period_hours,
 )
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
-from src.world.weather import INDOOR_TEMPERATURE_UNSUPPORTED, is_indoor_temperature_question
+from src.world.weather import INDOOR_TEMPERATURE_UNSUPPORTED, is_indoor_temperature_question, names_indoor_place
 
 logger = get_logger(__name__)
 
@@ -1293,6 +1293,15 @@ class RequestDispatcher:
                         continue
                     if setting_command and keyword in self._TEMPERATURE_OF_DAY_KEYWORDS:
                         continue
+                    # Review T037-U2b-RV1: "la temperatura de/para mañana en
+                    # el living" is the room's temperature, never the outdoor
+                    # entity. Checked here, after the command guards, so
+                    # "programá/poné la temperatura de mañana del living en
+                    # 20" keeps its command path; the verb forms ("hará",
+                    # "va a haber") meet the indoor check at the top.
+                    if (keyword in self._TEMPERATURE_OF_DAY_KEYWORDS
+                            and names_indoor_place(text_lower, self._indoor_room_words)):
+                        return PathType.FAST_HOUSEHOLD, Priority.HIGH
                     if (not is_question and domotics_verb
                             and keyword in self.WEATHER_CLAUSE_FRAGMENTS
                             and not non_command_hint):

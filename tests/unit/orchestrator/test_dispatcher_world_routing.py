@@ -1045,3 +1045,39 @@ def test_t037_u2b_follow_up_routing_table(dispatcher, text, path, horizon):
     assert dispatcher._classify_request(text.lower())[0] is path
     if path is PathType.FAST_WEATHER:
         assert parse_weather_horizon(text) == horizon
+
+
+# Review T037-U2b-RV1: every temperature form WEATHER_KEYWORDS routes to the
+# weather path meets the indoor check, question word or not. Keywords that
+# already say "afuera" are about outside.
+_TEMPERATURE_FORM_KEYWORDS = sorted(
+    k for k in RequestDispatcher.WEATHER_KEYWORDS
+    if ("temperatura" in k or "grados" in k) and "afuera" not in k
+)
+
+
+@pytest.mark.parametrize("keyword", _TEMPERATURE_FORM_KEYWORDS)
+def test_each_temperature_keyword_about_a_room_is_household(dispatcher, keyword):
+    path, _ = dispatcher._classify_request(f"{keyword} en el living")
+    assert path is PathType.FAST_HOUSEHOLD
+
+
+@pytest.mark.parametrize(("text", "path"), [
+    # Reviewer probes: FAST_WEATHER with the outdoor forecast before the fix.
+    ("temperatura hará en el dormitorio mañana", PathType.FAST_HOUSEHOLD),
+    ("grados habrá en la pieza el sábado", PathType.FAST_HOUSEHOLD),
+    ("decime la temperatura para mañana del living", PathType.FAST_HOUSEHOLD),
+    # The same gap in the T037-U2 keywords.
+    ("la temperatura de mañana en el living", PathType.FAST_HOUSEHOLD),
+    ("grados va a hacer en la cocina mañana", PathType.FAST_HOUSEHOLD),
+    ("cuál es la temperatura de mañana en casa", PathType.FAST_HOUSEHOLD),
+    # Neighbours: commands on a room's temperature for tomorrow keep their path.
+    ("programá la temperatura de mañana del living en 20", PathType.SLOW_LLM),
+    ("poné la temperatura de mañana del living en 20", PathType.FAST_DOMOTICS),
+    # Neighbours: outside, or no place at all, stays the weather.
+    ("la temperatura de mañana afuera de la cocina", PathType.FAST_WEATHER),
+    ("temperatura hará mañana", PathType.FAST_WEATHER),
+    ("decime la temperatura para mañana", PathType.FAST_WEATHER),
+])
+def test_temperature_keywords_with_a_place_keep_the_room_off_the_outdoor_entity(dispatcher, text, path):
+    assert dispatcher._classify_request(text.lower())[0] is path
