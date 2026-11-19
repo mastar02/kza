@@ -49,6 +49,12 @@ class UserList:
     items: list[ListItem] = field(default_factory=list)
 
 
+# A list in scope: shared, or (outside shared_only) owned by ``owner`` when one is
+# given. Parameters: (shared_only, owner, owner). ``owner=None`` without
+# shared_only keeps the unscoped internal view.
+_LIST_SCOPE = "(owner_type = 'shared' OR (? = 0 AND (? IS NULL OR owner_id = ?)))"
+
+
 def _generate_id() -> str:
     """Generate a short unique identifier."""
     return uuid.uuid4().hex[:12]
@@ -178,15 +184,18 @@ class ListStore:
 
     async def add_item(
         self, list_id: str, text: str, added_by: str | None = None, *,
-        guard: AuthorityGuard | None = None, shared_only: bool = False,
+        guard: AuthorityGuard | None = None, shared_only: bool = False, owner: str | None = None,
     ) -> ListItem | None:
-        """Check the current parent scope and commit its item in one transaction."""
+        """Check the current parent scope and commit its item in one transaction.
+
+        ``owner`` limits the parent to shared lists and that person's own lists.
+        """
         now, item_id = time.time(), _generate_id()
         if shared_only:
             added_by = None
         def operation(db):
-            parent = db.execute("SELECT 1 FROM lists WHERE id = ? "
-                "AND (? = 0 OR owner_type = 'shared')", (list_id, shared_only)).fetchone()
+            parent = db.execute(f"SELECT 1 FROM lists WHERE id = ? AND {_LIST_SCOPE}",
+                                (list_id, shared_only, owner, owner)).fetchone()
             if parent is None:
                 return None
             db.execute("INSERT INTO list_items (id, list_id, text, completed, added_by, created_at) "
@@ -205,13 +214,27 @@ class ListStore:
             return [self._row_to_item(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
+    async def get_items_in_scope(self, list_id: str, *, guard: AuthorityGuard | None = None,
+                                 shared_only: bool = False, owner: str | None = None) -> list[ListItem] | None:
+        """Items of one list in scope, or None when no such list is in scope (one read)."""
+        def operation(db):
+            if db.execute(f"SELECT 1 FROM lists WHERE id = ? AND {_LIST_SCOPE}",
+                          (list_id, shared_only, owner, owner)).fetchone() is None:
+                return None
+            rows = db.execute("SELECT * FROM list_items WHERE list_id = ? ORDER BY created_at",
+                              (list_id,)).fetchall()
+            return [self._row_to_item(row) for row in rows]
+        return await self._work.read(operation, guard=guard)
+
     async def remove_item(self, item_id: str, *, list_id: str | None = None,
-                          guard: AuthorityGuard | None = None, shared_only: bool = False) -> bool:
+                          guard: AuthorityGuard | None = None, shared_only: bool = False,
+                          owner: str | None = None) -> bool:
         """Delete only from the selected list while its parent scope is eligible."""
         def operation(db):
             return db.execute("DELETE FROM list_items WHERE id = ? AND (? IS NULL OR list_id = ?) "
-                "AND (? = 0 OR EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
-                "AND owner_type = 'shared'))", (item_id, list_id, list_id, shared_only)).rowcount > 0
+                "AND ((? = 0 AND ? IS NULL) OR EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
+                f"AND {_LIST_SCOPE}))",
+                (item_id, list_id, list_id, shared_only, owner, shared_only, owner, owner)).rowcount > 0
         return await self._work.write(operation, guard=guard)
 
     async def complete_item(self, item_id: str, *, list_id: str | None = None,

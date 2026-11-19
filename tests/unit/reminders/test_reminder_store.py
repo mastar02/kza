@@ -113,3 +113,23 @@ async def test_cancel_keeps_the_scope_check(store):
     assert await store.cancel(private.id, shared_only=True) is False
     assert (await store.get_by_id(private.id)).state == "active"
     assert await store.cancel("missing") is False
+
+
+@pytest.mark.asyncio
+async def test_owner_scope_and_shared_view_for_a_person(store):
+    """T035-U1: a person sees shared reminders and her own; another person's are out of scope."""
+    from src.reminders.reminder_store import ReminderScope, ReminderState
+    shared = await store.create("household", "basura", time.time() + 60, scope=ReminderScope.SHARED)
+    own = await store.create("ana", "mio", time.time() + 60)
+    other = await store.create("beto", "ajeno", time.time() + 60)
+    view = await store.get_active_for_user("ana", include_shared=True)
+    assert {r.id for r in view} == {shared.id, own.id}
+    assert {r.id for r in await store.get_active_for_user("ana")} == {own.id}
+    assert {r.id for r in await store.get_active_for_user(None, shared_only=True, include_shared=True)} == {shared.id}
+    assert await store.get_by_id(other.id, owner="ana") is None
+    assert (await store.get_by_id(shared.id, owner="ana")).id == shared.id
+    assert await store.cancel(other.id, owner="ana") is False
+    assert await store.cancel(own.id, shared_only=True) is False
+    assert (await store.get_by_id(other.id)).state is ReminderState.ACTIVE
+    assert await store.cancel(shared.id, owner="ana") is True
+    assert await store.cancel(own.id, owner="ana") is True

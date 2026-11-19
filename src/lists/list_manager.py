@@ -157,20 +157,32 @@ class ListManager:
         """Read a list by ID with an original authority and optional shared scope."""
         return await self._store.get_items(list_id, shared_only=shared_only, guard=guard)
 
+    async def get_items_in_scope(self, list_id: str, *, shared_only: bool = False, owner: str | None = None,
+                                 guard: AuthorityGuard | None = None) -> list[ListItem] | None:
+        """Read a list by ID in a session scope; None when the list is not in that scope.
+
+        Args:
+            list_id: List identifier.
+            shared_only: Only shared lists are in scope.
+            owner: Person whose own lists are in scope besides the shared ones.
+            guard: Authority guard of the caller.
+        """
+        return await self._store.get_items_in_scope(list_id, shared_only=shared_only, owner=owner, guard=guard)
+
     async def add_item_to_list_id(
         self, list_id: str, item_text: str, user_id: str | None = None, *,
-        guard: AuthorityGuard | None = None, shared_only: bool = False,
+        guard: AuthorityGuard | None = None, shared_only: bool = False, owner: str | None = None,
     ) -> ListItem | None:
         """Check the parent and add an item by ID under original authority."""
         return await self._store.add_item(list_id, item_text,
-            added_by=None if shared_only else user_id, guard=guard, shared_only=shared_only)
+            added_by=None if shared_only else user_id, guard=guard, shared_only=shared_only, owner=owner)
 
     async def remove_item_by_id(self, item_id: str, *, list_id: str | None = None,
                                 guard: AuthorityGuard | None = None,
-                                shared_only: bool = False) -> bool:
+                                shared_only: bool = False, owner: str | None = None) -> bool:
         """Delete an identified item only from an eligible selected list."""
         return await self._store.remove_item(item_id, list_id=list_id,
-            guard=guard, shared_only=shared_only)
+            guard=guard, shared_only=shared_only, owner=owner)
 
     async def get_all_lists(self, user_id: str | None, *, shared_only: bool = False,
                             guard: AuthorityGuard | None = None) -> list[UserList]:

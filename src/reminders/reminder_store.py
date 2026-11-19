@@ -65,6 +65,12 @@ NOTICE_ID_RANGE_END = "notice;"
 MAX_LEDGER_PROBE = 10000
 
 
+# A reminder in scope: shared, or (outside shared_only) owned by ``owner`` when
+# one is given. Parameters: (shared_only, owner, owner). ``owner=None`` without
+# shared_only keeps the unscoped internal view (T035-U1).
+_REMINDER_SCOPE = "(scope = 'shared' OR (? = 0 AND (? IS NULL OR user_id = ?)))"
+
+
 def _ledger_row(row) -> ReminderLedgerRow:
     return ReminderLedgerRow(row["request_id"], ReminderActionStatus(row["status"]), row["reason"], row["body"])
 
@@ -372,22 +378,25 @@ class ReminderStore:
         )
 
     async def get_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
-                        shared_only: bool = False) -> Reminder | None:
+                        shared_only: bool = False, owner: str | None = None) -> Reminder | None:
         """Resolve current scope before projecting any reminder material."""
         def operation(db):
-            row = db.execute("SELECT * FROM reminders WHERE id = ? "
-                "AND (? = 0 OR scope = 'shared')", (reminder_id, shared_only)).fetchone()
+            row = db.execute(f"SELECT * FROM reminders WHERE id = ? AND {_REMINDER_SCOPE}",
+                             (reminder_id, shared_only, owner, owner)).fetchone()
             return self._row_to_reminder(row) if row is not None else None
         return await self._work.read(operation, guard=guard)
 
     async def get_active_for_user(self, user_id: str | None, *,
                                   guard: AuthorityGuard | None = None,
-                                  shared_only: bool = False) -> list[Reminder]:
-        """Select shared household jobs or a trusted user's private view before DTOs."""
+                                  shared_only: bool = False, include_shared: bool = False) -> list[Reminder]:
+        """Select shared household jobs or a trusted user's private view before DTOs.
+
+        ``include_shared`` adds every shared job to the user's own view (T035-U1).
+        """
         def operation(db):
             rows = db.execute("SELECT * FROM reminders WHERE state = 'active' "
-                "AND ((? = 1 AND scope = 'shared') OR (? = 0 AND user_id = ?)) "
-                "ORDER BY trigger_at ASC", (shared_only, shared_only, user_id)).fetchall()
+                "AND ((scope = 'shared' AND (? = 1 OR ? = 1)) OR (? = 0 AND user_id = ?)) "
+                "ORDER BY trigger_at ASC", (shared_only, include_shared, shared_only, user_id)).fetchall()
             return [self._row_to_reminder(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
@@ -431,7 +440,7 @@ class ReminderStore:
         return await self._work.write(operation, guard=guard)
 
     async def cancel(self, reminder_id: str, *, guard: AuthorityGuard | None = None,
-                     shared_only: bool = False) -> bool:
+                     shared_only: bool = False, owner: str | None = None) -> bool:
         """Commit cancellation only under original authority and current scope.
 
         Only an active reminder transitions; a fired or already cancelled one
@@ -439,8 +448,8 @@ class ReminderStore:
         """
         def operation(db):
             return db.execute("UPDATE reminders SET state = ? WHERE id = ? AND state = 'active' "
-                "AND (? = 0 OR scope = 'shared')",
-                (ReminderState.CANCELLED.value, reminder_id, shared_only)).rowcount > 0
+                f"AND {_REMINDER_SCOPE}",
+                (ReminderState.CANCELLED.value, reminder_id, shared_only, owner, owner)).rowcount > 0
         return await self._work.write(operation, guard=guard)
 
     async def update_trigger(self, reminder_id: str, new_trigger: float, *,
