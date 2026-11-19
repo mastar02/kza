@@ -50,8 +50,11 @@ sriov-migration-prompt.md
 # Audios de prueba manual (TTS/STT) generados ad-hoc
 *.mp3
 
-# Claude Code local config
-.claude/
+# Claude Code local runtime state (track only project-scoped settings & portable skills)
+.claude/*
+!.claude/settings.json
+!.claude/skills/
+!.claude/skills/**
 
 # Ruido de sesiones de dev en el server (ver docs/architecture/ECOSISTEMA_LOCAL_SERVER.md)
 # Snapshots timestamped que ensucian git status y esconden el trabajo real.

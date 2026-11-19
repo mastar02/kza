@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|shell|shell_command|run_shell|Write|Edit|apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/kza_safety_guard.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
