@@ -2363,3 +2363,17 @@ async def test_listo_on_the_dispatcher_never_cancels_the_only_running_timer(leav
     assert (result.path, result.success, result.response) == (PathType.FAST_TIMER, False,
                                                               "No hay ningún temporizador sonando.")
     assert [t.state.value for t in leaves.timers.get_all_timers()] == ["running"]
+
+
+async def test_a_configured_wake_word_before_listo_still_stops_the_ring(leaves):
+    """T030-U2b-RV1: the dispatcher claims 'Jarvis, listo' with the configured wake words the gate used."""
+    classifier = HouseholdIntentClassifier(HouseholdIntentSettings.from_config({}, wake_words=["Jarvis"]))
+    dispatcher = leaves.dispatcher(household_intents=classifier)
+    await leaves.apply_state(dispatcher, "light_match;timer_ringing:pasta")
+    before = leaves.snapshot()
+    result = await dispatcher.dispatch(user_id="unknown", text="Jarvis, listo", service_filter="turn_off")
+    assert (result.path, result.intent, result.success) == (PathType.FAST_TIMER, "timer", True)
+    assert result.response == "Paré el temporizador de pasta."
+    assert leaves.effects(before) == effects()
+    (timer,) = leaves.timers.get_all_timers()
+    assert timer.ring.value == "stopped" and leaves.timers.ringing_timers() == []

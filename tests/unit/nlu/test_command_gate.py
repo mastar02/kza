@@ -409,3 +409,19 @@ def test_the_other_hard_rules_still_apply_to_a_ring_stop():
     low = CommandAcceptanceGate(ring_stop_open=ring, enforce_confidence=True).evaluate(
         "listo", stt_confidence=STTResult("listo", 1.0, no_speech_prob=0.9, avg_logprob=-0.2))
     assert low.accept is False and low.reason.startswith("low_confidence") and "ring_stop" not in low.signals
+
+
+def test_a_configured_wake_word_before_listo_is_a_filler_of_the_ring_stop():
+    """T030-U2b-RV1: the gate strips the classifier's configured wake words, not only WAKE_TERMS."""
+    from src.nlu.household_intents import HouseholdIntentClassifier, HouseholdIntentSettings
+
+    classifier = HouseholdIntentClassifier(HouseholdIntentSettings.from_config({}, wake_words=["Jarvis"]))
+    ring = _Ring(True)
+    decision = CommandAcceptanceGate(household_intents=classifier, ring_stop_open=ring).evaluate("Jarvis, listo")
+    assert (decision.accept, decision.reason, decision.signals.get("ring_stop")) == (True, "ok", True)
+    assert ring.calls == 1
+    # Without that configured wake word the same turn is not a bare "listo": it stays noise, unasked.
+    unknown = _Ring(True)
+    dropped = CommandAcceptanceGate(ring_stop_open=unknown).evaluate("Jarvis, listo")
+    assert (dropped.accept, dropped.reason) == (False, "noise_phrase:'listo'")
+    assert unknown.calls == 0
