@@ -197,6 +197,12 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
     # T034-U2: shared reminder notices are household tasks (home role); private reminders never appear.
     if path == "/api/reminders/notices" or path.startswith("/api/reminders/notices/"):
         return frozenset({DashboardPermission.TASKS_READ if read else DashboardPermission.TASKS_WRITE})
+    # T035-U1: household lists and reminders are tasks for every household session;
+    # the session's person, never the client, selects personal scope. The reminder
+    # status stays an operator diagnosis (default below).
+    if path == "/api/lists" or path.startswith("/api/lists/") or (
+            (path == "/api/reminders" or path.startswith("/api/reminders/")) and path != "/api/reminders/status"):
+        return frozenset({DashboardPermission.TASKS_READ if read else DashboardPermission.TASKS_WRITE})
     if path == "/api/conversations" or path == "/ws/live":
         return frozenset({DashboardPermission.CONVERSATIONS_READ})
     if path == "/ws":

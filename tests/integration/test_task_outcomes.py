@@ -196,9 +196,12 @@ async def test_missing_http_object_has_no_successful_mutation_receipt(leaves, tm
         async with AsyncExitStack() as stack:
             graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=factories)
             async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url="http://test", headers=dashboard_auth) as client:
-                assert (await client.delete("/api/reminders/missing")).status_code == 404
-                assert (await client.delete("/api/lists/missing/items/missing")).status_code == 404
-                created = await client.post("/api/lists", json={"name": "compras", "user_id": "fixture"})
+                for missing in (await client.delete("/api/reminders/missing"),
+                                await client.delete("/api/lists/missing/items/missing")):
+                    assert missing.status_code == 404
+                    assert missing.json()["outcome"]["status"] == "failed"
+                    assert missing.json()["outcome"]["persistence"] == "not_written"
+                created = await client.post("/api/lists", json={"name": "compras", "shared": True})
                 assert created.json()["outcome"]["persistence"] == "committed"
 
 

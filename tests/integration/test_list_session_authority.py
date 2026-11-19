@@ -1,4 +1,8 @@
-"""Real dashboard leases guard every native list transaction and its lifecycle."""
+"""Real dashboard leases guard every native list transaction and its lifecycle.
+
+T035-U1: the web session is a household credential bound to the person 'u1'
+(personal lists need tasks:personal, which an operator no longer holds, Q16).
+"""
 
 import asyncio
 from contextlib import AsyncExitStack
@@ -11,7 +15,8 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 
 from src.dashboard.api import DashboardAPI
-from src.dashboard.authority import DashboardAuthority
+from src.core.account_metadata import ActiveAccounts
+from src.dashboard.authority import DashboardAuthority, DashboardRole
 from src.lists.list_manager import ListManager
 from src.lists.list_store import ListStore, OwnerType
 from tests.mocks.memory_graph import Clock
@@ -23,7 +28,8 @@ pytestmark = pytest.mark.asyncio
 async def list_graph(tmp_path, dashboard_auth):
     clock = Clock()
     async with AsyncExitStack() as stack:
-        authority = DashboardAuthority(tmp_path / 'auth.db', clock=clock, session_ttl_s=60)
+        authority = DashboardAuthority(tmp_path / 'auth.db', clock=clock, session_ttl_s=60,
+                                       account_provider=lambda: ActiveAccounts(True, frozenset({'u1'})))
         stack.push_async_callback(authority.aclose)
         await authority.initialize()
         path = tmp_path / 'lists.db'
@@ -33,9 +39,11 @@ async def list_graph(tmp_path, dashboard_auth):
         api = DashboardAPI(authority=authority, list_manager=ListManager(store))
         stack.push_async_callback(api.stop)
         async with AsyncClient(transport=ASGITransport(app=api.app), base_url='http://testserver') as client:
-            token = dashboard_auth['Authorization'].split(' ', 1)[1]
-            assert (await client.post('/api/admin/auth/login', json={'token': token})).status_code == 200
-            yield SimpleNamespace(authority=authority, store=store, client=client, path=path, clock=clock, shutdown=stack)
+            person = await authority.issue_credential(authority.resolve(dashboard_auth['Authorization']),
+                subject='synthetic-person', role=DashboardRole.HOME, user_id='u1', expires_at=clock.now + 3600)
+            assert (await client.post('/api/admin/auth/login', json={'token': person.token})).status_code == 200
+            yield SimpleNamespace(authority=authority, store=store, client=client, path=path, clock=clock,
+                                  shutdown=stack, person={'Authorization': f'Bearer {person.token}'})
 
 
 @pytest.mark.parametrize('resource', ['lists', 'items'])
@@ -71,7 +79,7 @@ async def test_private_http_read_rechecks_original_admin_before_native_projectio
     try:
         assert await asyncio.to_thread(entered.wait, 3)
         monkeypatch.setattr(graph.store._work, 'read', read)
-        path = '/api/lists?user_id=u1' if resource == 'lists' else f'/api/lists/{target.id}/items'
+        path = '/api/lists' if resource == 'lists' else f'/api/lists/{target.id}/items'
         pending = asyncio.create_task(graph.client.get(path))
         await asyncio.wait_for(queued.wait(), 2)
         if cancel_observer:
@@ -85,7 +93,7 @@ async def test_private_http_read_rechecks_original_admin_before_native_projectio
         assert (await pending).status_code == 403
     await graph.store._work.drain_admitted()
     assert projections == []
-    authorized = await graph.client.get(path, headers=dashboard_auth)
+    authorized = await graph.client.get(path, headers=graph.person)
     assert authorized.status_code == 200
     assert authorized.json()[0]['id'] == (target.id if resource == 'lists' else item.id)
     assert projections == [True]
@@ -99,7 +107,7 @@ async def seed(graph):
 
 async def mutate(graph, operation, target, item):
     if operation == 'create':
-        return await graph.client.post('/api/lists', json={'name': 'Withdrawn synthetic list', 'user_id': 'u1'})
+        return await graph.client.post('/api/lists', json={'name': 'Withdrawn synthetic list'})
     if operation == 'add':
         return await graph.client.post(f'/api/lists/{target.id}/items', json={'text': 'Withdrawn synthetic item'})
     return await graph.client.delete(f'/api/lists/{target.id}/items/{item.id}')
@@ -138,7 +146,7 @@ async def test_session_retired_after_provisional_list_sql_rolls_back_only_its_wr
                 await pending
         assert (await graph.client.post('/api/admin/auth/logout')).json()['session_revoked']
         independent = asyncio.create_task(graph.client.post(f'/api/lists/{target.id}/items',
-            json={'text': 'Independent authorized item'}, headers=dashboard_auth))
+            json={'text': 'Independent authorized item'}, headers=graph.person))
         reader = asyncio.create_task(graph.store.get_items(target.id))
     finally:
         release.set()
@@ -209,7 +217,7 @@ async def test_committed_list_write_and_connection_close_remain_owned_after_canc
 
     graph.store._work._work._worker = held_worker
     pending = asyncio.create_task(graph.client.post('/api/lists',
-        json={'name': 'Committed synthetic list', 'user_id': 'u1'}))
+        json={'name': 'Committed synthetic list'}))
     closing = None
     try:
         await asyncio.wait_for(entered.wait(), 3)
