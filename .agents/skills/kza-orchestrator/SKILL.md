@@ -12,7 +12,7 @@ Cualquier consola principal (`claude`, `agy`, `codex`, `muse`) en el space `kza`
 2. **Pre-Task Spec Gate:** antes de tareas medianas/complejas, abrir `kza-analista` (read-only) para emitir Spec `<= 2 KB` y cerrar decisiones abiertas con el usuario.
 3. **Enrutamiento dinámico por cuotas reales:** usar siempre `scripts/kza_router.py` (`gpt-6-luna`) + `scripts/kza_quota.py` — nunca hardcodear un modelo único (incluido `kza-ui`). En gates `kza-qa` / `kza-privacy`, pasar `--exclude-family <familia_del_autor>` para cross-model estricto por **familia real** (`anthropic` | `openai` | `meta` | `google`).
 4. **Push sin polling:** esperar reactivamente con `hc wait --children any`. Nunca aceptar `done` sin verificar:
-   - archivo de reporte en `~/.local/state/kza-router/reports/<alias>.md` (o salida inline si Muse `--disable-write`),
+   - archivo de reporte en `~/.local/state/kza-router/reports/<alias>.md`,
    - `HEAD` exacto del worktree/PR,
    - estado de PR y tests reales.
 5. **Aislamiento total:** operar solo sobre `--label project=kza`, worktrees `~/.herdr/worktrees/kza/<alias>` y templates `kza-*.md`. Jamás tocar `tu-*`, `gsm-*` ni producción `/home/kza/*`.

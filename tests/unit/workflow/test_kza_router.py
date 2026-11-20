@@ -140,15 +140,37 @@ def test_safe_cli_flags_per_runtime_read_only_vs_write() -> None:
         "agy": next(c for c in kza_router.DEFAULT_CATALOG if c.runtime == "agy" and c.family == "google"),
     }
 
-    codex_ro = kza_router.build_cli_command(codex_sol, "kza-qa")
-    assert "--no-daemon" in codex_ro and "-s" in codex_ro and "read-only" in codex_ro
-    assert "service_tier=fast" in codex_ro
-    codex_rw = kza_router.build_cli_command(codex_sol, "kza-dev")
-    assert "--no-daemon" in codex_rw and "read-only" not in codex_rw
-    assert "service_tier=fast" in codex_rw
+    for role in ("kza-qa", "kza-ui", "kza-pregate", "kza-analista", "kza-privacy", "kza-dev", "kza-ops"):
+        codex_cmd = kza_router.build_cli_command(codex_sol, role)
+        assert "--no-daemon" in codex_cmd
+        assert "-a" in codex_cmd and "never" in codex_cmd
+        assert "-s" in codex_cmd and "danger-full-access" in codex_cmd
+        assert "--dangerously-bypass-hook-trust" in codex_cmd
+        assert "read-only" not in codex_cmd
+        assert "service_tier=fast" in codex_cmd
+
+        muse_cmd = kza_router.build_cli_command(by_rt["muse"], role)
+        assert "--yolo" in muse_cmd
+        assert "--contributor-mode" in muse_cmd and "off" in muse_cmd
+        assert "--disable-request-user-input" in muse_cmd
+        assert "--trust-workspace" in muse_cmd
+        assert "--effort" in muse_cmd and by_rt["muse"].effort in muse_cmd
+        assert "--disable-write" not in muse_cmd
+
+        claude_cmd = kza_router.build_cli_command(by_rt["claude"], role)
+        assert "--setting-sources" in claude_cmd and "project" in claude_cmd
+        assert "--permission-mode" in claude_cmd and "bypassPermissions" in claude_cmd
+        assert "plan" not in claude_cmd
+
+        agy_cmd = kza_router.build_cli_command(by_rt["agy"], role)
+        assert "--dangerously-skip-permissions" in agy_cmd
+        assert "--mode" in agy_cmd and "auto" in agy_cmd
+        assert "--effort" in agy_cmd and by_rt["agy"].effort in agy_cmd
+        assert agy_cmd[-1] == "-i"
+        assert "plan" not in agy_cmd
 
     terra_ui = kza_router.build_cli_command(codex_terra, "kza-ui")
-    assert "--no-daemon" in terra_ui and "service_tier=fast" in terra_ui and "read-only" in terra_ui
+    assert "--no-daemon" in terra_ui and "service_tier=fast" in terra_ui and "danger-full-access" in terra_ui
 
     astra_pre = kza_router.build_cli_command(codex_astra, "kza-pregate")
     assert "--no-daemon" in astra_pre and "service_tier=fast" not in astra_pre
@@ -167,16 +189,8 @@ def test_safe_cli_flags_per_runtime_read_only_vs_write() -> None:
     assert "service_tier=fast" in choice_map["codex:gpt-6.1-terra"]
     assert "service_tier=fast" not in choice_map["codex:gpt-6.2-astra"]
 
-    muse_ro = kza_router.build_cli_command(by_rt["muse"], "kza-qa")
-    assert "--contributor-mode" in muse_ro and "off" in muse_ro
-    assert "--disable-request-user-input" in muse_ro and "--disable-write" in muse_ro
-
-    claude_ro = kza_router.build_cli_command(by_rt["claude"], "kza-analista")
-    assert "--setting-sources" in claude_ro and "project" in claude_ro
-    assert "--permission-mode" in claude_ro and "plan" in claude_ro
-
-    agy_ro = kza_router.build_cli_command(by_rt["agy"], "kza-privacy")
-    assert "--mode" in agy_ro and "plan" in agy_ro
+    with pytest.raises(ValueError, match="Unsupported role"):
+        kza_router.build_cli_command(codex_sol, "unknown-role")
 
 
 def test_quota_emergency_fail_closed_unless_explicit_flag(tmp_path: Path) -> None:

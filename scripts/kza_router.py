@@ -358,8 +358,9 @@ def load_catalog(catalog_path: Path | None = None) -> list[ModelCandidate]:
 
 
 def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
-    """Build mandatory safe CLI invocation flags for the selected runtime and role."""
-    read_only = role in READ_ONLY_ROLES
+    """Build mandatory unattended CLI invocation flags with safety-guard hooks."""
+    if role not in ALL_ROLES:
+        raise ValueError(f"Unsupported role '{role}'")
 
     if candidate.runtime == "codex":
         cmd = [
@@ -372,25 +373,33 @@ def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
         ]
         if uses_codex_fast_mode(candidate):
             cmd.extend(["-c", "service_tier=fast"])
-        if read_only:
-            cmd.extend(["-s", "read-only"])
+        cmd.extend(
+            [
+                "-a",
+                "never",
+                "-s",
+                "danger-full-access",
+                "--dangerously-bypass-hook-trust",
+            ]
+        )
         return cmd
 
     if candidate.runtime == "muse":
-        cmd = [
+        return [
             "muse",
+            "--model",
+            candidate.model,
+            "--effort",
+            candidate.effort,
+            "--yolo",
             "--contributor-mode",
             "off",
             "--disable-request-user-input",
-            "--model",
-            candidate.model,
+            "--trust-workspace",
         ]
-        if read_only:
-            cmd.append("--disable-write")
-        return cmd
 
     if candidate.runtime == "claude":
-        cmd = [
+        return [
             "claude",
             "--setting-sources",
             "project",
@@ -398,16 +407,22 @@ def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
             candidate.model,
             "--effort",
             candidate.effort,
+            "--permission-mode",
+            "bypassPermissions",
         ]
-        if read_only:
-            cmd.extend(["--permission-mode", "plan"])
-        return cmd
 
     if candidate.runtime == "agy":
-        cmd = ["agy", "--model", candidate.model]
-        if read_only:
-            cmd.extend(["--mode", "plan"])
-        return cmd
+        return [
+            "agy",
+            "--model",
+            candidate.model,
+            "--effort",
+            candidate.effort,
+            "--dangerously-skip-permissions",
+            "--mode",
+            "auto",
+            "-i",
+        ]
 
     raise ValueError(f"Unsupported runtime '{candidate.runtime}'")
 

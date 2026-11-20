@@ -28,4 +28,4 @@ Aplicable a `kza-qa`, `kza-pregate` y `kza-privacy` en cualquier runtime (`claud
 - Veredicto literal en la primera línea: **`APROBADO`** o **`BLOQUEA`**.
 - Hallazgos ordenados por severidad (`CRÍTICO` / `ALTO` / `MEDIO` / `RESIDUO`) con `archivo:línea`.
 - Solo `CRÍTICO` / `ALTO` introducido por el diff justifica `BLOQUEA`.
-- Escribir reporte UNA vez en `report_path` (o inline si Muse `--disable-write`) y enviar sobre `<= 6` líneas vía `hc send`.
+- Escribir reporte UNA vez en `report_path` y enviar sobre `<= 6` líneas vía `hc send`.

@@ -241,12 +241,6 @@ def build_worker_prompt(
 ) -> str:
     """Build the self-contained launch prompt for a KZA worker seat."""
     read_only = role in kza_router.READ_ONLY_ROLES
-    muse_ro_note = ""
-    if runtime == "muse" and read_only:
-        muse_ro_note = (
-            "- Nota Muse `--disable-write`: si las escrituras al disco están deshabilitadas, "
-            "entregá el dictamen completo inline en tu salida final y enviá el sobre de <= 6 líneas vía `hc send`.\n"
-        )
 
     header = (
         f"[KZA SEAT {alias} | role={role} | runtime={runtime} | mode={'read-only' if read_only else 'read-write'}]\n"
@@ -256,7 +250,6 @@ def build_worker_prompt(
         f"- Parent terminal: {parent_terminal_id or 'NONE'}\n"
         f"- Protocolo de cierre obligatorio:\n"
         f"  1. Escribí tu reporte completo UNA SOLA VEZ en `{report_path}`.\n"
-        f"{muse_ro_note}"
         f"  2. Notificá al padre con un sobre de <= 6 líneas vía:\n"
         f"     `hc send {parent_terminal_id or '$HC_TERMINAL_ID'} \"<sobre <= 6 líneas con HEAD, veredicto/estado y ruta de reporte>\"`\n"
         f"  3. Nunca hagas `git stash`, `git add -A`, push a `main` ni toques `/home/kza/*` o templates/worktrees ajenos.\n"
