@@ -59,10 +59,13 @@
     const entries = new Map();
     const sources = {};
     const channels = new Map();
+    const operations = new Map();
     const listeners = new Set();
+    let readSequence = 0;
     let permissions = new Set();
     let notice = null;
 
+    const operationKey = (kind, target) => JSON.stringify([kind, String(target)]);
     function notify() { for (const listener of [...listeners]) listener(); }
     // Freshness is time-driven: wake subscribers when the earliest current
     // observation expires, so an expired read is relabelled with no new read.
@@ -77,7 +80,7 @@
     }
     function reset() {
       if (expiryTimer !== null) { clearTimer(expiryTimer); expiryTimer = null; }
-      entries.clear(); channels.clear(); permissions = new Set(); notice = null;
+      entries.clear(); channels.clear(); operations.clear(); permissions = new Set(); notice = null;
       for (const key of Object.keys(sources)) delete sources[key];
       for (const [key] of COLLECTIONS) sources[key] = STATUS.PENDING;
     }
@@ -92,13 +95,21 @@
       unobserved(key, field) { return (entries.get(key)?.unobserved || []).includes(field); },
       freshness(key) { return freshness(this.entry(key), now()); },
       now() { return now(); },
-      accept(key, observation, data) {
+      beginRead() { return ++readSequence; },
+      accept(key, observation, data, readId) {
         const status = data === null || data === undefined || !Array.isArray(data) ? STATUS.DEGRADED
           : observation.source === 'real' ? STATUS.REAL
           : observation.source === 'mock' ? STATUS.DEMO : STATUS.DEGRADED;
         const kept = status === STATUS.DEGRADED ? [] : data;
         entries.set(key, { ...observation, data: kept, status });
         sources[key] = status;
+        if (status === STATUS.REAL && (!observation.expiresAt || freshness(observation, now()) === 'vigente')) {
+          for (const [id, attempt] of operations) {
+            if (attempt.refresh === key && attempt.outcome.state === 'uncertain' && readId > attempt.afterRead) {
+              operations.delete(id);
+            }
+          }
+        }
         scheduleExpiry();
         notify();
         return status;
@@ -116,6 +127,24 @@
       channel(name) { return channels.get(name) || 'sin conectar'; },
       setNotice(value) { notice = value ? { ...value } : null; notify(); },
       notice() { return notice; },
+      operationOutcome(kind, target) { return operations.get(operationKey(kind, target))?.outcome; },
+      beginOperation(kind, target, refresh) {
+        const id = operationKey(kind, target);
+        const attempt = { id, refresh, outcome: { state: 'pending', message: 'Hay una solicitud en curso.' } };
+        operations.set(id, attempt);
+        this.setNotice(null);
+        return attempt;
+      },
+      finishOperation(attempt, outcome) {
+        if (operations.get(attempt.id) !== attempt) return false;
+        if (outcome.state === 'uncertain') {
+          attempt.outcome = outcome;
+          // Reads already in flight may still describe the state before the write.
+          attempt.afterRead = readSequence;
+        } else operations.delete(attempt.id);
+        this.setNotice(outcome);
+        return true;
+      },
       summary() {
         const keys = COLLECTIONS.map(([key]) => key);
         const pick = status => keys.filter(key => sources[key] === status);
@@ -128,6 +157,7 @@
   }
 
   async function readCollection({ fetch, store, key, path, signal }) {
+    const readId = store.beginRead();
     let result;
     try {
       result = await requestAccess(fetch, path, { signal }, async response => ({
@@ -141,7 +171,7 @@
       return status;
     }
     if (signal?.aborted) return store.status(key);
-    return store.accept(key, result.observation, result.data);
+    return store.accept(key, result.observation, result.data, readId);
   }
 
   async function readPermissions({ fetch, store, signal }) {
@@ -179,27 +209,24 @@
   }
 
   function failure(status, detail) {
-    const uncertain = detail && typeof detail === 'object' && detail.effect === 'uncertain';
-    if (status === 504 || uncertain) return { state: 'uncertain', message: 'Resultado incierto: el servidor no pudo confirmar el efecto. Revisá el estado antes de reintentar.' };
     if (status === 401) return { state: 'auth', message: 'La sesión venció. Volvé a iniciar sesión.' };
     if (status === 403) return { state: 'denied', message: 'La sesión no tiene permiso para esta operación.' };
-    if (status === 404) return { state: 'not_found', message: 'El servidor no encontró el elemento.' };
     if (status === 409 && detail === 'observability_demo_mode') {
       return { state: 'rejected', message: 'No disponible en modo demostración: el servidor no aplicó ningún cambio.' };
     }
-    if (status === 409) return { state: 'conflict', message: 'El estado cambió. Actualizá antes de reintentar.' };
+    if (status === 409) return { state: 'conflict', message: 'Conflicto: el estado cambió. Actualizá antes de reintentar.' };
+    const uncertain = detail && typeof detail === 'object' && detail.effect === 'uncertain';
+    if (status === 504 || uncertain) return { state: 'uncertain', message: 'Resultado incierto: el servidor no pudo confirmar el efecto. Revisá el estado antes de reintentar.' };
+    if (status === 404) return { state: 'not_found', message: 'El servidor no encontró el elemento.' };
     if (status === 503) return { state: 'unavailable', message: 'La operación no está disponible en este momento.' };
     return { state: 'error', message: `No se pudo completar la operación (HTTP ${status}).` };
   }
 
   const UNCERTAIN_TIMEOUT = 'Resultado incierto: el servidor no respondió a tiempo. Revisá el estado antes de reintentar.';
 
-  async function runOperation({ fetch, store, kind, target, timeoutMs = OPERATION_TIMEOUT_MS,
-                                setTimer = (callback, ms) => setTimeout(callback, ms),
-                                clearTimer = handle => clearTimeout(handle) }) {
-    const allowed = availability(store, kind, target);
-    if (!allowed.enabled) return { state: 'denied', message: allowed.reason };
-    const operation = OPERATIONS[kind](target);
+  async function sendOperation({ fetch, store, operation, timeoutMs = OPERATION_TIMEOUT_MS,
+                                 setTimer = (callback, ms) => setTimeout(callback, ms),
+                                 clearTimer = handle => clearTimeout(handle) }) {
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimer(() => { timedOut = true; controller.abort(); }, timeoutMs);
@@ -207,6 +234,7 @@
     try {
       response = await fetch(operation.path, { method: operation.method, credentials: 'same-origin',
         cache: 'no-store', signal: controller.signal });
+      if (response.status === 401 || response.status === 403) return failure(response.status);
       body = await response.json().catch(error => {
         if (timedOut) throw error;
         return {};
@@ -236,6 +264,22 @@
     const refreshMessage = refreshed === STATUS.FORBIDDEN ? ' Sin permiso para actualizar la lista.'
       : refreshed === STATUS.DEGRADED ? ' No se pudo actualizar la lista.' : '';
     return { state: 'confirmed', message: operation.done + refreshMessage };
+  }
+
+  async function runOperation({ fetch, store, kind, target, ...options }) {
+    const held = store.operationOutcome(kind, target);
+    if (held) return held;
+    const allowed = availability(store, kind, target);
+    if (!allowed.enabled) {
+      const outcome = { state: 'denied', message: allowed.reason };
+      store.setNotice(outcome);
+      return outcome;
+    }
+    const operation = OPERATIONS[kind](target);
+    const attempt = store.beginOperation(kind, target, operation.refresh);
+    const outcome = await sendOperation({ ...options, fetch, store, operation });
+    if (!store.finishOperation(attempt, outcome)) return { state: 'retired' };
+    return outcome;
   }
 
   // Seconds until an ISO-8601 instant with an explicit offset; null otherwise.

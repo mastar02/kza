@@ -1,5 +1,9 @@
 (function (root) {
   'use strict';
+  const ACTION_MESSAGES = {
+    accepted:'', conflict:'Conflicto: las voces cambiaron. Actualizá antes de reintentar.',
+    denied:'La sesión no tiene permiso para esta operación de voz.', uncertain:'',
+  };
   function mountVoices(container,controller) {
     const state = controller.state, doc = container.ownerDocument, selected = new Set();
     const listeningButtons = new Map(), deleteButtons = new Set();
@@ -14,11 +18,13 @@
     }
     const heading = node('header','','page-head');
     const refreshStatus = node('p','','mute');
+    const mutationStatus = node('p','','mute');
     const refresh = button('Actualizar',() => runAction(refreshStatus,async () => {
-      await controller.refresh(); await controller.settled();
-      return ['profiles','captures'].every(key => state[key].status()==='real');
-    },'No se pudieron actualizar las voces. Volvé a intentar.','Actualizando…'));
-    heading.append(node('h1','Voces'),node('p','Revisá muestras locales antes de confirmar un nombre. El nombre no concede permisos.','mute'),refresh,refreshStatus);
+      await controller.refresh({surface:'obs'}); await controller.settled();
+      return {state:['profiles','captures'].every(key => state[key].status()==='real') ? 'accepted' : 'unavailable'};
+    },'No se pudieron actualizar las voces. Volvé a intentar.',{readOnly:true}));
+    heading.append(node('h1','Voces'),node('p','Revisá muestras locales antes de confirmar un nombre. El nombre no concede permisos.','mute'),
+      refresh,refreshStatus,mutationStatus);
     const profiles = node('section','','card'), captures = node('section','','card'), review = node('section','','card');
     const filterView = root.KzaVoiceFilters.mountVoiceFilters({doc,controller,button}), results = node('div');
     captures.append(node('h2','Muestras de voz'),
@@ -27,14 +33,17 @@
       node('p','Estas correcciones organizan las muestras; los perfiles guardados se revisan por separado.','mute'),
       node('p','Más recientes primero.','mute'),filterView.element,results);
     const profileStatus = node('p','','mute'), captureStatus = node('p','','mute');
-    for (const status of [refreshStatus,profileStatus,captureStatus]) status.setAttribute('role','status');
+    for (const status of [refreshStatus,mutationStatus,profileStatus,captureStatus]) status.setAttribute('role','status');
     profiles.setAttribute('aria-label','Perfiles confirmados'); captures.setAttribute('aria-label','Muestras de voz'); review.setAttribute('aria-label','Escuchar muestra');
     container.replaceChildren(heading,review,profiles,captures);
     function reviewPending() { return requestedReview!==null || state.review.status()==='loading'; }
     function updateActions() {
       const loading = reviewPending();
+      const held = controller.mutationHeld?.();
+      const notice = held ? 'Resultado incierto. Actualizá las voces y revisá el estado antes de reintentar.' : '';
+      if (mutationStatus.textContent !== notice) mutationStatus.textContent = notice;
       refresh.disabled = actionPending || loading;
-      for (const control of deleteButtons) control.disabled = actionPending || loading;
+      for (const control of deleteButtons) control.disabled = actionPending || loading || held;
       updateCaptureActions();
       for (const [id,{listen,read,available}] of listeningButtons) {
         listen.disabled = read.disabled = !available || loading || actionPending;
@@ -52,15 +61,15 @@
       }
       review.scrollIntoView({block:'center',behavior:'auto'});
     }
-    async function runAction(status, operation, failure, pending = 'Aplicando cambios…') {
-      if (!active || actionPending || reviewPending()) return;
-      actionPending = true; status.textContent = pending; updateActions();
-      let accepted = false;
-      try { accepted = await operation(); }
-      catch { accepted = false; }
+    async function runAction(status, operation, failure, {readOnly = false} = {}) {
+      if (!active || actionPending || reviewPending() || (!readOnly && controller.mutationHeld?.())) return;
+      actionPending = true; status.textContent = readOnly ? 'Actualizando…' : 'Aplicando cambios…'; updateActions();
+      let outcome;
+      try { outcome = await operation(); }
+      catch { outcome = {state:'unavailable'}; }
       finally {
         actionPending = false;
-        if (active) { status.textContent = accepted ? '' : failure; updateActions(); }
+        if (active) { status.textContent = ACTION_MESSAGES[outcome?.state] ?? failure; updateActions(); }
       }
     }
     function drawProfiles() {
@@ -69,7 +78,7 @@
       if (!rows.length) profiles.append(node('p',message(state.profiles,'No hay perfiles confirmados.')));
       for (const row of rows) {
         const id = row.id, revision = row.revision, item = node('div','','row');
-        const remove = button('Borrar perfil',() => runAction(profileStatus,() => controller.deleteProfile(id,revision),
+        const remove = button('Borrar perfil',() => runAction(profileStatus,() => controller.deleteProfileOutcome(id,revision),
           'No se pudo borrar el perfil. Actualizá antes de reintentar.'));
         deleteButtons.add(remove);
         item.append(node('strong',row.name),node('span',new Date(row.confirmed_at*1000).toLocaleString(),'mute'),remove); profiles.append(item);
@@ -89,10 +98,10 @@
       input.type = 'text'; input.maxLength = 64; input.setAttribute('aria-label','Nombre del perfil'); input.autocomplete = 'off';
       const confirm = button('Confirmar perfil',() => runAction(captureStatus,() => {
         const name = input.value.trim(); input.value = '';
-        return controller.confirm([...selected],name,crypto.randomUUID());
+        return controller.confirmOutcome([...selected],name,crypto.randomUUID());
       },'No se pudo confirmar. Las muestras pueden haber vencido; actualizá antes de reintentar.'));
       function correction(action) {
-        return runAction(captureStatus,() => controller.correctGroups([...selected],action,crypto.randomUUID()),
+        return runAction(captureStatus,() => controller.correctGroupsOutcome([...selected],action,crypto.randomUUID()),
           'No se pudo corregir el grupo. Actualizá para revisar sus muestras y reintentar.');
       }
       const merge = button('Unir grupos seleccionados',() => correction('merge'));
@@ -100,7 +109,7 @@
       const unknown = button('Dejar como desconocido',() => correction('unknown'));
       function update() {
         const chosen = rows.filter(row => selected.has(row.id)), groups = new Map(chosen.map(row => [row.group_id,row]));
-        const locked = actionPending || reviewPending();
+        const locked = actionPending || reviewPending() || controller.mutationHeld?.();
         count.textContent = `${selected.size} muestras seleccionadas · elegí entre 3 y 32 de la misma voz para confirmar un perfil.`;
         confirm.disabled = locked || selected.size<3 || !input.value.trim();
         merge.disabled = locked || groups.size<2 || [...groups.values()].reduce((total,row) => total+row.group_size,0)>32;
@@ -195,10 +204,11 @@
       state.review.committed(state.review.deliveryToken());
     }
     const unsubscribe = [state.profiles.subscribe(drawProfiles),state.captures.subscribe(drawCaptures),state.review.subscribe(drawReview),filterView.stop];
+    if (controller.subscribeMutationHold) unsubscribe.push(controller.subscribeMutationHold(updateActions));
     const check = () => { controller.checkFilters(); for (const key of ['profiles','captures','review']) state[key].check(); };
     const onVisibility = () => { if (doc.hidden) controller.closeReview(); else check(); };
     doc.addEventListener('visibilitychange',onVisibility); root.addEventListener('focus',check);
-    drawProfiles(); drawCaptures(); drawReview(); controller.refresh();
+    drawProfiles(); drawCaptures(); drawReview(); controller.refresh({surface:'obs'});
     return () => {
       active = false; renderedReview = requestedReview = null; listeningButtons.clear(); deleteButtons.clear();
       for (const stop of unsubscribe) stop(); selected.clear(); controller.leave();

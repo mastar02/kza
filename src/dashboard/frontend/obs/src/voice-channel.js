@@ -6,6 +6,12 @@
   const CAPTURE_QUERY_KEYS = Object.freeze([...Object.keys(DEFAULT_FILTERS),'cursor']);
   const CAPTURE_ID = /^vf_[0-9a-f]{64}$/;
   const ROOM_GONE = 'La habitación elegida ya no tiene muestras vigentes.';
+  function mutationRejection(status) {
+    if (status === 401 || status === 403) return 'denied';
+    if (status === 409) return 'conflict';
+    if (status >= 500 && status !== 503) return 'uncertain';
+    return 'unavailable';
+  }
   function createVoiceController({ state, fetch, emitAck, hasView = () => false, onUnauthorized = () => {}, onStatus = () => {},
       includePerson = false, profilesOnly = false, personId = null, canSearch = () => false,
       monotonic = () => performance.now(), wall = Date.now, schedule = setTimeout, cancel = clearTimeout }) {
@@ -19,8 +25,13 @@
     let filters = DEFAULT_FILTERS, count = null, rooms = null, summaryTimer = null, roomNotice = '';
     let queryCursor = null, queryHasSearch = false;
     let capturePageToken;
+    let obsView = false, mutationHold = null;
     const pages = {}, actions = new Set(), aborts = new Set();
-    const filterListeners = new Set();
+    const filterListeners = new Set(), mutationListeners = new Set();
+    function setMutationHold(value) {
+      mutationHold = value;
+      for (const listener of mutationListeners) listener();
+    }
     const searchAllowed = () => !profilesOnly && canSearch() === true;
     const expired = entry => entry && (entry.mono <= monotonic() || entry.wall <= wall());
     const notifyFilters = (reset = false) => { for (const listener of filterListeners) listener(reset); };
@@ -106,11 +117,16 @@
       onPage:kind === 'captures' ? capturePage : cursor => { pages[kind] = cursor; },
       onRetire:kind === 'captures' ? retireSummary : undefined,
       retains:kind === 'captures' ? token => rooms?.token === token || count?.token === token : undefined,
-      onHttpError:kind === 'captures' ? status => {
-        if (status === 409 && queryCursor !== null) void reapplyCaptures();
-        if (status === 403) { resetMissingRoom(); clearSummary(); return queryHasSearch; }
-        return false;
-      } : undefined,
+      onHttpError:status => {
+        if (kind === 'captures') {
+          if (status === 409 && queryCursor !== null) void reapplyCaptures();
+          if (status === 403) {
+            resetMissingRoom(); clearSummary();
+            if (queryHasSearch) return true;
+          }
+        }
+        return status === 403 && obsView;
+      },
       onState:value => {
         if (kind === 'captures' && value === 'unavailable' && !rooms && resetMissingRoom()) notifyFilters();
         state[kind].setStatus(value); onStatus(value);
@@ -138,7 +154,10 @@
         return false;
       } finally { if (attempt === capturesSequence) reapplying = false; }
     }
-    async function refresh() {
+    async function refresh({ surface } = {}) {
+      if (surface === 'obs') obsView = true;
+      // An older refresh must never release a hold added while its reads run.
+      const hold = mutationHold;
       const attempt = ++sequence;
       const captureAttempt = ++capturesSequence;
       reapplying = false;
@@ -150,33 +169,65 @@
       if (!channels.profiles.refresh(profilePath())) return;
       await channels.profiles.settled();
       if (closed || attempt!==sequence) return;
-      if (!profilesOnly && captureAttempt === capturesSequence) queryCaptures();
+      const capturesStarted = !profilesOnly && captureAttempt === capturesSequence && queryCaptures();
+      if (!hold) return;
+      if (hold.includes('profiles') && state.profiles.status() !== 'real') return;
+      if (hold.includes('captures')) {
+        if (!capturesStarted) return;
+        await channels.captures.settled();
+        if (captureAttempt !== capturesSequence || state.captures.status() !== 'real') return;
+      }
+      if (!closed && attempt === sequence && hold === mutationHold) {
+        setMutationHold(null);
+      }
     }
-    async function mutate(path,body,method) {
-      if (closed || profilesOnly || actions.size) return false;
+    async function mutate(path,body,method,typed,refreshKeys) {
+      if (mutationHold) return {state:'uncertain'};
+      if (closed || profilesOnly || actions.size) return {state:'unavailable'};
       const abort = new AbortController(); aborts.add(abort);
       let encoded = JSON.stringify(body), response = null;
       const task = (async () => {
+        let rejection;
         try {
           response = await fetch(path,{ method, credentials:'same-origin', signal:abort.signal,
             headers:{'Content-Type':'application/json'}, body:encoded });
-          if (response.status===401 || response.status===403) onUnauthorized();
+          if (!response.ok) rejection = mutationRejection(response.status);
+          if (response.status===401 || (response.status===403 && !typed)) onUnauthorized();
           // Mutation responses carry status/IDs only. Drain their real body so
           // an error echo or delayed transport cannot outlive action ownership.
           await response.arrayBuffer();
-          return response.ok && !abort.signal.aborted;
-        } catch { return false; }
+          return {state:rejection ?? (abort.signal.aborted ? 'uncertain' : 'accepted')};
+        } catch { return {state:rejection ?? 'uncertain'}; }
         finally { encoded = body = response = null; }
       })();
       actions.add(task);
-      let accepted = false;
-      try { accepted = await task; }
+      let outcome;
+      try {
+        outcome = await task;
+        if (!closed && typed && outcome.state === 'uncertain') setMutationHold(refreshKeys);
+      }
       finally {
         actions.delete(task); aborts.delete(abort);
         for (const channel of Object.values(channels)) channel.flush();
       }
-      if (!closed && accepted) await refresh();
-      return accepted;
+      if (!closed && outcome.state === 'accepted') await refresh();
+      return outcome;
+    }
+    function confirm(identities,name,requestId,typed) {
+      return mutate('/api/voices/profiles',{fingerprint_ids:identities,name,request_id:requestId},
+        'POST',typed,['profiles','captures']);
+    }
+    function correctGroups(identities,action,requestId,typed) {
+      const rows = state.captures.snapshot().filter(row => identities.includes(row.id));
+      if (!identities.length || rows.length!==identities.length || new Set(identities).size!==identities.length) {
+        return Promise.resolve({state:'unavailable'});
+      }
+      return mutate('/api/voices/groups/corrections',{fingerprint_ids:identities,
+        expected_revisions:Object.fromEntries(rows.map(row => [row.group_id,row.group_revision])),action,request_id:requestId},
+        'POST',typed,['captures']);
+    }
+    function deleteProfile(identity,revision,typed) {
+      return mutate('/api/voices/profiles/'+identity,{expected_revision:revision},'DELETE',typed,['profiles']);
     }
     function clearFilters() {
       capturesSequence++; reapplying = false; queryCursor = null; queryHasSearch = false; capturePageToken = undefined;
@@ -238,22 +289,22 @@
         return kind === 'captures' && !profilesOnly && !reapplying && queryCaptures(cursor);
       },
       hasNext:kind => !!pages[kind],
-      confirm(identities,name,requestId) { return mutate('/api/voices/profiles',
-        { fingerprint_ids:identities, name, request_id:requestId },'POST'); },
-      correctGroups(identities,action,requestId) {
-        const rows = state.captures.snapshot().filter(row => identities.includes(row.id));
-        if (!identities.length || rows.length!==identities.length || new Set(identities).size!==identities.length) return Promise.resolve(false);
-        return mutate('/api/voices/groups/corrections',{fingerprint_ids:identities,
-          expected_revisions:Object.fromEntries(rows.map(row => [row.group_id,row.group_revision])),action,request_id:requestId},'POST');
-      },
-      setPerson(identity,userId,profileRevision,linkRevision) {
+      // NEXO uses the boolean methods and revalidates its session on both 401 and 403.
+      async confirm(identities,name,requestId) { return (await confirm(identities,name,requestId)).state === 'accepted'; },
+      async correctGroups(identities,action,requestId) { return (await correctGroups(identities,action,requestId)).state === 'accepted'; },
+      async setPerson(identity,userId,profileRevision,linkRevision) {
         if (!includePerson || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(identity)
             || userId !== null && (typeof userId !== 'string' || !userId.length || userId.length > 128 || /[\x00-\x1f\x7f]/.test(userId))
-            || !Number.isInteger(profileRevision) || profileRevision < 1 || !Number.isInteger(linkRevision) || linkRevision < 0) return Promise.resolve(false);
-        return mutate('/api/voices/profiles/'+identity+'/person', {user_id:userId,
-          expected_profile_revision:profileRevision,expected_link_revision:linkRevision},'PUT');
+            || !Number.isInteger(profileRevision) || profileRevision < 1 || !Number.isInteger(linkRevision) || linkRevision < 0) return false;
+        return (await mutate('/api/voices/profiles/'+identity+'/person', {user_id:userId,
+          expected_profile_revision:profileRevision,expected_link_revision:linkRevision},'PUT')).state === 'accepted';
       },
-      deleteProfile(identity,revision) { return mutate('/api/voices/profiles/'+identity,{expected_revision:revision},'DELETE'); },
+      async deleteProfile(identity,revision) { return (await deleteProfile(identity,revision)).state === 'accepted'; },
+      confirmOutcome(identities,name,requestId) { return confirm(identities,name,requestId,true); },
+      correctGroupsOutcome(identities,action,requestId) { return correctGroups(identities,action,requestId,true); },
+      deleteProfileOutcome(identity,revision) { return deleteProfile(identity,revision,true); },
+      mutationHeld:() => mutationHold !== null,
+      subscribeMutationHold(listener) { mutationListeners.add(listener); return () => mutationListeners.delete(listener); },
       dispose() {
         closed = true; root?.removeEventListener?.('pagehide',leave);
         leave(); unsubscribeCaptures();
