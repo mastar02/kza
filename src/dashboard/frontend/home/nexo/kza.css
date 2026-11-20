@@ -1,7 +1,7 @@
 /* KZA's real controls within the approved NEXO composition. */
 [hidden]{display:none!important}
 body{font-size:14px}
-.skip-link{position:fixed;top:-100px;left:90px;z-index:150;padding:12px 18px;background:var(--mint);color:#062b24;border-radius:8px}
+.skip-link{position:fixed;top:-100px;left:90px;z-index:150;display:inline-flex;align-items:center;box-sizing:border-box;min-width:44px;min-height:44px;padding:12px 18px;background:var(--mint);color:#062b24;border-radius:8px}
 .skip-link:focus{top:12px}
 .kza-mark{display:grid;place-items:center;width:44px;height:56px;margin:18px 0 32px;color:var(--mint);font-size:38px;font-weight:650;transform:skewY(-12deg)}
 .app-shell{margin-left:var(--rail);min-width:0}
