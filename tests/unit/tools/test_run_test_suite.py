@@ -91,3 +91,161 @@ def test_should_prebuild_defaults_lazy_on_tier0_and_enabled_on_tier1_tier2():
     assert runner.should_prebuild(2) is True
     assert runner.should_prebuild(1, no_prebuild=True) is False
     assert runner.should_prebuild(2, no_prebuild=True) is False
+
+
+def test_evaluate_summary_tier2_rejects_missing_or_partial_nrestarts():
+    for pair in ((None, None), (4, None), (None, 4), (111, 112), (True, True)):
+        assert runner.evaluate_summary(
+            steps=[{"name": "lane-a", "exit_code": 0}],
+            before_nrestarts=pair[0],
+            after_nrestarts=pair[1],
+            require_nrestarts=True,
+        ) == (1, False)
+    assert runner.evaluate_summary(
+        steps=[{"name": "lane-a", "exit_code": 0}],
+        before_nrestarts=111,
+        after_nrestarts=111,
+        require_nrestarts=True,
+    ) == (0, True)
+
+
+def test_choose_cache_dir_follows_shm_capacity(tmp_path, monkeypatch):
+    shm = tmp_path / "dev_shm"
+    shm.mkdir()
+    monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=32 * 1024**3, f_frsize=1))
+    assert runner.choose_cache_dir(None, platform="linux", shm_root=shm, home_dir=tmp_path) == (
+        shm / "kza-artifact-cache"
+    ).resolve()
+
+    monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=1 * 1024**3, f_frsize=1))
+    assert runner.choose_cache_dir(None, platform="linux", shm_root=shm, home_dir=tmp_path) == (
+        tmp_path / ".cache" / "kza-runtime-artifacts"
+    ).resolve()
+
+
+def test_sanitize_env_strips_inherited_overrides():
+    cleaned = runner.sanitize_env(
+        {
+            "PATH": "/usr/bin",
+            "PYTEST_ADDOPTS": "-n 4 -k bad",
+            "KZA_SC6B_MEASURE": "1",
+            "KZA_REQUIRE_REAL_SYSTEMD": "1",
+        }
+    )
+    assert "PYTEST_ADDOPTS" not in cleaned
+    assert "KZA_SC6B_MEASURE" not in cleaned
+    assert "KZA_REQUIRE_REAL_SYSTEMD" not in cleaned
+    assert cleaned["PYTHONFAULTHANDLER"] == "1"
+
+
+def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path):
+    solo = tmp_path / "runs" / "SOLO_WINDOW"
+    acquired = runner.acquire_solo_window(solo, tier=2, platform="linux")
+    assert acquired == solo and solo.is_file()
+    try:
+        for tier in (0, 1, 2):
+            try:
+                runner.acquire_solo_window(solo, tier=tier, platform="linux")
+                raise AssertionError("expected RuntimeError when SOLO_WINDOW is held")
+            except RuntimeError as exc:
+                assert "SOLO_WINDOW" in str(exc)
+    finally:
+        solo.unlink(missing_ok=True)
+
+
+def test_run_tier2_lanes_waits_for_a_and_b_and_runs_exact_compiled_nodeids(tmp_path, monkeypatch):
+    timeline: list[tuple[str, str]] = []
+    recorded_cmds: dict[str, list[str]] = {}
+    recorded_envs: dict[str, dict[str, str]] = {}
+
+    def fake_run(name: str, cmd: list[str], *, cwd: Path, env: dict[str, str], log_path: Path) -> dict:
+        timeline.append(("start", name))
+        if name == "lane-b-sc6b2":
+            import time
+            time.sleep(0.05)
+        recorded_cmds[name] = list(cmd)
+        recorded_envs[name] = dict(env)
+        timeline.append(("end", name))
+        return {"name": name, "exit_code": 0, "duration_s": 0.01, "log": str(log_path)}
+
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    env = runner.sanitize_env({"PYTEST_ADDOPTS": "-n 9", "KZA_SC6B_MEASURE": "1"})
+    steps = runner.run_tier2_lanes(
+        repo=tmp_path,
+        python_exe=Path("/venv/bin/python"),
+        env=env,
+        basetemp_root=tmp_path / "bt",
+        out_dir=tmp_path / "out",
+        workers=8,
+        has_xdist=True,
+        run_node=True,
+    )
+    assert [s["name"] for s in steps][-1] == "lane-c-compiled-solo"
+    end_a = timeline.index(("end", "lane-a-core"))
+    end_b2 = timeline.index(("end", "lane-b-sc6b2"))
+    start_c = timeline.index(("start", "lane-c-compiled-solo"))
+    assert start_c > end_a and start_c > end_b2
+
+    cmd_c = recorded_cmds["lane-c-compiled-solo"]
+    assert all("::" in target for target in cmd_c if target.startswith("tests/integration/"))
+    assert len([t for t in cmd_c if t.startswith("tests/integration/")]) == len(runner.COMPILED_SOLO_TESTS)
+    assert "-n" not in cmd_c
+    assert "KZA_REQUIRE_REAL_SYSTEMD" not in recorded_envs["lane-a-core"]
+    assert "KZA_REQUIRE_REAL_SYSTEMD" not in recorded_envs["lane-c-compiled-solo"]
+    assert recorded_envs["lane-b-linux"]["KZA_REQUIRE_REAL_SYSTEMD"] == "1"
+
+
+def test_safe_rmtree_ignores_symlinks_to_outside_files(tmp_path):
+    outside = tmp_path / "outside.txt"
+    outside.write_text("keep")
+    tree = tmp_path / "tree"
+    (tree / "sub").mkdir(parents=True)
+    ro_file = tree / "sub" / "ro.tar.gz"
+    ro_file.write_bytes(b"tar")
+    os.chmod(ro_file, 0o444)
+    os.symlink(outside, tree / "sub" / "link")
+    os.chmod(tree / "sub", 0o555)
+
+    runner.safe_rmtree(tree)
+    assert not tree.exists()
+    assert outside.read_text() == "keep"
+
+
+def test_main_cleans_shm_basetemp_when_prebuild_fails(tmp_path, monkeypatch):
+    shm = tmp_path / "dev_shm"
+    shm.mkdir()
+    out_dir = tmp_path / "out"
+    solo = tmp_path / "runs" / "SOLO_WINDOW"
+    monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=32 * 1024**3, f_frsize=1))
+    monkeypatch.setattr(runner, "_shm_has_capacity", lambda *_args, **_kw: True)
+    monkeypatch.setattr(
+        runner,
+        "choose_basetemp_root",
+        lambda explicit, od: (
+            (shm / "reserved-bt").mkdir(parents=True, exist_ok=True) or (shm / "reserved-bt"),
+            True,
+        ),
+    )
+
+    from tests.mocks import runtime_artifact_cache as cache_mod
+    monkeypatch.setattr(cache_mod, "prebuild_standard_artifacts", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    try:
+        runner.main(
+            [
+                "--tier",
+                "1",
+                "--no-node",
+                "--prebuild",
+                "--out-dir",
+                str(out_dir),
+                "--cache-dir",
+                str(tmp_path / "cache"),
+                "--solo-window-file",
+                str(solo),
+            ]
+        )
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "boom" in str(exc)
+    assert not (shm / "reserved-bt").exists()
