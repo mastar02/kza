@@ -55,8 +55,12 @@ _ROUTINE_DIRECTIVE = re.compile(
     r"\b(?:programa que|configura que|(?:quiero|necesito|haz|hace|pon|pone) que (?:cuando|cada vez que))\b"
 )
 _RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
+_RECURRENCE_QUESTION = re.compile(r"\bcuando se\b")
 _CONFIGURATION_VERB = re.compile(r"\b(?:configur(?:a|ame|ar|e)|program(?:a|ame|ar|e))\b")
-_NOMINAL_PROGRAM = re.compile(r"\b(?:el|del|al|un|este|ese|aquel|mi|tu|su|nuestro|otro|mismo) programa\b")
+_NOMINAL_PROGRAM = re.compile(
+    r"\b(?:el|del|al|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
+    r"(?: [a-z]+)? programa\b"
+)
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
 _QUESTION_OPENING = re.compile(
     r"^(?:(?:a|con|de|en|hasta|para|por) )?(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)\b"
@@ -260,15 +264,20 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     phrase = " ".join(words)
     if _UNCLAIMED_CREATION.search(phrase):
         return True
-    # Accent marks distinguish an embedded question ("cuándo se juega")
-    # from the conjunction in a directive ("quiero que cuando anochezca").
-    if _QUESTION_MARKER.search(unicodedata.normalize("NFC", text)) or _QUESTION_OPENING.match(phrase):
+    # A question that leads with an interrogative can mention a configuration verb.
+    if _QUESTION_OPENING.match(phrase):
         return False
     command_text = _NOMINAL_PROGRAM.sub(" ", phrase)
-    if _ROUTINE_DIRECTIVE.search(command_text) or _RECURRENCE_CLAUSE.match(phrase):
+    names_routine = not _ROUTINE_VOCABULARY.isdisjoint(words)
+    # A directive can have an embedded question or a trailing "¿podés?".
+    if _ROUTINE_DIRECTIVE.search(command_text) or (names_routine and _CONFIGURATION_VERB.search(command_text)):
         return True
-    return (not _ROUTINE_VOCABULARY.isdisjoint(words)
-            and (_CONFIGURATION_VERB.search(command_text) is not None or _RECURRENCE_CLAUSE.search(phrase) is not None))
+    recurrence = _RECURRENCE_CLAUSE.search(phrase)
+    if recurrence is None or (recurrence.start() != 0 and not names_routine):
+        return False
+    # A bare recurrence clause may introduce a question even if STT dropped the accents.
+    return not (_QUESTION_MARKER.search(unicodedata.normalize("NFC", text))
+                or _RECURRENCE_QUESTION.search(phrase, recurrence.end()))
 
 
 def name_key(name: str) -> str:

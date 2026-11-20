@@ -49,10 +49,13 @@ async def voice_router(orchestrated, utterance, *, scheduler=None):
     ("para la rutina de riego configura que funcione de noche", "no creo rutinas por voz"),
     ("para el riego rutinario configura que funcione de noche", "no creo rutinas por voz"),
     ("configura el horario de la automatización de riego", "no creo rutinas por voz"),
+    ("configurá a qué hora se activa la automatización de riego", "no creo rutinas por voz"),
+    ("configura el horario de la automatización de riego para las ocho, ¿sí?", "no creo rutinas por voz"),
     ("para la automatización de riego configura el horario de noche", "no creo rutinas por voz"),
     ("para la automatización de riego configurá el horario a las ocho", "no creo rutinas por voz"),
     ("programa que arranque el riego al anochecer", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego", "no creo rutinas por voz"),
+    ("quiero que cuando anochezca empiece el riego, ¿podés?", "no creo rutinas por voz"),
     ("haz que cuando anochezca empiece el riego", "no creo rutinas por voz"),
     ("configura que el riego empiece de noche", "no creo rutinas por voz"),
     ("cada vez que anochezca que empiece el riego", "no creo rutinas por voz"),
@@ -94,8 +97,11 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "qué pasa cada vez que hay un empate",
     "cuál es el nombre del programa que ganó el premio",
     "cada vez que hay un empate cuándo se juega el desempate",
+    "cada vez que hay un empate cuando se juega el desempate",
+    "quiero escuchar algún programa de rutinas de ejercicio",
+    "quiero escuchar un buen programa de rutinas de ejercicio",
 ])
-async def test_question_without_automation_intent_stays_conversational(orchestrated, utterance):
+async def test_utterance_without_automation_intent_stays_conversational(orchestrated, utterance):
     async with voice_router(orchestrated, utterance) as (router, dispatcher):
         router.chroma.search_command.return_value = None
         dispatcher._slow_path = AsyncMock(return_value=DispatchResult(
@@ -115,6 +121,7 @@ async def test_question_without_automation_intent_stays_conversational(orchestra
     "quiero escuchar mi programa de rutinas de ejercicio",
     "cada vez que hay un empate se juega el desempate?",
     "cual es el nombre del programa que gano el premio",
+    "quién configura el horario de la automatización de riego",
 ])
 def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance):
     assert not is_unclaimed_routine_creation(f"Nexa, {utterance}")
