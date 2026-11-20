@@ -32,7 +32,8 @@ import logging
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from src.core.task_outcome import (
@@ -161,6 +162,7 @@ class CompoundPartReport:
         reason: A content-free code (receipt reason or refusal intent), or None.
         path: The part's PathType value, or None.
         retried: The report comes from an earlier run of the same turn.
+        intercom_receipt: Per-zone playback evidence for an intercom part.
     """
 
     index: int
@@ -172,13 +174,17 @@ class CompoundPartReport:
     reason: str | None = None
     path: str | None = None
     retried: bool = False
+    intercom_receipt: dict | None = field(default=None, repr=False)
 
     def summary(self) -> dict:
         """Content-free description for turn results and logs."""
-        return {"index": self.index, "request_id": self.request_id, "verdict": self.verdict.value,
+        summary = {"index": self.index, "request_id": self.request_id, "verdict": self.verdict.value,
                 "task_status": self.outcome.status.value, "dispatch": self.outcome.dispatch.value,
                 "effect": self.outcome.effect.value, "path": self.path, "reason": self.reason,
                 "retried": self.retried}
+        if self.intercom_receipt is not None:
+            summary["intercom_receipt"] = deepcopy(self.intercom_receipt)
+        return summary
 
 
 @dataclass(frozen=True)
@@ -312,7 +318,8 @@ def compose_reply(reports: Iterable[CompoundPartReport]) -> str:
                 report.outcome.status, "No pude hacerlo.")
             sentences.append(f"{head}: no lo hice. {reason}")
         elif report.verdict is PartVerdict.UNCERTAIN:
-            sentences.append(f"{head}: no sé si se hizo; fijate antes de repetirlo.")
+            detail = own if report.intercom_receipt is not None else ""
+            sentences.append(f"{head}: {detail or 'no sé si se hizo; fijate antes de repetirlo.'}")
         elif report.verdict is PartVerdict.INTERRUPTED:
             sentences.append(f"{head}: no lo intenté porque me interrumpiste.")
         elif report.verdict is PartVerdict.SAME_TARGET:
@@ -371,8 +378,7 @@ class CompoundRunner:
             earlier = self._ledger.get(request_id)
             if earlier is not None:
                 if earlier.segment == segment:
-                    report = CompoundPartReport(index, request_id, segment, earlier.verdict, earlier.outcome,
-                                                earlier.response, earlier.reason, earlier.path, retried=True)
+                    report = replace(earlier, retried=True)
                 else:
                     report = CompoundPartReport(index, request_id, segment, PartVerdict.NOT_DONE,
                                                 TaskOutcome(TaskStatus.FAILED, dispatch=DispatchState.NOT_SENT,
@@ -428,9 +434,11 @@ class CompoundRunner:
         response = "" if silent else (getattr(result, "response", "") or "")
         receipt = getattr(result, "receipt", None)
         reason = getattr(receipt, "reason", None) or getattr(result, "intent", None)
+        intercom_receipt = getattr(result, "intercom_receipt", None)
         return CompoundPartReport(context.index, context.request_id, segment, _verdict(outcome), outcome,
                                   response if isinstance(response, str) else "",
-                                  reason if isinstance(reason, str) else None, path)
+                                  reason if isinstance(reason, str) else None, path,
+                                  intercom_receipt=deepcopy(intercom_receipt) if isinstance(intercom_receipt, dict) else None)
 
     def _remember(self, report: CompoundPartReport) -> None:
         self._ledger[report.request_id] = report

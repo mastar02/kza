@@ -38,7 +38,7 @@ from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.orchestrator.compound import CompoundPartContext, CompoundRunner
 from src.orchestrator.dispatcher import (
-    DispatchResult, compound_dispatch_result, compound_part_target, has_domotics_action_verb,
+    DispatchResult, compound_dispatch_result, compound_part_target, has_domotics_action_verb, notification_dnd_refusal,
 )
 from src.orchestrator.priority_queue import Priority
 from src.pipeline.earcon_gate import should_play_earcon
@@ -993,8 +993,11 @@ class RequestRouter:
         household = self.household_intents.classify(text)
         if household is not None and household.controls_routine:
             return AcceptanceDecision(False, "legacy_routine_control", gate_decision.signals)
-        if household is not None and household.family in {HouseholdFamily.INTERCOM, HouseholdFamily.NOTIFICATION}:
-            return AcceptanceDecision(False, "legacy_household_voice", gate_decision.signals)
+        if household is not None:
+            if household.family is HouseholdFamily.INTERCOM:
+                return AcceptanceDecision(False, "legacy_household_voice", gate_decision.signals)
+            if household.family is HouseholdFamily.NOTIFICATION:
+                return gate_decision
         if (gate_decision.signals or {}).get("ring_stop") is True:
             # T030-U2b: the legacy timer commands do not stop a ring, so a bare "listo" stays noise here.
             return AcceptanceDecision(False, "noise_phrase:'listo'", gate_decision.signals)
@@ -1753,7 +1756,6 @@ class RequestRouter:
         run = await self._compound.run(household.parts, run_part,
                                        interrupted=lambda: self._room_turns.get(room_id, 0) != started,
                                        part_target=compound_part_target)
-        result["compound_parts"] = [report.summary() for report in run.reports]
         return await self._finish_orchestrated_turn(
             compound_dispatch_result(run), result, text=text, zone_id=zone_id, room_context=room_context,
             emotion=cmd.emotion, pipeline_start=pipeline_start)
@@ -1869,6 +1871,9 @@ class RequestRouter:
         intercom_receipt = getattr(dispatch_result, "intercom_receipt", None)
         if intercom_receipt is not None:
             result["intercom_receipt"] = intercom_receipt
+        compound_parts = getattr(dispatch_result, "compound_parts", None)
+        if isinstance(compound_parts, tuple):
+            result["compound_parts"] = list(compound_parts)
         for key in ("timeout_stage", "voice_delivery"):
             value = getattr(dispatch_result, key, None)
             if isinstance(value, str):
@@ -2008,6 +2013,13 @@ class RequestRouter:
         # parts of a compound still running in this room.
         self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
+
+        household = self.household_intents.classify(text)
+        if household is not None and household.family is HouseholdFamily.NOTIFICATION:
+            return await self._finish_orchestrated_turn(
+                notification_dnd_refusal(), result, text=text, zone_id=self._response_zone.get(),
+                room_context=None, emotion=cmd.emotion, pipeline_start=pipeline_start,
+            )
 
         if await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000

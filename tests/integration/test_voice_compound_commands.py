@@ -15,9 +15,11 @@ import numpy as np
 import pytest
 
 from src.core.household_clock import RoomNamespace
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.home_assistant.control_policy import EntityGrant, HomeActor, HomeControlPolicy
 from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.voice_resolver import HomeVoiceResolver
+from src.intercom.intercom_system import IntercomSystem
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.household_intents import HouseholdIntentClassifier, HouseholdIntentSettings
 from src.nlu.llm_router import CommandClassification
@@ -129,6 +131,45 @@ async def graph():
     await built.timers.start()
     yield built
     await built.timers.stop()
+
+
+async def test_compound_preserves_intercom_receipts_and_replays_without_playback(graph):
+    attempts = []
+
+    async def speak(message, zone):
+        attempts.append((message, zone))
+        delivery = DeliveryState.COMPLETE if zone == "zone_cocina" else DeliveryState.FAILED
+        return ResponseResult(message, GenerationState.COMPLETE, delivery)
+
+    intercom = IntercomSystem(speak, room_catalog={
+        "zone_cocina": ("Cocina",), "zone_escritorio": ("Escritorio",),
+    })
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("escritorio", "Escritorio")
+    graph.orchestrator.dispatcher.intercom = intercom
+    await intercom.start()
+    try:
+        text = "poné un timer de 5 minutos y anunciá en toda la casa: El pedido está listo."
+        request_id = "voice:compound-intercom"
+        first = await graph.turn(text, request_id=request_id)
+        assert first["intent"] == "compound" and first["outcome"]["status"] == "uncertain"
+        timer, announcement = first["compound_parts"]
+        assert timer["task_status"] == "completed" and "intercom_receipt" not in timer
+        assert announcement["task_status"] == "uncertain" and announcement["dispatch"] == "partial"
+        assert "1 de 2 salas" in first["response"]
+        receipt = intercom.get_history()[-1].receipt()
+        assert receipt["zones"] == {"zone_cocina": "confirmed", "zone_escritorio": "failed"}
+        assert announcement["intercom_receipt"] == receipt
+        announcement["intercom_receipt"]["zones"]["zone_cocina"] = "tampered"
+
+        replay = await graph.turn(text, request_id=request_id)
+        assert replay["compound_parts"][1]["retried"] is True
+        assert replay["compound_parts"][1]["intercom_receipt"] == receipt
+        assert attempts == [
+            ("El pedido está listo.", "zone_cocina"), ("El pedido está listo.", "zone_escritorio"),
+        ]
+    finally:
+        await intercom.stop()
 
 
 async def test_cmp_0001_both_parts_done_each_with_its_own_receipt(graph):

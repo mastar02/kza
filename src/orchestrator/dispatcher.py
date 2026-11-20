@@ -634,6 +634,7 @@ class DispatchResult:
             "response_requirement": self.response_requirement.value,
             "source_observation": self.observation.to_dict() if self.observation is not None else None,
             **({"intercom_receipt": self.intercom_receipt} if self.intercom_receipt is not None else {}),
+            **({"compound_parts": list(self.compound_parts)} if self.compound_parts is not None else {}),
         }
 
 
@@ -1690,16 +1691,11 @@ class RequestDispatcher:
                 return self._household_refusal(PathType.FAST_HOUSEHOLD, "intercom",
                                                "El intercomunicador no está disponible ahora.", TaskStatus.UNSUPPORTED)
             outcome, response, announcement = await self.intercom.announce_from_voice(household.complement)
-            receipt = None if announcement is None else {
-                "announcement_id": announcement.announcement_id,
-                "zones": {zone: delivery.value for zone, delivery in announcement.zone_receipts.items()},
-            }
             return DispatchResult(path=PathType.FAST_HOUSEHOLD, priority=Priority.HIGH,
                                   success=outcome.task_completed, response=response, intent="intercom",
-                                  outcome=outcome, intercom_receipt=receipt)
+                                  outcome=outcome, intercom_receipt=announcement.receipt() if announcement else None)
         if family is HouseholdFamily.NOTIFICATION:
-            return self._household_refusal(PathType.FAST_HOUSEHOLD, "notification_config",
-                                           VOICE_DND_WEB_REQUIRED, TaskStatus.UNSUPPORTED)
+            return notification_dnd_refusal()
         # DEFERRED_ACTION: interim refusal until T031-U5 (reminders with home actions).
         return self._household_refusal(PathType.FAST_HOUSEHOLD, "deferred_action",
                                        "Todavía no programo acciones de la casa por voz; podés crear una rutina en la web.",
@@ -3080,6 +3076,13 @@ def compound_dispatch_result(run) -> DispatchResult:
         path=PathType.FAST_HOUSEHOLD, priority=Priority.HIGH, success=run.outcome.task_completed,
         response=run.response, intent="compound", outcome=run.outcome,
         compound_parts=tuple(report.summary() for report in run.reports),
+    )
+
+
+def notification_dnd_refusal() -> DispatchResult:
+    """Voice can give the same authenticated-web guidance on either pipeline path."""
+    return RequestDispatcher._household_refusal(
+        PathType.FAST_HOUSEHOLD, "notification_config", VOICE_DND_WEB_REQUIRED, TaskStatus.UNSUPPORTED,
     )
 
 

@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
 from enum import Enum, StrEnum
@@ -107,7 +107,7 @@ class SmartNotificationManager:
         ha_client = None,
         quiet_hours: tuple[time, time] = None,
         *,
-        voice_zone_key: Callable[[str], str | None] | None = None,
+        voice_zone_key: Callable[[str], Hashable] | None = None,
     ):
         self.tts = tts_callback
         self.push = push_callback
@@ -273,7 +273,7 @@ class SmartNotificationManager:
             # Broadcast: obtener todos los usuarios
             users = self._get_all_user_ids()
 
-        attempted_voice_zones: set[str | None] = set()
+        attempted_voice_zones: set[Hashable] = set()
         for user_id in users:
             # Evaluar contexto
             context = self._get_user_context(user_id)

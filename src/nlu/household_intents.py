@@ -41,7 +41,7 @@ import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from functools import lru_cache
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from src.nlu.command_grammar import (
@@ -117,6 +117,7 @@ class HouseholdIntent:
             ``no_time``, ``new_routine``, ``clock_alarm``,
             ``ring_stop``), or None.
         parts: COMPOUND only: the parts in spoken order.
+        literal_span: Intercom message offsets in the original transcript.
     """
 
     family: HouseholdFamily
@@ -126,6 +127,7 @@ class HouseholdIntent:
     verb: str = ""
     reason: str | None = None
     parts: tuple[HouseholdPart, ...] = ()
+    literal_span: tuple[int, int] | None = field(default=None, repr=False, compare=False)
 
     @property
     def controls_routine(self) -> bool:
@@ -566,6 +568,15 @@ _CLOCK = re.compile(r"\b(?:a|para|cuando sean?) (?:las? )?(?:\d{1,2}(?:[:.]\d{2}
 _ARTICLE_CLOCK_UNIT = re.compile(rf"\b(?:a|para|de) (?:la|las) {_ALARM_HOUR} "
                                  rf"(?:h|hs|hrs|horas?|y {_NUMBER} (?:minutos?|mins?))\b")
 _INTERCOM_DESTINATION_HEADS = frozenset({"en", "a", "al", "por", "para"})
+INTERCOM_BROADCAST_TARGETS = frozenset({
+    "toda la casa", "todas las salas", "todas partes", "todos lados", "todos", "parlantes",
+    "todos los parlantes",
+})
+_INTERCOM_PUNCTUATION = re.compile(r"[^\w]*")
+_INTERCOM_DIRECTION = re.compile(
+    r"(?:" + "|".join(sorted(_INTERCOM_DESTINATION_HEADS)) + r")\b\s*", re.IGNORECASE,
+)
+_INTERCOM_MESSAGE_MARKER = re.compile(r"\bque\b|:", re.IGNORECASE)
 _NOTIFICATION = re.compile(
     r"(?:(?:(?P<disable>desactiva|desactive|quita|quite|saca|saque)|activa|active|pone|pon) )?"
     r"(?:el )?(?:modo )?no molestar"
@@ -1025,6 +1036,28 @@ def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
     return None
 
 
+def intercom_slots(complement: str) -> tuple[str | None, int]:
+    """Return the explicit destination, if any, and the literal message offset.
+
+    Punctuation between the verb and a destination cannot turn a room
+    request into broadcast. "Que" marks the start of an explicitly literal body.
+    """
+    start = _INTERCOM_PUNCTUATION.match(complement).end()
+    direction = _INTERCOM_DIRECTION.match(complement, start)
+    marker = _INTERCOM_MESSAGE_MARKER.search(complement, start)
+    target_start = direction.end() if direction else start
+    target_end = marker.start() if marker else len(complement)
+    target = " ".join(complement[target_start:target_end].strip(" ,").split())
+    if direction or target.casefold() in INTERCOM_BROADCAST_TARGETS:
+        return target, marker.end() if marker else len(complement)
+    opening_colon = complement.find(":", 0, start)
+    if opening_colon != -1:
+        return None, opening_colon + 1
+    if marker and marker.start() == start:
+        return None, marker.end()
+    return None, 0
+
+
 def _intercom_intent(utt: _Utterance, verb: _Verb | None) -> HouseholdIntent | None:
     """Claim the command head and leave destination resolution to intercom."""
     if verb is None or _INTERCOM not in verb.classes or verb.infinitive:
@@ -1037,11 +1070,20 @@ def _intercom_intent(utt: _Utterance, verb: _Verb | None) -> HouseholdIntent | N
     ))
     if not announce and (not explicit_destination or head.endswith(("me", "nos"))):
         return None
-    # Preserve the colon, punctuation inside the message, and the casing as
-    # transcribed. The token bounds exclude trailing command fillers.
-    complement = (utt.source[utt.word_ends[verb.end - 1]:utt.word_ends[-1]].strip()
-                  if utt.word_ends else _rest(utt, verb.end))
-    return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6", complement, verb.form)
+    if not utt.word_ends:
+        return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6",
+                               _rest(utt, verb.end), verb.form)
+
+    start, last_word = utt.word_ends[verb.end - 1], utt.word_ends[-1]
+    tail = _INTERCOM_PUNCTUATION.match(utt.source, last_word)
+    end = tail.end()
+    if end != len(utt.source):
+        # A following filler or clause is outside the payload.
+        end = last_word + len(tail[0].rstrip(" \t,;:"))
+    complement = utt.source[start:end]
+    _, message_start = intercom_slots(complement)
+    return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6",
+                           complement.strip(), verb.form, literal_span=(start + message_start, end))
 
 
 def _r6(utt: _Utterance) -> HouseholdIntent | None:

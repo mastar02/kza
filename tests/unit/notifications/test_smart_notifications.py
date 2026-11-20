@@ -10,16 +10,18 @@ from src.pipeline.feature_manager import build_feature_manager
 
 
 @pytest.mark.parametrize("first_delivery_ok", [True, False])
-async def test_broadcast_attempts_each_zone_once_even_with_aliases_and_failed_output(first_delivery_ok):
+async def test_broadcast_attempts_each_physical_zone_once_even_with_aliases_and_failed_output(first_delivery_ok):
     attempts = []
 
     async def speak(message, *, zone_id):
         attempts.append((message, zone_id))
         return first_delivery_ok or zone_id != "zone_pasillo"
 
-    zone_manager = ZoneManager([Zone("pasillo", "Pasillo", 0, 1), Zone("cocina", "Cocina", 1, 2)])
+    zone_manager = ZoneManager([
+        Zone("pasillo", "Pasillo", 0, 1), Zone("recibidor", "Recibidor", 1, 1), Zone("cocina", "Cocina", 2, 2),
+    ], ma1260_controller=object())
     response = SimpleNamespace(aspeak=speak)
-    user_zones = {"one": None, "two": "pasillo", "three": "zone_cocina"}
+    user_zones = {"one": None, "two": "pasillo", "three": "zone_recibidor", "four": "zone_cocina"}
     users = SimpleNamespace(get_all_users=lambda: [SimpleNamespace(user_id=user_id) for user_id in user_zones])
     config = {"alerts": {"enabled": False}, "tts": {"streaming": {"default_output_zone": "zone_pasillo"}}}
     manager = build_feature_manager(config, response_handler=response, zone_manager=zone_manager,

@@ -227,6 +227,17 @@ class CommandAcceptanceGate:
             logger.warning("[CommandGate] ring check failed, 'listo' stays noise: %s", type(error).__name__)
             return False
 
+    def _without_intercom_message(self, text: str) -> str:
+        """Mask literal intercom bodies for phrase filtering, including in compounds."""
+        claimed = self._household_intents.classify(text)
+        if claimed is None:
+            return text
+        intents = (part.intent for part in claimed.parts) if claimed.parts else (claimed,)
+        spans = [intent.literal_span for intent in intents if intent is not None and intent.literal_span]
+        for start, end in sorted(spans, reverse=True):
+            text = text[:start] + " [mensaje] " + text[end:]
+        return text
+
     def _hard_reason(self, text: str, ring_stop: bool = False) -> str | None:
         """Return the first matching hard rule name, or None. Migrated from _is_noise_text.
 
@@ -242,8 +253,11 @@ class CommandAcceptanceGate:
         norm = _normalize(text)
         if not norm:
             return "empty_after_norm"
+        noise_text = norm
+        if any(phrase in norm for phrase in _NOISE_PHRASES):
+            noise_text = _normalize(self._without_intercom_message(text))
         for phrase in _NOISE_PHRASES:
-            if phrase in norm:
+            if phrase in noise_text:
                 if ring_stop and phrase == "listo":
                     continue
                 if phrase in _STATE_ECHO_PHRASES:

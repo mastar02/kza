@@ -8,10 +8,11 @@ Extracted from VoicePipeline to reduce its responsibility.
 
 import asyncio
 import logging
+from collections.abc import Hashable
 
 from src.alerts import AlertManager, AlertScheduler
 from src.core.household_clock import RoomNamespace, ZONE_PREFIX
-from src.intercom import AnnouncementPriority, IntercomSystem
+from src.intercom import Announcement, AnnouncementPriority, IntercomSystem
 from src.notifications import NotificationPriority, SmartNotificationManager
 from src.timers import NamedTimer, NamedTimerManager
 
@@ -228,7 +229,7 @@ class FeatureManager:
             priority: One of "low", "normal", "high", "emergency".
 
         Returns:
-            Dict with success flag and announcement_id.
+            Delivery confirmation and the per-zone receipt.
         """
         if not self.intercom:
             return {"success": False, "error": "Intercom not configured"}
@@ -244,7 +245,7 @@ class FeatureManager:
             zones=zones,
             priority=priority_map.get(priority, AnnouncementPriority.NORMAL),
         )
-        return {"success": True, "announcement_id": announcement.announcement_id}
+        return await self._announcement_result(announcement)
 
     async def announce_emergency(self, message: str) -> dict:
         """Emergency announcement across the entire house.
@@ -253,13 +254,22 @@ class FeatureManager:
             message: Emergency text.
 
         Returns:
-            Dict with success flag and announcement_id.
+            Delivery confirmation and the per-zone receipt.
         """
         if not self.intercom:
             return {"success": False, "error": "Intercom not configured"}
 
         announcement = await self.intercom.announce_emergency(message)
-        return {"success": True, "announcement_id": announcement.announcement_id}
+        return await self._announcement_result(announcement)
+
+    @staticmethod
+    async def _announcement_result(announcement: Announcement) -> dict:
+        await announcement.wait_for_delivery()
+        return {
+            "success": announcement.delivery_confirmed,
+            "announcement_id": announcement.announcement_id,
+            "intercom_receipt": announcement.receipt(),
+        }
 
     def get_intercom_zones(self) -> dict:
         """Return available intercom zones."""
@@ -424,10 +434,10 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
             labels += tuple(aliases)
         intercom_rooms[ZONE_PREFIX + room_id] = tuple(label for label in labels if isinstance(label, str))
 
-    def voice_zone_key(zone_id: str) -> str | None:
+    def voice_zone_key(zone_id: str) -> Hashable:
         target = voice.default_zone if zone_id == "default" else zone_id
-        zone = zone_manager.get_zone(target) if zone_manager is not None and target else None
-        return zone.id if zone is not None else target
+        output = zone_manager.playback_output_key(target) if zone_manager is not None and target else None
+        return output if output is not None else target
 
     alerts = config.get("alerts", {})
     manager = scheduler = None
@@ -449,7 +459,8 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
             )
     features = FeatureManager(
         timer_manager=NamedTimerManager(tts_callback=voice.aspeak),
-        intercom=IntercomSystem(tts_callback=voice.aspeak, zone_manager=zone_manager, room_catalog=intercom_rooms),
+        intercom=IntercomSystem(tts_callback=response_handler.aspeak, zone_manager=zone_manager,
+                                room_catalog=intercom_rooms),
         notifications=SmartNotificationManager(tts_callback=voice.aspeak, user_manager=user_manager, ha_client=ha_client,
                                                voice_zone_key=voice_zone_key),
         alert_manager=manager, alert_scheduler=scheduler,

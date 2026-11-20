@@ -5,7 +5,7 @@ import logging
 import re
 import unicodedata
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Hashable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -14,14 +14,11 @@ from typing import Any
 from src.core.household_clock import ZONE_PREFIX
 from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.core.voice_delivery import ResponseResult, VoiceDeliveryError, invoke_voice_callback
+from src.nlu.household_intents import INTERCOM_BROADCAST_TARGETS, intercom_slots
 
 logger = logging.getLogger(__name__)
 
-_ALL_ROOMS = frozenset({"toda la casa", "todas las salas", "todas partes", "todos lados", "todos", "parlantes",
-                        "todos los parlantes"})
-_DIRECTION = re.compile(r"^(?:en|a|al|por|para)(?:\s+|$)", re.IGNORECASE)
 _ARTICLE = re.compile(r"^(?:el|la|los|las)\s+")
-_MESSAGE_MARKER = re.compile(r"\bque\b|:", re.IGNORECASE)
 
 
 def _room_name(text: str) -> str:
@@ -71,6 +68,25 @@ class Announcement:
     # Configuración
     repeat: int = 1                    # Veces a repetir
     delay_between_repeats: float = 2.0 # Segundos entre repeticiones
+    _settled: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False, compare=False)
+
+    async def wait_for_delivery(self) -> None:
+        """Wait until playback settles or the queue stops before delivery."""
+        await self._settled.wait()
+
+    @property
+    def delivery_confirmed(self) -> bool:
+        """Whether every requested zone has a confirmed output receipt."""
+        return bool(self.zone_receipts) and all(
+            state is ZoneDelivery.CONFIRMED for state in self.zone_receipts.values()
+        )
+
+    def receipt(self) -> dict:
+        """Project the delivery evidence without retaining the message."""
+        return {
+            "announcement_id": self.announcement_id,
+            "zones": {zone: state.value for zone, state in self.zone_receipts.items()},
+        }
 
 
 class IntercomSystem:
@@ -79,8 +95,8 @@ class IntercomSystem:
     Args:
         tts_callback: The shared voice owner, returning a playback receipt.
         zone_manager: Configured audio routes, used to load available outputs.
-        room_catalog: Configured transport ids and spoken names. With no catalog
-            supplied, only standalone programmatic calls use explicit audio routes.
+        room_catalog: Configured transport ids and names for spoken destinations.
+            Programmatic producers use the configured audio routes.
     """
 
     def __init__(
@@ -92,8 +108,8 @@ class IntercomSystem:
     ) -> None:
         self.tts = tts_callback
         self.zone_manager = zone_manager
-        self._room_names = None if room_catalog is None else {
-            zone: {_room_name(label) for label in labels} for zone, labels in room_catalog.items()
+        self._room_names = {
+            zone: {_room_name(label) for label in labels} for zone, labels in (room_catalog or {}).items()
         }
 
         self._announcement_queue: asyncio.Queue[Announcement] = asyncio.Queue()
@@ -123,6 +139,10 @@ class IntercomSystem:
                 await self._process_task
             except asyncio.CancelledError:
                 pass
+        while not self._announcement_queue.empty():
+            announcement = self._announcement_queue.get_nowait()
+            announcement._settled.set()
+            self._announcement_queue.task_done()
 
     async def _load_zones(self):
         """Load only explicitly configured audio routes."""
@@ -146,23 +166,13 @@ class IntercomSystem:
 
     def _parse_announcement_command(self, complement: str) -> tuple[str, list[str]]:
         """Resolve only a leading destination slot, keeping message text intact."""
-        text = complement.strip()
-        room_names = self._room_names or {}
-        direction = _DIRECTION.match(text)
-        marker = _MESSAGE_MARKER.search(text)
-        target = text[direction.end() if direction else 0:marker.start() if marker else len(text)]
-        target = target.strip(" ,")
-        if direction or target.casefold() in _ALL_ROOMS:
-            if target.casefold() in _ALL_ROOMS:
-                zones = list(room_names)
-            else:
-                label = _room_name(target)
-                matches = [zone for zone, names in room_names.items() if label and label in names]
-                zones = matches if len(matches) == 1 else []
-            return (text[marker.end():].strip() if marker else ""), zones
-        if marker and marker.start() == 0:
-            text = text[marker.end():].strip()
-        return text, list(room_names)
+        target, message_start = intercom_slots(complement)
+        message = complement[message_start:].strip()
+        if target is None or target.casefold() in INTERCOM_BROADCAST_TARGETS:
+            return message, list(self._room_names)
+        label = _room_name(target)
+        matches = [zone for zone, names in self._room_names.items() if label and label in names]
+        return message, matches if len(matches) == 1 else []
 
     async def announce_from_voice(self, complement: str) -> tuple[TaskOutcome, str, Announcement | None]:
         """Deliver an admitted P3-F2 request at the ordinary configured volume."""
@@ -186,7 +196,7 @@ class IntercomSystem:
         announcement = Announcement(f"ann_{uuid.uuid4().hex[:8]}", message, zones)
         await self._deliver_announcement(announcement)
         confirmed = sum(state is ZoneDelivery.CONFIRMED for state in announcement.zone_receipts.values())
-        if confirmed == len(zones):
+        if announcement.delivery_confirmed:
             return TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
                                dispatch=DispatchState.ACCEPTED, effect=EffectState.OBSERVED,
                                observation_scope="software_state"), "Anuncio reproducido.", announcement
@@ -210,7 +220,10 @@ class IntercomSystem:
         while self._running:
             try:
                 announcement = await self._announcement_queue.get()
-                await self._deliver_announcement(announcement)
+                try:
+                    await self._deliver_announcement(announcement)
+                finally:
+                    self._announcement_queue.task_done()
             except asyncio.CancelledError:
                 break
             except Exception as error:
@@ -218,25 +231,35 @@ class IntercomSystem:
 
     async def _deliver_announcement(self, announcement: Announcement) -> None:
         """Keep playback evidence for each zone, including an interrupted delivery."""
-        catalog = self._zones if self._room_names is None else self._room_names
-        targets = list(catalog) if "all" in announcement.target_zones else announcement.target_zones
-        announcement.zone_receipts = dict.fromkeys(targets, ZoneDelivery.NOT_SENT)
         try:
-            for index in range(announcement.repeat):
+            targets = self._targets(announcement)
+            announcement.zone_receipts = dict.fromkeys(targets, ZoneDelivery.NOT_SENT)
+            outputs: dict[Hashable, list[str]] = {}
+            for zone in announcement.zone_receipts:
+                key = self._playback_output_key(zone)
+                if key is None:
+                    announcement.zone_receipts[zone] = ZoneDelivery.FAILED
+                else:
+                    outputs.setdefault(key, []).append(zone)
+            # One attempt per physical channel in a broadcast, including failures.
+            repeats = announcement.repeat if len(targets) == 1 and "all" not in announcement.target_zones else 1
+            for index in range(repeats):
                 if index:
                     await asyncio.sleep(announcement.delay_between_repeats)
-                for zone in announcement.zone_receipts:
+                for zones in outputs.values():
                     try:
-                        delivery = await self._announce_to_zone(zone, announcement.message)
+                        delivery = await self._announce_to_zone(zones[0], announcement.message)
                     except asyncio.CancelledError:
-                        if announcement.zone_receipts[zone] is not ZoneDelivery.CONFIRMED:
-                            announcement.zone_receipts[zone] = ZoneDelivery.UNCERTAIN
+                        for zone in zones:
+                            if announcement.zone_receipts[zone] is not ZoneDelivery.CONFIRMED:
+                                announcement.zone_receipts[zone] = ZoneDelivery.UNCERTAIN
                         raise
-                    previous = announcement.zone_receipts[zone]
-                    if previous is not ZoneDelivery.CONFIRMED and (
-                        previous is not ZoneDelivery.UNCERTAIN or delivery is ZoneDelivery.CONFIRMED
-                    ):
-                        announcement.zone_receipts[zone] = delivery
+                    for zone in zones:
+                        previous = announcement.zone_receipts[zone]
+                        if previous is not ZoneDelivery.CONFIRMED and (
+                            previous is not ZoneDelivery.UNCERTAIN or delivery is ZoneDelivery.CONFIRMED
+                        ):
+                            announcement.zone_receipts[zone] = delivery
         finally:
             # Preserve the legacy summary fields alongside the individual receipts.
             announcement.failed_zones = [zone for zone, state in announcement.zone_receipts.items()
@@ -246,6 +269,7 @@ class IntercomSystem:
             self._announcement_history.append(announcement)
             if len(self._announcement_history) > 100:
                 self._announcement_history = self._announcement_history[-50:]
+            announcement._settled.set()
 
         try:
             if announcement.delivered and self._on_announcement_delivered:
@@ -255,14 +279,19 @@ class IntercomSystem:
         except Exception as error:
             logger.warning("Announcement listener failed: %s", type(error).__name__)
 
+    def _targets(self, announcement: Announcement) -> list[str]:
+        return list(self._zones) if "all" in announcement.target_zones else announcement.target_zones
+
+    def _playback_output_key(self, zone_id: str) -> Hashable | None:
+        if self.zone_manager is not None:
+            return self.zone_manager.playback_output_key(zone_id)
+        room_id = zone_id.removeprefix(ZONE_PREFIX)
+        if room_id in self._zones or ZONE_PREFIX + room_id in self._zones:
+            return ("registered", room_id)
+        return None
+
     async def _announce_to_zone(self, zone_id: str, message: str) -> ZoneDelivery:
         """Deliver through the shared local owner to one configured route."""
-        room_id = zone_id.removeprefix(ZONE_PREFIX)
-        canonical = ZONE_PREFIX + room_id
-        if self._room_names is not None and canonical not in self._room_names:
-            return ZoneDelivery.FAILED
-        if room_id not in self._zones and canonical not in self._zones:
-            return ZoneDelivery.FAILED
         try:
             result = await invoke_voice_callback(self.tts, message, zone_id)
         except VoiceDeliveryError as error:
@@ -287,11 +316,18 @@ class IntercomSystem:
         announcement = Announcement(
             announcement_id=f"ann_{uuid.uuid4().hex[:8]}",
             message=message,
-            target_zones=zones or ["all"],
+            target_zones=["all"] if zones is None else list(zones),
             priority=priority,
             created_by=user_id,
         )
-        await self._announcement_queue.put(announcement)
+        announcement.zone_receipts = dict.fromkeys(self._targets(announcement), ZoneDelivery.NOT_SENT)
+        if self._running and self.tts is not None:
+            try:
+                self._announcement_queue.put_nowait(announcement)
+                return announcement
+            except Exception as error:
+                logger.warning("Announcement could not be queued: %s", type(error).__name__)
+        announcement._settled.set()
         return announcement
 
     async def announce_emergency(self, message: str) -> Announcement:

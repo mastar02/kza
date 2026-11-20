@@ -1,5 +1,6 @@
 """Intercom routing, playback receipts and optional audio zone metadata."""
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,6 +9,7 @@ from src.audio.zone_manager import Zone, ZoneManager
 from src.core.task_outcome import DispatchState, EffectState, TaskStatus
 from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.intercom.intercom_system import AnnouncementPriority, IntercomSystem, ZoneDelivery
+from src.nlu.command_gate import CommandAcceptanceGate
 from src.nlu.household_intents import HouseholdFamily, classify_household_intent
 
 
@@ -63,11 +65,14 @@ def test_zone_defaults_intercom_fields_to_none():
 
 @pytest.mark.parametrize(("text", "message", "zones"), [
     ("Avisá en el fogón que Llegó Ana", "Llegó Ana", ["zone_cocina"]),
+    ("Avisa, en la cocina: Llego Ana", "Llego Ana", ["zone_cocina"]),
+    ("Avisa: en la cocina: Llego Ana", "Llego Ana", ["zone_cocina"]),
     ("Decile al Salón: Llegó Ana", "Llegó Ana", ["zone_sala"]),
     ("Decí en toda la casa que Llegó Ana", "Llegó Ana", ["zone_cocina", "zone_sala"]),
     ("Anunciá: Ana vino al Salón", "Ana vino al Salón", ["zone_cocina", "zone_sala"]),
     ("Anunciá que Ana está en la cocina", "Ana está en la cocina", ["zone_cocina", "zone_sala"]),
     ("Anunciá: Vení, y apagá la luz", "Vení, y apagá la luz", ["zone_cocina", "zone_sala"]),
+    ("Anuncia: El pedido esta listo.", "El pedido esta listo.", ["zone_cocina", "zone_sala"]),
     ("Avisá en kitchen que Llegó Ana", "Llegó Ana", []),
     ("Avisá en otra sala que Llegó Ana", "Llegó Ana", []),
     ("Anunciá en patio que Llegó Ana", "Llegó Ana", []),
@@ -79,6 +84,88 @@ def test_voice_resolves_only_configured_room_labels(text, message, zones):
     intent = classify_household_intent(text)
     assert intent.family is HouseholdFamily.INTERCOM
     assert intercom._parse_announcement_command(intent.complement) == (message, zones)
+
+
+@pytest.mark.parametrize("text", [
+    "Avisa, en el fogon: Llego Ana",
+    "Avisa, en el ambiente: Llego Ana",
+])
+async def test_punctuated_unknown_or_ambiguous_destination_never_broadcasts(text):
+    speak = MagicMock(side_effect=AssertionError("clarifications have no playback"))
+    intercom = IntercomSystem(speak, room_catalog={
+        "zone_cocina": ("Cocina", "ambiente"), "zone_sala": ("Sala", "ambiente"),
+    })
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("sala", "Sala")
+    await intercom.start()
+    try:
+        intent = classify_household_intent(text)
+        outcome, response, announcement = await intercom.announce_from_voice(intent.complement)
+        assert outcome.status is TaskStatus.NEEDS_INPUT
+        assert "sala configurada" in response and announcement is None
+        speak.assert_not_called()
+        assert intercom.get_history() == []
+    finally:
+        await intercom.stop()
+
+
+def test_gate_accepts_noise_words_in_intercom_payload_and_preserves_other_rejections():
+    gate = CommandAcceptanceGate()
+    assert gate.evaluate("Anuncia: El pedido esta listo.").accept
+    assert gate.evaluate("Anunciá: ¡Gracias por ver!").accept
+    rejected = gate.evaluate("Gracias por ver, anunciá que llegó Ana")
+    assert not rejected.accept and rejected.reason == "noise_phrase:'gracias por ver'"
+
+
+@pytest.mark.parametrize("shared_delivery", [DeliveryState.COMPLETE, DeliveryState.FAILED])
+async def test_voice_broadcast_keeps_room_receipts_for_one_attempt_per_physical_output(shared_delivery):
+    attempts = []
+
+    async def speak(message, zone):
+        attempts.append((message, zone))
+        delivery = shared_delivery if zone == "zone_cocina" else DeliveryState.COMPLETE
+        return ResponseResult(message, GenerationState.COMPLETE, delivery)
+
+    zones = ZoneManager([
+        Zone("cocina", "Cocina", 0, 1), Zone("comedor", "Comedor", 1, 1), Zone("sala", "Sala", 2, 2),
+    ], ma1260_controller=object())
+    intercom = IntercomSystem(speak, zones, room_catalog={
+        "zone_cocina": ("Cocina",), "zone_comedor": ("Comedor",), "zone_sala": ("Sala",),
+    })
+    await intercom.start()
+    try:
+        outcome, _, announcement = await intercom.announce_from_voice("en toda la casa: ¡Llegó Ana!")
+        shared = "confirmed" if shared_delivery is DeliveryState.COMPLETE else "failed"
+        assert announcement.receipt()["zones"] == {
+            "zone_cocina": shared, "zone_comedor": shared, "zone_sala": "confirmed",
+        }
+        assert outcome.task_completed is (shared_delivery is DeliveryState.COMPLETE)
+        assert attempts == [("¡Llegó Ana!", "zone_cocina"), ("¡Llegó Ana!", "zone_sala")]
+    finally:
+        await intercom.stop()
+
+
+async def test_shutdown_settles_active_and_pending_programmatic_announcements():
+    started = asyncio.Event()
+
+    async def speak(message, zone):
+        started.set()
+        await asyncio.Future()
+
+    intercom = IntercomSystem(speak)
+    intercom.register_zone("cocina", "Cocina")
+    await intercom.start()
+    active = await intercom.announce("Activo")
+    await started.wait()
+    pending = await intercom.announce("Pendiente")
+    await intercom.stop()
+
+    await intercom._announcement_queue.join()
+    await active.wait_for_delivery()
+    await pending.wait_for_delivery()
+    assert active.zone_receipts == {"cocina": ZoneDelivery.UNCERTAIN}
+    assert pending.zone_receipts == {"cocina": ZoneDelivery.NOT_SENT}
+    assert not active.delivery_confirmed and not pending.delivery_confirmed
 
 
 async def test_broadcast_keeps_confirmed_failed_and_uncertain_zones_without_voice_escalation():
