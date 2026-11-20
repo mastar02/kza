@@ -40,8 +40,21 @@ INSTRUMENT = """(() => {
     if(path==='/api/home/catalog'&&window.__qaHoldCatalog){window.__qaHoldCatalog=false;await new Promise(resolve=>window.__qaReleaseCatalog=resolve);}
     if(path==='/api/reminders/notices'&&window.__qaHoldNotices){window.__qaHoldNotices=false;await new Promise(resolve=>window.__qaReleaseNotices=resolve);}
     if(path==='/api/reminders/notices'&&window.__qaFailNotices)throw new TypeError('Synthetic offline notices');
+    const evaluatorToken=path==='/api/reminders/notices/dismiss'&&window.__qaNoticeEvaluatorToken;
+    if(evaluatorToken){
+      delete window.__qaNoticeEvaluatorToken;
+      // This intercept runs after the app's whoami and before the POST reaches the server.
+      const login=await fetcher('/api/admin/auth/login',{method:'POST',credentials:'same-origin',cache:'no-store',
+        headers:{'Content-Type':'application/json'},body:JSON.stringify({token:evaluatorToken})});
+      if(!login.ok)throw new Error('Synthetic evaluator cookie switch failed');
+    }
     const response=await fetcher(input,options);
-    if(path==='/api/reminders/notices'&&window.__qaHoldNoticeResponse){window.__qaHoldNoticeResponse=false;await new Promise(resolve=>window.__qaReleaseNoticeResponse=resolve);}
+    if(evaluatorToken)window.__qaNoticeWriteStatus=response.status;
+    if(path==='/api/reminders/notices'&&window.__qaHoldNoticeResponse){
+      window.__qaHoldNoticeResponse=false;
+      await response.clone().arrayBuffer();
+      await new Promise(resolve=>window.__qaReleaseNoticeResponse=resolve);
+    }
     if(path==='/api/reminders/notices/dismiss'&&window.__qaDropNoticeDismiss){window.__qaDropNoticeDismiss=false;await response.text();throw new TypeError('Synthetic lost notice receipt');}
     if(path==='/api/admin/users'&&(!options.method||options.method==='GET')&&window.__qaHoldPeople){window.__qaHoldPeople=false;await new Promise(resolve=>window.__qaReleasePeople=resolve);}
     if(path==='/api/admin/users'&&options.method==='POST'&&window.__qaHoldPeopleMutation){window.__qaHoldPeopleMutation=false;await new Promise(resolve=>window.__qaReleasePeopleMutation=resolve);}
@@ -373,8 +386,8 @@ async def main() -> None:
                     await asyncio.sleep(0.1)
                     assert await page.evaluate("document.documentElement.scrollWidth<=window.innerWidth")
 
-                    await notice_store.create('synthetic-owner', 'Aviso antes de cerrar sesión', time.time() - 2,
-                                              scope=ReminderScope.SHARED)
+                    late_notice = await notice_store.create('synthetic-owner', 'Aviso antes de cerrar sesión',
+                                                            time.time() - 2, scope=ReminderScope.SHARED)
                     await page.evaluate("document.querySelector('#home-notices button').click()")
                     await page.wait_for(f"{NOTICES_READY} && document.querySelector('#home-notices').textContent.includes('Aviso antes de cerrar sesión')")
                     await page.evaluate("window.__qaHoldNoticeResponse=true;document.querySelector('#home-notices button').click()")
@@ -391,15 +404,28 @@ async def main() -> None:
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
 
                     marker = len(requests)
-                    # This household-only fixture also covers hidden evaluator bootstrap.
-                    await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:true})")
+                    await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:false})")
                     await login(page, evaluator.token, "Evaluación temporal")
                     await page.wait_for("!document.querySelector('#evaluation-view').hidden && !!document.querySelector('#app-nav [data-view=evaluation]')")
                     assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].every(node=>node.dataset.view==='evaluation') && !document.querySelector('#house-canvas canvas')")
-                    await page.evaluate("window.__qaReleaseNoticeResponse()")
-                    assert await page.evaluate("!document.querySelector('#home-notices') && !document.body.textContent.includes('Aviso antes de cerrar sesión')")
+                    await page.evaluate("new Promise(resolve=>{window.__qaReleaseNoticeResponse();requestAnimationFrame(()=>requestAnimationFrame(resolve))})")
+                    assert await page.evaluate("document.hidden===false && document.querySelector('#home-view').hidden && !document.querySelector('#home-notices,.notice-row,[data-notice-dismiss]') && !document.body.textContent.includes('Aviso antes de cerrar sesión')")
                     assert not any(item['path'] in {NOTICE_LIST, NOTICE_DISMISS} for item in requests[marker:])
                     assert not any(request["path"].startswith('/api/home/') or request["path"] in {"/api/users", "/api/voices", "/api/conversations"} for request in requests[marker:])
+                    await page.evaluate("document.querySelector('#logout').click()")
+                    await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
+
+                    await login(page, home.token, "Acceso de hogar")
+                    await page.wait_for(f"{NOTICES_READY} && !!document.querySelector('{PENDING_DISMISS}')")
+                    marker = len(requests)
+                    await page.evaluate(f"window.__qaNoticeEvaluatorToken={json.dumps(evaluator.token)};"
+                                        f"document.querySelector('{PENDING_DISMISS}').click()")
+                    await page.wait_for("window.__qaNoticeWriteStatus===403 && document.querySelector('#session-label').textContent==='Evaluación temporal'")
+                    await page.wait_for("!document.querySelector('#evaluation-view').hidden")
+                    assert sum(item['path'] == NOTICE_DISMISS and item['method'] == 'POST' for item in requests[marker:]) == 1
+                    assert (await notice_store.get_by_id(late_notice.id)).state is ReminderState.ACTIVE
+                    assert await notice_store.get_home_action_receipt(notice_request_id(late_notice.id, late_notice.trigger_at, 1)) is None
+                    assert await page.evaluate("!document.querySelector('#home-notices,.notice-row,[data-notice-dismiss]')")
                     await page.evaluate("document.querySelector('#logout').click()")
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
 
@@ -517,7 +543,8 @@ async def main() -> None:
                               "staleness": {**staleness_check, "stale_episodes_during_audits": len(stale_episodes)},
                               "notice_checks": ["real shared-only list and dismiss", "initial and post-dismiss empty state", "pending and uncertain delivery labels",
                                                 "no markup in notice text", "stale and offline states block writes", "keyboard focus holds through refresh and returns after removal",
-                                                "lost committed receipt stays uncertain", "no hidden or evaluator prefetch", "logout clears before late response"],
+                                                "lost committed receipt stays uncertain", "visible evaluator has no notice requests or DOM after a late response",
+                                                "logout clears before late response", "server rejects evaluator cookie introduced after whoami"],
                               "people_checks": ['real CRUD once per gesture', 'mutation stays pending across leave/reentry without repost', 'crossed GET keeps latest result', 'lost mutation receipt requires GET without repost', 'account level does not select dashboard role', 'cancelled confirmation has no effect', 'deletion retires every personal session', 'last admin conflict', '503 is not empty catalog', 'open dialog reports failed refresh and disables submit while preserving draft', 'names are DOM text', '320/390 reflow', 'logout clears dialog/draft/accounts before late GET under another login'],
                               "screenshots": ["home-desktop.png", "climate-desktop.png", "home-mobile.png", "people-desktop.png", "people-mobile.png"],
                               "reflow_widths": {view: sorted(audit['widths'], key=int) for view, audit in audits.items()},

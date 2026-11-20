@@ -166,6 +166,8 @@
       writing = operation; feedback = null; emit();
       let sent = false;
       try {
+        // whoami checks the account known to this tab at lookup time. The POST
+        // authorizes its own cookie on the server, including a cookie changed since whoami.
         const identity = await verify(operation.preflight.signal, current);
         if (!identity || !current()) return false;
         mayWrite = identity.permissions.includes('tasks:write');
@@ -189,7 +191,10 @@
         return true;
       } catch (failure) {
         if (currentAccount() && writing === operation && (sent || current())) {
-          if (failure?.status === 403) mayWrite = false;
+          if (failure?.status === 403) {
+            if (sent) forgetObservation();
+            else mayWrite = false;
+          }
           feedback = sent || [401, 403].includes(failure?.status)
             ? dismissError(failure) : { kind: 'error', text: 'No se pudo verificar la sesión. El descarte no se envió.' };
         }

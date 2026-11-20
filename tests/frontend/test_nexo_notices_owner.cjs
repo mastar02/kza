@@ -49,7 +49,7 @@ function setup({ identity = grant(), entries = [] } = {}) {
     requests.push({ path, ...options });
     if (path === WHOAMI) return fixture.whoami ? fixture.whoami() : response(fixture.identity);
     if (path === NOTICE_LIST) return fixture.list ? fixture.list() : fixture.sample();
-    if (path === NOTICE_DISMISS) return fixture.post();
+    if (path === NOTICE_DISMISS) return fixture.post(options);
     assert.fail(`Unexpected route ${path}`);
   } });
   const api = createScopedApi({ session, transport, onRetired: () => { session.clear(); owner.clear(); } });
@@ -176,6 +176,54 @@ test('losing live read permission during preflight clears all notice data immedi
   assert.equal(posts().length, 0);
 });
 
+test('the server rejects a dismiss if the cookie loses write authority after whoami', async () => {
+  for (const nextCookie of [grant(['evaluation:read'], 'evaluator', 'synthetic-evaluator'),
+    grant(['home:read', 'tasks:read'])]) {
+    const { fixture, owner, open, key, requests, accountChanges } = setup({ entries: [due] });
+    await open();
+    const occurrence = key(due.reminder_id), marker = requests.length;
+    const originalCookie = fixture.identity, reconcile = deferred();
+    let status;
+    fixture.whoami = () => {
+      // The first whoami answers from Home. The next HTTP request uses the
+      // replacement cookie, while this tab still holds its original permissions.
+      const answer = response(originalCookie);
+      fixture.identity = nextCookie;
+      fixture.whoami = async () => { await reconcile.promise; return response(fixture.identity); };
+      return answer;
+    };
+    fixture.post = ({ body }) => {
+      assert.deepEqual(JSON.parse(body), { reminder_id: due.reminder_id, trigger_at: due.trigger_at });
+      if (fixture.identity.permissions.includes('tasks:write')) {
+        fixture.entries = []; status = 200; return success('dismissed');
+      }
+      status = 403; return response({ detail: 'dashboard_permission_denied' }, status);
+    };
+
+    assert.equal(await owner.dismiss(occurrence), false);
+    assert.equal(status, 403);
+    assert.deepEqual(requests.slice(marker).map(({ path }) => path), [WHOAMI, NOTICE_DISMISS, WHOAMI]);
+    assert.deepEqual(fixture.entries, [due]);
+    assert.deepEqual(owner.getState().notices, []);
+    assert.equal(owner.getState().canWrite, false);
+    assert.equal(owner.getState().feedback.kind, 'error');
+    assert.match(owner.getState().feedback.text, /permiso/);
+
+    reconcile.resolve();
+    await flush();
+    assert.equal(requests.slice(marker).filter(({ path }) => path === NOTICE_DISMISS).length, 1);
+    if (nextCookie.role === 'evaluator') {
+      assert.equal(accountChanges.length, 1);
+      assert.deepEqual(owner.getState(), { visible: false });
+      assert.equal(requests.slice(marker).some(({ path }) => path === NOTICE_LIST), false);
+    } else {
+      assert.equal(owner.getState().status, 'ready');
+      assert.equal(key(due.reminder_id), occurrence);
+      assert.equal(owner.getState().canWrite, false);
+    }
+  }
+});
+
 test('double dismiss sends once and an older list response cannot restore the committed occurrence', async () => {
   const successor = { ...due, trigger_at: due.trigger_at + 30 };
   const { owner, open, fixture, posts } = setup({ entries: [due, successor] });
@@ -262,7 +310,7 @@ test('account switch during a list read clears and discards the response', async
   assert.deepEqual(owner.getState(), { visible: false });
 });
 
-test('switching personal grants under the same subject stops dismiss and clears old data', async () => {
+test('whoami reporting a different personal grant under the same subject clears the tab before POST', async () => {
   const { owner, open, key, fixture, posts, accountChanges } = setup({ identity: grant(writeGrant, 'home', 'same', 'binding-a'), entries: [due] });
   await open();
   fixture.identity = grant(writeGrant, 'home', 'same', 'binding-b');
