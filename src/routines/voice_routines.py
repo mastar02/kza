@@ -67,7 +67,8 @@ _CONFIGURATION_VERB = re.compile(
     r"|\b(?:configur|program)(?:ame|ar|e)\b"
 )
 _VOSEO_PROGRAM_VERB = re.compile(r"\bprogramá\b", re.I)
-_PROGRAM_DETERMINER = r"(?:el|del|al|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
+_PROGRAM_PLAIN_DETERMINER = r"(?:el|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
+_PROGRAM_DETERMINER = rf"(?:del|al|{_PROGRAM_PLAIN_DETERMINER})"
 _PROGRAM_OBJECT = r"(?:el|la|los|las|un|una|unos|unas|mi|tu|su|este|esta|ese|esa)"
 _PROGRAM_PRENOMINAL_MODIFIER = (
     r"(?:buen(?:a)?|mal(?:a)?|gran|mejor|peor|mayor|menor|nuev[oa]|viej[oa]|primer[oa]?|segund[oa]"
@@ -80,13 +81,19 @@ _PROGRAM_PRENOMINAL_MODIFIER = (
 )
 _PROGRAM_NOMINAL_END = rf"programa\b(?!\s*[,;:]| {_PROGRAM_OBJECT}\b)"
 _PROGRAM_SCHEDULE_TAIL = r"(?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|[0-9]+|cuando|cada|tod[oa]s?)"
-# The open modifier needs "programa de" and excludes purpose and time complements.
-# Relative clauses ("el primer programa que se emitió") are nominal as well.
+_PROGRAM_COMPLEMENT_CONTEXT = (
+    r"(?<!\bpara )(?<!\bdespues )(?<!\bluego )(?<!\bantes )"
+    r"(?<!\bdespues de )(?<!\bluego de )(?<!\bantes de )"
+)
+# A temporal complement may end at an ordinal ("después del último, programa ...").
+# After one of those complements, "programa a las" can also be a command.
+# A known modifier can still name a program with a "de" complement after those phrases.
 _NOMINAL_PROGRAM = re.compile(
-    rf"\b{_PROGRAM_DETERMINER} {_PROGRAM_NOMINAL_END}"
-    rf"|\b{_PROGRAM_DETERMINER} {_PROGRAM_PRENOMINAL_MODIFIER} {_PROGRAM_NOMINAL_END}(?! {_PROGRAM_SCHEDULE_TAIL}\b)"
-    r"|(?<!\bpara )(?<!\bdespues )(?<!\bluego )(?<!\bdespues de )(?<!\bluego de )"
-    rf"\b{_PROGRAM_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= de\b)"
+    rf"\b{_PROGRAM_DETERMINER} {_PROGRAM_NOMINAL_END}(?! a las\b)"
+    rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_DETERMINER}(?: {_PROGRAM_PRENOMINAL_MODIFIER})?"
+    rf" {_PROGRAM_NOMINAL_END}(?! {_PROGRAM_SCHEDULE_TAIL}\b)"
+    rf"|\b{_PROGRAM_DETERMINER} {_PROGRAM_PRENOMINAL_MODIFIER} {_PROGRAM_NOMINAL_END}(?= de\b)"
+    rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_PLAIN_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= (?:de|que)\b)"
 )
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
 _INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"

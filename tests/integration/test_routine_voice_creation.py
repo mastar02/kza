@@ -69,6 +69,8 @@ async def voice_router(orchestrated, utterance, *, scheduler=None):
     ("después del riego, programa que vuelva a arrancar a las ocho", "no creo rutinas por voz"),
     ("después del riego programa, que vuelva a arrancar a las ocho", "no creo rutinas por voz"),
     ("después del riego programa que vuelva a arrancar a las ocho", "no creo rutinas por voz"),
+    ("después del último programa que se encienda el riego a las ocho", "no creo rutinas por voz"),
+    ("para el próximo programa que se encienda el riego a las ocho", "no creo rutinas por voz"),
     ("programa que arranque el riego al anochecer", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego, ¿podés?", "no creo rutinas por voz"),
@@ -118,6 +120,7 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "quiero escuchar un buen programa de rutinas de ejercicio",
     "quiero escuchar un excelente programa de rutinas de ejercicio",
     "quiero ver el primer programa que se emitió anoche",
+    "quiero ver el polémico programa que ganó el premio",
     "¿se configura el horario de la automatización de riego desde la web?",
     "podés decirme quién configura el horario de la automatización de riego",
     "¿Te parece que programa bien el horario la automatización de riego?",
@@ -152,6 +155,7 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
     "para el excelente programa de rutinas de ejercicio",
     "quiero ver un insólito programa de rutinas de ejercicio",
     "quiero ver el primer programa que el público votó",
+    "quiero ver el programa a las ocho sobre rutinas de ejercicio",
 ])
 def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance):
     assert not is_unclaimed_routine_creation(f"Nexa, {utterance}")
@@ -172,6 +176,11 @@ def test_accented_program_verb_survives_nominal_filtering():
     "después del riego programa de nuevo el horario de la automatización",
     "luego del riego programa de nuevo el horario de la automatización",
     "para el riego programa de nuevo el horario de la automatización",
+    "antes del último programa que se encienda el riego",
+    "luego de el último programa que se encienda el riego",
+    "para el próximo programa a las ocho la rutina de jardín",
+    "después del último programa a las ocho la rutina de jardín",
+    "para el programa a las ocho la rutina de jardín",
 ])
 def test_program_directive_survives_nominal_filtering(utterance):
     assert is_unclaimed_routine_creation(f"Nexa, {utterance}")
