@@ -17,6 +17,7 @@ scheduler once it exists.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 import logging
@@ -29,7 +30,7 @@ from src.core.task_outcome import (
 )
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.nlu.command_grammar import WAKE_TERMS
-from src.nlu.household_intents import HouseholdFamily, HouseholdIntent, HouseholdOperation
+from src.nlu.household_intents import HouseholdFamily, HouseholdIntent, HouseholdOperation, strip_fillers
 from src.routines.models import (
     ActionStatus, BrakeStatus, RoutineBrake, RoutineConflict, RoutineNameConflict, RoutineNotFound, RoutineRun,
     RunStatus, ScheduledRoutine, TimeSchedule,
@@ -50,10 +51,13 @@ ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desd
 _UNCLAIMED_CREATION = re.compile(
     r"\b(?:(?:crea|crear) (?:una )?(?:rutina|automatizacion)|nueva (?:rutina|automatizacion)|automatiza)\b"
 )
-_ROUTINE_CONFIGURATION = re.compile(r"\b(?:programa que|quiero que cuando|haz que cuando|configura que|cada vez que)\b")
+_ROUTINE_DIRECTIVE = re.compile(r"\b(?:programa que|quiero que cuando|haz que cuando|configura que)\b")
+_RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
+_CONFIGURATION_HEAD = re.compile(r"^(?:configur(?:a|ame|ar|e)|program(?:a|ame|ar|e))\b")
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
 _PLURAL_NOUNS = frozenset({"rutinas", "automatizaciones"})
+_ROUTINE_VOCABULARY = _SINGULAR_NOUNS | _PLURAL_NOUNS | {"rutinario", "rutinaria", "rutinarios", "rutinarias"}
 # Words heard before the request itself: wake words, fillers and courtesy.
 _LEADS = frozenset(WAKE_TERMS | {"che", "oye", "oi", "hola", "bueno", "dale", "eh", "ehh", "em", "y", "ahora",
                                   "entonces", "porfa", "por", "favor", "disculpa", "perdon"})
@@ -243,15 +247,19 @@ def _words(text: str) -> list[str]:
     return re.sub(r"[^a-z0-9]+", " ", _fold(text)).split()
 
 
-def is_unclaimed_routine_creation(text: str) -> bool:
+def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) -> bool:
     """Recognize creation or configuration of routines outside the request grammar."""
-    words = _words(text)
+    words = strip_fillers(text, wake_words, extra_leads=_LEADS)
     phrase = " ".join(words)
-    if _UNCLAIMED_CREATION.search(phrase):
+    if _UNCLAIMED_CREATION.search(phrase) or _ROUTINE_DIRECTIVE.search(phrase):
         return True
-    # General conditional language is only a routine request when it names one.
-    return (not (_SINGULAR_NOUNS | _PLURAL_NOUNS).isdisjoint(words)
-            and _ROUTINE_CONFIGURATION.search(phrase) is not None)
+    # A recurrence clause at the head can describe a new automation without
+    # naming one. In a question such as "qué pasa cada vez que llueve" it
+    # needs separate routine vocabulary. A bare "cuando" is never a cue.
+    if _RECURRENCE_CLAUSE.match(phrase):
+        return True
+    return (not _ROUTINE_VOCABULARY.isdisjoint(words)
+            and (_CONFIGURATION_HEAD.match(phrase) is not None or _RECURRENCE_CLAUSE.search(phrase) is not None))
 
 
 def name_key(name: str) -> str:

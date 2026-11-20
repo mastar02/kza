@@ -1315,7 +1315,7 @@ class RequestDispatcher:
 
         # Requests the household grammar did not claim still cannot be extracted
         # by the reasoner or treated as an immediate HA action.
-        if is_unclaimed_routine_creation(text_lower):
+        if is_unclaimed_routine_creation(text_lower, wake_words=self.household_intents.settings.wake_words):
             return PathType.FAST_ROUTINE, Priority.MEDIUM
 
         if service_filter in ("turn_on", "turn_off"):
@@ -2034,7 +2034,7 @@ class RequestDispatcher:
                 if read is not None:
                     return read
                 # An uncued consult without a matching saved routine goes to conversation.
-            elif is_unclaimed_routine_creation(text):
+            elif is_unclaimed_routine_creation(text, wake_words=self.household_intents.settings.wake_words):
                 return self._household_refusal(PathType.FAST_ROUTINE, "routine", ROUTINE_CREATE_REFUSAL,
                                                TaskStatus.UNSUPPORTED)
 

@@ -2032,7 +2032,10 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        refuse_routine = is_unclaimed_routine_creation(text) or (
+        refuse_routine = (
+            household is None
+            and is_unclaimed_routine_creation(text, wake_words=self.household_intents.settings.wake_words)
+        ) or (
             household is not None and household.family is HouseholdFamily.ROUTINE
             and (household.operation is not HouseholdOperation.QUERY or self.voice_routines is None)
         )

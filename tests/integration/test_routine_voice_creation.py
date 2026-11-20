@@ -1,32 +1,28 @@
 """Routine requests cannot fall back to installing or deleting HA automations."""
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
 
-from src.orchestrator.dispatcher import MultiUserOrchestrator
+from src.orchestrator.dispatcher import DispatchResult, MultiUserOrchestrator, PathType, Priority
+from src.pipeline.command_event import CommandEvent
 from src.pipeline.command_processor import ProcessedCommand
 from src.pipeline.request_router import RequestRouter
 from src.routines.voice_routines import VoiceRoutineService
 from tests.mocks.responses import response_handler_mock
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("orchestrated", [True, False])
-@pytest.mark.parametrize(("utterance", "response_part"), [
-    ("pensaba en una nueva rutina para la noche", "no creo rutinas por voz"),
-    ("borrá la rutina riego", "desde la web"),
-    ("elimina la automatización riego", "desde la web"),
-    ("elimina las automatizaciones de riego", "desde la web"),
-    ("para la rutina de riego configura que funcione de noche", "no creo rutinas por voz"),
-])
-async def test_retired_routine_requests_are_refused_before_a_producer(orchestrated, utterance, response_part):
-    text = f"Nexa, {utterance}"
+@asynccontextmanager
+async def voice_router(orchestrated, utterance, *, scheduler=None):
     processor = MagicMock()
-    processor.process_command = AsyncMock(return_value=ProcessedCommand(text=text, success=True, timings={}))
+    processor.process_command = AsyncMock(return_value=ProcessedCommand(
+        text=f"Nexa, {utterance}", success=True, timings={},
+    ))
     chroma, ha, reasoner = MagicMock(), AsyncMock(), MagicMock()
-    voice_routines = VoiceRoutineService()
+    voice_routines = VoiceRoutineService(scheduler)
     orchestrator = MultiUserOrchestrator(chroma, ha, llm=reasoner, voice_routines=voice_routines)
     orchestrator.dispatcher._slow_path = AsyncMock(side_effect=AssertionError("routine reached cloud"))
     audio_manager = MagicMock()
@@ -37,14 +33,70 @@ async def test_retired_routine_requests_are_refused_before_a_producer(orchestrat
         wake_acoustically_confirmed=True,
     )
     try:
+        yield router, orchestrator.dispatcher
+    finally:
+        await router.aclose()
+        await orchestrator.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("orchestrated", [True, False])
+@pytest.mark.parametrize(("utterance", "response_part"), [
+    ("pensaba en una nueva rutina para la noche", "no creo rutinas por voz"),
+    ("borrá la rutina riego", "desde la web"),
+    ("elimina la automatización riego", "desde la web"),
+    ("elimina las automatizaciones de riego", "desde la web"),
+    ("para la rutina de riego configura que funcione de noche", "no creo rutinas por voz"),
+    ("para el riego rutinario configura que funcione de noche", "no creo rutinas por voz"),
+    ("configura el horario de la automatización de riego", "no creo rutinas por voz"),
+    ("programa que arranque el riego al anochecer", "no creo rutinas por voz"),
+    ("quiero que cuando anochezca empiece el riego", "no creo rutinas por voz"),
+    ("haz que cuando anochezca empiece el riego", "no creo rutinas por voz"),
+    ("configura que el riego empiece de noche", "no creo rutinas por voz"),
+    ("cada vez que anochezca que empiece el riego", "no creo rutinas por voz"),
+])
+async def test_retired_routine_requests_are_refused_before_a_producer(orchestrated, utterance, response_part):
+    async with voice_router(orchestrated, utterance) as (router, dispatcher):
         result = await router.process_command(np.zeros(16000, dtype=np.float32))
         assert result["intent"] == "routine" and response_part in result["response"]
+        if orchestrated:
+            assert result["path"] == "fast_routine"
         assert result["outcome"]["status"] == "unsupported"
         assert result["outcome"]["persistence"] == "not_written"
         assert result["outcome"]["dispatch"] == "not_sent"
         assert result["task_completed"] is False
-        assert not ha.mock_calls and not chroma.mock_calls and not reasoner.mock_calls
-        orchestrator.dispatcher._slow_path.assert_not_called()
-    finally:
-        await router.aclose()
-        await orchestrator.stop()
+        assert not router.ha.mock_calls and not router.chroma.mock_calls and not router.llm.mock_calls
+        dispatcher._slow_path.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("orchestrated", [True, False])
+async def test_catalog_question_with_automation_vocabulary_still_reads(orchestrated):
+    scheduler = SimpleNamespace(get_all_routines=AsyncMock(return_value=[]))
+    text = "qué rutinas tengo y cuál automatiza el riego"
+    async with voice_router(orchestrated, text, scheduler=scheduler) as (router, dispatcher):
+        event = CommandEvent(np.zeros(16000, dtype=np.float32), room_id="", capture_trigger="wake", wake_score=0.9)
+        result = await router.process_command(event)
+        assert result["intent"] == "routine" and result["outcome"]["status"] == "completed"
+        assert result["response"] == "No hay rutinas guardadas. Podés crearlas desde la web."
+        scheduler.get_all_routines.assert_awaited_once()
+        assert not router.ha.mock_calls and not router.chroma.mock_calls and not router.llm.mock_calls
+        dispatcher._slow_path.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("orchestrated", [True, False])
+@pytest.mark.parametrize("utterance", ["cuándo juega Peñarol", "qué pasa cada vez que hay un empate"])
+async def test_time_question_without_automation_intent_stays_conversational(orchestrated, utterance):
+    async with voice_router(orchestrated, utterance) as (router, dispatcher):
+        router.chroma.search_command.return_value = None
+        dispatcher._slow_path = AsyncMock(return_value=DispatchResult(
+            PathType.SLOW_LLM, Priority.LOW, True, "Respuesta sintética.", intent="conversation",
+        ))
+        result = await router.process_command(np.zeros(16000, dtype=np.float32))
+        assert result["intent"] == "conversation"
+        if orchestrated:
+            assert result["path"] == "slow_llm"
+            dispatcher._slow_path.assert_awaited_once()
+        else:
+            router.chroma.search_command.assert_called()
