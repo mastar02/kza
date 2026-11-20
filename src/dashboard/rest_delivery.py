@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from fastapi import FastAPI
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp,Receive,Scope,Send
 
 from src.analytics.event_logger import EventLogger
@@ -26,6 +26,10 @@ from src.memory.fact_ledger import MemorySource
 
 if TYPE_CHECKING:
     from src.dashboard.live_retention import LiveRetention,LiveSubscriber
+    from src.routines.proposals import ProposalDelivery
+
+ROUTINE_PROPOSALS_PATH = '/api/routines/proposals'
+PROPOSAL_DELIVERY_SCOPE = 'kza.routine_proposal_delivery'
 
 
 class RestResult(StrEnum):
@@ -89,6 +93,7 @@ class DashboardApplication(FastAPI):
         async def guarded_send(message):
             nonlocal guard, observation
             try:
+                proposal_delivery = scope.get(PROPOSAL_DELIVERY_SCOPE)
                 if message['type'] == 'http.response.start':
                     observation = scope.get('kza.dashboard_observation')
                     # Logout publishes only its fixed revocation receipt and cookie removal.
@@ -99,6 +104,10 @@ class DashboardApplication(FastAPI):
                             (b'content-type', b'application/json'), (b'cache-control', b'no-store'),
                             (b'content-length', str(len(denial)).encode('ascii'))]})
                         await send({'type': 'http.response.body', 'body': denial})
+                        raise _PrivateDeliveryRetired()
+                    elif proposal_delivery is not None and not proposal_delivery.current():
+                        await JSONResponse({'detail': 'routine_proposal_not_found'}, status_code=404,
+                                           headers={'Cache-Control': 'no-store'})(scope, receive, send)
                         raise _PrivateDeliveryRetired()
                     elif not source_current():
                         unavailable = b'{"detail":"Estado de entidad no disponible"}'
@@ -117,13 +126,34 @@ class DashboardApplication(FastAPI):
                             if key.lower() != b'cache-control'
                         ] + [(b'cache-control', b'no-store')]}
                 elif message['type'] == 'http.response.body':
-                    if not current() or not source_current():
+                    if (not current() or not source_current()
+                            or proposal_delivery is not None and not proposal_delivery.current()):
                         # Headers may already have reached the peer. Closing the response
                         # preserves its framing and never presents a replacement as success.
                         raise _PrivateDeliveryRetired()
                 await send(message)
             finally:
                 message = None
+
+        application = super().__call__
+        path = scope.get('path', '')
+        tray = getattr(self.state, 'routine_proposals', None)
+        if (tray is not None and scope.get('method') == 'GET'
+                and (path == ROUTINE_PROPOSALS_PATH or (
+                    path.startswith(ROUTINE_PROPOSALS_PATH + '/') and path.count('/') == 4
+                ))):
+            async def serve_proposals(delivery: ProposalDelivery | None) -> None:
+                if delivery is not None:
+                    scope[PROPOSAL_DELIVERY_SCOPE] = delivery
+                try:
+                    await application(scope, receive, guarded_send)
+                except _PrivateDeliveryRetired:
+                    return
+                finally:
+                    scope.pop(PROPOSAL_DELIVERY_SCOPE, None)
+
+            await tray.own_delivery(serve_proposals)
+            return
 
         owner = getattr(self.state, 'rest_delivery_owner', None)
         try:
@@ -135,9 +165,9 @@ class DashboardApplication(FastAPI):
                 if not isinstance(owner,RestDeliveryOwner):
                     await RestDeliveryOwner._error(guarded_send,503)
                     return
-                await owner.scope(super().__call__, scope, receive, guarded_send)
+                await owner.scope(application, scope, receive, guarded_send)
             else:
-                await super().__call__(scope, receive, guarded_send)
+                await application(scope, receive, guarded_send)
         except _PrivateDeliveryRetired:
             return
 

@@ -178,6 +178,8 @@ def _route_permissions(
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.HOME_CONTROL})
     if not read and path.startswith("/api/entities/") and path.endswith("/call") and path.count("/") == 4:
         return frozenset({DashboardPermission.HOME_CONTROL})
+    if path == "/api/routines/proposals" or path.startswith("/api/routines/proposals/"):
+        return frozenset({DashboardPermission.ROUTINES_MANAGE})
     if path == "/api/routines" or path.startswith("/api/routines/"):
         tail = path.split("/")[4:]
         if method == "POST" and tail == ["execute"]:

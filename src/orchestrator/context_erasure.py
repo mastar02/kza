@@ -1,9 +1,12 @@
 """Registered snapshot cleanup and retained runtime conversation context scopes."""
 
+from __future__ import annotations
+
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from functools import partial
+from typing import TYPE_CHECKING
 from weakref import WeakSet
 
 from src.core.owned_work import OwnedBlockingWork
@@ -13,6 +16,9 @@ from src.memory.privacy_services import PrivacyServices
 from src.orchestrator.context_storage import cleanup_snapshots, register_snapshots
 from src.orchestrator.context_retention import ContextRetention
 
+if TYPE_CHECKING:
+    from src.routines.proposals import RoutineProposalTray
+
 
 async def _await(function, *args, **kwargs):
     return await function(*args, **kwargs)
@@ -21,8 +27,11 @@ async def _await(function, *args, **kwargs):
 class ContextEraser:
     """Connect known context buffers and policy roots without broad erasure claims."""
 
-    def __init__(self, privacy: PrivacyServices):
+    def __init__(self, privacy: PrivacyServices, *, routine_proposals: RoutineProposalTray | None = None):
+        if routine_proposals is not None and routine_proposals.source_policy is not privacy.ledger:
+            raise ValueError("routine_proposal_authority_mismatch")
         self.privacy = privacy
+        self.routine_proposals = routine_proposals
         self._managers = WeakSet()
         self._short_terms = WeakSet()
         self._routers = WeakSet()
@@ -33,6 +42,8 @@ class ContextEraser:
         self._runtime = OwnedBlockingWork(worker=_await)
         self._closing = None
         self.retention = ContextRetention(privacy, runtime_sweep=self._sweep_runtime)
+        if routine_proposals is not None:
+            routine_proposals.retention_notify = self.retention.notify
 
     async def _offload(self, function, *args, **kwargs):
         return await asyncio.get_running_loop().run_in_executor(
@@ -79,6 +90,8 @@ class ContextEraser:
             results.append(memory.prune_retained())
         for router in list(self._routers):
             router.prune_private()
+        if self.routine_proposals is not None:
+            results.append(self.routine_proposals.prune_retained())
         return {'checked_at':now,'next_at':min([now+30,*(r['next_at'] for r in results)]),
             'pruned':sum(r['pruned'] for r in results),'unknown':sum(r['unknown'] for r in results),
             'pending_operations':sum(r['pending_operations'] for r in results)}
@@ -89,6 +102,8 @@ class ContextEraser:
         if not self.privacy.ledger.conversation_revoked(step.conversation_id):
             raise RuntimeError("context_erasure_authority_unavailable")
         unknown = 0
+        if self.routine_proposals is not None:
+            unknown += self.routine_proposals.erase_conversation(step.conversation_id)
         for manager in list(self._managers):
             unknown += await manager.erase_conversation(step.conversation_id)
         for memory in list(self._short_terms):
@@ -138,7 +153,7 @@ class ContextEraser:
 
 async def build_context_erasure(
     config: dict, *, privacy: PrivacyServices, owner: ErasureCoordinator, memory=None,
-    verify_only: bool = False,
+    verify_only: bool = False, routine_proposals: RoutineProposalTray | None = None,
 ) -> ContextEraser:
     """Register historical roots even with persistence, recall or orchestration off."""
     base = (
@@ -154,7 +169,7 @@ async def build_context_erasure(
         1,
         {"kind": "runtime", "name": "conversation_buffers"},
     )
-    driver = ContextEraser(privacy)
+    driver = ContextEraser(privacy, routine_proposals=routine_proposals)
     owner.register(
         ErasureParticipant.CONTEXTS,
         driver.clean,

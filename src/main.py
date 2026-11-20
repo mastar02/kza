@@ -54,6 +54,7 @@ from src.home_assistant.ha_client import HomeAssistantClient
 from src.llm.reasoner import LLMReasoner, FastRouter
 from src.routines.routine_manager import RoutineManager
 from src.routines.factory import build_routine_scheduler
+from src.routines.proposals import RoutineProposalTray
 from src.routines.routine_scheduler import RoutineScheduler
 from src.routines.voice_routines import VoiceRoutineService
 from src.timers.voice_commands import TimerVoiceCommands
@@ -968,8 +969,11 @@ async def build_application(
                                               verify_only=verify_only)
     suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services,
                                                         verify_only=verify_only)
+    routine_proposals = RoutineProposalTray(privacy_services.ledger)
+    privacy_services.add_borrower(routine_proposals.begin_close)
     context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services,
-                                                  memory=memory_manager, verify_only=verify_only)
+                                                  memory=memory_manager, verify_only=verify_only,
+                                                  routine_proposals=routine_proposals)
     wake_clip_store = await build_wake_clip_store(config, privacy=privacy_services, shutdown=shutdown,
                                                   owner=erasure_services, verify_only=verify_only)
     stt_correction_collector = await build_stt_correction_collector(config, store=wake_clip_store)
@@ -2090,6 +2094,7 @@ async def build_application(
         config, ha_client=ha_client, home_actions=home_action_service, shutdown=shutdown, start=False,
         household_clock=household_clock,
     )
+    shutdown.push_async_callback(routine_proposals.aclose)
     # T033-U1 late binding: the router and the orchestrator read this one scheduler.
     voice_routines.bind_scheduler(routine_scheduler)
 
@@ -2152,6 +2157,7 @@ async def build_application(
         dashboard = DashboardAPI(
             authority=dashboard_authority,
             routine_scheduler=routine_scheduler,
+            routine_proposals=routine_proposals,
             presence_detector=presence_detector,
             ha_client=ha_client,
             list_manager=list_manager,
