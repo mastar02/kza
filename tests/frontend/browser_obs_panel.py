@@ -406,8 +406,11 @@ async def responsive_layout(page: Page) -> dict:
             await _press_tab(page)
             assert await page.evaluate("document.activeElement.matches('.table-scroll')")
             assert_ring(await page.evaluate(FOCUS_PROBE))
-            await _press(page, 'ArrowRight', 'ArrowRight', 39)
-            await page.wait_for("document.activeElement.matches('.table-scroll') && document.activeElement.scrollLeft > 0")
+            assert await page.evaluate("document.activeElement.scrollWidth > document.activeElement.clientWidth")
+            await _press_tab(page)
+            await page.wait_for("document.activeElement.matches('.user-actions button') && "
+                                "document.activeElement.closest('.table-scroll').scrollLeft > 0")
+            assert_ring(await page.evaluate(FOCUS_PROBE))
 
         await page.evaluate("document.querySelector('.user-actions button').focus()")
         await press_enter(page)
@@ -472,6 +475,8 @@ async def main() -> None:
         await authority.initialize()
         users = UserManager(str(directory / 'users.json'))
         users.add_user('Synthetic account', permission_level=PermissionLevel.ADULT)
+        # A long cell places the enrolment column beyond the narrow viewport.
+        users.add_user('Synthetic' + 'W' * 48, permission_level=PermissionLevel.ADULT)
         bus = LiveEventBus()
         dashboard = DashboardAPI(authority=authority, alert_manager=alerts, user_manager=users, event_bus=bus)
 
