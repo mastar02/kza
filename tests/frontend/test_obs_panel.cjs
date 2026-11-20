@@ -164,49 +164,92 @@ test('hydrate keeps the session and other rows when a collection is forbidden', 
   assert.deepEqual(store.get('ALERTS'), [{ id: 'observed' }]);
 });
 
+const appCode = jsx('src/app.jsx');
+
+async function mountObsApp({ recheck, permissions = ['diagnostics:read'] }) {
+  let rendered, ready;
+  const sockets = [], retries = new Map();
+  const mounted = new Promise(resolve => { ready = resolve; });
+  let whoami = 0;
+  const window = {
+    location: { protocol: 'http:', host: 'localhost' },
+    addEventListener() {}, removeEventListener() {}, dispatchEvent() {},
+    fetch: async url => {
+      if (url === '/api/admin/auth/whoami') {
+        return ++whoami <= 2 ? reply(200, { permissions }) : recheck();
+      }
+      return reply(200, [{ id: 'private' }], realHeaders());
+    },
+    KzaDashboardSession: sessionApi,
+    KzaObsData: data,
+    KzaCaptureRecorder: { stopAll() {} },
+    KzaLivePrivacy: require('../../src/dashboard/frontend/obs/src/live-privacy.js'),
+    KzaConversationPrivacy: require('../../src/dashboard/frontend/obs/src/conversation-privacy.js'),
+    KzaConversationChannel: require('../../src/dashboard/frontend/obs/src/conversation-channel.js'),
+    KzaVoicePrivacy: require('../../src/dashboard/frontend/obs/src/voice-privacy.js'),
+    KzaVoiceChannel: require('../../src/dashboard/frontend/obs/src/voice-channel.js'),
+  };
+  vm.runInNewContext(appCode, {
+    window, document: { getElementById() {}, querySelector() {}, addEventListener() {}, removeEventListener() {} },
+    React: { createElement: (type, props) => ({ type: type.name || type, props }) },
+    ReactDOM: { createRoot: () => ({ render(node) { rendered = node; if (node.type === 'App') ready(); } }) },
+    WebSocket: class { constructor() { sockets.push(this); } close() { this.closed = true; } },
+    LoginGate() {}, AccessNotice() {}, queueMicrotask, AbortController, CustomEvent,
+    setTimeout(callback, delay) { retries.set(callback, delay); return callback; },
+    clearTimeout: callback => retries.delete(callback),
+  });
+  await mounted;
+  return {
+    sockets, retries, store: window.__kzaObs,
+    get rendered() { return rendered; },
+    get whoami() { return whoami; },
+  };
+}
+
 test('ws.onclose renders the classified access state and clears private data', async t => {
-  const code = jsx('src/app.jsx');
   for (const [failure, component, message] of accessCases) {
     await t.test(String(failure.name || failure), async () => {
-      let rendered, socket, ready;
-      const mounted = new Promise(resolve => { ready = resolve; });
-      let whoami = 0;
-      const window = {
-        location: { protocol: 'http:', host: 'localhost' },
-        addEventListener() {}, removeEventListener() {}, dispatchEvent() {},
-        fetch: async url => {
-          if (url === '/api/admin/auth/whoami') {
-            return ++whoami <= 2 ? reply(200, { permissions: ['diagnostics:read'] }) : accessFailure(failure);
-          }
-          return reply(200, [{ id: 'private' }], realHeaders());
-        },
-        KzaDashboardSession: sessionApi,
-        KzaObsData: data,
-        KzaCaptureRecorder: { stopAll() {} },
-        KzaLivePrivacy: require('../../src/dashboard/frontend/obs/src/live-privacy.js'),
-        KzaConversationPrivacy: require('../../src/dashboard/frontend/obs/src/conversation-privacy.js'),
-        KzaConversationChannel: require('../../src/dashboard/frontend/obs/src/conversation-channel.js'),
-        KzaVoicePrivacy: require('../../src/dashboard/frontend/obs/src/voice-privacy.js'),
-        KzaVoiceChannel: require('../../src/dashboard/frontend/obs/src/voice-channel.js'),
-      };
-      vm.runInNewContext(code, {
-        window, document: { getElementById() {}, querySelector() {}, addEventListener() {}, removeEventListener() {} },
-        React: { createElement: (type, props) => ({ type: type.name || type, props }) },
-        ReactDOM: { createRoot: () => ({ render(node) { rendered = node; if (node.type === 'App') ready(); } }) },
-        WebSocket: class { constructor() { socket = this; } close() { this.closed = true; } },
-        LoginGate() {}, AccessNotice() {}, setTimeout, clearTimeout, queueMicrotask, AbortController, CustomEvent,
-      });
-      await mounted;
-      assert.deepEqual(window.__kzaObs.get('ZONES'), [{ id: 'private' }]);
+      const app = await mountObsApp({ recheck: () => accessFailure(failure) });
+      const [socket] = app.sockets;
+      assert.deepEqual(app.store.get('ZONES'), [{ id: 'private' }]);
       await socket.onclose({ code: 1008 });
-      assert.equal(whoami, 3);
-      assert.equal(rendered.type, component);
-      assert.equal(rendered.props.failure.message, message);
-      assert.deepEqual(window.__kzaObs.get('ZONES'), []);
-      assert.equal(window.__kzaObs.can('diagnostics:read'), false);
+      assert.equal(app.whoami, 3);
+      assert.equal(app.rendered.type, component);
+      assert.equal(app.rendered.props.failure.message, message);
+      assert.deepEqual(app.store.get('ZONES'), []);
+      assert.equal(app.store.can('diagnostics:read'), false);
       assert.equal(socket.closed, true);
+      assert.equal(app.retries.size, 0);
     });
   }
+});
+
+test('ws.onclose keeps the panel open without retrying a denied 1006 handshake', async () => {
+  const app = await mountObsApp({ recheck: () => reply(200, { permissions: ['diagnostics:read'] }) });
+  await app.sockets[0].onclose({ code: 1006 });
+  assert.equal(app.whoami, 3);
+  assert.equal(app.rendered.type, 'App');
+  assert.equal(app.store.channel('ws'), 'No tenés permiso para este acceso.');
+  assert.equal(app.store.can('diagnostics:read'), true);
+  assert.equal(app.retries.size, 0);
+});
+
+test('ws.onclose keeps the panel mounted and reconnects after a transient network error', async () => {
+  const app = await mountObsApp({
+    permissions: ['diagnostics:read', 'conversations:read'],
+    recheck: () => { throw new TypeError('network'); },
+  });
+  const rendered = app.rendered;
+  await app.sockets[0].onclose({ code: 1006 });
+  assert.equal(app.whoami, 3);
+  assert.equal(app.rendered, rendered);
+  assert.deepEqual(app.store.get('ZONES'), [{ id: 'private' }]);
+  assert.equal(app.store.channel('ws'), 'Reconectando. No se pudo conectar con el servidor.');
+  assert.deepEqual([...app.retries.values()], [3000]);
+  const [retry] = app.retries.keys();
+  retry();
+  assert.equal(app.sockets.length, 2);
+  assert.equal(app.store.channel('ws'), 'conectando');
 });
 
 function mountLogin(fetch) {

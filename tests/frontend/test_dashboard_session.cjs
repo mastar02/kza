@@ -51,8 +51,12 @@ for (const [name, failure, kind, state, message] of cases) {
     const { session, states, failures, calls } = fixture({ fetch: failedFetch(whoami, failure) });
     await session.start();
     assert.deepEqual(states, ['checking', state]);
-    assert.equal(failures.at(-1).kind, kind);
-    assert.equal(failures.at(-1).message, message);
+    if (failure === 401) {
+      assert.equal(failures.at(-1), undefined);
+    } else {
+      assert.equal(failures.at(-1).kind, kind);
+      assert.equal(failures.at(-1).message, message);
+    }
     assert.equal(calls.hydrate, 0);
     assert.equal(calls.connect, 0);
   });
@@ -71,13 +75,29 @@ for (const [name, failure, kind, state, message] of cases) {
 }
 
 test('a socket close with valid authority distinguishes policy, busy service and transport', async () => {
-  const fetch = async () => ({ ok: true, status: 200 });
+  const fetch = async () => ({ ok: true, status: 200, json: async () => ({ permissions: ['conversations:read'] }) });
   assert.deepEqual(await liveCloseStatus(fetch, 1008),
     { kind: 'forbidden', message: 'No tenés permiso para este acceso.', retry: false });
   assert.deepEqual(await liveCloseStatus(fetch, 1013),
     { kind: 'unavailable', message: 'La autoridad de acceso no está disponible.', retry: true });
   assert.deepEqual(await liveCloseStatus(fetch, 1006),
     { kind: 'disconnected', message: 'desconectado', retry: true });
+});
+
+test('1006 with authenticated whoami but no conversations permission is forbidden without retry', async () => {
+  const fetch = async path => {
+    assert.equal(path, whoami);
+    return { ok: true, status: 200, json: async () => ({ permissions: ['diagnostics:read'] }) };
+  };
+  assert.deepEqual(await liveCloseStatus(fetch, 1006),
+    { kind: 'forbidden', message: 'No tenés permiso para este acceso.', retry: false });
+});
+
+test('1006 with a transient whoami failure keeps retrying with a channel message', async () => {
+  assert.deepEqual(await liveCloseStatus(failedFetch(whoami, new TypeError()), 1006),
+    { kind: 'network', message: 'Reconectando. No se pudo conectar con el servidor.', retry: true });
+  assert.deepEqual(await liveCloseStatus(failedFetch(whoami, new DOMException('', 'TimeoutError')), 1006),
+    { kind: 'timeout', message: 'Reconectando. El servidor no respondió a tiempo.', retry: true });
 });
 
 test('a hung login is canceled at the deadline and reported as a timeout', async t => {
@@ -104,10 +124,11 @@ test('canceling the owning login aborts the request without a timeout', async ()
   await assert.rejects(request, { kind: 'aborted', message: 'Se canceló la solicitud.' });
 });
 
-test('missing session never hydrates data or opens a socket', async () => {
-  const { session, states, calls } = fixture({ fetch: async () => ({ ok: false, status: 401 }) });
+test('first visit with no session opens login with no credential error', async () => {
+  const { session, states, failures, calls } = fixture({ fetch: async () => ({ ok: false, status: 401 }) });
   await session.start();
   assert.deepEqual(states, ['checking', 'login']);
+  assert.equal(failures.at(-1), undefined);
   assert.equal(calls.hydrate, 0);
   assert.equal(calls.connect, 0);
 });
@@ -150,9 +171,10 @@ test('a hydration result arriving after logout cannot restore the session', asyn
 });
 
 test('authentication loss while loading is a login state, not mock data', async () => {
-  const { session, states, calls } = fixture({ hydrate: async () => { throw new SessionRequired(); } });
+  const { session, states, failures, calls } = fixture({ hydrate: async () => { throw new SessionRequired(); } });
   await session.start();
   assert.equal(states.at(-1), 'login');
+  assert.equal(failures.at(-1).message, 'La credencial es inválida o la sesión venció.');
   assert.equal(calls.connect, 0);
   assert.equal(calls.clear, 2);
 });

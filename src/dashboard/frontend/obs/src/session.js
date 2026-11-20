@@ -65,20 +65,29 @@
   }
 
   async function liveCloseStatus(fetch, code, signal) {
+    let identity;
     try {
-      await checkAccess(fetch, signal);
+      identity = await checkAccess(fetch, signal, code === 1006 ? response => response.json() : undefined);
     } catch (error) {
+      if (code === 1006 && ['network', 'timeout'].includes(error.kind)) {
+        return { kind: error.kind, message: `Reconectando. ${error.message}`, retry: true };
+      }
       return { failure: error };
     }
-    if (code === 1008 || code === 1013) {
-      const { kind, message } = classifyAccessFailure(code === 1008 ? 403 : 503);
-      return { kind, message, retry: code === 1013 };
+    // Chromium reports a rejection before the handshake completes as 1006.
+    const permissions = identity?.permissions;
+    const denied = code === 1008 || (code === 1006 &&
+      !(Array.isArray(permissions) && permissions.includes('conversations:read')));
+    if (denied || code === 1013) {
+      const { kind, message } = classifyAccessFailure(denied ? 403 : 503);
+      return { kind, message, retry: !denied };
     }
     return { kind: 'disconnected', message: 'desconectado', retry: true };
   }
 
   function createSession({ fetch, hydrate, connect, clear, onState }) {
     let generation = 0, abort = null, dispose = null;
+    let initialCheck = true;
     function reset() {
       generation += 1;
       abort?.abort(); abort = null;
@@ -86,10 +95,16 @@
       clear();
     }
     function fail(error) {
+      initialCheck = false;
       reset();
       const failure = classifyAccessFailure(error);
       const state = ['login', 'forbidden'].includes(failure.kind) ? failure.kind : 'unavailable';
       onState(state, failure);
+    }
+    function expire() {
+      initialCheck = false;
+      reset();
+      onState('login');
     }
     async function start() {
       reset();
@@ -100,6 +115,7 @@
       try {
         await checkAccess(fetch, controller.signal);
         if (attempt !== generation) return;
+        initialCheck = false;
         onState('loading');
         await hydrate({ signal: controller.signal });
         if (attempt !== generation || controller.signal.aborted) return;
@@ -107,13 +123,14 @@
         onState('ready', undefined, controller.signal);
       } catch (error) {
         if (attempt !== generation || controller.signal.aborted) return;
-        fail(error);
+        if (initialCheck && error instanceof SessionRequired) expire();
+        else fail(error);
       }
     }
     return {
       start,
       fail,
-      expire() { reset(); onState('login'); },
+      expire,
       stop: reset,
     };
   }

@@ -235,6 +235,7 @@ async def login_keyboard(page: Page, login_release: asyncio.Event, requests: lis
     """Verify the modal's key loop, return focus and single pending POST."""
     password_focused = "document.activeElement.matches('dialog:modal input[type=password]')"
     assert await page.evaluate(password_focused)
+    assert not await page.evaluate("!!document.querySelector('dialog:modal [role=alert]')")
     assert await page.evaluate(
         "(()=>{const dialog=document.querySelector('dialog:modal'), field=dialog.querySelector('input');"
         "return dialog.getAttribute('aria-modal')==='true' && field.labels.length===1 && "
@@ -473,7 +474,7 @@ async def main() -> None:
                         await login_keyboard(page, login_release, requests)
                     finally:
                         login_release.set()
-                    checks.append('login is named and modal, wraps Tab, restores focus on Escape and sends one invalid POST')
+                    checks.append('first visit opens a clean named modal, wraps Tab, restores focus and sends one invalid POST')
                     await set_login_token(page, TOKEN)
                     await press_enter(page)
                     await page.wait_for("!!document.querySelector('#view-live')")
