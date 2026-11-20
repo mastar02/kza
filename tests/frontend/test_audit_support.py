@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import errno
 import json
 from pathlib import Path
 import tempfile
@@ -11,6 +12,7 @@ import pytest
 import pytest_asyncio
 from websockets.asyncio.client import connect
 
+from tests.frontend import browser_support
 from tests.frontend.browser_support import (
     Page,
     WCAG_SCRIPT,
@@ -20,7 +22,7 @@ from tests.frontend.browser_support import (
     audit_view,
     audit_wcag,
     browser_binary,
-    browser_profile_root,
+    temporary_browser_profile,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -35,14 +37,14 @@ async def page():
             raise
         pytest.skip('Chromium is required for the DOM and keyboard audit probes')
 
-    with tempfile.TemporaryDirectory(prefix='kza-audit-test-', dir=browser_profile_root()) as profile:
+    async with temporary_browser_profile('kza-audit-test-') as profile:
         browser = await asyncio.create_subprocess_exec(
             binary, '--headless', '--no-first-run', '--disable-background-networking',
             '--remote-debugging-port=0', f'--user-data-dir={profile}', 'about:blank',
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )
         try:
-            port_file = Path(profile) / 'DevToolsActivePort'
+            port_file = profile / 'DevToolsActivePort'
             async with asyncio.timeout(15):
                 while not port_file.exists() or not port_file.read_text().splitlines():
                     assert browser.returncode is None, 'Chromium exited before exposing CDP'
@@ -64,6 +66,26 @@ async def page():
 
 async def load(page: Page, html: str) -> None:
     await page.evaluate(f'document.body.innerHTML = {json.dumps(html)}')
+
+
+async def test_browser_profile_cleanup_retries_enotempty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    attempts = 0
+    cleanup = tempfile.TemporaryDirectory.cleanup
+
+    def cleanup_with_late_write(directory):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            (Path(directory.name) / 'late-chromium-file').touch()
+            raise OSError(errno.ENOTEMPTY, 'late Chromium write', directory.name)
+        cleanup(directory)
+
+    monkeypatch.setattr(browser_support, 'browser_profile_root', lambda: tmp_path)
+    monkeypatch.setattr(tempfile.TemporaryDirectory, 'cleanup', cleanup_with_late_write)
+    async with temporary_browser_profile('kza-audit-test-') as profile:
+        assert profile.is_dir()
+    assert attempts == 2
+    assert not profile.exists()
 
 
 async def test_contrast_uses_wcag_luminance_and_computed_paint(page: Page):
@@ -142,8 +164,10 @@ async def test_spacing_and_text_resize_report_new_clipping_and_restore_styles(pa
         <style>p {font:16px/16px Arial;margin:0}</style>
         <p style="height:17px;overflow:hidden">A line that fits before text changes.</p>
         <p>A flexible paragraph stays readable.</p>
+        <p style="">An explicitly empty style stays present.</p>
     ''')
     original = await page.evaluate('[...document.querySelectorAll("p")].map(el=>el.getAttribute("style"))')
+    assert original == ['height:17px;overflow:hidden', None, '']
     findings = await audit_wcag(page)
     clipping = [item for item in findings if item['issue'] == 'text_newly_clipped']
     assert {(item['criterion'], item['element']) for item in clipping} == {

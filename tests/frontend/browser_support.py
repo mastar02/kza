@@ -11,12 +11,15 @@ DevTools Protocol and page JavaScript.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
+import errno
 import json
 import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 import time
 
 
@@ -107,6 +110,25 @@ def browser_profile_root(mode: int = 0o777) -> Path | None:
     root = Path.home() / 'snap/chromium/common'
     root.mkdir(mode=mode, parents=True, exist_ok=True)
     return root
+
+
+@asynccontextmanager
+async def temporary_browser_profile(prefix: str) -> AsyncIterator[Path]:
+    """Create a profile and retry cleanup if Chromium finishes writing during removal."""
+    directory = tempfile.TemporaryDirectory(prefix=prefix, dir=browser_profile_root())
+    try:
+        yield Path(directory.name)
+    finally:
+        for delay in (0.05, 0.1, 0.2):
+            try:
+                await asyncio.to_thread(directory.cleanup)
+                break
+            except OSError as exc:
+                if exc.errno != errno.ENOTEMPTY:
+                    raise
+                await asyncio.sleep(delay)
+        else:
+            await asyncio.to_thread(directory.cleanup)
 
 
 def evidence_directory(variable: str, default_parent: str) -> Path:

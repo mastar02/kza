@@ -309,8 +309,13 @@
       }
     } finally {
       for (const [el, original] of sizes) {
-        if (original === null) el.removeAttribute('style');
-        else el.setAttribute('style', original);
+        if (original !== null) {
+          el.setAttribute('style', original);
+        } else if (el.getAttribute('style') !== null) {
+          // Materialize the CSSOM changes first. Blink can otherwise clear
+          // the declarations on removal and later serialize an empty attribute.
+          el.removeAttribute('style');
+        }
       }
     }
     return findings;
