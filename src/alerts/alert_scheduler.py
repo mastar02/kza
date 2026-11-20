@@ -30,21 +30,22 @@ Uso:
 """
 
 import asyncio
+import logging
+import math
 from collections.abc import Awaitable
-from typing import Callable, TYPE_CHECKING
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Callable, TYPE_CHECKING
 
-from src.core.logging import get_logger
-from .alert_manager import AlertManager
+from src.alerts.alert_manager import AlertManager
 
 # Type hints para tipos específicos (evitar importaciones circulares)
 if TYPE_CHECKING:
-    from .security_alerts import SecurityAlerts
-    from .pattern_alerts import PatternAlerts
-    from .device_alerts import DeviceAlerts
+    from src.alerts.security_alerts import SecurityAlerts
+    from src.alerts.pattern_alerts import PatternAlerts
+    from src.alerts.device_alerts import DeviceAlerts
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class CheckType(StrEnum):
@@ -52,6 +53,7 @@ class CheckType(StrEnum):
     SECURITY = "security"
     PATTERN = "pattern"
     DEVICE = "device"
+    HA = "ha"
 
 
 @dataclass
@@ -116,6 +118,7 @@ class AlertScheduler:
         self._security_handlers: list[Callable[[], Awaitable[None]]] = []
         self._pattern_handlers: list[Callable[[], Awaitable[None]]] = []
         self._device_handlers: list[Callable[[], Awaitable[None]]] = []
+        self._ha_reconcile: Callable[[], Awaitable[None]] | None = None
 
         logger.info(
             f"AlertScheduler initialized "
@@ -161,6 +164,15 @@ class AlertScheduler:
         self._device_handlers.append(handler)
         logger.debug(f"Device handler registered (total: {len(self._device_handlers)})")
 
+    def register_ha_source(self, reconcile: Callable[[], Awaitable[None]], interval: float) -> None:
+        """Register one bounded HA snapshot check for all selected conditions."""
+        if type(interval) not in (int, float) or not math.isfinite(interval) or interval <= 0:
+            raise ValueError("alerts.ha.reconcile_interval_seconds must be finite and positive")
+        self._ha_reconcile = reconcile
+        self._check_configs[CheckType.HA] = CheckConfig(
+            CheckType.HA, interval, description="Home Assistant state reconciliation",
+        )
+
     def register_security_checks(self, security_alerts: 'SecurityAlerts') -> None:
         """
         Registrar métodos estándar de verificación de seguridad.
@@ -203,38 +215,29 @@ class AlertScheduler:
         self._running = True
         logger.info("AlertScheduler starting...")
 
+        tasks = []
         try:
-            # Crear tareas para cada tipo de verificación
-            security_task = asyncio.create_task(
-                self._run_periodic_check(
-                    CheckType.SECURITY,
-                    self._check_configs[CheckType.SECURITY].interval_seconds,
-                )
-            )
-            pattern_task = asyncio.create_task(
-                self._run_periodic_check(
-                    CheckType.PATTERN,
-                    self._check_configs[CheckType.PATTERN].interval_seconds,
-                )
-            )
-            device_task = asyncio.create_task(
-                self._run_periodic_check(
-                    CheckType.DEVICE,
-                    self._check_configs[CheckType.DEVICE].interval_seconds,
-                )
-            )
-
-            self._tasks = [security_task, pattern_task, device_task]
+            tasks = [
+                asyncio.create_task(self._run_periodic_check(check_type, config.interval_seconds),
+                                    name=f"alert-check-{check_type.value}")
+                for check_type, config in self._check_configs.items()
+            ]
+            self._tasks = tasks
 
             # Esperar a que todas las tareas se completen
-            await asyncio.gather(*self._tasks)
+            await asyncio.gather(*tasks)
 
         except asyncio.CancelledError:
             logger.info("AlertScheduler cancelled")
         except Exception as e:
             logger.error(f"Error in AlertScheduler: {e}")
         finally:
-            self._running = False
+            if self._tasks is tasks:
+                self._running = False
+                self._tasks = []
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             logger.info("AlertScheduler stopped")
 
     async def stop(self) -> None:
@@ -278,8 +281,9 @@ class AlertScheduler:
             f"Starting {check_type.value} check loop (interval={interval_seconds}s)"
         )
 
-        # Primera ejecución después de un pequeño delay
-        await asyncio.sleep(1)
+        # HA establishes its baseline at startup. Keep the legacy check delay.
+        if check_type is not CheckType.HA:
+            await asyncio.sleep(1)
 
         while self._running:
             try:
@@ -294,6 +298,8 @@ class AlertScheduler:
                     await self._execute_pattern_checks()
                 elif check_type == CheckType.DEVICE:
                     await self._execute_device_checks()
+                elif check_type == CheckType.HA and self._ha_reconcile is not None:
+                    await self._ha_reconcile()
 
                 # Esperar hasta el próximo intervalo
                 await asyncio.sleep(interval_seconds)
@@ -384,5 +390,7 @@ class AlertScheduler:
                 "security": len(self._security_handlers),
                 "pattern": len(self._pattern_handlers),
                 "device": len(self._device_handlers),
+                "ha": int(self._ha_reconcile is not None),
             },
+            "pattern_alerts": "connected" if self._pattern_handlers else "not_connected",
         }

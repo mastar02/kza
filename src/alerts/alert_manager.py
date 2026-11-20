@@ -103,11 +103,15 @@ class AlertCondition:
         latched: True for a stateful condition whose episode stays open until
             resolve_condition; False for a momentary event whose episode closes
             by itself after the manager's cooldown_seconds.
+        reannounce: Whether interval-based announcements may repeat this episode.
+        retain_if_history_full: Keep the active episode visible until it resolves.
     """
 
     source: str
     condition: str
     latched: bool = True
+    reannounce: bool = True
+    retain_if_history_full: bool = False
 
     def key(self, alert_type: AlertType) -> tuple[str, str, str]:
         """Return the deduplication key of this condition for an alert type."""
@@ -163,9 +167,14 @@ class _Episode:
     alert: Alert
     latched: bool
     opened_at: float
+    reannounce: bool = True
     announced_at: float | None = None
     # The last notice failed without any audio and is retried once at the next check.
     retry_due: bool = False
+    retain_if_history_full: bool = False
+    defer_voice: bool = False
+    pending_notice: bool | None = None  # None: no job; bool: whether to retry
+    voice_in_flight: bool = False
 
 
 # Failed delivery states that can prove no audio was produced (with output_started
@@ -321,6 +330,7 @@ class AlertManager:
         details: dict | None = None,
         *,
         condition: AlertCondition | None = None,
+        defer_voice: bool = False,
     ) -> Alert | None:
         """
         Crear una alerta con latch por episodio de su condición.
@@ -337,6 +347,7 @@ class AlertManager:
             message: Mensaje descriptivo (voz y web, en español)
             details: Detalles adicionales (dict)
             condition: Identidad de la condición que reporta la alerta
+            defer_voice: Let the owning producer deliver notices outside state evaluation.
 
         Returns:
             La alerta si se abrió un episodio o se escaló; None si el episodio ya
@@ -364,7 +375,10 @@ class AlertManager:
                 source=cond.source,
                 condition=cond.condition,
             )
-            episode = _Episode(alert=alert, latched=cond.latched, opened_at=now)
+            episode = _Episode(alert=alert, latched=cond.latched, opened_at=now,
+                               reannounce=cond.reannounce,
+                               retain_if_history_full=cond.latched and cond.retain_if_history_full,
+                               defer_voice=defer_voice)
             self._episodes[key] = episode
 
             # Agregar al historial
@@ -393,10 +407,8 @@ class AlertManager:
         """Trim the history to max_history without hiding an open episode (caller holds the lock).
 
         The oldest alert not owned by a live episode (resolved, expired momentary
-        event, or legacy) goes first. Only when every alert belongs to a live
-        episode is the oldest one evicted, and its episode is dropped with it so
-        the next observation reopens the condition instead of being deduplicated
-        against an alert nobody can see.
+        event, or legacy) goes first. Active episodes with fixed producer keys
+        can remain visible independently of the bounded history.
         """
         while len(self._history) > self.max_history:
             owners = {id(ep.alert): key for key, ep in self._episodes.items()}
@@ -405,6 +417,8 @@ class AlertManager:
             evicted = self._history.pop(index)
             key = owners.get(id(evicted))
             if key is None:
+                continue
+            if self._episodes[key].retain_if_history_full:
                 continue
             del self._episodes[key]
             if id(evicted) in live:
@@ -445,6 +459,8 @@ class AlertManager:
                 logger.info("Alert voice retry dropped, alert acknowledged (id=%s)", alert.alert_id)
             logger.debug("Alert not spoken again, acknowledged (id=%s)", alert.alert_id)
             return None
+        if episode.pending_notice is not None or episode.voice_in_flight:
+            return None
         if episode.retry_due:
             episode.retry_due = False
             logger.info("Alert voice notice retried: %s (id=%s)", alert.alert_type.value, alert.alert_id)
@@ -452,6 +468,7 @@ class AlertManager:
             return None
         if (
             episode.latched
+            and episode.reannounce
             and self.reannounce_interval_seconds is not None
             and episode.announced_at is not None
             and now - episode.announced_at >= self.reannounce_interval_seconds
@@ -477,6 +494,7 @@ class AlertManager:
             if episode is None:
                 return None
             episode.alert.resolved_at = self._now()
+            self._drop_pending_notice(episode, "alert_condition_resolved")
             logger.info("Alert condition resolved: %s (id=%s, source=%s, condition=%s)",
                         alert_type.value, episode.alert.alert_id, condition.source, condition.condition)
             return episode.alert
@@ -510,13 +528,49 @@ class AlertManager:
             episode: The open episode whose alert is spoken.
             retry: This notice is the single retry of an output-free failure.
         """
-        episode.announced_at = self._clock()
         episode.retry_due = False
+        if episode.defer_voice:
+            episode.pending_notice = retry
+            if episode.alert.delivery_attempts == 0:
+                self._record_delivery(episode.alert, AlertDelivery.PENDING, None)
+            return
+        episode.announced_at = self._clock()
         output_free = await self._notify_voice(episode.alert)
         episode.retry_due = output_free and not retry
         if episode.retry_due:
             logger.info("Alert voice notice failed before any audio; one retry at the next check (id=%s)",
                         episode.alert.alert_id)
+
+    async def deliver_deferred_notice(self, alert_type: AlertType, condition: AlertCondition,
+                                      *, is_current: Callable[[], bool]) -> None:
+        """Deliver one pending notice while leaving the episode lock free during playback.
+
+        Args:
+            alert_type: Type of the episode that owns the notice.
+            condition: Stable identity of the episode that owns the notice.
+            is_current: Synchronous admission check of the producer's evidence and turn state.
+        """
+        async with self._lock:
+            episode = self._episodes.get(condition.key(alert_type))
+            if (episode is None or episode.pending_notice is None or episode.voice_in_flight
+                    or episode.alert.processed or not is_current()):
+                return
+            retry, episode.pending_notice = episode.pending_notice, None
+            episode.voice_in_flight = True
+            episode.announced_at = self._clock()
+        output_free = False
+        try:
+            output_free = await self._notify_voice(episode.alert)
+        finally:
+            episode.voice_in_flight = False
+            episode.retry_due = (output_free and not retry and not episode.alert.processed
+                                 and episode.pending_notice is None)
+
+    def _drop_pending_notice(self, episode: _Episode, reason: str) -> None:
+        if episode.pending_notice is not None:
+            episode.pending_notice = None
+            if not episode.voice_in_flight and episode.alert.delivery_attempts == 0:
+                self._record_delivery(episode.alert, AlertDelivery.BLOCKED, reason)
 
     async def _notify_voice(self, alert: Alert) -> bool:
         """Speak the alert and record the output's receipt on it, never swallowing a failure.
@@ -612,7 +666,13 @@ class AlertManager:
 
     def get_active_alerts(self) -> list[Alert]:
         """Return alerts still unacknowledged whose condition was not resolved, newest first."""
-        return [a for a in reversed(self._history) if not a.processed and a.resolved_at is None]
+        return [a for a in self._alerts_with_retained_episodes() if not a.processed and a.resolved_at is None]
+
+    def _alerts_with_retained_episodes(self) -> list[Alert]:
+        history_ids = {id(alert) for alert in self._history}
+        retained = [episode.alert for episode in reversed(self._episodes.values())
+                    if episode.retain_if_history_full and id(episode.alert) not in history_ids]
+        return list(reversed(self._history)) + retained
 
     async def mark_processed(self, alert_id: str, *, before_publish: Callable[[], None] | None = None,
                              update_timestamp: bool = True,
@@ -621,7 +681,7 @@ class AlertManager:
         async with self._lock:
             if before_publish is not None and before_publish() is False:
                 raise PermissionError("alert_authority_retired")
-            for alert in self._history:
+            for alert in self._alerts_with_retained_episodes():
                 if alert.alert_id == alert_id:
                     timestamp = (timestamp_factory or self._now)() if update_timestamp else None
                     if before_publish is not None and before_publish() is False:
@@ -629,13 +689,17 @@ class AlertManager:
                     alert.processed = True
                     if update_timestamp:
                         alert.processed_at = timestamp
+                    if alert.source is not None and alert.condition is not None:
+                        episode = self._episodes.get((alert.alert_type.value, alert.source, alert.condition))
+                        if episode is not None and episode.alert is alert:
+                            self._drop_pending_notice(episode, "alert_acknowledged")
                     logger.debug("Alert marked as processed: %s", alert_id)
                     return True
             return False
 
     def get_alert(self, alert_id: str) -> Alert | None:
         """Obtener alerta por ID"""
-        for alert in self._history:
+        for alert in self._alerts_with_retained_episodes():
             if alert.alert_id == alert_id:
                 return alert
         return None
@@ -649,6 +713,7 @@ class AlertManager:
         resolved_at = self._now()
         for episode in self._episodes.values():
             episode.alert.resolved_at = resolved_at
+            self._drop_pending_notice(episode, "alert_condition_resolved")
         self._episodes.clear()
         logger.debug("All alert episodes cleared")
 

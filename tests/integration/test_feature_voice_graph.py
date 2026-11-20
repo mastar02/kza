@@ -2,20 +2,31 @@
 
 import asyncio
 from contextlib import AsyncExitStack
+import threading
+import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
-import time
 
+from aiohttp import web
 import numpy as np
 import pytest
 
 from src.alerts.alert_manager import AlertDelivery, AlertType, AlertPriority
+from src.application import ApplicationFactories
 from src.core.voice_delivery import VoiceDeliveryError
 from src.intercom.intercom_system import Announcement
+from src.main import build_application
 from src.notifications.smart_notifications import Notification, NotificationChannel
+from src.pipeline.command_event import CommandEvent
 from src.pipeline.voice_services import build_voice_services
 from src.reminders.reminder_store import ReminderStore, ReminderScope
 from src.routines.routine_executor import RoutineExecutor
+from src.tts import piper_tts
+from src.vectordb import chroma_sync
+from tests.integration.test_ha_transport_ownership import _compact_state, _rest_state
+from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, offline_config
+from tests.mocks.audio_output import AudioBackend
+from tests.mocks.speech import PCMEngine
 from tests.mocks.voice_graph import voice_graph
 
 pytestmark = pytest.mark.asyncio
@@ -57,6 +68,118 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
         amplifier.select_all_zones.assert_called_once()
         ha.call_service.assert_not_called()
     assert services.responses.get_delivery_status()['closed']
+
+
+async def test_real_ha_delta_reaches_configured_pcm_and_yields_to_an_active_command(monkeypatch, tmp_path):
+    door = "binary_sensor.synthetic_contact"
+    subscription = asyncio.get_running_loop().create_future()
+    ws_requests = []
+
+    async def api(_request):
+        return web.json_response({"message": "API running"})
+
+    async def states(_request):
+        return web.json_response([_rest_state(door)])
+
+    async def websocket(request):
+        socket = web.WebSocketResponse()
+        await socket.prepare(request)
+        await socket.send_json({"type": "auth_required"})
+        assert (await socket.receive_json())["type"] == "auth"
+        await socket.send_json({"type": "auth_ok"})
+        async for message in socket:
+            frame = message.json()
+            ws_requests.append(frame["type"])
+            assert frame["type"] == "subscribe_entities"
+            ident = frame["id"]
+            await socket.send_json({"id": ident, "type": "result", "success": True})
+            await socket.send_json({"id": ident, "type": "event", "event": {"a": {door: _compact_state()}}})
+            subscription.set_result((socket, ident))
+        return socket
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(chroma_sync, "SentenceTransformer", lambda *_args, **_kwargs: OfflineEncoder())
+    backend, engine = AudioBackend(), PCMEngine(frames=240)
+    monkeypatch.setattr(piper_tts, "sd", backend)
+    amplifier = MagicMock(audio_output_device=7)
+    entered, release = threading.Event(), threading.Event()
+    stt = OfflineSTT(text="¿Qué hora es?")
+    transcribe = stt.transcribe_with_confidence
+
+    def gated_stt(*args):
+        entered.set()
+        assert release.wait(2), "Synthetic STT was not released"
+        return transcribe(*args)
+
+    monkeypatch.setattr(stt, "transcribe_with_confidence", gated_stt)
+    leaves = ApplicationFactories(stt=lambda _: stt, tts=lambda _: engine,
+                                  amplifier=lambda **_: amplifier, preflight=lambda: None)
+    app = web.Application()
+    app.add_routes([web.get("/api/", api), web.get("/api/states", states), web.get("/api/websocket", websocket)])
+    async with AsyncExitStack() as stack:
+        runner = web.AppRunner(app)
+        await runner.setup()
+        stack.push_async_callback(runner.cleanup)
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        url = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+        config = offline_config(tmp_path, url)
+        config["home_assistant"]["state_prefetch"]["enabled"] = True
+        config["alerts"] = {"ha": {"output_zone": "zone_alert", "door_window": {
+            door: {"name": "La ventana", "open_seconds": 0},
+        }}}
+        config["zones"] = {"enabled": True, "zone_list": [
+            {"id": "zone_alert", "name": "Avisos", "mic_device_index": 0, "ma1260_zone": 2},
+        ]}
+        graph = await build_application(config, shutdown=stack, factories=leaves)
+        stack.push_async_callback(graph._stop_services, None, None)
+        features = graph.voice_services.features
+        source = features.ha_alert_source
+        loop = graph.pipeline.audio_loop
+        waiting_for_turn = asyncio.Event()
+        wait_idle = loop.command_turns.wait_idle
+
+        async def observed_wait():
+            if loop.command_turns.active:
+                waiting_for_turn.set()
+            await wait_idle()
+
+        monkeypatch.setattr(loop.command_turns, "wait_idle", observed_wait)
+        await graph._start_services()
+        async with asyncio.timeout(2):
+            socket, ident = await subscription
+            while not features.alerts_available():
+                await asyncio.sleep(.001)
+
+        event = CommandEvent(np.full(16000, .1, dtype=np.float32), room_id="")
+        command = loop._track(asyncio.create_task(graph.pipeline.process_command(event)), loop._dispatches)
+        command.add_done_callback(loop._settle_turn)
+        try:
+            assert await asyncio.to_thread(entered.wait, 2)
+            await socket.send_json({"id": ident, "type": "event", "event": {"c": {door: {
+                "+": {"s": "on", "lc": time.time()},
+            }}}})
+            await asyncio.wait_for(waiting_for_turn.wait(), 2)
+            assert not command.done() and engine.calls == []
+            pending, = features.alert_manager.get_history()
+            assert pending.delivery is AlertDelivery.PENDING
+        finally:
+            release.set()
+        result = await asyncio.wait_for(command, 2)
+        assert result["path"] == "fast_clock" and result["task_completed"] and result["latency_ms"] < 300
+        await asyncio.wait_for(source._queue.join(), 2)
+        alert, = features.alert_manager.get_history()
+        async with asyncio.timeout(2):
+            while alert.delivery is AlertDelivery.PENDING:
+                await asyncio.sleep(.001)
+        assert (alert.source, alert.delivery) == (door, AlertDelivery.DELIVERED)
+        speech = "Alerta importante: La ventana sigue abierta"
+        assert engine.calls == [result["response"], speech] and engine.peak_active == 1
+        np.testing.assert_array_equal(backend.heard()[:, 0], np.concatenate([engine.audio(text) for text in engine.calls]))
+        amplifier.select_zone.assert_called_once_with(2)
+        amplifier.select_all_zones.assert_not_called()
+        assert ws_requests == ["subscribe_entities"]
+    assert not source.running and graph.ha_client._state_observers == []
 
 
 async def test_feature_delivery_failure_is_not_announced_as_completed_or_retried_via_ha(monkeypatch):
