@@ -114,7 +114,7 @@
               expires_at:Math.min(row.expires_at ?? batch.expires_at,batch.expires_at) }));
             if (store.receive(rows,timing,{variant,rowId})) {
               if (trackObservedAt && (!observation || batch.observed_at > observation.server)) {
-                observation = {server:batch.observed_at,mono:monotonic()};
+                observation = {server:batch.observed_at,mono:started.mono};
               }
               status = 'real';
             } else metadata.clear();

@@ -500,6 +500,34 @@ for (const wallSkew of [0,-48*3600000]) {
     assert.deepEqual(state.captures.snapshot(),[]);
     assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B,C]);
   });
+
+  test(`a replacement after a delayed response keeps the original deadline, wall skew ${wallSkew} ms`,async t=>{
+    const f=controllerFixture(createVoiceController,{wallSkew}), {controller:c,state}=f;
+    t.after(()=>c.dispose());
+    const row=groupedCapture(), acknowledged=()=>f.acks.flatMap(ack=>ack.receipts.map(receipt=>receipt.ticket));
+    const fields={observed_at:NOW,expires_at:NOW+10,matching_count:1,scan_complete:true,
+      count_expires_at:NOW+10,room_options:['Synthetic room'],room_options_expires_at:NOW+10};
+    await c.setFilters({listenable_only:true});
+    f.advance(6000);
+    f.latest().respond({rows:[row],fields}); await c.settled();
+    assert.equal(state.captures.deliveryToken(),B);
+    assert.deepEqual(acknowledged(),[]);
+    f.advance(1000);
+    await c.setFilters({association:'unknown'});
+    f.latest().respond({eventId:C,rows:[row],fields}); await c.settled();
+    assert.deepEqual(state.captures.snapshot().map(item=>item.id),[row.id]);
+    assert.equal(state.captures.deliveryToken(),C);
+    assert.deepEqual(acknowledged(),[B]);
+    f.advance(2999); await flush();
+    assert.equal(state.captures.snapshot()[0].id,row.id);
+    assert.equal(c.captureSummary().count,1);
+    assert.deepEqual(acknowledged(),[B]);
+    f.advance(1); await flush();
+    assert.deepEqual(state.captures.snapshot(),[]);
+    assert.equal(state.captures.deliveryToken(),null);
+    assert.deepEqual(c.captureSummary(),{count:null,rooms:[],roomNotice:''});
+    assert.deepEqual(acknowledged(),[B,C]);
+  });
 }
 
 for (const withdrawal of ['expiry','retire']) test(`OBS drops a selected room from the DOM before ACK on ${withdrawal}`,async t=>{
