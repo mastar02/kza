@@ -88,7 +88,7 @@
     const channels = Object.fromEntries(Object.keys(PATHS).map(kind => [kind,channelsAPI.createConversationChannel({
       store:state[kind], fetch, path:PATHS[kind], channel:`voices:${kind}`, loadOnOpen:false, hasView,
       emitAck:message => actions.size===0 && emitAck(message), onUnauthorized,
-      monotonic, wall,
+      monotonic, wall, trackObservedAt:kind === 'captures',
       onPage:kind === 'captures' ? capturePage : cursor => { pages[kind] = cursor; },
       onRetire:kind === 'captures' ? retireSummary : undefined,
       retains:kind === 'captures' ? token => rooms?.token === token || count?.token === token : undefined,

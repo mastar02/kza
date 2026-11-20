@@ -217,10 +217,10 @@ function transcript(id=review().id) {
   return {id,variant:'text',transcript:row.transcript,room_id:row.room_id,duration_s:row.duration_s,
     transcript_scope:row.transcript_scope,transcript_metadata:row.transcript_metadata};
 }
-function controllerFixture(makeController=createVoiceController) {
+function controllerFixture(makeController=createVoiceController, {wallSkew=0}={}) {
   let now=0, id=0, unauthorized=0;
   const calls=[], acks=[], revoked=[], timers=new Map();
-  const clock={monotonic:()=>now,wall:()=>NOW*1000+now,
+  const clock={monotonic:()=>now,wall:()=>NOW*1000+now+wallSkew,
     schedule:(fn,ms)=>{timers.set(++id,{fn,at:now+ms});return id;},cancel:token=>timers.delete(token)};
   const state=createVoiceState({...clock,url:{createObjectURL:()=>`blob:synthetic-${++id}`,revokeObjectURL:token=>revoked.push(token)}});
   const controller=makeController({state,...clock,canSearch:()=>true,
@@ -395,6 +395,46 @@ test('room options expire with their snapshot when its deadline is earlier',asyn
   assert.equal(f.calls.length,2);
   assert.deepEqual(f.query(),{...DEFAULTS,listenable_only:true});
   f.latest().respond(); await c.settled(); c.dispose();
+});
+
+test('a room refresh cannot renew an expired capture or hold its replacement ticket',async t=>{
+  const f=controllerFixture(createVoiceController,{wallSkew:-48*3600000}), {controller:c,state}=f;
+  t.after(()=>c.dispose());
+  const short=NOW+3, row={...groupedCapture(),expires_at:short,group_expires_at:short};
+  const fields={expires_at:short,matching_count:1,scan_complete:true,count_expires_at:short,
+    room_options:['Synthetic room'],room_options_expires_at:short};
+  const acknowledged=()=>f.acks.flatMap(ack=>ack.receipts.map(receipt=>receipt.ticket));
+  await c.setFilters({listenable_only:true});
+  f.latest().respond({rows:[row],fields}); await c.settled();
+  assert(c.review(row.id));
+  f.latest().respond({eventId:C,rows:[{...review(),id:row.id}],fields:{expires_at:short}});
+  await c.settled();
+  const media=new Media(); state.review.attachMedia(media);
+  f.advance(2999); await flush();
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.equal(c.captureSummary().count,1);
+  assert.deepEqual(acknowledged(),[]);
+  f.advance(1); await flush();
+  assert.equal(state.captures.deliveryToken(),null);
+  assert.equal(state.review.pendingRetirements(),1);
+  assert.deepEqual(acknowledged(),[B]);
+  assert.equal(f.calls.length,3);
+  assert.equal(f.latest().path,QUERY);
+  // The server clock is still frozen. Its replacement snapshot has a new
+  // event ID but the same source, observation time and absolute deadline.
+  f.latest().respond({eventId:A,rows:[row],fields}); await c.settled();
+  assert.deepEqual(state.captures.snapshot(),[]);
+  assert.deepEqual(c.captureSummary(),{count:null,rooms:[],roomNotice:''});
+  assert.deepEqual(acknowledged(),[B,A]);
+  media.emptied(); await state.review.retired(); await flush();
+  assert.deepEqual(acknowledged(),[B,A,C]);
+  await c.setFilters({listenable_only:false});
+  const fresh=short+3;
+  f.latest().respond({rows:[{...row,id:'vf_'+'c'.repeat(64),created_at:short,expires_at:fresh,group_expires_at:fresh}],
+    fields:{...fields,observed_at:short,expires_at:fresh,count_expires_at:fresh,room_options_expires_at:fresh}});
+  await c.settled();
+  assert.equal(state.captures.snapshot().length,1);
+  assert.equal(c.captureSummary().count,1);
 });
 
 test('retiring an earlier captures snapshot leaves the current summary intact',async()=>{
