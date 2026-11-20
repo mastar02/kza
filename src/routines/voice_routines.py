@@ -34,7 +34,7 @@ from src.routines.models import (
     ActionStatus, BrakeStatus, RoutineBrake, RoutineConflict, RoutineNameConflict, RoutineNotFound, RoutineRun,
     RunStatus, ScheduledRoutine, TimeSchedule,
 )
-from src.routines.proposals import ProposalOperation, ProposalUnavailable, RoutineProposalTray
+from src.routines.proposals import ProposalDecision, ProposalOperation, ProposalUnavailable, RoutineProposalTray
 from src.routines.routine_scheduler import RoutineScheduler
 from src.routines.routine_store import HOUSEHOLD_VOICE
 from src.routines.voice_proposal_extractor import ProposalIssue, VoiceProposalError, VoiceProposalExtractor
@@ -354,6 +354,11 @@ class VoiceRoutineService:
         self._voice_brake = voice_brake
         self._proposal_extractor = proposal_extractor
         self._proposal_tray = proposal_tray
+        self._proposal_review_available: AuthorityGuard | None = None
+
+    def bind_proposal_review(self, available: AuthorityGuard) -> None:
+        """Attach the availability check for the application's web review service."""
+        self._proposal_review_available = available
 
     def claims_proposal(self, intent: HouseholdIntent | None) -> bool:
         """Whether this voice request can enter the local proposal path."""
@@ -373,19 +378,32 @@ class VoiceRoutineService:
                     and sources[0].origin is MemoryOrigin.VOICE and not sources[0].fact_dependencies
                     and tray.source_policy.sources_available(sources))
 
+        def review_available() -> bool:
+            review = self._proposal_review_available
+            return self._scheduler is not None and review is not None and review()
+
         cancelled = RoutineProposalResult("", TaskOutcome(TaskStatus.CANCELLED,
                                                            persistence=PersistenceState.NOT_WRITTEN))
         if not current():
             return cancelled
+        unavailable = RoutineProposalResult("Ahora no está disponible la revisión de rutinas en la web.",
+                                            TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN))
+        if not review_available():
+            return unavailable
         source = sources[0]
         try:
             spec = await extractor.extract(complement)
             if not current():
                 return cancelled
-            tray.submit(ProposalOperation.CREATE, conversation_id=source.conversation_id, spec=spec,
-                        expires_at=source.expires_at)
-        except (PermissionError, ProposalUnavailable):
+            if not review_available():
+                return unavailable
+            submission = tray.submit_for_review(
+                ProposalOperation.CREATE, conversation_id=source.conversation_id, spec=spec, expires_at=source.expires_at,
+            )
+        except PermissionError:
             return cancelled
+        except ProposalUnavailable:
+            return unavailable if current() else cancelled
         except ValueError as error:
             if not current():
                 return cancelled
@@ -394,6 +412,10 @@ class VoiceRoutineService:
                                              TaskOutcome(TaskStatus.NEEDS_INPUT))
             return RoutineProposalResult("Para proponer una rutina necesito una acción sobre un dispositivo seleccionado.",
                                          TaskOutcome(TaskStatus.UNSUPPORTED))
+        if submission.decision is not None:
+            decision = "confirmada" if submission.decision is ProposalDecision.CONFIRMED else "rechazada"
+            return RoutineProposalResult(f"Esa propuesta ya fue {decision} en la web.",
+                                         TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN))
         return RoutineProposalResult("Dejé la propuesta para confirmar en la web.", TaskOutcome(
             TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE, effect=EffectState.OBSERVED,
             observation_scope="software_state",

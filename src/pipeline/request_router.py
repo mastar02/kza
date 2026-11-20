@@ -2032,6 +2032,8 @@ class RequestRouter:
                           _task_outcome=proposal.outcome)
             if proposal.response:
                 await self._speak_response(proposal.response)
+            elif (turn := self._turn_outcome.get()) is not None:
+                turn.response_requirement = ResponseRequirement.SILENT
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 

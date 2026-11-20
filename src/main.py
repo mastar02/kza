@@ -2191,6 +2191,10 @@ async def build_application(
         )
         speaker_models.add_borrower(dashboard.admin_work.begin_close)
         shutdown.push_async_callback(dashboard.stop)
+        if dashboard_authority is not None:
+            voice_routines.bind_proposal_review(
+                lambda: dashboard_authority.available and not dashboard.admin_work.status()["closed"],
+            )
         if destination_registration is not None:
             # Original stop is installed first; attachment failure still drains it.
             await destination_registration.attach_accounts(user_manager, dashboard)

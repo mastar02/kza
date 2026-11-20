@@ -63,6 +63,14 @@ class ProposalReceipt:
     revision: int | None = None
 
 
+@dataclass(frozen=True)
+class ProposalSubmission:
+    """Outcome of admission, including any terminal decision on a replay."""
+
+    proposal_id: str
+    decision: ProposalDecision | None = None
+
+
 @dataclass
 class _Proposal:
     proposal_id: str
@@ -124,7 +132,18 @@ class RoutineProposalTray:
         routine_id: str | None = None, expected_revision: int | None = None,
         expires_at: float | None = None,
     ) -> str:
-        """Queue a normalized change internally and return its opaque proposal ID.
+        """Queue a normalized change and return its stable opaque proposal ID."""
+        return self.submit_for_review(
+            operation, conversation_id=conversation_id, spec=spec, routine_id=routine_id,
+            expected_revision=expected_revision, expires_at=expires_at,
+        ).proposal_id
+
+    def submit_for_review(
+        self, operation: ProposalOperation, *, conversation_id: str, spec: RoutineSpec | None = None,
+        routine_id: str | None = None, expected_revision: int | None = None,
+        expires_at: float | None = None,
+    ) -> ProposalSubmission:
+        """Queue a normalized change and return its current review state.
 
         Args:
             operation: Requested change.
@@ -136,7 +155,7 @@ class RoutineProposalTray:
                 enforces its own maximum even if the source lives longer.
 
         Returns:
-            The same ID for a replay of an equivalent change from this source.
+            The same ID and any terminal decision for an equivalent change from this source.
         """
         operation = ProposalOperation(operation)
         conversation_id = str(UUID(conversation_id))
@@ -169,7 +188,7 @@ class RoutineProposalTray:
                     entry.expires_at = deadline
                     if self.retention_notify is not None:
                         self.retention_notify()
-                return entry.proposal_id
+                return ProposalSubmission(entry.proposal_id, entry.receipt.status if entry.receipt else None)
         proposal_id = uuid4().hex
         self._entries[proposal_id] = _Proposal(
             proposal_id, operation, conversation_id, fingerprint, now, deadline,
@@ -177,7 +196,7 @@ class RoutineProposalTray:
         )
         if self.retention_notify is not None:
             self.retention_notify()
-        return proposal_id
+        return ProposalSubmission(proposal_id)
 
     async def own_delivery(self, serve: Callable[[ProposalDelivery | None], Awaitable[None]]) -> None:
         """Retain the actual ASGI scope, including buffered sends, through cancellation."""

@@ -1,21 +1,26 @@
 """Local voice proposals through capture admission, web review and erasure."""
 
 import asyncio
+from contextlib import AsyncExitStack
 from dataclasses import asdict
 import json
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 from httpx import ASGITransport, AsyncClient
 import pytest
 
+from src.main import build_application
 from src.memory.fact_ledger import MemoryReviewer
 from src.monitoring.loop_lag import LoopLagConfig, LoopLagProbe
+from tests.integration.test_capability_application import configuration
 from tests.integration.test_global_capture_http import URL as CAPTURE_URL, login, settled
 from tests.integration.test_routine_voice_execute import application, leaves, save, say
 from tests.integration.test_routine_voice_factory import OWN_WAKE
+from tests.mocks.task_transport import TaskTransport
 
 pytestmark = pytest.mark.asyncio
 PROPOSALS = "/api/routines/proposals"
@@ -96,6 +101,60 @@ async def test_voice_affirmations_leave_proposal_and_saved_routines_intact(home,
         assert response.status_code == 200 and response.json()["status"] == "confirmed"
     assert len(await home.scheduler.get_all_routines()) == 2
     assert home.transport.sends == []
+
+
+@pytest.mark.parametrize("orchestrated", [True, False])
+@pytest.mark.parametrize("missing", ["dashboard", "scheduler"])
+async def test_voice_proposals_require_working_web_review(
+    tmp_path, leaves, dashboard_auth, orchestrated, missing,
+):
+    transport = TaskTransport()
+    async with transport.serve() as url, AsyncExitStack() as stack:
+        config, _ = configuration(tmp_path, url)
+        config["orchestrator"]["enabled"] = orchestrated
+        if missing == "dashboard":
+            config["dashboard"]["enabled"] = False
+        else:
+            # SQLite initialization fails against a directory, through the real factory.
+            config["routines"]["db_path"] = str(tmp_path)
+        graph = await build_application(config, shutdown=stack, factories=leaves)
+        assert (graph.dashboard is None) == (missing == "dashboard")
+        assert (graph.routine_scheduler is None) == (missing == "scheduler")
+
+        result = await say(SimpleNamespace(graph=graph), PROPOSE)
+        assert result["response"] == "Ahora no está disponible la revisión de rutinas en la web."
+        assert result["outcome"]["status"] == "unsupported" and not result["task_completed"]
+        assert result["outcome"]["persistence"] == "not_written"
+        assert graph.producer_coverage.context_erasure.routine_proposals._entries == {}
+        assert transport.sends == []
+
+
+@pytest.mark.parametrize(("review_action", "decision", "spoken"), [
+    ("confirm", "confirmed", "confirmada"), ("reject", "rejected", "rechazada"),
+])
+async def test_replaying_a_reviewed_proposal_reports_its_terminal_decision(
+    home, dashboard_auth, review_action, decision, spoken,
+):
+    capture = OWN_WAKE | {"conversation_id": str(uuid4())}
+    assert (await say(home, PROPOSE, "voice:first", **capture))["response"] == REPLY
+    tray = home.graph.dashboard.routine_proposals
+    [proposal_id] = tray._entries
+    assert (await say(home, PROPOSE, "voice:pending-replay", **capture))["response"] == REPLY
+    assert list(tray._entries) == [proposal_id]
+    async with AsyncClient(transport=ASGITransport(app=home.graph.dashboard.app), base_url="http://test") as client:
+        await login(client, dashboard_auth["Authorization"].split(" ", 1)[1])
+        reviewed = await client.post(f"{PROPOSALS}/{proposal_id}/{review_action}")
+        assert reviewed.status_code == 200 and reviewed.json()["status"] == decision
+        saved = await home.scheduler.get_all_routines()
+        assert len(saved) == (1 if decision == "confirmed" else 0)
+
+        result = await say(home, PROPOSE, "voice:terminal-replay", **capture)
+        assert result["response"] == f"Esa propuesta ya fue {spoken} en la web."
+        assert not result["task_completed"] and result["outcome"]["persistence"] == "not_written"
+        pending = await client.get(PROPOSALS)
+        assert pending.status_code == 200 and pending.json()["proposals"] == []
+    assert list(tray._entries) == [proposal_id]
+    assert await home.scheduler.get_all_routines() == saved and home.transport.sends == []
 
 
 async def test_voice_proposal_has_no_person_and_is_erased_with_its_conversation(home, monkeypatch):
@@ -198,28 +257,34 @@ async def test_total_mute_prevents_voice_proposals(home, dashboard_auth):
     assert await home.scheduler.get_all_routines() == [] and home.transport.sends == []
 
 
-async def test_total_mute_retires_an_inflight_proposal_before_submission(home, dashboard_auth, monkeypatch):
-    actions = home.graph.pipeline.request_router.home_actions
-    validate = actions.validate_selection
-    checked, release = asyncio.Event(), asyncio.Event()
+@pytest.mark.parametrize("orchestrated", [True, False])
+async def test_total_mute_retires_an_inflight_proposal_before_submission(
+    tmp_path, leaves, dashboard_auth, monkeypatch, orchestrated,
+):
+    async with application(tmp_path, leaves, orchestrated=orchestrated) as home:
+        actions = home.graph.pipeline.request_router.home_actions
+        validate = actions.validate_selection
+        checked, release = asyncio.Event(), asyncio.Event()
 
-    async def hold_validation(*args, **kwargs):
-        await validate(*args, **kwargs)
-        checked.set()
-        await release.wait()
+        async def hold_validation(*args, **kwargs):
+            await validate(*args, **kwargs)
+            checked.set()
+            await release.wait()
 
-    monkeypatch.setattr(actions, "validate_selection", hold_validation)
-    async with AsyncClient(transport=ASGITransport(app=home.graph.dashboard.app), base_url="http://test") as client:
-        await login(client, dashboard_auth["Authorization"].split(" ", 1)[1])
-        revision = (await client.get(CAPTURE_URL)).json()["revision"]
-        pending = asyncio.create_task(say(home, PROPOSE))
-        try:
-            await asyncio.wait_for(checked.wait(), 2)
-            response = await client.post(CAPTURE_URL, json={"muted": True, "expected_revision": revision})
-            assert response.status_code == 202 and not home.graph.capture_control.capture_allowed
-        finally:
-            release.set()
-            result = await pending
-        await settled(client, "muted")
-    assert not result["success"] and result["response"] != REPLY
-    assert home.graph.dashboard.routine_proposals._entries == {}
+        monkeypatch.setattr(actions, "validate_selection", hold_validation)
+        async with AsyncClient(transport=ASGITransport(app=home.graph.dashboard.app), base_url="http://test") as client:
+            await login(client, dashboard_auth["Authorization"].split(" ", 1)[1])
+            revision = (await client.get(CAPTURE_URL)).json()["revision"]
+            pending = asyncio.create_task(say(home, PROPOSE))
+            try:
+                await asyncio.wait_for(checked.wait(), 2)
+                response = await client.post(CAPTURE_URL, json={"muted": True, "expected_revision": revision})
+                assert response.status_code == 202 and not home.graph.capture_control.capture_allowed
+            finally:
+                release.set()
+                result = await pending
+            await settled(client, "muted")
+        assert not result["success"] and result["response"] == ""
+        assert result["outcome"]["status"] == "cancelled" and not result["response_required"]
+        assert result["outcome"]["response_requirement"] == "silent"
+        assert home.graph.dashboard.routine_proposals._entries == {}
