@@ -114,6 +114,13 @@ async def test_retired_routine_requests_are_refused_before_a_producer(orchestrat
     "para el próximo programa que vamos a ver cuándo se prenden las luces al salir el sol",
     "para el programa que vamos a ver cómo se prenden las luces al salir el sol",
     "para el próximo programa que vamos a ver quiero que se enciendan las luces al salir el sol",
+    "para el próximo programa que vamos a ver quiero que me enciendan las luces al salir el sol",
+    "para el próximo programa que vamos a ver quería que nos enciendan las luces al salir el sol",
+    "para el próximo programa que vamos a ver queremos que te enciendan las luces al salir el sol",
+    "para el próximo programa que vamos a ver quisiera que le enciendan las luces al salir el sol",
+    "para el último programa que vimos quiero que me enciendan las luces al salir el sol",
+    "para el próximo programa que vamos a ver, cuándo se prenden las luces al salir el sol",
+    "para el próximo programa que escuche cuándo se prenden las luces al salir el sol",
 ])
 async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(orchestrated, utterance):
     async with voice_router(orchestrated, utterance) as (router, dispatcher):
@@ -174,6 +181,13 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "para el próximo programa que vamos a grabar buscá información sobre el premio",
     "después del último programa que se emitió anoche, hablemos del premio",
     "para el programa que vamos a grabar mañana, me podés buscar información sobre el premio",
+    "después del último programa que vimos, ¿quién ganó el premio?",
+    "después del último programa que vimos quién ganó el premio",
+    "para el próximo programa que vamos a grabar, ¿quién ganó el premio?",
+    "para el próximo programa que vamos a grabar, quién ganó el premio",
+    "para el próximo programa que vamos a grabar ¿qué premio ganó el invitado?",
+    "para el próximo programa que vamos a grabar, cuándo pasa el programa a la radio",
+    "después del último programa que escuché ¿quién ganó el premio?",
     "¿se configura el horario de la automatización de riego desde la web?",
     "podés decirme quién configura el horario de la automatización de riego",
     "¿Te parece que programa bien el horario la automatización de riego?",
@@ -187,6 +201,7 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
         result = await router.process_command(np.zeros(16000, dtype=np.float32))
         assert result["intent"] == "conversation"
         assert result["outcome"]["status"] == "completed"
+        assert not router.ha.mock_calls
         if orchestrated:
             assert result["path"] == "slow_llm"
             dispatcher._slow_path.assert_awaited_once()
@@ -216,6 +231,8 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
     "para el nuevo programa que se estrenó anoche, buscá información sobre el elenco",
     "después del último programa que grabé quiero hablar del premio",
     "después del último programa que miré quiero hablar del premio",
+    "después del último programa que vimos ayer",
+    "después del último programa que escuche quiero hablar del premio",
 ])
 def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance):
     assert not is_unclaimed_routine_creation(f"Nexa, {utterance}")
@@ -251,8 +268,9 @@ def test_accented_program_verb_survives_nominal_filtering():
     "para el próximo programa que vamos a ver hoy primero el momento en que se prenden las luces",
     "después del último programa que vimos anoche, quisiera que las luces prendan a las ocho",
     "para el próximo programa que vamos a ver nos enciendan las luces al salir el sol",
-    "después del último programa que vimos ayer",
     "para el próximo programa que vamos a grabar mañana",
+    "después del último programa que vimos quiero que me enciendan las luces",
+    "después del último programa que vimos, me programás el riego",
 ])
 def test_program_directive_survives_nominal_filtering(utterance):
     assert is_unclaimed_routine_creation(f"Nexa, {utterance}")

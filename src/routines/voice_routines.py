@@ -29,7 +29,7 @@ from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus,
 )
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
-from src.nlu.command_grammar import WAKE_TERMS
+from src.nlu.command_grammar import WAKE_TERMS, extract_entity, match_intent_rules
 from src.nlu.household_intents import HouseholdFamily, HouseholdIntent, HouseholdOperation, strip_fillers
 from src.routines.models import (
     ActionStatus, BrakeStatus, RoutineBrake, RoutineConflict, RoutineNameConflict, RoutineNotFound, RoutineRun,
@@ -85,24 +85,44 @@ _PROGRAM_COMPLEMENT_CONTEXT = (
     r"(?<!\bpara )(?<!\bdespues )(?<!\bluego )(?<!\bantes )"
     r"(?<!\bdespues de )(?<!\bluego de )(?<!\bantes de )"
 )
-# Require a conversational main clause after the media relative. An adverb or
-# embedded question may still introduce the object of "ver" in a command.
-# A pronoun alone ("nos enciendan") is not a conversational opening.
+_INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"
+_PROGRAM_DESIRE = r"(?:quiero|queria|queremos|quisiera)"
+_PROGRAM_EXPLICIT_DIRECTIVE = (
+    rf"(?:{_PROGRAM_DESIRE} que|(?:me|te|nos|le|les) (?:program|configur)(?:a|as|e|en|es)"
+    rf"|(?:program|configur)(?:a|ame|e) (?:que|{_PROGRAM_OBJECT}))"
+)
+# Keep the accent that distinguishes "escuché" from the subjunctive "escuche".
+_ACCENTED_MEDIA_PRETERITE = re.compile(r"(\b(?:grab|escuch|mir)é\b)", re.I)
+# A past event can identify the program without a main clause. Keep an
+# explicit instruction in the same clause eligible for routine refusal.
+_PROGRAM_PAST_RELATIVE = (
+    r"(?:vi|viste|vio|vimos|vieron|(?:grab|escuch|mir)(?:é|aste|o|amos|aron)"
+    r"|gan(?:o|aron)(?: (?:el|un) premio)?"
+    r"|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron)|estren(?:o|aron)))"
+    rf"\b(?![^¿?!.;]*\b{_PROGRAM_EXPLICIT_DIRECTIVE}\b)"
+)
+# A prospective relative can still be the complement of "programa que".
+# Require a conversational clause or a clearly separated question.
 _PROGRAM_CONVERSATIONAL_HEAD = (
-    r"(?:(?:quiero|queria|queremos|quisiera)\b(?! que (?:se|el|la|los|las|a las|al|cuando|cada)\b)"
+    rf"(?:{_PROGRAM_DESIRE}\b(?! que\b)"
     r"|buscame|busca|decime|dime|contame|mostrame|explicame|resumi|resumime|anota|recordame|acordate"
     r"|prepara|preparame|hablemos|charlemos|comentame|avisame|pensaba|tengo|tenemos|puedo|podemos|podes|podrias"
     r"|(?:me|te|nos) (?:podes|puedes|podrias|puede|pueden|ayudas|buscas|contas|cuentas|cuento"
     r"|decis|dices|digo|explicas|explico|mostras|muestras|muestro))"
 )
-_PROGRAM_MEDIA_RELATIVE = (
-    r"que (?:ya )?(?:"
-    r"vi|viste|vio|vimos|vieron|vemos|veamos|(?:grab|escuch|mir)(?:e|aste|o|amos|aron|emos)"
-    r"|gan(?:o|aron)(?: (?:el|un) premio)?"
-    r"|(?:voy|vas|va|vamos|van) a (?:ver|mirar|grabar|escuchar|pasar|dar|emitir|transmitir)"
-    r"|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron|ra|ran)|estren(?:o|aron|ara|aran)))"
-    rf"\b(?: (?:ayer|anoche|hoy|manana|recien|juntos))?(?: *,)? {_PROGRAM_CONVERSATIONAL_HEAD}\b"
+_PROGRAM_QUESTION_WORD = rf"(?:{_INTERROGATIVE}|por que)\b"
+_PROGRAM_DIRECT_QUESTION = (
+    rf"(?: *, *| +)¿ *{_PROGRAM_QUESTION_WORD}"
+    rf"| *, *(?P<unmarked_program_question>{_PROGRAM_QUESTION_WORD}[^¿?!.;]*)"
 )
+_PROGRAM_PROSPECTIVE_RELATIVE = (
+    r"(?:vemos|veamos|(?:grab|escuch|mir)(?:e|emos)"
+    r"|(?:voy|vas|va|vamos|van) a (?:ver|mirar|grabar|escuchar|pasar|dar|emitir|transmitir)"
+    r"|se (?:(?:emiti|(?:re)?transmiti)ran?|estrenaran?))"
+    r"\b(?: (?:ayer|anoche|hoy|manana|recien|juntos))?"
+    rf"(?:(?: *,)? {_PROGRAM_CONVERSATIONAL_HEAD}\b|{_PROGRAM_DIRECT_QUESTION})"
+)
+_PROGRAM_MEDIA_RELATIVE = rf"que (?:ya )?(?:{_PROGRAM_PAST_RELATIVE}|{_PROGRAM_PROSPECTIVE_RELATIVE})"
 # A temporal complement may end at an ordinal ("después del último, programa ...").
 # After one of those complements, "programa a las" can also be a command.
 # A "de" complement or a relative describing the show can still identify a noun.
@@ -116,7 +136,6 @@ _NOMINAL_PROGRAM = re.compile(
     rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_PLAIN_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= (?:de|que)\b)"
 )
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
-_INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"
 _QUESTION_OPENING = re.compile(
     rf"^(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE}\b"
     r"|^(?:(?:me )?(?:podes|podrias|puedes) )?(?:decime|dime|decirme|decir|contame|contarme|sabes) "
@@ -315,6 +334,14 @@ def _words(text: str) -> list[str]:
     return re.sub(r"[^a-z0-9]+", " ", _fold(text)).split()
 
 
+def _mask_nominal_program(match: re.Match[str]) -> str:
+    question = match["unmarked_program_question"]
+    # A comma alone does not disambiguate an embedded device clause from a question.
+    if question and (match_intent_rules(question, extract_entity(question)) or re.search(r"\briego\b", question)):
+        return match[0]
+    return " "
+
+
 def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) -> bool:
     """Recognize creation or configuration of routines outside the request grammar."""
     original = unicodedata.normalize("NFC", text)
@@ -329,8 +356,11 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     if _QUESTION_OPENING.match(phrase):
         return False
     # Preserve clause punctuation on either side of "programa" until nominal filtering.
-    folded = " ".join(_fold(original).split())
-    without_nominal_programs = _NOMINAL_PROGRAM.sub(" ", folded)
+    parts = _ACCENTED_MEDIA_PRETERITE.split(original)
+    folded = " ".join("".join(
+        part.lower() if index % 2 else _fold(part) for index, part in enumerate(parts)
+    ).split())
+    without_nominal_programs = _NOMINAL_PROGRAM.sub(_mask_nominal_program, folded)
     command_text = phrase
     if without_nominal_programs != folded:
         command_text = " ".join(strip_fillers(without_nominal_programs, wake_words, extra_leads=_LEADS))
