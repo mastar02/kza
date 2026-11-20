@@ -1301,12 +1301,13 @@ test('R5: a retried assign refused for dependents says on the card that nothing 
   assert.match(memory.RETRY_DEPENDENTS, /^No se asignó\./);
 });
 
-test('R8: the /obs account removal confirmation states that assigned memories are deleted irreversibly', () => {
+test('R8: NEXO Personas warns about irreversible removal and /obs only lists accounts', () => {
   const fs = require('node:fs'), path = require('node:path');
   const admin = fs.readFileSync(path.join(__dirname, '../../src/dashboard/frontend/obs/src/views/admin.jsx'), 'utf8');
   const people = require('../../src/dashboard/frontend/home/nexo/people.js');
   assert.ok(people.MEMORY_REMOVAL.includes('sin posibilidad de recuperarlos'));
-  const at = admin.indexOf('confirm(`¿Eliminar ${uid}?'), confirmCall = admin.slice(at, admin.indexOf(')) return;', at));
-  assert.ok(at >= 0, 'the removal asks for confirmation');
-  assert.ok(confirmCall.includes(people.MEMORY_REMOVAL), 'the /obs confirm carries the same sentence as NEXO');
+  assert.doesNotMatch(admin, /confirm\s*\(\s*['"\x60]¿Eliminar|className="user-form"|(?:Crear|Eliminar) usuario/);
+  assert.doesNotMatch(admin, /method:\s*['"]DELETE['"]/);
+  assert.deepEqual(admin.match(/\/api\/admin\/users[^'"\x60\s]*/g), ['/api/admin/users/${userId}/enroll']);
+  assert.ok(admin.includes('Las personas se crean y se retiran en NEXO › Personas'));
 });

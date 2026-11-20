@@ -83,38 +83,34 @@ function SourceNote({ k }) {
 // ---- Authorized operation with pending state and server result ----
 function OperationButton({ kind, target, label, confirmLabel = null, className = 'btn' }) {
   const obs = useObs();
-  const [phase, setPhase] = useState('idle');
-  const live = useRef(true);
-  useEffect(() => () => { live.current = false; }, []);
+  const [confirming, setConfirming] = useState(false);
+  const phase = obs.operationOutcome(kind, target)?.state;
   const allowed = window.KzaObsData.availability(obs, kind, target);
+  const reason = phase === 'uncertain' ? 'Actualizá los datos y revisá el estado antes de reintentar.' : allowed.reason;
   const reasonId = useMemo(() => `op-${kind}-${String(target).replace(/[^a-zA-Z0-9_-]/g, '_')}`, [kind, target]);
   async function run() {
-    setPhase('pending'); obs.setNotice(null);
+    setConfirming(false);
     const outcome = await window.KzaObsData.runOperation({ fetch: window.fetch.bind(window), store: obs, kind, target });
-    // The row may disappear after the fresh read, so the result lives in the shell.
-    obs.setNotice(outcome);
-    if (live.current) setPhase('idle');
-    // After an applied operation with an expired session, keep its result visible.
     if (outcome.state === 'auth') window.dispatchEvent(new CustomEvent('kza:auth-required'));
   }
-  const describedBy = !allowed.enabled ? reasonId : undefined;
+  const disabled = !allowed.enabled || phase === 'pending' || phase === 'uncertain';
   return (
     <span style={{ display: 'inline-flex', flexDirection: 'column', gap: 4, alignItems: 'flex-start' }}>
       <span style={{ display: 'inline-flex', gap: 4 }}>
-        {phase === 'confirm' ? (
+        {confirming && !disabled ? (
           <>
             <button type="button" className="btn danger" onClick={run}>{confirmLabel}</button>
-            <button type="button" className="btn" onClick={() => setPhase('idle')}>Cancelar</button>
+            <button type="button" className="btn" onClick={() => setConfirming(false)}>Cancelar</button>
           </>
         ) : (
-          <button type="button" className={className} disabled={!allowed.enabled || phase === 'pending'}
-                  aria-describedby={describedBy}
-                  onClick={() => (confirmLabel ? setPhase('confirm') : run())}>
+          <button type="button" className={className} disabled={disabled}
+                  aria-describedby={reason ? reasonId : undefined}
+                  onClick={() => (confirmLabel ? setConfirming(true) : run())}>
             {phase === 'pending' ? 'Enviando…' : label}
           </button>
         )}
       </span>
-      {!allowed.enabled && <span id={reasonId} className="mono mute" style={{ fontSize: 10 }}>{allowed.reason}</span>}
+      {reason && <span id={reasonId} className="mono mute" style={{ fontSize: 10 }}>{reason}</span>}
     </span>
   );
 }

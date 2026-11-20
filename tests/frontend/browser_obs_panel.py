@@ -13,6 +13,7 @@ checks the native modal, focus return and error announcement. Synthetic fixtures
 """
 
 import asyncio
+import base64
 from datetime import datetime, timezone
 from enum import Enum
 import json
@@ -31,8 +32,8 @@ from websockets.asyncio.client import connect
 
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority
+from src.dashboard.live_event_bus import LiveEventBus
 from src.users.user_manager import PermissionLevel, UserManager
-from tests.frontend.browser_nexo_home import screenshot
 from tests.frontend.browser_support import (Page, _press_tab, browser_binary, browser_profile_root, evidence_directory,
                                             press_enter)
 
@@ -40,6 +41,20 @@ EVIDENCE = evidence_directory('KZA_OBS_PANEL_EVIDENCE', 'data/autonomous-roadmap
 TOKEN = 'synthetic-obs-panel-root'
 FORBIDDEN = ('Marco', 'Lucía', 'vllm-7b', 'ik-30b', '192.168.1.2', '21d 08h', 'kza@a3f9c2e', 'turn_8821',
              'Khruangbin', 'datos de ejemplo', 'wireframe')
+OBS_FETCH_SPY = r"""(() => {
+    const fetch = window.fetch.bind(window);
+    window.__obsUserWrites = [];
+    window.__obsAuthEvents = 0;
+    window.addEventListener('kza:auth-required', () => window.__obsAuthEvents++);
+    window.fetch = (input, options) => {
+        const method = (options?.method ?? input.method ?? 'GET').toUpperCase();
+        const path = new URL(input.url ?? input, location.href).pathname;
+        if (['POST', 'DELETE'].includes(method) && /^\/api\/admin\/users(?:\/|$)/.test(path)) {
+            window.__obsUserWrites.push({method, path});
+        }
+        return fetch(input, options);
+    };
+})()"""
 # Navigation entries in document order: (hash id, visible label, readiness condition).
 NAV = (('live', 'Live', "!!document.querySelector('#view-live')"),
        ('conversations', 'Conversaciones', "!!document.querySelector('#view-conversations h1')"),
@@ -145,7 +160,7 @@ LAYOUT_VOICE = r"""(async () => {
   const id = 'vf_' + 'a'.repeat(64);
   const timing = {observed_at: now, expires_at: now + 60};
   const captures = state.captures.receive([{
-    id, ...timing, created_at: now, duration_s: 1, review_available: true,
+    id, ...timing, created_at: now, duration_s: 1, review_available: true, room_id: null,
     suggested_profile: null, similarity: null, group_id: '00000000-0000-0000-0000-000000000001',
     group_revision: 1, group_size: 1, group_state: 'unknown', group_reason: 'unreviewed',
     group_similarity: null, group_expires_at: timing.expires_at,
@@ -244,6 +259,14 @@ async def check_layout(page: Page, width: int, view: str, *, names=(), overlay: 
     for name in names:
         assert name in exposed_names, (width, view, name)
     return probe
+
+
+async def screenshot(page: Page, path: Path, *, full: bool = True) -> None:
+    """Capture the current panel without waiting for display refresh callbacks."""
+    await page.evaluate('window.scrollTo(0, 0)')
+    result = await page.command('Page.captureScreenshot', {'format': 'png', 'captureBeyondViewport': full})
+    path.write_bytes(base64.b64decode(result['data']))
+    path.chmod(0o600)
 
 
 async def set_login_token(page: Page, token: str) -> None:
@@ -372,19 +395,22 @@ async def responsive_layout(page: Page) -> dict:
                 names += ('Nombre del perfil',)
             if view == 'admin':
                 await page.wait_for("!!document.querySelector('.user-actions button')")
-                names += ('Nombre del usuario', 'Nivel de permiso', 'Enrolar voz de Synthetic account',
-                          'Eliminar usuario Synthetic account')
+                names += ('Enrolar voz de Synthetic account',)
             result[width][view] = await check_layout(page, width, view, names=names)
             if width == 390 and view == 'live':
                 await screenshot(page, EVIDENCE / 'obs-view-live-390.png', full=False)
 
         if width == 320:
-            await page.evaluate("document.querySelector('.user-form button').focus()")
+            await page.evaluate("[...document.querySelectorAll('main .content button')]"
+                                ".find(button => button.textContent === 'cerrar sesión').focus()")
             await _press_tab(page)
             assert await page.evaluate("document.activeElement.matches('.table-scroll')")
             assert_ring(await page.evaluate(FOCUS_PROBE))
-            await _press(page, 'ArrowRight', 'ArrowRight', 39)
-            await page.wait_for("document.activeElement.matches('.table-scroll') && document.activeElement.scrollLeft > 0")
+            assert await page.evaluate("document.activeElement.scrollWidth > document.activeElement.clientWidth")
+            await _press_tab(page)
+            await page.wait_for("document.activeElement.matches('.user-actions button') && "
+                                "document.activeElement.closest('.table-scroll').scrollLeft > 0")
+            assert_ring(await page.evaluate(FOCUS_PROBE))
 
         await page.evaluate("document.querySelector('.user-actions button').focus()")
         await press_enter(page)
@@ -449,7 +475,10 @@ async def main() -> None:
         await authority.initialize()
         users = UserManager(str(directory / 'users.json'))
         users.add_user('Synthetic account', permission_level=PermissionLevel.ADULT)
-        dashboard = DashboardAPI(authority=authority, alert_manager=alerts, user_manager=users)
+        # A long cell places the enrolment column beyond the narrow viewport.
+        users.add_user('Synthetic' + 'W' * 48, permission_level=PermissionLevel.ADULT)
+        bus = LiveEventBus()
+        dashboard = DashboardAPI(authority=authority, alert_manager=alerts, user_manager=users, event_bus=bus)
 
         @dashboard.app.middleware('http')
         async def record(request, call_next):
@@ -485,6 +514,7 @@ async def main() -> None:
                     page = Page(connection)
                     await page.command('Runtime.enable')
                     await page.command('Page.enable')
+                    await page.command('Page.addScriptToEvaluateOnNewDocument', {'source': OBS_FETCH_SPY})
                     await page.command('Emulation.setDeviceMetricsOverride',
                                        {'width': 1440, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False})
                     await page.command('Page.navigate', {'url': f'http://127.0.0.1:{port}/obs/'})
@@ -524,10 +554,21 @@ async def main() -> None:
 
                     text = await visit('Alertas', 'view-alerts')
                     assert 'Synthetic device alert' in text
-                    await page.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='Marcar atendida').click()")
+                    acknowledge = "[...document.querySelectorAll('button')].find(b=>b.textContent==='Marcar atendida')"
+                    ack_path = '/api/admin/alerts/synthetic-alert-1/ack'
+                    faults[ack_path] = 504
+                    await page.evaluate(f"{acknowledge}.click()")
+                    await page.wait_for(f"{acknowledge}?.disabled && document.body.innerText.includes('Resultado incierto')")
+                    assert not alerts.marked
+                    del faults[ack_path]
+                    await page.evaluate("document.querySelector('.topbar button').click()")
+                    await page.wait_for(f"{acknowledge}?.disabled === false")
+                    assert sum(item['path'] == ack_path for item in requests) == 1
+                    checks.append('a fresh alerts read enables a new explicit acknowledgement without an automatic retry')
+                    await page.evaluate(f"{acknowledge}.click()")
                     await page.wait_for("document.body.innerText.includes('El servidor marcó la alerta como atendida.')")
                     assert alerts.marked == [('synthetic-alert-1', True)]
-                    assert {'method': 'POST', 'path': '/api/admin/alerts/synthetic-alert-1/ack', 'status': 200} in requests
+                    assert {'method': 'POST', 'path': ack_path, 'status': 200} in requests
                     assert await page.evaluate("document.body.innerText.includes('atendidas · 1')")
                     checks.append('ack runs POST /api/admin/alerts/{id}/ack and shows the server-confirmed result')
                     reads = sum(item['path'] == '/api/alerts' for item in requests)
@@ -556,8 +597,45 @@ async def main() -> None:
                     text = await visit('Voces', 'view-users')
                     await page.evaluate("[...document.querySelectorAll('.nav-item')].find(n=>n.textContent.includes('Admin')).click()")
                     await page.wait_for("document.body.innerText.includes('Acciones de servicio')")
+                    await page.wait_for("!!document.querySelector('.user-actions button')")
+                    assert await page.evaluate("""(() => {
+                        const region = document.querySelector('[aria-label="Usuarios administrados"]');
+                        const card = region.closest('.card');
+                        return card.textContent.includes('Las personas se crean y se retiran en NEXO › Personas')
+                            && [...region.querySelectorAll('thead th')].slice(0, 4).map(th => th.textContent)
+                                .join(',') === 'id,nombre,permiso,voz'
+                            && region.textContent.includes('Synthetic account')
+                            && !card.querySelector('form, input, select, [aria-label^="Eliminar usuario"]')
+                            && region.querySelector('button').getAttribute('aria-label') === 'Enrolar voz de Synthetic account';
+                    })()""")
+                    await page.evaluate("document.querySelector('.user-actions button').click()")
+                    await page.wait_for("!!document.querySelector('.admin-overlay [role=dialog]')")
+                    await page.evaluate("""document.querySelector('[aria-label="Cerrar enrolamiento"]').click()""")
+                    await page.wait_for("!document.querySelector('.admin-overlay')")
+                    assert await page.evaluate('window.__obsUserWrites') == []
+                    assert not [item for item in requests if item['method'] in {'POST', 'DELETE'}
+                                and (item['path'] == '/api/admin/users' or item['path'].startswith('/api/admin/users/'))]
                     await screenshot(page, EVIDENCE / 'obs-admin.png')
-                    checks.append('every view renders without example data')
+                    checks.append('Admin lists users, opens and closes voice enrollment, and performs no admin-user writes')
+
+                    restart = "document.querySelector('.admin-service-row:first-child button')"
+                    restart_path = '/api/admin/services/kza-voice/restart'
+
+                    async def request_restart():
+                        await page.evaluate(f"{restart}.click()")
+                        await page.wait_for(f"{restart}.textContent === 'Confirmar reinicio de kza-voice'")
+                        await page.evaluate(f"{restart}.click()")
+
+                    for status, message in ((409, 'Conflicto: el estado cambió'), (403, 'no tiene permiso para esta operación')):
+                        auth_events = await page.evaluate('window.__obsAuthEvents')
+                        faults[restart_path] = status
+                        await request_restart()
+                        await page.wait_for(f"document.body.innerText.includes({json.dumps(message)})")
+                        assert {'method': 'POST', 'path': restart_path, 'status': status} in requests
+                        assert await page.evaluate('window.__obsAuthEvents') == auth_events
+                        assert not await page.evaluate('!!document.querySelector("dialog:modal")')
+                    del faults[restart_path]
+                    checks.append('409 reports a conflict and 403 reports denial without reopening login')
 
                     # Restart whose server outcome is uncertain: systemctl is replaced in this
                     # process only (never executed) and times out, so the server answers 504.
@@ -569,19 +647,29 @@ async def main() -> None:
 
                     with mock.patch('src.dashboard.admin.shutil.which', lambda _: '/usr/bin/systemctl'), \
                             mock.patch('src.dashboard.admin.subprocess.run', timed_out):
-                        await page.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='↻ Reiniciar').click()")
-                        await page.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='Confirmar reinicio de kza-voice').click()")
+                        await request_restart()
                         await page.wait_for("document.body.innerText.includes('Resultado incierto: el servidor no pudo confirmar el efecto')")
+                        await page.wait_for(f"{restart}.disabled && {restart}.textContent.includes('Reiniciar')")
+                        sent = sum(item['path'] == restart_path for item in requests)
+                        await page.evaluate(f"{restart}.click()")
+                        await visit('Live', 'view-live')
+                        await page.evaluate("[...document.querySelectorAll('.nav-item')].find(n=>n.textContent.includes('Admin')).click()")
+                        await page.wait_for(f"{restart}?.disabled")
+                        await page.evaluate(f"{restart}.click()")
+                        assert sum(item['path'] == restart_path for item in requests) == sent
                     assert commands == [['systemctl', '--user', 'restart', 'kza-voice']]
                     assert {'method': 'POST', 'path': '/api/admin/services/kza-voice/restart', 'status': 504} in requests
                     assert not await page.evaluate("document.body.innerText.includes('completó el reinicio')")
                     await screenshot(page, EVIDENCE / 'obs-admin-restart-uncertain.png')
-                    checks.append('restart with a server timeout (504, effect uncertain) is shown as Resultado incierto, never applied')
+                    checks.append('504 leaves restart disabled across navigation and blocks repeated clicks')
 
                     keyboard = await keyboard_navigation(page, port, checks)
 
-
                     responsive = await responsive_layout(page)
+                    assert await page.evaluate('window.__obsUserWrites') == []
+                    assert not [item for item in requests if item['method'] in {'POST', 'DELETE'}
+                                and (item['path'] == '/api/admin/users' or item['path'].startswith('/api/admin/users/'))]
+                    checks.append('fetch and server spies see zero admin-user writes while visiting and using the read-only list')
                     checks.append('responsive layout, accessible names and populated table regions at 320/390/768/1280/1440 px')
                     checks.append('mobile keyboard disclosure, Escape, focus return, hash history and keyboard table scrolling')
                     faults['/api/zones'] = 403
@@ -608,6 +696,7 @@ async def main() -> None:
                 browser.wait(timeout=10)
             server.should_exit = True
             await serving
+            await bus.aclose()
             await authority.aclose()
     result = {'passed': True, 'synthetic_fixture': True, 'checks': checks, 'keyboard': keyboard,
               'responsive': {width: {'login': login[width], **responsive[width]} for width in WIDTHS},
@@ -629,9 +718,11 @@ async def keyboard_navigation(page: Page, port: int, checks: list) -> dict:
         return state
 
     # A view change by keyboard clears the operation notice, as a click did before.
-    assert await page.evaluate("document.body.innerText.includes('Resultado incierto')")
-    uncertain = await page.evaluate("window.__kzaObs.notice()")
+    assert await page.evaluate("window.__kzaObs.notice() === null")
+    uncertain = await page.evaluate("window.__kzaObs.operationOutcome('restartService', 'kza-voice')")
     assert uncertain['state'] == 'uncertain', uncertain
+    await page.evaluate(f"window.__kzaObs.setNotice({json.dumps(uncertain)})")
+    await page.wait_for("document.body.innerText.includes('Resultado incierto')")
     await page.evaluate("document.querySelectorAll('.nav-item')[8].focus()")
     await press_shift_tab(page)
     probe = await page.evaluate(FOCUS_PROBE)
@@ -710,27 +801,26 @@ async def keyboard_navigation(page: Page, port: int, checks: list) -> dict:
     record['history'].append({'delta': 1, **await opened(index)})
     checks.append('Back and Forward restore the view named by the hash (Back to the entry without hash opens Live), with focus and announcement')
 
-    # Inputs, selects and buttons inside a view show the same ring when reached with the keyboard.
+    # The read-only user table and enrolment button remain reachable by keyboard.
     await page.evaluate("document.querySelectorAll('.nav-item')[7].focus()")
     await _press_tab(page)
     await press_enter(page)
     await opened(8)
-    await page.wait_for("!!document.querySelector('.content form input')")
-    await page.evaluate("document.querySelector('.content form input').focus()")
-    for expected in ('select', 'button'):
+    await page.wait_for("!!document.querySelector('.user-actions button')")
+    for selector in ('.topbar button', 'main .content .page-head button',
+                     '[aria-label="Usuarios administrados"]', '.user-actions button'):
         await _press_tab(page)
         probe = await page.evaluate(FOCUS_PROBE)
-        assert probe['tag'] == expected, probe
+        assert await page.evaluate(f"document.activeElement.matches({json.dumps(selector)})"), probe
         assert_ring(probe)
         record['controls'].append(probe)
     await press_shift_tab(page)
-    await press_shift_tab(page)
     probe = await page.evaluate(FOCUS_PROBE)
-    assert probe['tag'] == 'input', probe
+    assert await page.evaluate("document.activeElement.getAttribute('aria-label') === 'Usuarios administrados'"), probe
     assert_ring(probe)
     record['controls'].append(probe)
-    await screenshot(page, EVIDENCE / 'obs-focus-admin-input.png', full=False)
-    checks.append('input, select and button in Admin show the focus ring with the keyboard')
+    await screenshot(page, EVIDENCE / 'obs-focus-admin-table.png', full=False)
+    checks.append('the table region and buttons in Admin show the focus ring with the keyboard')
     (EVIDENCE / 'keyboard-navigation.json').write_text(json.dumps(record, indent=2) + '\n')
     return {'tab_order': [probe['text'] for probe in record['tab_order']],
             'contrast_min': min(probe['contrast'] for probe in record['tab_order'] + record['controls']),

@@ -1,11 +1,10 @@
 // =============================================================
 // Admin view — centro de administración
-// CRUD usuarios + voice enrollment + alerts ack + service restart
+// Consulta de usuarios + voice enrollment + alerts ack + service restart
 // Card/Pill son globals (declarados en primitives.jsx — Babel inline scripts
 // comparten scope global). No destructuro de window.* para no shadowearlos.
 // =============================================================
 
-const PERMISSION_LEVELS = ["guest", "child", "teen", "adult", "admin"];
 const ENROLL_SAMPLES = 3;
 const ENROLL_PHRASES = [
   "Hola, soy yo grabando una muestra para KZA",
@@ -182,52 +181,13 @@ function encodeWav(int16Samples, sampleRate) {
 // ---------------- Users panel ----------------
 
 function UsersPanel({ users, loadError, onChanged }) {
-  const [name, setName] = React.useState("");
-  const [level, setLevel] = React.useState("adult");
-  const [err, setErr] = React.useState(null);
-  const create = async (e) => {
-    e.preventDefault();
-    setErr(null);
-    try {
-      const r = await authedFetch("/api/admin/users", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, permission_level: level }),
-      });
-      if (!r.ok) { setErr((await r.json()).detail || `HTTP ${r.status}`); return; }
-      setName(""); onChanged();
-    } catch (e) { setErr(String(e)); }
-  };
-  const del = async (uid) => {
-    // U3b-1b/D7: the removal also deletes the memories assigned to that person.
-    if (!confirm(`¿Eliminar ${uid}? También se eliminan, sin posibilidad de recuperarlos, los recuerdos asignados a esta persona en Memoria, junto con los recuerdos que dependen de ellos.`)) return;
-    setErr(null);
-    try {
-      const r = await authedFetch(`/api/admin/users/${encodeURIComponent(uid)}`, { method: "DELETE" });
-      if (!r.ok) {
-        const body = await r.json().catch(() => ({}));
-        setErr(typeof body.detail === "string" ? body.detail : `No se pudo eliminar (HTTP ${r.status}).`);
-      }
-    } catch (e) { setErr(String(e)); }
-    onChanged();
-  };
-
   return (
     <div className="card">
       <div className="card-h"><h3>Usuarios</h3>
         <span className="h-meta"><span>{loadError ? "no disponible" : `${users.length} usuarios`}</span></span>
       </div>
       <div className="card-b">
-        <form onSubmit={create} className="user-form" aria-label="Crear usuario">
-          <input value={name} onChange={e => setName(e.target.value)}
-                 placeholder="nombre" aria-label="Nombre del usuario" required />
-          <select value={level} onChange={e => setLevel(e.target.value)}
-                  aria-label="Nivel de permiso">
-            {PERMISSION_LEVELS.map(p => <option key={p} value={p}>{p}</option>)}
-          </select>
-          <button className="btn primary" type="submit">+ crear</button>
-        </form>
-        {err && <div className="pill err" style={{ marginBottom: 8 }}>{err}</div>}
+        <p className="mute">Las personas se crean y se retiran en NEXO › Personas</p>
         <div className="table-scroll" role="region" aria-label="Usuarios administrados" tabIndex={0}>
           <table className="k">
             <thead><tr><th>id</th><th>nombre</th><th>permiso</th><th>voz</th><th></th></tr></thead>
@@ -241,14 +201,13 @@ function UsersPanel({ users, loadError, onChanged }) {
                   <td>
                     <div className="user-actions">
                       <EnrollButton userId={u.id} userName={u.name} onDone={onChanged} />
-                      <button className="btn danger" aria-label={`Eliminar usuario ${u.name}`} onClick={() => del(u.id)}>×</button>
                     </div>
                   </td>
                 </tr>
               ))}
               {users.length === 0 && (
                 <tr><td colSpan={5} className="mute" style={{ textAlign: "center", padding: 24 }}>
-                  {loadError ? `Usuarios no disponibles: ${loadError}` : "Sin usuarios — creá uno arriba"}
+                  {loadError ? `Usuarios no disponibles: ${loadError}` : "Sin usuarios"}
                 </td></tr>
               )}
             </tbody>
@@ -427,7 +386,7 @@ function AdminView() {
       <div className="page-head">
         <div>
           <h1>Admin</h1>
-          <div className="subtitle">Gestión de usuarios, voz, servicios — endpoints autenticados</div>
+          <div className="subtitle">Consulta de usuarios, enrolamiento de voz y acciones de servicio</div>
         </div>
         <button className="btn" onClick={async () => {
           await fetch("/api/admin/auth/logout", { method: "POST", credentials: "same-origin" });

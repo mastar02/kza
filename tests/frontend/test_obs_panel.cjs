@@ -6,6 +6,8 @@ const { test } = require('node:test');
 const data = require('../../src/dashboard/frontend/obs/src/obs-data.js');
 const nav = require('../../src/dashboard/frontend/obs/src/obs-nav.js');
 const sessionApi = require('../../src/dashboard/frontend/obs/src/session.js');
+const { createVoiceController } = require('../../src/dashboard/frontend/obs/src/voice-channel.js');
+const { createVoiceState } = require('../../src/dashboard/frontend/obs/src/voice-privacy.js');
 const Babel = require('../../src/dashboard/frontend/obs/vendor/babel-standalone-7.29.0.min.js');
 
 const OBS = path.resolve(__dirname, '../../src/dashboard/frontend/obs');
@@ -453,10 +455,130 @@ test('failures are reported honestly and never as applied', async () => {
     assert.equal(outcome.state, state);
     assert.equal(calls.length, 1, 'no refresh after a failed operation');
     assert.doesNotMatch(outcome.message, /completó|marcó|descartó|quitó/);
+    if (state === 'conflict') assert.match(outcome.message, /Conflicto.*Actualizá/);
   }
   const outcome = await data.runOperation({ fetch: async () => { throw new TypeError('offline'); },
     store: adminStore(), kind: 'clearCooldown', target: 'fast' });
   assert.equal(outcome.state, 'uncertain');
+});
+
+test('an uncertain operation waits for a fresh real read of its own collection', async t => {
+  const store = data.createObservationStore({ now: () => new Date('2026-11-10T12:00:01Z') });
+  t.after(() => store.clear());
+  store.setPermissions(['admin:manage']);
+  const calls = [];
+  const run = (kind = 'restartService', target = 'kza-voice') => data.runOperation({
+    fetch: async (url, { method }) => {
+      calls.push([url, method]);
+      return reply(504, {});
+    }, store, kind, target,
+  });
+  const read = (key, response) => data.readCollection({ fetch: async () => response, store, key, path: '/collection' });
+  let completeOld;
+  const oldResponse = new Promise(resolve => { completeOld = resolve; });
+  const oldRead = read('SERVICES', oldResponse);
+  const outcome = await run();
+  assert.equal(outcome.state, 'uncertain');
+  assert.equal(store.notice().state, 'uncertain');
+  completeOld(reply(200, [], realHeaders()));
+  await oldRead;
+  await read('ALERTS', reply(200, [], realHeaders()));
+  await read('SERVICES', reply(403, {}));
+  await read('SERVICES', reply(200, [], realHeaders({ 'X-KZA-Source': 'mock' })));
+  await read('SERVICES', reply(200, [], realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:00Z' })));
+  assert.equal(await run(), outcome);
+  assert.equal(calls.length, 1);
+
+  await run('restartService', 'chromadb');
+  assert.equal(calls.length, 2);
+  await read('SERVICES', reply(200, [], realHeaders()));
+  assert.equal(store.operationOutcome('restartService', 'kza-voice'), undefined);
+  await run();
+  assert.equal(calls.length, 3);
+});
+
+test('voice outcomes keep NEXO booleans and separate OBS permission denial from session expiry', async () => {
+  const state = createVoiceState();
+  let status = 403, unauthorized = 0;
+  const controller = createVoiceController({ state, emitAck: () => true, onUnauthorized: () => unauthorized++,
+    fetch: async () => ({ ok: status === 200, status, arrayBuffer: async () => new ArrayBuffer(0) }) });
+  const id = '00000000-0000-0000-0000-000000000001';
+  assert.equal(await controller.deleteProfile(id, 1), false);
+  assert.equal(unauthorized, 1);
+  assert.deepEqual(await controller.deleteProfileOutcome(id, 1), { state: 'denied' });
+  assert.equal(unauthorized, 1);
+  status = 401;
+  assert.deepEqual(await controller.deleteProfileOutcome(id, 1), { state: 'denied' });
+  assert.equal(unauthorized, 2);
+  status = 409;
+  assert.deepEqual(await controller.deleteProfileOutcome(id, 1), { state: 'conflict' });
+  status = 503;
+  assert.deepEqual(await controller.deleteProfileOutcome(id, 1), { state: 'unavailable' });
+  status = 200;
+  assert.deepEqual(await controller.deleteProfileOutcome(id, 1), { state: 'accepted' });
+  assert.equal(controller.mutationHeld(), false);
+  controller.dispose();
+});
+
+test('an uncertain voice mutation survives leaving and requires a fresh successful voice refresh', async () => {
+  const state = createVoiceState();
+  const id = '00000000-0000-0000-0000-000000000001';
+  let writes = 0, unauthorized = 0, readStatus = 200, captureStatus = 200;
+  let completeOld, startOld;
+  const oldStarted = new Promise(resolve => { startOld = resolve; });
+  const oldResponse = new Promise(resolve => { completeOld = resolve; });
+  const voiceRead = (kind, status = readStatus) => reply(status, {
+    connection_id: id, channel: `voices:${kind}`, snapshot: null,
+  });
+  let firstRead = true;
+  const controller = createVoiceController({ state, emitAck: () => true, onUnauthorized: () => unauthorized++,
+    fetch: async (url, { method }) => {
+      if (method === 'DELETE') {
+        writes++;
+        throw new TypeError('connection lost');
+      }
+      if (url === '/api/voices/profiles') {
+        if (method === 'POST') {
+          writes++;
+          return { ok: false, status: 504, arrayBuffer: async () => new ArrayBuffer(0) };
+        }
+        if (firstRead) { firstRead = false; startOld(); return oldResponse; }
+        return voiceRead('profiles');
+      }
+      assert.equal(url, '/api/voices/captures/query');
+      return voiceRead('captures', captureStatus);
+    } });
+  controller.open(id);
+  const oldRefresh = controller.refresh({ surface: 'obs' });
+  await oldStarted;
+  assert.deepEqual(await controller.deleteProfileOutcome(id, 1), { state: 'uncertain' });
+  completeOld(voiceRead('profiles'));
+  await oldRefresh;
+  await controller.settled();
+  assert.equal(controller.mutationHeld(), true);
+  controller.leave();
+  readStatus = 403;
+  await controller.refresh({ surface: 'obs' });
+  await controller.settled();
+  assert.equal(state.profiles.status(), 'forbidden');
+  assert.equal(unauthorized, 0);
+  assert.equal(controller.mutationHeld(), true);
+  assert.deepEqual(await controller.deleteProfileOutcome(id, 1), { state: 'uncertain' });
+  assert.equal(writes, 1);
+  readStatus = 200;
+  await controller.refresh({ surface: 'obs' });
+  await controller.settled();
+  assert.equal(controller.mutationHeld(), false);
+  const samples = ['a', 'b', 'c'].map(character => `vf_${character.repeat(64)}`);
+  assert.deepEqual(await controller.confirmOutcome(samples, 'Synthetic profile', id), { state: 'uncertain' });
+  assert.equal(writes, 2);
+  captureStatus = 503;
+  await controller.refresh({ surface: 'obs' });
+  assert.equal(controller.mutationHeld(), true);
+  captureStatus = 200;
+  await controller.refresh({ surface: 'obs' });
+  assert.equal(controller.mutationHeld(), false);
+  controller.dispose();
 });
 
 function fakeClock(start) {
@@ -655,6 +777,14 @@ test('panel views use only existing authenticated endpoints for writes', () => {
   assert.match(admin, /@router\.delete\("\/alerts\/\{alert_id\}", dependencies=\[Depends\(require_admin\)\]\)/);
   assert.match(admin, /@router\.post\("\/services\/\{name\}\/restart", dependencies=\[Depends\(require_admin\)\]\)/);
   assert.match(observability, /@router\.post\("\/api\/llm\/endpoints\/\{endpoint_id\}\/clear-cooldown"\)/);
+});
+
+test('the only admin users route in OBS is the existing voice enrollment', () => {
+  const refs = sourceFiles()
+    .filter(file => file.startsWith(path.join(OBS, 'src') + path.sep))
+    .flatMap(file => fs.readFileSync(file, 'utf8').split('\n').filter(line => line.includes('/api/admin/users')));
+  assert.equal(refs.length, 1);
+  assert.match(refs[0], /uploadSamples\(`\/api\/admin\/users\/\$\{userId\}\/enroll`\)/);
 });
 
 // ---- Navigation: hash <-> view (WEB-03, WEB-05 /obs/) ----
