@@ -1,11 +1,15 @@
-"""Tests for the portable multi-worker tier runner scripts/run_test_suite.py (T090-U1)."""
+"""Tests for the portable tier runner and the CI test workflow."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+import shlex
 import stat
 from types import SimpleNamespace
+
+import pytest
+import yaml
 
 from scripts import run_test_suite as runner
 
@@ -485,3 +489,50 @@ def test_main_disk_basetemp_cleanup_preserves_symlink_on_prebuild_error(tmp_path
     assert not list(out_dir.glob("basetemp-*"))
     assert (out_dir / "basetemp").is_symlink()
     assert sentinel.read_text() == "keep"
+
+
+@pytest.fixture(scope="module")
+def ci_workflow() -> dict:
+    """Load the checked-in GitHub Actions workflow with a safe YAML parser."""
+    path = runner.REPO_ROOT / ".github" / "workflows" / "ci.yml"
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
+
+
+def _ci_pytest_command(workflow: dict, suite: str) -> list[str]:
+    steps = workflow["jobs"][f"{suite}-tests"]["steps"]
+    test_step = next(step for step in steps if step.get("name") == f"Run {suite} tests")
+    return shlex.split(test_step["run"])
+
+
+@pytest.mark.parametrize("suite", ["unit", "safety", "integration"])
+def test_ci_pytest_jobs_use_worksteal(ci_workflow: dict, suite: str) -> None:
+    command = _ci_pytest_command(ci_workflow, suite)
+    assert command[:2] == ["pytest", f"tests/{suite}/"]
+    worker_option = command.index("-n")
+    assert command[worker_option + 1] == "auto"
+    assert "--dist=worksteal" in command
+
+
+def test_ci_integration_excludes_real_systemd_modules(ci_workflow: dict) -> None:
+    command = _ci_pytest_command(ci_workflow, "integration")
+    ignored = {arg.removeprefix("--ignore=") for arg in command if arg.startswith("--ignore=")}
+    assert ignored == set(runner.LINUX_SYSTEMD_MODULES)
+
+
+def test_ci_safety_failures_block_the_job(ci_workflow: dict) -> None:
+    job = ci_workflow["jobs"]["safety-tests"]
+    assert "continue-on-error" not in job
+    assert all("continue-on-error" not in step for step in job["steps"])
+
+
+def test_ci_keeps_nightly_training_triggers(ci_workflow: dict) -> None:
+    # PyYAML's YAML 1.1 resolver reads an unquoted GitHub Actions "on" key as True.
+    triggers = ci_workflow.get("on", ci_workflow.get(True))
+    assert triggers["schedule"]
+    assert "workflow_dispatch" in triggers
+    job = ci_workflow["jobs"]["nightly-training-test"]
+    assert job["if"] == "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+    assert any(
+        step.get("name") == "Simulate nightly training cycle" and step.get("run")
+        for step in job["steps"]
+    )

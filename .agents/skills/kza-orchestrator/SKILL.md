@@ -41,3 +41,39 @@ python3 scripts/kza_seat.py close --alias kza-qa-pr42 --done-readonly
 python3 scripts/kza_router.py outcome <decision_id> --rounds 1 --approved true
 python3 scripts/kza_router.py report --days 30
 ```
+
+## Tiers de validación
+
+Ejecutar desde el checkout del SHA que se está verificando con el venv KZA
+de Python 3.13. En un worktree Mac sin venv propio, usar la ruta absoluta al
+Python del venv compartido y mantener el directorio de trabajo del asiento.
+
+- **Tier 0**, feedback de asiento con objetivo de 15–45 s. Seleccionar los
+  tests afectados. Omitir `--no-node` si el cambio afecta al frontend.
+- **Tier 1**, validación amplia en Mac o en el checkout de desarrollo de
+  `kza-yo`. Ejecuta Node y pytest con hasta 8 workers por defecto. Excluye
+  los cinco módulos de systemd real y los ocho casos `compiled-solo`.
+
+```bash
+.venv/bin/python scripts/run_test_suite.py --tier 0 --no-node --targets tests/unit/tools/test_run_test_suite.py
+.venv/bin/python scripts/run_test_suite.py --tier 1
+```
+
+**Tier 2**, gate completo coordinado por el orquestador, como `yo` en
+`/home/yo/projects/kza` de `kza-yo`. Reservar la ventana de pruebas y respetar
+`SOLO_WINDOW` y `feature-pytest.lock` para evitar otras corridas durante
+el gate. Mantener los seis workers y los límites de hilos y CPU.
+
+```bash
+env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+  RAYON_NUM_THREADS=2 TOKIO_WORKER_THREADS=2 \
+  taskset -c 24-47 nice -n 10 .venv/bin/python scripts/run_test_suite.py --tier 2 --workers 6
+```
+
+El Tier 2 ejecuta Node, el carril paralelo sin systemd y el carril serial
+con systemd de usuario real. Al terminar los tres, ejecuta `compiled-solo`.
+Aceptar el gate con `exit_code == 0`, `nrestarts_ok == true` y dos lecturas
+válidas de journald que cumplan `before_NRestarts == after_NRestarts` en
+`summary.json`. Incluir en el reporte del asiento el SHA, el tier, los
+targets y la ruta de ese resumen. GitHub Actions verifica unit, safety e
+integration con xdist y reserva los cinco módulos de systemd real para Tier 2.

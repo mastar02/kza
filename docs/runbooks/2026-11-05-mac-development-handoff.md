@@ -2103,3 +2103,40 @@ Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prom
 - [x] Código, tracking y handoff guardados; verificar publicación y HEAD al retomar.
 - [x] Goal anterior pausado por pedido del usuario, no completado; sesión nueva con goal nuevo y criterios físicos pendientes.
 - [ ] Completar F1: censo y owners globales, cierre SDK genuino, migración legacy y guards pendientes; los avances locales anteriores no cierran esa aceptación.
+
+## Adenda 2026-11-20 — T090, validación por tiers
+
+Ejecutar desde el checkout del SHA bajo prueba con el venv KZA de Python 3.13.
+En un asiento Mac sin venv propio, sustituir `.venv/bin/python` por
+`/Users/gabriel/Documents/Proyectos/kza/.venv/bin/python` y mantener el
+directorio de trabajo del asiento.
+
+- **Tier 0**, feedback de asiento con objetivo de 15–45 s. Pasar los módulos
+  afectados en `--targets`. Omitir `--no-node` si el cambio afecta al frontend.
+- **Tier 1**, validación sin systemd en Mac o `kza-yo`. Ejecuta Node y la
+  suite Python con hasta 8 workers por defecto, caché en disco y directorio
+  temporal propio. Excluye los cinco módulos de systemd real y los ocho
+  casos `compiled-solo`.
+
+```bash
+.venv/bin/python scripts/run_test_suite.py --tier 0 --no-node --targets tests/unit/tools/test_run_test_suite.py tests/unit/tools/test_runtime_artifact_cache.py
+.venv/bin/python scripts/run_test_suite.py --tier 1
+```
+
+**Tier 2**, gate completo en `kza-yo` como `yo` desde `/home/yo/projects/kza`.
+Coordinar la ventana con el orquestador y respetar `SOLO_WINDOW` y
+`feature-pytest.lock`. Conservar la afinidad, prioridad y límites de hilos.
+
+```bash
+env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
+  RAYON_NUM_THREADS=2 TOKIO_WORKER_THREADS=2 \
+  taskset -c 24-47 nice -n 10 .venv/bin/python scripts/run_test_suite.py --tier 2 --workers 6
+```
+
+El runner ejecuta Node, la suite sin systemd y el carril serial de systemd
+real en paralelo. Los casos `compiled-solo` esperan a los tres. Abrir el
+`summary.json` de la ruta `out=` informada por el runner. El gate requiere
+`exit_code == 0`, `nrestarts_ok == true` y dos lecturas válidas de journald con
+`before_NRestarts == after_NRestarts`. Guardar el SHA y la ruta del resumen
+en el reporte. GitHub Actions usa xdist en los tres jobs Python y reserva
+los cinco módulos de systemd de usuario real para Tier 2.
