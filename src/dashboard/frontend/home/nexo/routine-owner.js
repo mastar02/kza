@@ -5,16 +5,19 @@
   const isNode = typeof module !== 'undefined' && module.exports;
   const home = isNode ? require('../home.js') : root.HomeUI;
   const { newRequestId } = isNode ? require('../request-id.js') : root.HomeRequestIdentity;
-  const { canReadRoutineRuns, canExecuteRoutine } = isNode ? require('./state.js') : root.NexoState;
+  const { canReadRoutineRuns, canExecuteRoutine, canReviewRoutineProposals, ROUTINE_PROPOSALS, ROUTINE_PROPOSAL_ID } =
+    isNode ? require('./state.js') : root.NexoState;
   // Markers from older pages without an opaque actor cannot be attributed safely.
   const PREFIX = 'kza:routine-attempt:';
   const WRITE_PREFIX = PREFIX + '~write:';
+  const PROPOSAL_PREFIX = PREFIX + '~proposal:';
   // Outside the attempt prefix so a session-end wipe can leave a content-free reminder.
   const ENDED_KEY = 'kza:routine-pending-ended';
   const TIMEZONE = 'America/Montevideo';
   const OPERATIONS = home.OPERATION_LABELS;
   const RUN_STATUSES = ['running', 'succeeded', 'failed', 'uncertain', 'skipped', 'interrupted'];
   const WRITE_KINDS = ['create', 'update', 'enable', 'disable', 'delete'];
+  const PROPOSAL_ACTIONS = { confirm: 'confirmed', reject: 'rejected' };
   const CATALOG_STALE_MS = 300000, CATALOG_REFRESH_MS = 60000;
   const RETIRED = ['dashboard_session_retired', 'dashboard_authority_retired'];
   const copy = value => value == null ? value : JSON.parse(JSON.stringify(value));
@@ -74,16 +77,50 @@
           || value.operation === 'disable' && ['disabled', 'already_disabled'].includes(value.status))) throw Error('invalid_routine_brake');
     return { receipt_id: value.receipt_id, operation: value.operation, status: value.status };
   }
-  function parseRoutine(value) {
+  function parseDefinition(value) {
     const schedule = value?.schedule;
-    if (!value || typeof value !== 'object' || !string(value.routine_id) || !value.routine_id || !Number.isSafeInteger(value.revision) || value.revision < 1
-        || !string(value.name) || !string(value.description) || typeof value.enabled !== 'boolean' || !string(value.timezone)
+    if (!string(value?.name) || !string(value.description) || typeof value.enabled !== 'boolean' || !string(value.timezone)
         || !(schedule === null || (schedule && string(schedule.at) && Array.isArray(schedule.weekdays)))
         || !Array.isArray(value.conditions) || !Array.isArray(value.actions)) throw Error('invalid_routine');
+    return definition(value);
+  }
+  function parseRoutine(value) {
+    if (!string(value?.routine_id) || !value.routine_id || !Number.isSafeInteger(value.revision) || value.revision < 1) throw Error('invalid_routine');
     // created_by is disclosed by the server but never kept for presentation.
-    return { routine_id: value.routine_id, revision: value.revision, ...definition(value),
+    return { routine_id: value.routine_id, revision: value.revision, ...parseDefinition(value),
       latest_run: value.latest_run == null ? null : parseRun(value.latest_run),
       latest_voice_brake: parseVoiceBrake(value.latest_voice_brake) };
+  }
+  function parseProposal(value) {
+    if (!string(value?.proposal_id) || !ROUTINE_PROPOSAL_ID.test(value.proposal_id) || !WRITE_KINDS.includes(value.operation)
+        || value.source !== 'household_voice' || !string(value.expires_at) || !Number.isFinite(Date.parse(value.expires_at))) throw Error('invalid_proposal');
+    return { id: value.proposal_id, operation: value.operation, expiresAt: value.expires_at };
+  }
+  function parseProposalPreview(value, expected) {
+    const { id, operation } = parseProposal(value);
+    if (id !== expected.id || operation !== expected.operation || typeof value.stale !== 'boolean' || !value.diff) throw Error('invalid_proposal_preview');
+    const { before, after } = value.diff;
+    if (operation === 'create' && before !== null ||
+        ['create', 'update'].includes(operation) && after === null ||
+        operation === 'delete' && after !== null ||
+        !value.stale && operation !== 'create' && before === null ||
+        ['enable', 'disable'].includes(operation) && before !== null && after?.enabled !== (operation === 'enable')) {
+      throw Error('invalid_proposal_diff');
+    }
+    return { stale: value.stale, before: before === null ? null : parseDefinition(before), after: after === null ? null : parseDefinition(after) };
+  }
+  function proposalError(error) {
+    if (error?.status === 404) return 'La propuesta expiró o ya no está disponible.';
+    if (error?.status === 409) return ({
+      proposal_confirming: 'Hay una confirmación en curso.',
+      proposal_confirmed: 'La propuesta ya fue confirmada.',
+      proposal_rejected: 'La propuesta ya fue rechazada.',
+      routine_busy: 'La rutina está en curso. Esperá a que termine.'
+    })[detailCode(error)] || 'La rutina cambió. Volvé a consultar la propuesta.';
+    if (error?.status === 422) return 'El servidor rechazó la definición de la propuesta.';
+    if (error?.status === 503) return 'Las propuestas por voz no están disponibles.';
+    if (!Number.isInteger(error?.status)) return 'No se pudo leer la respuesta del servicio de propuestas.';
+    return describeError(error);
   }
 
   function detailCode(error) {
@@ -130,11 +167,13 @@
 
   function createRoutineOwner({ api, session, storage = root.sessionStorage, makeId = newRequestId, schedule = setTimeout, cancel = clearTimeout, now = Date.now, onAccountChanged = () => {} }) {
     let epoch = 0, opened = false, timer, pollDelay = 1500, listVersion = 0, refreshing = null, again = false, serial = 0;
+    let proposalViewVersion = 0, proposalListVersion = 0;
     const reads = new Set(), listeners = new Set(), busy = new Set(), consulting = new Set();
     let state = initial();
     function initial() {
       return { routines: [], list: { loading: false, loaded: false, observedAt: null, error: null }, catalog: null,
-        catalogStatus: { loading: false, observedAt: null, error: null }, attempts: {}, writes: {}, notices: {}, draft: null, announcement: null };
+        catalogStatus: { loading: false, observedAt: null, error: null }, attempts: {}, writes: {}, notices: {}, draft: null, announcement: null,
+        proposals: { items: [], loading: false, loaded: false, error: null, selected: null, decisions: {}, verifiedGeneration: null } };
     }
     function capabilities() {
       return { read: session.can('home:read'), manage: session.can('routines:manage'),
@@ -168,12 +207,15 @@
      * accounts while this one was hidden; different accounts can share a display name.
      * Resolves 'same', 'changed' (another, no or an unidentified account) or 'unknown' (not asked).
      */
-    async function confirmAccount() {
+    async function confirmAccount({ proposal = false } = {}) {
       const expected = routineActor();
       if (!expected) return 'changed';
       try {
         const identity = await read('/api/admin/auth/whoami');
-        return identity?.ok === true && identity.routine_actor === expected ? 'same' : 'changed';
+        if (identity?.ok !== true || identity.routine_actor !== expected) return 'changed';
+        if (proposal && (identity.role !== session.role() ||
+            !Array.isArray(identity.permissions) || !identity.permissions.includes('routines:manage'))) return 'changed';
+        return 'same';
       } catch (error) {
         return [401, 403].includes(error?.status) ? 'changed' : 'unknown';
       }
@@ -206,6 +248,10 @@
       for (const key of keys) {
         try {
           const value = JSON.parse(storage.getItem(key));
+          if (key.startsWith(PROPOSAL_PREFIX)) {
+            if (!current || value?.actor !== current || !canReviewRoutineProposals(session)) remove(key);
+            continue;
+          }
           // Another account's (or a legacy, unbound) record is never restored, consulted or retried.
           if (!current || !value || value.actor !== current) {
             if (key.startsWith(WRITE_PREFIX) || value?.state !== 'terminal') foreignPending = true;
@@ -227,6 +273,145 @@
         } catch (_) { remove(key); }
       }
       if (foreignPending) notice('session', 'Una ejecución o un cambio de rutina de otra sesión quedó sin confirmar y no se puede consultar desde esta cuenta. Revisá el último resultado de tus rutinas antes de repetirlo.');
+    }
+
+    function proposalSession() {
+      const ticket = epoch, generation = session.generation?.(), actor = routineActor();
+      return () => Boolean(actor) && actor === routineActor() && ticket === epoch &&
+        generation === session.generation?.() && canReviewRoutineProposals(session);
+    }
+    function proposalView(currentSession = proposalSession()) {
+      const version = proposalViewVersion;
+      return () => opened && version === proposalViewVersion && currentSession();
+    }
+    async function verifyProposalAccount(current) {
+      if (!current()) return false;
+      const account = await confirmAccount({ proposal: true });
+      if (!current()) return false;
+      if (account === 'changed') { accountChanged(); return false; }
+      if (account === 'unknown') throw Error(ACCOUNT_UNKNOWN);
+      return true;
+    }
+    const proposalPath = id => ROUTINE_PROPOSALS + '/' + id;
+    const UNCERTAIN_PROPOSAL = 'Resultado incierto. No se pudo verificar la decisión.';
+
+    function restoreProposalDecisions() {
+      try {
+        for (const key of storageKeys().filter(key => key.startsWith(PROPOSAL_PREFIX))) {
+          const id = key.slice(PROPOSAL_PREFIX.length);
+          try {
+            const marker = JSON.parse(storage.getItem(key));
+            if (!ROUTINE_PROPOSAL_ID.test(id) || !routineActor() || marker?.actor !== routineActor()
+                || !Object.hasOwn(PROPOSAL_ACTIONS, marker.action)) throw Error('invalid_proposal_marker');
+            state.proposals.decisions[id] ??= { action: marker.action, sending: false, message: UNCERTAIN_PROPOSAL };
+          } catch (_) { remove(key); }
+        }
+      } catch (_) { /* Storage is best effort when reading. */ }
+    }
+
+    async function refreshProposals() {
+      const tray = state.proposals, current = proposalView(), version = proposalListVersion;
+      if (!current() || tray.loading) return;
+      tray.loading = true; tray.error = null; emit();
+      try {
+        if (!await verifyProposalAccount(current)) return;
+        tray.verifiedGeneration = session.generation?.();
+        restoreProposalDecisions(); emit();
+        const value = await read(ROUTINE_PROPOSALS);
+        if (!await verifyProposalAccount(current) || version !== proposalListVersion) return;
+        if (!Array.isArray(value?.proposals)) throw Error('invalid_proposal_list');
+        const items = value.proposals.map(parseProposal);
+        if (new Set(items.map(item => item.id)).size !== items.length) throw Error('duplicate_proposal');
+        tray.items = items; tray.loaded = true;
+      } catch (error) {
+        if (current()) tray.error = error?.message === ACCOUNT_UNKNOWN ? ACCOUNT_UNKNOWN : proposalError(error);
+      } finally {
+        if (current()) { tray.loading = false; emit(); }
+      }
+    }
+
+    async function reviewProposal(id) {
+      const tray = state.proposals, item = tray.items.find(row => row.id === id), view = proposalView();
+      if (!view() || !(item || tray.decisions[id]) ||
+          tray.selected?.id === id && (tray.selected.loading || tray.decisions[id])) return;
+      const selected = { id, preview: null, loading: !tray.decisions[id], status: 'pending', message: null };
+      tray.selected = selected; emit();
+      if (!selected.loading) return;
+      const current = () => view() && tray.selected === selected;
+      try {
+        if (!await verifyProposalAccount(current)) return;
+        const value = await read(proposalPath(id));
+        if (!await verifyProposalAccount(current)) return;
+        selected.preview = parseProposalPreview(value, item);
+        if (selected.preview.stale) {
+          selected.status = 'conflict'; selected.message = 'Conflicto. La rutina cambió desde que se hizo la propuesta.';
+        }
+      } catch (error) {
+        if (!current()) return;
+        selected.status = error?.status === 404 ? 'expired' : error?.status === 409 ? 'conflict' : 'error';
+        selected.message = error?.message === ACCOUNT_UNKNOWN ? ACCOUNT_UNKNOWN : proposalError(error);
+        if (selected.status === 'expired') {
+          tray.items = tray.items.filter(row => row.id !== id); proposalListVersion++;
+        }
+      } finally {
+        if (current()) { selected.loading = false; emit(); }
+      }
+    }
+
+    async function decideProposal(id, action) {
+      const tray = state.proposals, selected = tray.selected, previous = tray.decisions[id];
+      const sessionCurrent = proposalSession(), view = proposalView(sessionCurrent);
+      if (!view() || selected?.id !== id || !Object.hasOwn(PROPOSAL_ACTIONS, action) || previous?.sending ||
+          (previous ? previous.action !== action : !selected.preview ||
+            action === 'confirm' && (selected.status !== 'pending' || selected.preview.stale))) return;
+      const marker = { action, sending: true, message: previous?.message ?? null };
+      const current = () => view() && tray.selected === selected;
+      tray.decisions[id] = marker; emit();
+      let sent = false, status, message, removeItem = false, keepMarker = Boolean(previous), changed = false;
+      try {
+        if (!await verifyProposalAccount(current)) return;
+        // The server replays by proposal ID and decision. Store only that identity and its account.
+        try {
+          if (!storage) throw Error('storage_unavailable');
+          storage.setItem(PROPOSAL_PREFIX + id, JSON.stringify({ action, actor: routineActor() }));
+        } catch (_) { message = 'El navegador no permite guardar la decisión pendiente. No se envió.'; return; }
+        sent = true;
+        const receipt = await api(proposalPath(id) + '/' + action, { method: 'POST' });
+        if (receipt?.proposal_id !== id || receipt.status !== PROPOSAL_ACTIONS[action]) throw Error('invalid_proposal_receipt');
+        // A changed cookie must not expose a receipt under the cached account.
+        if (view() && !await verifyProposalAccount(view) && !sessionCurrent()) return;
+        status = receipt.status;
+        message = status === 'confirmed' ? 'Propuesta confirmada. Se aplicó el cambio a la rutina.' : 'Propuesta rechazada.';
+        removeItem = true; keepMarker = false; changed = status === 'confirmed';
+      } catch (error) {
+        if (!sessionCurrent()) return;
+        const code = detailCode(error);
+        const opposite = error?.status === 409 && ['proposal_confirmed', 'proposal_rejected'].includes(code);
+        const unavailable = error?.status === 503 && code === 'routine_proposals_unavailable';
+        const gone = error?.status === 404;
+        // Source expiry can suppress a committed confirmation receipt, even on the first send.
+        const uncertain = sent && (error?.answered === true || gone && (action === 'confirm' || Boolean(previous))
+          || error?.status === 409 && code === 'proposal_confirming'
+          || error?.sent !== false && (!Number.isInteger(error?.status) || error.status >= 500 && !unavailable));
+        keepMarker = !gone && (uncertain || Boolean(previous) && !opposite && (unavailable || error?.sent === false || [401, 403].includes(error?.status) || !sent));
+        removeItem = gone || opposite;
+        status = uncertain ? 'uncertain' : gone ? 'expired' : opposite ? 'closed' : error?.status === 409 ? 'conflict' : selected.status;
+        const reason = error?.message === ACCOUNT_UNKNOWN ? (sent ? 'No se pudo confirmar la cuenta de esta sesión.' : ACCOUNT_UNKNOWN) : proposalError(error);
+        message = (uncertain || keepMarker ? UNCERTAIN_PROPOSAL + ' ' : '') + reason;
+      } finally {
+        if (sessionCurrent()) {
+          if (keepMarker) { marker.sending = false; marker.message = message || marker.message; }
+          else { delete tray.decisions[id]; remove(PROPOSAL_PREFIX + id); }
+          if (removeItem) { tray.items = tray.items.filter(row => row.id !== id); proposalListVersion++; }
+          if (current() && message) {
+            selected.status = status || selected.status; selected.message = message;
+            if (removeItem) selected.preview = null;
+          }
+          if (message && view()) announce(message);
+          emit();
+          if (changed) { listVersion++; void refresh(); }
+        }
+      }
     }
 
     function resolveWrites() {
@@ -607,12 +792,14 @@
         if (ticket !== epoch || !opened) return true;
         if (account === 'changed') { accountChanged(); return true; }
       }
-      void refresh();
+      void refresh(); void refreshProposals();
       return true;
     }
     /** Stop reads and polling; keep drafts, attempts and markers. Resolves immediately. */
     function leave() {
       opened = false; stopTimer(); again = false;
+      proposalViewVersion++;
+      Object.assign(state.proposals, { items: [], loading: false, loaded: false, error: null, selected: null, verifiedGeneration: null });
       for (const controller of reads) controller.abort();
       reads.clear(); refreshing = null;
       return Promise.resolve(true);
@@ -632,11 +819,16 @@
       return Promise.resolve(true);
     }
     function getState() {
-      return { ...copy(state), busy: [...busy], capabilities: capabilities(), catalogUsable: catalogUsable(), locked: Object.fromEntries(state.routines.map(item => [item.routine_id, locked(item.routine_id)])) };
+      const { proposals: { verifiedGeneration, ...proposals }, ...routineState } = state;
+      const visibleProposals = verifiedGeneration === session.generation?.() ? proposals :
+        { ...proposals, items: [], loaded: false, selected: null, decisions: {} };
+      return { ...copy(routineState), proposals: canReviewRoutineProposals(session) ? copy(visibleProposals) : null,
+        busy: [...busy], capabilities: capabilities(), catalogUsable: catalogUsable(), locked: Object.fromEntries(state.routines.map(item => [item.routine_id, locked(item.routine_id)])) };
     }
     function subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); }
     return { open, leave, clear, refresh, subscribe, getState, capabilities, newDraft, edit, setDraft, closeEditor, reopenDraft, discardDraft, save, preview, discardAndReload,
-      setEnabled, remove: removeRoutine, execute, retryAttempt, consult, riskyActions, locked, hiddenDraft, isOpen: () => opened };
+      setEnabled, remove: removeRoutine, execute, retryAttempt, consult, riskyActions, locked, hiddenDraft,
+      refreshProposals, reviewProposal, decideProposal, isOpen: () => opened };
   }
 
   const exported = { ENDED_KEY, createRoutineOwner, validateRoutineDraft, definition, sameDefinition, describeError, executeOutcome, writeOutcome, parseRoutine, parseRun, riskyRun, emptyDraft, PREFIX, WRITE_PREFIX, TIMEZONE };

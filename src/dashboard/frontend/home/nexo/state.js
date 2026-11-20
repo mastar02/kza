@@ -39,6 +39,9 @@
   }
   const canReadRoutineRuns = can => can('routines:execute') || can('routines:manage');
   const canExecuteRoutine = can => can('home:control') && canReadRoutineRuns(can);
+  const canReviewRoutineProposals = session => ['operator', 'home'].includes(session.role?.()) && session.can('routines:manage');
+  const ROUTINE_PROPOSALS = '/api/routines/proposals';
+  const ROUTINE_PROPOSAL_ID = /^[0-9a-f]{32}$/;
 
   // Mirrors the effective server requirement: auth.py route permission plus the handler's own set.
   function routinePermission(pathname, method) {
@@ -47,6 +50,13 @@
     if (!item) return null;
     const [, id, rest] = item;
     if (id === 'preview') return rest === undefined && method === 'POST' ? 'routines:manage' : null;
+    if (id === 'proposals') {
+      if (rest === undefined) return method === 'GET' ? 'routines:manage' : null;
+      const [proposalId, decision, extra] = rest.split('/');
+      if (!ROUTINE_PROPOSAL_ID.test(proposalId) || extra !== undefined) return null;
+      return (decision === undefined && method === 'GET' ||
+        ['confirm', 'reject'].includes(decision) && method === 'POST') ? 'routines:manage' : null;
+    }
     if (rest === undefined) return method === 'GET' ? 'home:read' : ['PUT', 'DELETE'].includes(method) ? 'routines:manage' : null;
     if (['enable', 'disable'].includes(rest) && method === 'POST') return 'routines:manage';
     if (rest === 'execute' && method === 'POST') return canExecuteRoutine;
@@ -95,6 +105,7 @@
       const publicAuth = pathname === '/api/admin/auth/whoami' && method === 'GET' ||
         ['/api/admin/auth/login', '/api/admin/auth/logout'].includes(pathname) && method === 'POST';
       const noticeRoute = pathname === NOTICE_LIST || pathname === NOTICE_DISMISS;
+      const proposalRoute = pathname === ROUTINE_PROPOSALS || pathname.startsWith(ROUTINE_PROPOSALS + '/');
       const permission = pathname === '/api/home/catalog' && method === 'GET' ? 'home:read' :
         pathname === '/api/home/actions' && method === 'GET' ? 'home:read' :
         pathname === '/api/home/actions' && method === 'POST' ? 'home:control' :
@@ -105,7 +116,8 @@
         /^\/api\/admin\/users\/[^/]+\/permissions$/.test(pathname) && method === 'PUT' ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+$/.test(pathname) && method === 'DELETE' ? ['admin:manage', 'auth:manage'] :
         routinePermission(pathname, method) || memoryPermission(pathname, method);
-      const permitted = () => (!noticeRoute || canReadNotices(session)) && (
+      const permitted = () => (!noticeRoute || canReadNotices(session)) &&
+        (!proposalRoute || canReviewRoutineProposals(session)) && (
         typeof permission === 'function' ? permission(session.can) :
         Boolean(permission) && (Array.isArray(permission) ? permission : [permission]).every(session.can));
       if (!publicAuth && !permitted()) {
@@ -138,6 +150,7 @@
     return ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando' })[entity.state] || entity.state || 'Estado desconocido';
   }
   const exported = { createSession, createScopedApi, sessionRetired, canReadRoutineRuns, canExecuteRoutine,
+    ROUTINE_PROPOSALS, ROUTINE_PROPOSAL_ID, canReviewRoutineProposals,
     memoryPermission, voicePermission, roomEntities, entityState, NOTICE_LIST, NOTICE_DISMISS, canReadNotices };
   root.NexoState = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
