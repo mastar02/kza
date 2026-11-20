@@ -51,9 +51,16 @@ ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desd
 _UNCLAIMED_CREATION = re.compile(
     r"\b(?:(?:crea|crear) (?:una )?(?:rutina|automatizacion)|nueva (?:rutina|automatizacion)|automatiza)\b"
 )
-_ROUTINE_DIRECTIVE = re.compile(r"\b(?:programa que|quiero que cuando|haz que cuando|configura que)\b")
+_ROUTINE_DIRECTIVE = re.compile(
+    r"\b(?:programa que|configura que|(?:quiero|necesito|haz|hace|pon|pone) que (?:cuando|cada vez que))\b"
+)
 _RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
-_CONFIGURATION_HEAD = re.compile(r"^(?:configur(?:a|ame|ar|e)|program(?:a|ame|ar|e))\b")
+_CONFIGURATION_VERB = re.compile(r"\b(?:configur(?:a|ame|ar|e)|program(?:a|ame|ar|e))\b")
+_NOMINAL_PROGRAM = re.compile(r"\b(?:el|del|al|un|este|ese|aquel|mi|tu|su|nuestro|otro|mismo) programa\b")
+_QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
+_QUESTION_OPENING = re.compile(
+    r"^(?:(?:a|con|de|en|hasta|para|por) )?(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)\b"
+)
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
 _PLURAL_NOUNS = frozenset({"rutinas", "automatizaciones"})
@@ -251,15 +258,17 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     """Recognize creation or configuration of routines outside the request grammar."""
     words = strip_fillers(text, wake_words, extra_leads=_LEADS)
     phrase = " ".join(words)
-    if _UNCLAIMED_CREATION.search(phrase) or _ROUTINE_DIRECTIVE.search(phrase):
+    if _UNCLAIMED_CREATION.search(phrase):
         return True
-    # A recurrence clause at the head can describe a new automation without
-    # naming one. In a question such as "qué pasa cada vez que llueve" it
-    # needs separate routine vocabulary. A bare "cuando" is never a cue.
-    if _RECURRENCE_CLAUSE.match(phrase):
+    # Accent marks distinguish an embedded question ("cuándo se juega")
+    # from the conjunction in a directive ("quiero que cuando anochezca").
+    if _QUESTION_MARKER.search(unicodedata.normalize("NFC", text)) or _QUESTION_OPENING.match(phrase):
+        return False
+    command_text = _NOMINAL_PROGRAM.sub(" ", phrase)
+    if _ROUTINE_DIRECTIVE.search(command_text) or _RECURRENCE_CLAUSE.match(phrase):
         return True
     return (not _ROUTINE_VOCABULARY.isdisjoint(words)
-            and (_CONFIGURATION_HEAD.match(phrase) is not None or _RECURRENCE_CLAUSE.search(phrase) is not None))
+            and (_CONFIGURATION_VERB.search(command_text) is not None or _RECURRENCE_CLAUSE.search(phrase) is not None))
 
 
 def name_key(name: str) -> str:
