@@ -298,23 +298,20 @@ def _tokens(text: str) -> _Utterance:
 
 def _quote_spans(text: str) -> list[tuple[int, int]]:
     """Find balanced quotes across lines, keeping each outer span intact."""
-    def opening_boundary(before: str, char: str) -> bool:
-        return before != char and (not before or before.isspace() or before in "«([{\"':,;¡¿")
+    def opening_boundary(before: str) -> bool:
+        return not before or before.isspace() or before in "«([{\"':,;¡¿"
 
     def starts_content(offset: int) -> bool:
         start = offset + 1
-        seen = {text[offset]}
-        while start < len(text):
-            char = text[start]
-            if not char.isspace():
-                if char not in _QUOTE_CLOSERS or char in seen:
-                    break
-                seen.add(char)
+        nested_openers = False
+        while start < len(text) and (text[start].isspace() or text[start] in _QUOTE_CLOSERS):
+            nested_openers |= text[start] in _QUOTE_CLOSERS
             start += 1
         after = text[start:start + 1]
         if not after or after in ")]}»\"'":
-            return False
-        if len(seen) > 1 and after in ",.;:?!…":
+            # A balanced child can be the only item, even if it is empty.
+            return nested_openers
+        if nested_openers and after in ",.;:?!…":
             # Punctuation alone after an empty pair does not start nested content.
             return re.match(r"[,.;:?!…\s¡¿«\"'([{—-]*[^\W_]", text[start:]) is not None
         following = text[start + 1:start + 2]
@@ -334,29 +331,40 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
             before, after = text[max(0, offset - 1):offset], text[offset + 1:offset + 2]
             if char == "'" and before.isalnum() and after.isalnum():
                 continue  # Apostrophe inside a word.
-            markers.append((offset, char, opening_boundary(before, char) and starts_content(offset),
+            markers.append((offset, char, opening_boundary(before) and starts_content(offset),
                             bool(before) and before not in "«([{¡¿"))
 
     if not markers:
         return []
+
+    empty_pairs: set[int] = set()
+    for index in range(len(markers) - 1):
+        start, opener, _, _ = markers[index]
+        end, closer, _, _ = markers[index + 1]
+        if _QUOTE_CLOSERS.get(opener) == closer and not text[start + 1:end].strip():
+            empty_pairs.add(index)
 
     sibling_connector = re.compile(
         r"(?:\.{3}|…)\s*(?:[,;]\s*)?(?:(?:y|e|o|u|pero|(?:y\s+)?(?:luego|despu[eé]s))\s*)?",
         re.IGNORECASE,
     )
 
-    def continuations(index: int, stack: str) -> tuple[str, ...]:
+    def continuations(index: int, stack: str) -> tuple[tuple[int, str], ...]:
         offset, char, can_open, can_close = markers[index]
+        # Consume an empty pair together, even after punctuation. If later
+        # delimiters would be left unmatched, the nested opening can still win.
+        empty = ((index + 2, stack),) if index in empty_pairs else ()
         if not stack or stack[-1] != char:
-            return (stack + _QUOTE_CLOSERS[char],) if can_open else (stack,)
-        closed = stack[:-1]
+            following = stack + _QUOTE_CLOSERS[char] if can_open else stack
+            return (*empty, (index + 1, following))
+        closed = (index + 1, stack[:-1])
         if not can_open:
-            return (closed,)
-        opened = stack + _QUOTE_CLOSERS[char]
+            return (closed, *empty)
+        opened = (index + 1, stack + _QUOTE_CLOSERS[char])
         if not can_close:
-            return (opened,)
-        if text[offset + 1].isspace():
-            return closed, opened
+            return (*empty, opened)
+        if empty or text[offset + 1].isspace():
+            return (closed, *empty, opened)
         if index + 1 < len(markers):
             next_offset, _, next_can_open, _ = markers[index + 1]
             if next_can_open and sibling_connector.fullmatch(text, offset + 1, next_offset):
@@ -366,24 +374,24 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
     # A state only needs the expected closers, not their source offsets.
     # Prefer a fully balanced continuation. For malformed speech, retain
     # the spans along the path with the fewest skipped or unclosed marks.
-    choices: dict[tuple[int, str], tuple[int, str]] = {}
+    choices: dict[tuple[int, str], tuple[int, tuple[int, str]]] = {}
     pending = [(0, "")]
     while pending:
         state = pending[-1]
         index, stack = state
         if index == len(markers):
-            choices[state] = (len(stack), stack)
+            choices[state] = (len(stack), state)
         else:
-            best = (len(markers) + 1, stack)
-            for next_stack in continuations(index, stack):
-                successor = (index + 1, next_stack)
+            best = (len(markers) + 1, state)
+            for successor in continuations(index, stack):
                 if successor not in choices:
                     pending.append(successor)
                     break
                 cost, _ = choices[successor]
-                cost += next_stack == stack  # Ignoring a delimiter leaves it unmatched.
+                # An ignored mark is unmatched. A consumed pair costs zero.
+                cost += successor == (index + 1, stack)
                 if cost < best[0]:
-                    best = (cost, next_stack)
+                    best = (cost, successor)
                 if cost == 0:
                     choices[state] = best
                     break
@@ -392,17 +400,30 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         if state in choices:
             pending.pop()
 
-    starts: list[int] = []
+    opened: list[tuple[int, bool]] = []
     spans: list[tuple[int, int]] = []
+    index = 0
     stack = ""
-    for index, (offset, _, _, _) in enumerate(markers):
-        _, next_stack = choices[index, stack]
+    while index < len(markers):
+        offset = markers[index][0]
+        # Keep literal text between marks. Consumed empty children contribute
+        # nothing, while a child with content also counts toward its parent.
+        if opened and not opened[-1][1]:
+            start, _ = opened[-1]
+            previous_end = markers[index - 1][0] + 1
+            opened[-1] = (start, bool(text[previous_end:offset].strip()))
+        _, (next_index, next_stack) = choices[index, stack]
         if len(next_stack) > len(stack):
-            starts.append(offset)
+            opened.append((offset, False))
         elif len(next_stack) < len(stack):
-            start = starts.pop()
-            if text[start + 1:offset].strip():
+            start, has_content = opened.pop()
+            if has_content:
                 spans.append((start, offset + 1))
+                if opened:
+                    opened[-1] = (opened[-1][0], True)
+        elif next_index == index + 1 and opened:
+            opened[-1] = (opened[-1][0], True)
+        index = next_index
         stack = next_stack
     return sorted(spans)
 
@@ -696,7 +717,6 @@ INTERCOM_BROADCAST_TARGETS = frozenset({
     "todos los parlantes",
 })
 _INTERCOM_PUNCTUATION = re.compile(r"[^\w]*")
-_INTERCOM_EMPTY_QUOTE_PREFIX = re.compile(r'''(?:[^\w"'«»]|"\s*"|'\s*'|«\s*»)*''')
 _INTERCOM_DIRECTION = re.compile(
     r"(?:" + "|".join(sorted(_INTERCOM_DESTINATION_HEADS)) + r")\b\s*", re.IGNORECASE,
 )
@@ -1168,8 +1188,7 @@ def intercom_slots(complement: str) -> tuple[str | None, int]:
     """
     start = _INTERCOM_PUNCTUATION.match(complement).end()
     quotes = _quote_spans(complement)
-    # A span inferred across adjacent empty pairs cannot hide room syntax.
-    if quotes and quotes[0][0] < start and not _INTERCOM_EMPTY_QUOTE_PREFIX.fullmatch(complement, 0, start):
+    if quotes and quotes[0][0] < start:
         return None, quotes[0][0]
     direction = _INTERCOM_DIRECTION.match(complement, start)
     marker = _INTERCOM_MESSAGE_MARKER.search(complement, start)

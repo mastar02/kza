@@ -284,10 +284,55 @@ def test_empty_straight_quotes_are_not_treated_as_nested_openers(empty, suffix):
     assert _quote_spans(empty + suffix) == []
 
 
+@pytest.mark.parametrize("text", [
+    '"   "… "   "', '""...""', "''''''", "«»«   »", '« "" »', '« «» »', '\' "«»" \'',
+    '« " «   » " »', "« ' \"\" ' »", '« « " «   » " » »',
+])
+def test_empty_quote_pairs_do_not_create_spans_between_or_around_them(text):
+    assert _quote_spans(text) == []
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("gap", ["", " ", "\n"])
+@pytest.mark.parametrize("location", ["la cocina", "el fogón"])
+@pytest.mark.parametrize("depth", [2, 3])
+@pytest.mark.parametrize("ending", [".", ", por favor."])
+async def test_nested_same_delimiter_at_start_preserves_broadcast_literal(quote, gap, location, depth, ending):
+    inner = f"{quote}En {location}: esperen{quote}"
+    message = f"{quote}{gap}{inner}, dijo Ana{ending}{quote}"
+    spans = [message, inner]
+    if depth == 3:
+        message = f"{quote}{gap}{message}, dijo Luis.{quote}"
+        spans.insert(0, message)
+    attempts = []
+
+    async def speak(text, zone):
+        attempts.append((text, zone))
+        return ResponseResult(text, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    intercom = IntercomSystem(speak, room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("sala", "Sala")
+    await intercom.start()
+    try:
+        text = f"Anunciá: {message}"
+        assert CommandAcceptanceGate().evaluate(text).accept
+        intent = classify_household_intent(text)
+        assert intent.family is HouseholdFamily.INTERCOM
+        outcome, _, announcement = await intercom.announce_from_voice(intent.complement)
+        assert outcome.task_completed
+        assert announcement.receipt()["zones"] == {"zone_cocina": "confirmed", "zone_sala": "confirmed"}
+        assert attempts == [(message, "zone_cocina"), (message, "zone_sala")]
+        assert [message[start:end] for start, end in _quote_spans(message)] == spans
+    finally:
+        await intercom.stop()
+
+
 @pytest.mark.parametrize("empty", [
     '""', "''", "«»", '"   "', "' \n\t '", "« \n »", '"   "... —""', "' \n '… —''",
+    '""...""', '"   "… "   "',
 ])
-@pytest.mark.parametrize("separator", [" ", "... —", "… —"])
+@pytest.mark.parametrize("separator", [" ", "... —", "… —", "—"])
 @pytest.mark.parametrize(("destination", "expected_zone"), [("la cocina", "zone_cocina"), ("el fogón", None)])
 @pytest.mark.parametrize("message", ["El mensaje es privado.", '"El mensaje es privado."'])
 async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destination(
@@ -318,6 +363,8 @@ async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destinat
             assert outcome.task_completed
             assert announcement.receipt()["zones"] == {expected_zone: "confirmed"}
             assert attempts == [(message, expected_zone)]
+        expected_spans = [message] if message.startswith('"') else []
+        assert [text[start:end] for start, end in _quote_spans(text)] == expected_spans
     finally:
         await intercom.stop()
 
