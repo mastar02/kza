@@ -59,6 +59,21 @@ class ModelCandidate:
     effort: str
     capability_notes: str
     role_suitability: dict[str, float] = field(default_factory=dict)
+    fast_mode: bool = False
+
+
+_CODEX_FAST_MODEL_RE = re.compile(r"(?:^|-)(?:sol|terra)(?:$|-)", re.IGNORECASE)
+
+
+def uses_codex_fast_mode(candidate: ModelCandidate) -> bool:
+    """Return True when Codex should launch with `/fast on` (`-c service_tier=fast`).
+
+    Applies to Codex `sol` and `terra` models (or any Codex candidate with
+    `fast_mode=True` in the catalog).
+    """
+    if candidate.runtime != "codex":
+        return False
+    return bool(candidate.fast_mode or _CODEX_FAST_MODEL_RE.search(candidate.model))
 
 
 # Catalog derived from verified Mac CLI models and role benchmarks.
@@ -105,7 +120,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
         model="gpt-6.2-sol",
         family="openai",
         effort="high",
-        capability_notes="Deep Python/async systems engineering, complex debugging, rigorous QA and invariant proofs.",
+        capability_notes="Deep Python/async systems engineering, complex debugging, rigorous QA and invariant proofs; runs with Codex /fast on (service_tier=fast, ~2x speed, higher quota rate).",
         role_suitability={
             "kza-analista": 0.93,
             "kza-dev": 0.97,
@@ -115,6 +130,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
             "kza-ui": 0.84,
             "kza-ops": 0.93,
         },
+        fast_mode=True,
     ),
     ModelCandidate(
         candidate_id="codex:gpt-6.2-astra",
@@ -132,6 +148,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
             "kza-ui": 0.78,
             "kza-ops": 0.95,
         },
+        fast_mode=False,
     ),
     ModelCandidate(
         candidate_id="codex:gpt-6.1-terra",
@@ -139,7 +156,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
         model="gpt-6.1-terra",
         family="openai",
         effort="medium",
-        capability_notes="Specialized desktop/browser computer-use and visual E2E verification (NEXO UI, interactive PC checks).",
+        capability_notes="Specialized desktop/browser computer-use and visual E2E verification (NEXO UI, interactive PC checks); runs with Codex /fast on (service_tier=fast, ~1.5x speed).",
         role_suitability={
             "kza-analista": 0.72,
             "kza-dev": 0.75,
@@ -149,6 +166,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
             "kza-ui": 0.98,
             "kza-ops": 0.78,
         },
+        fast_mode=True,
     ),
     ModelCandidate(
         candidate_id="muse:muse-wonder-full-1.0",
@@ -332,6 +350,7 @@ def load_catalog(catalog_path: Path | None = None) -> list[ModelCandidate]:
                             str(k): float(v)
                             for k, v in (item.get("role_suitability") or {}).items()
                         },
+                        fast_mode=bool(item.get("fast_mode", False)),
                     )
         except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             pass
@@ -351,6 +370,8 @@ def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
             "-c",
             f"model_reasoning_effort={candidate.effort}",
         ]
+        if uses_codex_fast_mode(candidate):
+            cmd.extend(["-c", "service_tier=fast"])
         if read_only:
             cmd.extend(["-s", "read-only"])
         return cmd
@@ -480,8 +501,9 @@ def build_decisions_payload(
     for c in candidates:
         qw = quota_weights.get(c.runtime, 0.0)
         suit = c.role_suitability.get(role, 0.80)
+        fast_tag = ", codex_fast=/fast on (service_tier=fast)" if uses_codex_fast_mode(c) else ""
         desc = (
-            f"runtime={c.runtime}, family={c.family}, effort={c.effort}, "
+            f"runtime={c.runtime}, family={c.family}, effort={c.effort}{fast_tag}, "
             f"quota_weight={qw:.2f}, benchmark_prior={suit:.2f}; {c.capability_notes}"
         )
         cand_lines.append(f"- {c.candidate_id}: {desc}")
@@ -492,6 +514,7 @@ def build_decisions_payload(
         f"Role: {role} ({'read-only' if role in READ_ONLY_ROLES else 'read-write'}).\n"
         f"Complexity: {complexity}.\n"
         f"Excluded model families (cross-model guard): {', '.join(excluded_families) or 'none'}.\n"
+        f"Runtime policy: Codex sol and terra models run with `/fast on` (`-c service_tier=fast`: faster latency, higher quota consumption rate); factor this into speed vs quota trade-offs.\n"
         f"Task summary (sanitized): {sanitized_summary}\n"
         f"Eligible candidates with real subscription quota weights (higher = healthier quota) "
         f"and documented capability/benchmark priors:\n"
@@ -766,6 +789,7 @@ def route_task(
         "model": selected.model,
         "family": selected.family,
         "effort": selected.effort,
+        "fast_mode": uses_codex_fast_mode(selected),
         "cli_command": cli_command,
         "quota_weights": quota_weights,
         "deterministic_scores": det_scores,

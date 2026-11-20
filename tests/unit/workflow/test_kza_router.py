@@ -130,17 +130,42 @@ def test_sanitize_summary_strips_secrets_emails_lan_ips_and_private_paths() -> N
 
 
 def test_safe_cli_flags_per_runtime_read_only_vs_write() -> None:
+    codex_sol = next(c for c in kza_router.DEFAULT_CATALOG if c.candidate_id == "codex:gpt-6.2-sol")
+    codex_terra = next(c for c in kza_router.DEFAULT_CATALOG if c.candidate_id == "codex:gpt-6.1-terra")
+    codex_astra = next(c for c in kza_router.DEFAULT_CATALOG if c.candidate_id == "codex:gpt-6.2-astra")
     by_rt = {
-        "codex": next(c for c in kza_router.DEFAULT_CATALOG if c.runtime == "codex"),
+        "codex": codex_sol,
         "muse": next(c for c in kza_router.DEFAULT_CATALOG if c.runtime == "muse"),
         "claude": next(c for c in kza_router.DEFAULT_CATALOG if c.runtime == "claude"),
         "agy": next(c for c in kza_router.DEFAULT_CATALOG if c.runtime == "agy" and c.family == "google"),
     }
 
-    codex_ro = kza_router.build_cli_command(by_rt["codex"], "kza-qa")
+    codex_ro = kza_router.build_cli_command(codex_sol, "kza-qa")
     assert "--no-daemon" in codex_ro and "-s" in codex_ro and "read-only" in codex_ro
-    codex_rw = kza_router.build_cli_command(by_rt["codex"], "kza-dev")
+    assert "service_tier=fast" in codex_ro
+    codex_rw = kza_router.build_cli_command(codex_sol, "kza-dev")
     assert "--no-daemon" in codex_rw and "read-only" not in codex_rw
+    assert "service_tier=fast" in codex_rw
+
+    terra_ui = kza_router.build_cli_command(codex_terra, "kza-ui")
+    assert "--no-daemon" in terra_ui and "service_tier=fast" in terra_ui and "read-only" in terra_ui
+
+    astra_pre = kza_router.build_cli_command(codex_astra, "kza-pregate")
+    assert "--no-daemon" in astra_pre and "service_tier=fast" not in astra_pre
+
+    payload = kza_router.build_decisions_payload(
+        role="kza-dev",
+        complexity="high",
+        sanitized_summary="Implement async handler",
+        candidates=[codex_sol, codex_terra, codex_astra],
+        quota_weights={"codex": 1.0},
+        excluded_families=[],
+    )
+    assert "/fast on" in payload["input"] and "service_tier=fast" in payload["input"]
+    choice_map = {ch["value"]: ch["description"] for ch in payload["questions"][0]["choices"]}
+    assert "service_tier=fast" in choice_map["codex:gpt-6.2-sol"]
+    assert "service_tier=fast" in choice_map["codex:gpt-6.1-terra"]
+    assert "service_tier=fast" not in choice_map["codex:gpt-6.2-astra"]
 
     muse_ro = kza_router.build_cli_command(by_rt["muse"], "kza-qa")
     assert "--contributor-mode" in muse_ro and "off" in muse_ro

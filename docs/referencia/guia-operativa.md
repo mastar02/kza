@@ -145,7 +145,7 @@ python tools/code_search.py "cómo se maneja el timeout de HA al boot"
 - **Confianza inicial en tabs visibles:** `agy` (primera vez en un worktree nuevo), `muse` (workspace nuevo) y `codex` (primera vez con `.codex/hooks.json`) pausan en `blocked` pidiendo confirmación humana en el tab visible de `herdr-app`. **Nunca bypassear diálogos de confianza programáticamente.**
 - **Scripts de orquestación:**
   - `scripts/kza_quota.py` — telemetría real de cuotas de las 4 suscripciones (`claude`, `codex`, `muse`, `agy`).
-  - `scripts/kza_router.py` — enrutamiento dinámico vía OpenAI Decisions API (`gpt-6-luna`, 0 output tokens) con fallback determinista local, exclusión cross-model por **familia real** (`anthropic`|`openai`|`meta`|`google`), `outcome` y `report`.
+  - `scripts/kza_router.py` — enrutamiento dinámico vía OpenAI Decisions API (`gpt-6-luna`, 0 output tokens) con fallback determinista local, exclusión cross-model por **familia real** (`anthropic`|`openai`|`meta`|`google`), `/fast on` (`-c service_tier=fast`) en modelos Codex `sol` y `terra` (informado a `gpt-6-luna` y pasado al lanzar el asiento), `outcome` y `report`.
   - `scripts/kza_seat.py` — `open`, `status`, `close`, `sync-templates` (solo enlaza `kza-*.md`; jamás toca `tu-*` ni `gsm-*`).
 - **Carga de API Key en macOS Keychain (si se crea una entrada nueva):** usar siempre `read -rs` (nunca `security add-generic-password -w` interactivo, porque `getpass` BSD trunca silenciosamente a 128 bytes):
   ```bash

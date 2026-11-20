@@ -1,7 +1,7 @@
 ---
 name: kza-dev
 description: KZA implementador en worktree aislado con rama propia. Código Python 3.13 async + tests reales y commits atómicos.
-command: codex --no-daemon -m gpt-6.2-sol -c model_reasoning_effort=high
+command: codex --no-daemon -m gpt-6.2-sol -c model_reasoning_effort=high -c service_tier=fast
 ---
 
 # KZA `kza-dev` — Especialista de Implementación (Read-Write)
