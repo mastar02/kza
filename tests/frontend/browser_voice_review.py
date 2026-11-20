@@ -334,13 +334,17 @@ async def main(*,browser_binary=None):
             dashboard = DashboardAPI(authority=authority,event_bus=bus,voice_registry=voices,observability_use_mocks=False)
             original_gpu,original_services = system_monitor.gpu_snapshot,system_monitor.services_snapshot
             requests = []
+            review_releases: dict[str, asyncio.Event] = {}
             system_monitor.gpu_snapshot,system_monitor.services_snapshot = lambda:None,lambda:None
             @dashboard.app.middleware('http')
             async def cookie(request,call_next):
                 path = request.url.path
+                release = review_releases.get(path)
                 if ((path.startswith('/api/voices/captures/') and path.endswith('/review'))
                         or path.startswith('/api/evaluation/samples/')):
                     await asyncio.sleep(.25)  # Expose loading feedback before the real response.
+                if release is not None:
+                    await release.wait()
                 response = await call_next(request)
                 requests.append({'method':request.method,'path':request.url.path,'status':response.status_code})
                 return response
@@ -431,14 +435,37 @@ async def main(*,browser_binary=None):
                                 raise
                             control = f'#view-users [data-capture-id="{identity}"] button'
                             review_requests = sum(item['path'].endswith('/review') for item in requests)
-                            timing = await start_review(page,control,'Escuchar',OBS_REVIEW,'Cargando audio…')
-                            assert await page.evaluate("""(() => {
-                              const buttons=[...document.querySelectorAll('[data-capture-id] button')];
-                              const other=buttons.find(button=>button.textContent==='Escuchar');
-                              other?.click();
-                              const refresh=[...document.querySelectorAll('#view-users button')].find(button=>button.textContent==='Actualizar');
-                              return refresh.disabled && buttons.length>0 && buttons.every(button=>button.disabled);
-                            })()""")
+                            request_path = f'/api/voices/captures/{identity}/review'
+                            release = asyncio.Event()
+                            # The fixed response delay does not bound elapsed time between CDP commands.
+                            review_releases[request_path] = release
+                            try:
+                                timing = await start_review(page,control,'Escuchar',OBS_REVIEW,'Cargando audio…')
+                                locks = await page.evaluate("""(() => {
+                                  const inspect=()=>{
+                                    const buttons=[...document.querySelectorAll('[data-capture-id] button')];
+                                    const refresh=[...document.querySelectorAll('#view-users button')].find(button=>button.textContent==='Actualizar');
+                                    return {refreshDisabled:refresh?.disabled ?? null,
+                                      buttons:buttons.map(button=>({text:button.textContent,disabled:button.disabled}))};
+                                  };
+                                  const before=inspect();
+                                  const buttons=[...document.querySelectorAll('[data-capture-id] button')];
+                                  const other=buttons.find(button=>button.textContent==='Escuchar')
+                                    ?? buttons.find(button=>button.textContent==='Cargando audio…');
+                                  other?.click();
+                                  const card=document.querySelector('#view-users [aria-label="Escuchar muestra"]');
+                                  return {before,after:inspect(),hidden:document.hidden,
+                                    status:window.__kzaVoiceState?.review.status(),busy:card?.getAttribute('aria-busy'),
+                                    playerHasSource:card?.querySelector('audio')?.hasAttribute('src') ?? false,
+                                    elapsedMs:performance.now()-window.__voiceMeasurement.clicked};
+                                })()""")
+                                assert all(snapshot['refreshDisabled'] is True and snapshot['buttons']
+                                    and all(button['disabled'] for button in snapshot['buttons'])
+                                    for snapshot in (locks['before'],locks['after'])), (
+                                        'voice_review_lock',identity,locks)
+                            finally:
+                                review_releases.pop(request_path)
+                                release.set()
                             await page.wait_for('document.querySelector('+json.dumps(OBS_REVIEW)+').textContent.includes('+json.dumps(text)+') && !!document.querySelector("audio")')
                             assert sum(item['path'].endswith('/review') for item in requests)==review_requests+1
                             try:
