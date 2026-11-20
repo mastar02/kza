@@ -310,7 +310,7 @@ def _control_pair(repo, runtimes, roots, island, island_files, evidence, artifac
 
 def _prepare(task, evidence, repo, revision, *,
              bridge_revision="80b47f55716e980b93a7312b6732de0611e3e2e0"):
-    from scripts.build_runtime import build_runtime
+    from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
     from scripts.stage_runtime import activate_slot, prepare_slot
     from tests.mocks.managed_slot_graph import canonical_template
     from tests.mocks.restore_application_graph import configuration

@@ -27,7 +27,7 @@ import pytest
 from scripts import compaction
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from tests.mocks import compaction_world as cw
 from tests.unit.tools import test_stage_runtime_admission as admission
 from tests.unit.tools.test_stage_runtime_admission import (

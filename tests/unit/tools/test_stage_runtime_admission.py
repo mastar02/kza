@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from scripts import stage_runtime as stage
 
 

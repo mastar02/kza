@@ -376,7 +376,7 @@ def test_verify_receipt_state_checks_the_manifest_before_the_binding(tmp_path):
 
 @pytest.fixture(scope="module")
 def admission_archive(tmp_path_factory):
-    from scripts.build_runtime import build_runtime
+    from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
     destination = tmp_path_factory.mktemp("admission-artifact") / "runtime.tar.gz"
     build_runtime(REPO, destination)
     return destination

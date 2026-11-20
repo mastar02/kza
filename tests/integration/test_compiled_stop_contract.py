@@ -21,7 +21,7 @@ import pytest
 import yaml
 
 from scripts import stage_runtime as stage
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from tests.mocks import compiled_restore as compiled
 from tests.mocks.managed_slot_graph import _get, _leaves, canonical_template
 from tests.mocks.restore_application_graph import configuration as restore_configuration

@@ -20,7 +20,7 @@ import time
 
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 
 REPO = Path(__file__).resolve().parents[2]
 CHILD = REPO / "tests" / "mocks" / "launcher_child.py"
