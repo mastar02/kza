@@ -2267,7 +2267,7 @@
         "T033"
       ],
       "status": "closed",
-      "note": "T033-U4 retiró ambos manejadores legados, su inyección y el índice Chroma de rutinas. Voz usa el scheduler persistente y la bandeja web para propuestas. tests/integration/test_home_control_policy.py protege la ausencia de callers a los escritores de automatizaciones HA; test_routine_voice_creation.py cubre el rechazo local en ambos modos de voz. Verificación estática con CPython 3.13; pytest pendiente por SOLO_WINDOW. T033-U5 sigue pendiente."
+      "note": "T033-U4 retiró ambos manejadores legados, su inyección y el índice Chroma de rutinas. Voz usa el scheduler persistente y la bandeja web para propuestas. tests/integration/test_home_control_policy.py protege la ausencia de callers a los escritores de automatizaciones HA; test_routine_voice_creation.py cubre el rechazo local y los controles conversacionales en ambos modos de voz. Validación en Mac con CPython 3.13 mediante pruebas dirigidas y comprobaciones estáticas. T033-U5 sigue pendiente."
     },
     {
       "id": "CORE-05",

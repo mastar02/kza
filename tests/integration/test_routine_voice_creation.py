@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from src.nlu.llm_router import CommandClassification
 from src.orchestrator.dispatcher import DispatchResult, MultiUserOrchestrator, PathType, Priority
 from src.pipeline.command_event import CommandEvent
 from src.pipeline.command_processor import ProcessedCommand
@@ -71,6 +72,9 @@ async def voice_router(orchestrated, utterance, *, scheduler=None):
     ("después del riego programa que vuelva a arrancar a las ocho", "no creo rutinas por voz"),
     ("después del último programa que se encienda el riego a las ocho", "no creo rutinas por voz"),
     ("para el próximo programa que se encienda el riego a las ocho", "no creo rutinas por voz"),
+    ("para el próximo programa que las luces prendan al salir el sol", "no creo rutinas por voz"),
+    ("después del último programa que a las ocho se encienda el riego", "no creo rutinas por voz"),
+    ("para el próximo programa que cada noche se encienda el riego", "no creo rutinas por voz"),
     ("programa que arranque el riego al anochecer", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego, ¿podés?", "no creo rutinas por voz"),
@@ -89,6 +93,34 @@ async def test_retired_routine_requests_are_refused_before_a_producer(orchestrat
         assert result["outcome"]["persistence"] == "not_written"
         assert result["outcome"]["dispatch"] == "not_sent"
         assert result["task_completed"] is False
+        assert not router.ha.mock_calls and not router.chroma.mock_calls and not router.llm.mock_calls
+        dispatcher._slow_path.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("utterance", [
+    "después del último programa que se encienda el riego a las ocho",
+    "para el próximo programa que las luces prendan al salir el sol",
+    "después del último programa que a las ocho se encienda el riego",
+    "para el próximo programa que cada noche se encienda el riego",
+])
+async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(utterance):
+    async with voice_router(True, utterance) as (router, dispatcher):
+        classify = AsyncMock(return_value=CommandClassification(is_command=True, confidence=0.99, intent="turn_on"))
+        router.llm_command_router = SimpleNamespace(classify=classify)
+        event = CommandEvent(
+            np.zeros(16000, dtype=np.float32), room_id="", capture_trigger="wake", wake_score=0.9,
+            textual_wake=True,
+        )
+
+        result = await router.process_command(event)
+
+        classify.assert_awaited_once()
+        assert (result["intent"], result["path"]) == ("routine", "fast_routine")
+        outcome = result["outcome"]
+        assert (outcome["status"], outcome["persistence"], outcome["dispatch"]) == (
+            "unsupported", "not_written", "not_sent",
+        )
         assert not router.ha.mock_calls and not router.chroma.mock_calls and not router.llm.mock_calls
         dispatcher._slow_path.assert_not_called()
 
@@ -121,6 +153,8 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "quiero escuchar un excelente programa de rutinas de ejercicio",
     "quiero ver el primer programa que se emitió anoche",
     "quiero ver el polémico programa que ganó el premio",
+    "después del último programa que vimos quiero hablar del premio",
+    "para el próximo programa que grabemos buscá información sobre el premio",
     "¿se configura el horario de la automatización de riego desde la web?",
     "podés decirme quién configura el horario de la automatización de riego",
     "¿Te parece que programa bien el horario la automatización de riego?",
@@ -133,6 +167,7 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
         ))
         result = await router.process_command(np.zeros(16000, dtype=np.float32))
         assert result["intent"] == "conversation"
+        assert result["outcome"]["status"] == "completed"
         if orchestrated:
             assert result["path"] == "slow_llm"
             dispatcher._slow_path.assert_awaited_once()
@@ -156,6 +191,10 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
     "quiero ver un insólito programa de rutinas de ejercicio",
     "quiero ver el primer programa que el público votó",
     "quiero ver el programa a las ocho sobre rutinas de ejercicio",
+    "antes del polémico programa que ganó el premio",
+    "después del último programa que se emitió anoche",
+    "luego del último programa que se transmitió anoche",
+    "para el nuevo programa que se estrenó anoche",
 ])
 def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance):
     assert not is_unclaimed_routine_creation(f"Nexa, {utterance}")
@@ -181,6 +220,7 @@ def test_accented_program_verb_survives_nominal_filtering():
     "para el próximo programa a las ocho la rutina de jardín",
     "después del último programa a las ocho la rutina de jardín",
     "para el programa a las ocho la rutina de jardín",
+    "después del último programa que cuando anochezca se encienda el riego",
 ])
 def test_program_directive_survives_nominal_filtering(utterance):
     assert is_unclaimed_routine_creation(f"Nexa, {utterance}")

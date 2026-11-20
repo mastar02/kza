@@ -85,14 +85,19 @@ _PROGRAM_COMPLEMENT_CONTEXT = (
     r"(?<!\bpara )(?<!\bdespues )(?<!\bluego )(?<!\bantes )"
     r"(?<!\bdespues de )(?<!\bluego de )(?<!\bantes de )"
 )
+_PROGRAM_MEDIA_RELATIVE = (
+    r"que (?:ya )?(?:vi|viste|vio|vimos|vieron|vemos|veamos|(?:grab|escuch)(?:aste|o|amos|aron|emos)"
+    r"|gan(?:o|aron)|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron|ra|ran)|estren(?:o|aron|ara|aran)))"
+)
 # A temporal complement may end at an ordinal ("después del último, programa ...").
 # After one of those complements, "programa a las" can also be a command.
-# A known modifier can still name a program with a "de" complement after those phrases.
+# A "de" complement or a relative describing the show can still identify a noun.
 _NOMINAL_PROGRAM = re.compile(
     rf"\b{_PROGRAM_DETERMINER} {_PROGRAM_NOMINAL_END}(?! a las\b)"
     rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_DETERMINER}(?: {_PROGRAM_PRENOMINAL_MODIFIER})?"
     rf" {_PROGRAM_NOMINAL_END}(?! {_PROGRAM_SCHEDULE_TAIL}\b)"
     rf"|\b{_PROGRAM_DETERMINER} {_PROGRAM_PRENOMINAL_MODIFIER} {_PROGRAM_NOMINAL_END}(?= de\b)"
+    rf"|\b{_PROGRAM_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= {_PROGRAM_MEDIA_RELATIVE}\b)"
     rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_PLAIN_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= (?:de|que)\b)"
 )
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
