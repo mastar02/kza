@@ -1075,22 +1075,24 @@ class RequestRouter:
 
     def _evaluate_voice_admission(
         self, text: str, stt_confidence: "STTResult | None", room_id: str | None,
-    ) -> tuple[AcceptanceDecision, bool]:
-        """Admit a deferred routine's local refusal without admitting an action."""
+    ) -> tuple[AcceptanceDecision, bool, bool]:
+        """Admit a local refusal or factual reply without admitting an action."""
         decision = self.command_gate.evaluate(text, stt_confidence=stt_confidence)
         refusal_only = False
+        factual_reply = False
         if not decision.accept and decision.reason == "non_immediate:deferred":
             household = self.household_intents.classify(text)
             wake_words = self.household_intents.settings.wake_words
             if household is None:
                 refusal_only = is_unclaimed_routine_creation(text, wake_words=wake_words)
+                factual_reply = not refusal_only and is_factual_question(text, wake_words=wake_words, reflexive_only=True)
             elif household.family is HouseholdFamily.DEFERRED_ACTION:
                 refusal_only = is_polite_scheduled_device_request(text, wake_words=wake_words)
-        if refusal_only:
+        if refusal_only or factual_reply:
             reply = self.command_gate.evaluate(text, stt_confidence=stt_confidence, reply_to_deferred_routine=True)
             if reply.reason != "gate_error":
                 decision = reply
-        return self._verify_wake(text, decision, room_id), refusal_only
+        return self._verify_wake(text, decision, room_id), refusal_only, factual_reply
 
     async def _refuse_routine(self, result: dict, pipeline_start: float, response: str = ROUTINE_CREATE_REFUSAL) -> dict:
         """Finish a retired routine request without handing it to a producer."""
@@ -1174,7 +1176,9 @@ class RequestRouter:
         # 1a. Command acceptance gate: corta antes del orchestrator si el texto
         #     es claramente ruido (TV, eco del TTS, repetición) o confianza baja.
         #     Evita que esas muestras vayan al slow path LLM (caro + bloquea queue).
-        gate_decision, refusal_only = self._evaluate_voice_admission(text, getattr(cmd, "stt_confidence", None), room_id)
+        gate_decision, refusal_only, factual_reply = self._evaluate_voice_admission(
+            text, getattr(cmd, "stt_confidence", None), room_id,
+        )
         if refusal_only and gate_decision.accept:
             return await self._refuse_routine(result, pipeline_start)
         if not gate_decision.accept:
@@ -1243,7 +1247,7 @@ class RequestRouter:
 
         wake_words = self.household_intents.settings.wake_words
         refuse_routine = is_unclaimed_routine_creation(text, wake_words=wake_words)
-        factual_question = not refuse_routine and is_factual_question(text, wake_words=wake_words)
+        factual_question = factual_reply or (not refuse_routine and is_factual_question(text, wake_words=wake_words))
         if not (refuse_routine or factual_question) and await self._try_home_command(
             text, result, room_id=room_id, pipeline_start=pipeline_start, extra_gate=tv_signal,
         ):
@@ -2032,10 +2036,13 @@ class RequestRouter:
             return result
 
         # 1a. Command acceptance gate — mismo corto-circuito que el path orchestrated
-        gate_decision, refusal_only = self._evaluate_voice_admission(text, getattr(cmd, "stt_confidence", None), room_id)
+        gate_decision, refusal_only, factual_reply = self._evaluate_voice_admission(
+            text, getattr(cmd, "stt_confidence", None), room_id,
+        )
         if refusal_only and gate_decision.accept:
             return await self._refuse_routine(result, pipeline_start)
-        gate_decision = self._legacy_household_drop(text, gate_decision)
+        if not factual_reply:
+            gate_decision = self._legacy_household_drop(text, gate_decision)
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
             result["intent"] = f"gate_rejected:{gate_decision.reason}"
@@ -2084,8 +2091,9 @@ class RequestRouter:
             household is not None and household.family is HouseholdFamily.ROUTINE
             and (household.operation is not HouseholdOperation.QUERY or self.voice_routines is None)
         )
-        factual_question = household is None and not refuse_routine and is_factual_question(
-            text, wake_words=self.household_intents.settings.wake_words,
+        factual_question = factual_reply or (
+            household is None and not refuse_routine
+            and is_factual_question(text, wake_words=self.household_intents.settings.wake_words)
         )
         # Hold possible routine refusals here until the reader has had a chance
         # to answer, without passing the request to a home action producer.

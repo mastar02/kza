@@ -185,7 +185,7 @@ class CommandAcceptanceGate:
     def evaluate(
         self, text: str, stt_confidence: "STTResult | None" = None, *, reply_to_deferred_routine: bool = False,
     ) -> AcceptanceDecision:
-        """Evaluate a capture. The deferred-routine option is for a local refusal only."""
+        """Evaluate a capture. The deferred-routine option allows a refusal or factual reply only."""
         try:
             return self._evaluate(text, stt_confidence, reply_to_deferred_routine=reply_to_deferred_routine)
         except Exception as e:  # fail-open: never drop voice control on an internal bug
@@ -239,8 +239,8 @@ class CommandAcceptanceGate:
         from src.nlu.command_grammar import non_immediate_action_reason
 
         action_block = non_immediate_action_reason(text)
-        local_refusal = reply_to_deferred_routine and action_block == "non_immediate:deferred"
-        if action_block and not local_refusal and not self._claimed_reminder(text) and not self._routine_read(text):
+        reply_only = reply_to_deferred_routine and action_block == "non_immediate:deferred"
+        if action_block and not reply_only and not self._claimed_reminder(text) and not self._routine_read(text):
             return action_block
         norm = _normalize(text)
         if not norm:

@@ -170,13 +170,17 @@ _CONTROL_SCHEDULE_PREFIX = rf"(?:{_ROUTINE_SCHEDULE.pattern} +)?"
 _COURTESY_MODAL = r"(?:podes|puedes|podrias|podria)"
 _COURTESY_HEAD = re.compile(rf"{_CONTROL_SCHEDULE_PREFIX}(?:(?:me|te|nos) +)?{_COURTESY_MODAL}\b")
 _CONTROL_HEAD = re.compile(
-    rf"{_CONTROL_SCHEDULE_PREFIX}(?:(?:que|me|te|nos|le|les|se|{_COURTESY_MODAL}|por favor) +)*"
-    r"(?:(?P<object>lo|la|los|las) +)?(?P<verb>[a-z]+)\b"
+    rf"{_CONTROL_SCHEDULE_PREFIX}(?:(?:que|me|te|nos|le|les|{_COURTESY_MODAL}|por favor) +)*"
+    r"(?P<reflexive>se +)?(?:(?P<object>lo|la|los|las) +)?(?P<verb>[a-z]+)\b"
 )
 _CONTROL_VERB = re.compile(
     r"(?:prend|encend|sub|abr)(?:e[rs]?|i[rs]?|a[sn]?)|enciend(?:es?|a[sn]?)|cierr(?:as?|e[sn]?)"
     r"|(?:apag|baj|cerr|activ|desactiv|dej|ajust|regul|bloque|desbloque|cambi|ilumin|cort)(?:a[rs]?|e[sn]?)"
     r"|apague[sn]?|pon(?:e[rs]?|g[ae][sn]?)?"
+)
+_SUBJUNCTIVE_CONTROL_VERB = re.compile(
+    r"(?:prend|enciend|abr|sub|pong)a[sn]?"
+    r"|(?:apagu|desactiv|activ|cambi|cierr|baj|dej|ajust|regul|bloque|desbloque|ilumin|cort|riegu)e[sn]?"
 )
 _CONTROL_ENTITY = re.compile(r"\b(?:riego|puertas?|porton|cerraduras?|aspersores?|enchufes?)\b")
 
@@ -391,9 +395,17 @@ def _has_device_action(text: str) -> bool:
             continue
         verb = head["verb"]
         target = text if head["object"] else clause
-        # The broad slot classifier also accepts indicative forms such as "ponen".
-        # Require the explicit verb pattern for conjugated forms ending in o/s/n.
-        action_verb = _CONTROL_VERB.fullmatch(verb) or (not verb.endswith(("o", "s", "n")) and classify_intent(verb))
+        if head["reflexive"]:
+            # A passive indicative ("se abre") describes an event. A subjunctive can request one.
+            action_verb = _SUBJUNCTIVE_CONTROL_VERB.fullmatch(verb)
+            if not action_verb:
+                continue
+        else:
+            # The broad slot classifier also accepts indicative forms such as "ponen".
+            # Require the explicit verb pattern for conjugated forms ending in o/s/n.
+            action_verb = _CONTROL_VERB.fullmatch(verb) or (
+                not verb.endswith(("o", "s", "n")) and classify_intent(verb)
+            )
         if _IRRIGATION_ACTION.match(clause, head.start("verb")) or (
             action_verb and (extract_entity(target) or _CONTROL_ENTITY.search(target))
         ):
@@ -432,22 +444,29 @@ def _mask_nominal_program(match: re.Match[str]) -> str:
     return " "
 
 
-def is_factual_question(text: str, *, wake_words: Iterable[str] = ()) -> bool:
+def is_factual_question(text: str, *, wake_words: Iterable[str] = (), reflexive_only: bool = False) -> bool:
     """Recognize factual questions in information requests or after a past-program relative."""
     original = unicodedata.normalize("NFC", text)
-    phrase = " ".join(strip_fillers(original, wake_words, extra_leads=_LEADS))
-    requests = tuple(_SUBORDINATE_REQUEST.finditer(phrase))
-    if requests and requests[0].start() == 0 and all(
-        _is_informational_complement(request["complement"]) for request in requests
-    ):
-        return True
+    if not reflexive_only:
+        phrase = " ".join(strip_fillers(original, wake_words, extra_leads=_LEADS))
+        requests = tuple(_SUBORDINATE_REQUEST.finditer(phrase))
+        if requests and requests[0].start() == 0 and all(
+            _is_informational_complement(request["complement"]) for request in requests
+        ):
+            return True
     if not original.rstrip().endswith("?"):
         return False
     folded = _fold_program_text(original)
-    return any(
-        match.end("past_program_question_mark") == len(folded) and _mask_nominal_program(match) == " "
-        for match in _NOMINAL_PROGRAM.finditer(folded)
-    )
+    for match in _NOMINAL_PROGRAM.finditer(folded):
+        if match.end("past_program_question_mark") != len(folded) or _mask_nominal_program(match) != " ":
+            continue
+        if not reflexive_only:
+            return True
+        question = match["past_program_question"] or match["past_program_tail"]
+        head = _CONTROL_HEAD.match(question.lstrip(" ,"))
+        if head and head["reflexive"]:
+            return True
+    return False
 
 
 def is_polite_scheduled_device_request(text: str, *, wake_words: Iterable[str] = ()) -> bool:

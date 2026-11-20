@@ -179,6 +179,12 @@ async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(orches
     ("podes prender la luz a las ocho", "gate"),
     ("a las ocho podés prender la luz?", "gate"),
     ("¿a las ocho y cuarto de la mañana podés prender la luz?", "gate"),
+    ("quiero que me cuentes el resultado y se prenda la luz a las ocho", "gate"),
+    ("hacé que se apague la luz a las ocho", "gate"),
+    ("quiero que me cuentes el resultado y se apaguen las luces a las ocho", "gate"),
+    ("quiero que me cuentes el resultado y se rieguen los jardines a las ocho", "verb_evidence"),
+    ("quiero que me cuentes el resultado y se bloqueen las puertas a las ocho", "verb_evidence"),
+    ("quiero que me cuentes el resultado y se desbloquee la puerta a las ocho", "verb_evidence"),
 ])
 async def test_scheduled_programming_cannot_turn_on_an_authorized_light(
     orchestrated, utterance, orchestrated_stage, tmp_path,
@@ -238,6 +244,19 @@ async def authorized_light_router(orchestrated, utterance, tmp_path):
     "después del último programa que vimos, ¿a las ocho entregaron el premio?",
     "después del último programa que vimos, a las ocho entregaron el premio?",
     "después del último programa que vimos, ¿quién ganó el premio?",
+    "después del último programa que vimos, ¿a las ocho se abre el portón del estadio?",
+    "después del último programa que vimos, a las ocho se abre el portón del estadio?",
+    "después del último programa que vimos, ¿a las ocho se cambia el enchufe del estadio?",
+    "después del último programa que vimos, a las ocho se cambia el enchufe del estadio?",
+    "después del último programa que vimos, ¿a las ocho se desactiva el riego del estadio?",
+    "después del último programa que vimos, a las ocho se desactiva el riego del estadio?",
+    "después del último programa que vimos, ¿a las ocho se prende la luz del estadio?",
+    "después del último programa que vimos, a las ocho se prende la luz del estadio?",
+    "después del último programa que vimos, ¿a las ocho se cierra la puerta del estadio?",
+    "después del último programa que vimos, ¿a las ocho se apaga la luz del estadio?",
+    "después del último programa que vimos, ¿a las ocho se corta la luz del estadio?",
+    "después del último programa que vimos, ¿a las ocho se prenden las luces del estadio?",
+    "después del último programa que vimos, ¿a las ocho se riegan los jardines del estadio?",
 ])
 async def test_factual_questions_cannot_turn_on_an_authorized_light(orchestrated, utterance, tmp_path):
     async with authorized_light_router(orchestrated, utterance, tmp_path) as (router, dispatcher, ha, classify):
