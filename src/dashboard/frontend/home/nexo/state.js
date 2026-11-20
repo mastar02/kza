@@ -11,9 +11,11 @@
       if (value?.ok !== true || !['operator', 'home', 'evaluator'].includes(value.role)
           || !Array.isArray(value.permissions) || value.permissions.some(permission => typeof permission !== 'string')
           || !Number.isFinite(expires) || expires <= wall()) return false;
+      // Account identifiers scope this tab's data; permissions come from the server grant.
       identity = { role: value.role, permissions: new Set(value.permissions), expires,
         subject: typeof value.subject === 'string' && value.subject ? value.subject : null,
-        routineActor: typeof value.routine_actor === 'string' && value.routine_actor ? value.routine_actor : null };
+        routineActor: typeof value.routine_actor === 'string' && value.routine_actor ? value.routine_actor : null,
+        accountBinding: typeof value.account_binding === 'string' ? value.account_binding : null };
       deadline = monotonic() + Math.max(0, expires - wall());
       return true;
     }
@@ -24,6 +26,7 @@
       role: () => active() ? identity.role : null,
       subject: () => active() ? identity.subject : null,
       routineActor: () => active() ? identity.routineActor : null,
+      accountBinding: () => active() ? identity.accountBinding : null,
       views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)
         && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')
         // 'Mis recuerdos' is a person's own view: only household credentials bound to a person carry memory:own:read.
@@ -81,22 +84,30 @@
     if (method === 'POST' && new RegExp(`^/api/voices/profiles/${PROFILE_ID}/attribution/resume$`).test(pathname)) return ['admin:manage', 'memory:assign', 'voices:review'];
     return null;
   }
+  const NOTICE_LIST = '/api/reminders/notices', NOTICE_DISMISS = NOTICE_LIST + '/dismiss';
+  function canReadNotices(session) {
+    return ['home', 'operator'].includes(session.role()) && session.can('home:read') && session.can('tasks:read');
+  }
   function createScopedApi({ session, transport, onRetired = () => {} }) {
     return async function api(path, options = {}) {
       const method = (options.method || 'GET').toUpperCase();
       const pathname = typeof path === 'string' ? path.split('?')[0] : '';
       const publicAuth = pathname === '/api/admin/auth/whoami' && method === 'GET' ||
         ['/api/admin/auth/login', '/api/admin/auth/logout'].includes(pathname) && method === 'POST';
+      const noticeRoute = pathname === NOTICE_LIST || pathname === NOTICE_DISMISS;
       const permission = pathname === '/api/home/catalog' && method === 'GET' ? 'home:read' :
         pathname === '/api/home/actions' && method === 'GET' ? 'home:read' :
         pathname === '/api/home/actions' && method === 'POST' ? 'home:control' :
         pathname === '/api/home/microphones' && method === 'GET' ? 'diagnostics:read' :
+        pathname === NOTICE_LIST && method === 'GET' ? 'tasks:read' :
+        pathname === NOTICE_DISMISS && method === 'POST' ? 'tasks:write' :
         pathname === '/api/admin/users' && ['GET', 'POST'].includes(method) ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+\/permissions$/.test(pathname) && method === 'PUT' ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+$/.test(pathname) && method === 'DELETE' ? ['admin:manage', 'auth:manage'] :
         routinePermission(pathname, method) || memoryPermission(pathname, method);
-      const permitted = () => typeof permission === 'function' ? permission(session.can) :
-        Boolean(permission) && (Array.isArray(permission) ? permission : [permission]).every(session.can);
+      const permitted = () => (!noticeRoute || canReadNotices(session)) && (
+        typeof permission === 'function' ? permission(session.can) :
+        Boolean(permission) && (Array.isArray(permission) ? permission : [permission]).every(session.can));
       if (!publicAuth && !permitted()) {
         throw Object.assign(new Error('Este acceso no permite la operación.'), { status: 403, sent: false });
       }
@@ -126,7 +137,8 @@
     if (entity.domain === 'climate') return `Modo ${MODE_LABELS[entity.state] || entity.state}`;
     return ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando' })[entity.state] || entity.state || 'Estado desconocido';
   }
-  const exported = { createSession, createScopedApi, sessionRetired, canReadRoutineRuns, canExecuteRoutine, memoryPermission, voicePermission, roomEntities, entityState };
+  const exported = { createSession, createScopedApi, sessionRetired, canReadRoutineRuns, canExecuteRoutine,
+    memoryPermission, voicePermission, roomEntities, entityState, NOTICE_LIST, NOTICE_DISMISS, canReadNotices };
   root.NexoState = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
 })(typeof window !== 'undefined' ? window : globalThis);

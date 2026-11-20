@@ -13,6 +13,8 @@ import './access-owner.js';
 import './access.js';
 import './evaluation-owner.js';
 import './evaluation.js';
+import './notices-owner.js';
+import './notices.js';
 import './routine-owner.js';
 import './routines.js';
 import './memory-owner.js';
@@ -56,6 +58,26 @@ function button(text, callback, className = 'text-button') {
 const transport = core.createApi({ onDemo() { byId('demo-banner').hidden = false; } });
 const api = state.createScopedApi({ session, transport, onRetired() { retire('Iniciá sesión para consultar tu hogar.'); } });
 const actions = core.createActionController({ api, onChange: updateReceipts });
+const notices = window.NexoNoticesOwner.createNoticesOwner({ api, session,
+  onAccountChanged(generation) {
+    setTimeout(() => {
+      if (generation !== session.generation()) return;
+      retire('La cuenta cambió en otra pestaña.'); void bootstrap();
+    }, 0);
+  } });
+let noticesPanel = null;
+function closeNotices({ endSession = false } = {}) {
+  if (noticesPanel) { noticesPanel.dispose(); noticesPanel.element.remove(); noticesPanel = null; }
+  if (endSession) notices.clear();
+  else notices.leave();
+}
+function openNotices() {
+  if (document.hidden || activeView !== 'home' || noticesPanel || !state.canReadNotices(session)) return;
+  const element = node('section', 'panel notice-panel'); element.id = 'home-notices'; element.hidden = true;
+  byId('home-view').querySelector('.main-column').append(element);
+  noticesPanel = { element, dispose: window.NexoNotices.mountNotices({ container: element, owner: notices }) };
+  notices.open();
+}
 let voiceDetailSerial=0;
 const people = window.NexoPeople.createPeople({ container: byId('people-view'), dialog: byId('person-dialog'), api, session, icon,
   voiceDetails({personId,container,current}) {
@@ -191,6 +213,7 @@ function destroyHouse() {
 function retire(message = '', { endSession = true } = {}) {
   epoch++; navigationVersion++; desiredView = null; privateSuspended = false; session.clear(); transport.invalidateSession();
   clearTimeout(sessionTimer); poller?.stop(); poller = null; ticker?.stop(); ticker = null;
+  closeNotices({ endSession: true });
   people.clear(); const accessClosing = closeAccess(), routinesClosing = closeRoutines(), memoryClosing = closeMemory(), myMemoryClosing = closeMyMemory(), voiceAdminClosing = closeVoiceAdmin();
   trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing, routinesClosing, routines.clear({ wipe: endSession }),
     memoryClosing, memory.clear({ wipe: endSession }), myMemoryClosing, myMemory.clear({ wipe: endSession }), myVoice.clear({ wipe: endSession }), voiceAdminClosing, voiceAdmin.clear({ wipe: endSession })]);
@@ -414,6 +437,7 @@ async function activate(view, push = true, force = false) {
   byId('workspace-toolbar').hidden = true;
   const status = byId('view-transition-status'); status.hidden = false; status.textContent = 'Preparando vista…';
   poller?.setHidden(true); ticker?.stop();
+  closeNotices();
   if (view !== 'home') destroyHouse();
   const stillCurrent = () => version === navigationVersion && desiredView === view && generation === session.generation() && session.views().includes(view);
   try {
@@ -469,6 +493,7 @@ async function activate(view, push = true, force = false) {
       if (selected) control.setAttribute('aria-current', 'page'); else control.removeAttribute('aria-current');
     }
     revealActiveRail();
+    if (view === 'home') openNotices();
     if (view === 'home' && !house) {
       byId('map-loading').hidden = false;
       house = createHouse({ container: byId('house-canvas'), onReady(ready) {
@@ -552,7 +577,9 @@ async function logout() {
   finally { lockAuthentication(false); }
 }
 byId('logout').addEventListener('click', logout); byId('retry-logout').addEventListener('click', logout);
-byId('refresh').addEventListener('click', () => { if (session.can('home:read')) { actions.reconcile(); poller?.refresh(); } });
+byId('refresh').addEventListener('click', () => {
+  if (session.can('home:read')) { actions.reconcile(); poller?.refresh(); void notices.refresh(); }
+});
 for (const control of byId('layer-tabs').querySelectorAll('[data-layer]')) control.addEventListener('click', () => {
   layer = control.dataset.layer;
   for (const item of byId('layer-tabs').querySelectorAll('[data-layer]')) { const active = item === control; item.classList.toggle('active', active); item.setAttribute('aria-pressed', String(active)); }
@@ -595,6 +622,7 @@ document.addEventListener('visibilitychange', () => {
   armSessionTimer();
   if (document.hidden || auxiliaryView(activeView)) ticker?.stop(); else { updateTemporal(); ticker?.start(); }
   poller?.setHidden(document.hidden || auxiliaryView(activeView));
+  if (document.hidden) closeNotices(); else openNotices();
   const privateView = desiredView || activeView;
   if (auxiliaryView(privateView)) {
     if (document.hidden) { privateSuspended = true; ++navigationVersion; activeView = privateView; void drainViews(); }
