@@ -103,11 +103,13 @@ class AlertCondition:
         latched: True for a stateful condition whose episode stays open until
             resolve_condition; False for a momentary event whose episode closes
             by itself after the manager's cooldown_seconds.
+        reannounce: Whether interval-based announcements may repeat this episode.
     """
 
     source: str
     condition: str
     latched: bool = True
+    reannounce: bool = True
 
     def key(self, alert_type: AlertType) -> tuple[str, str, str]:
         """Return the deduplication key of this condition for an alert type."""
@@ -163,6 +165,7 @@ class _Episode:
     alert: Alert
     latched: bool
     opened_at: float
+    reannounce: bool = True
     announced_at: float | None = None
     # The last notice failed without any audio and is retried once at the next check.
     retry_due: bool = False
@@ -364,7 +367,8 @@ class AlertManager:
                 source=cond.source,
                 condition=cond.condition,
             )
-            episode = _Episode(alert=alert, latched=cond.latched, opened_at=now)
+            episode = _Episode(alert=alert, latched=cond.latched, opened_at=now,
+                               reannounce=cond.reannounce)
             self._episodes[key] = episode
 
             # Agregar al historial
@@ -452,6 +456,7 @@ class AlertManager:
             return None
         if (
             episode.latched
+            and episode.reannounce
             and self.reannounce_interval_seconds is not None
             and episode.announced_at is not None
             and now - episode.announced_at >= self.reannounce_interval_seconds

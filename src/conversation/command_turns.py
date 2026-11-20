@@ -7,6 +7,7 @@ that command is being transcribed and answered. Observers that must not talk
 over the person (a held reminder notice, user answer Q33) also watch this.
 """
 
+import asyncio
 import logging
 from collections.abc import Callable
 
@@ -45,6 +46,19 @@ class CommandTurns:
                 it must not block, and its errors are logged and ignored.
         """
         self._listeners.append(callback)
+
+    async def wait_idle(self) -> None:
+        """Wait for an in-flight command to finish before starting background speech."""
+        if not self.active:
+            return
+        ended = asyncio.Event()
+        self.add_end_listener(ended.set)
+        try:
+            while self.active:
+                await ended.wait()
+                ended.clear()
+        finally:
+            self._listeners.remove(ended.set)
 
     def settle(self) -> None:
         """Notify the listeners if observed activity has ended (called by the owning loop)."""

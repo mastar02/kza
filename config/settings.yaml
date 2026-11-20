@@ -113,6 +113,17 @@ alerts:
     reminder: false     # Recordatorios (futuro)
     wellness: false     # Bienestar (futuro)
 
+  # Fuentes HA de solo lectura. Completar con IDs exactos elegidos del inventario.
+  # Cada mapa usa entity_id como clave. Las cerraduras y alarmas sólo pueden
+  # figurar para observar su disponibilidad. PatternAlerts sigue desconectado.
+  ha:
+    queue_maxsize: 128
+    reconcile_interval_seconds: 5  # Menor que la vigencia de las observaciones HA (6 s)
+    output_zone: null   # Usa tts.streaming.default_output_zone si se configuró
+    door_window: {}     # binary_sensor: {name: "La ventana", open_seconds: 120}
+    battery: {}         # sensor: {name: "El sensor", below_percent: 20}
+    unavailable: {}     # entity_id: {name: "El dispositivo", grace_seconds: 300}
+
   # Configuración de seguridad
   security:
     # Umbrales y contextos por zona

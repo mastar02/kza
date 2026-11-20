@@ -13,6 +13,8 @@ from src.timers import NamedTimerManager, NamedTimer
 from src.intercom import IntercomSystem, AnnouncementPriority
 from src.notifications import SmartNotificationManager, NotificationPriority
 from src.alerts import AlertManager, AlertScheduler
+from src.alerts.ha_alert_source import HAAlertSource
+from src.conversation.command_turns import CommandTurns
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +40,7 @@ class FeatureManager:
         alert_scheduler: Alert check scheduler.
         ha_integration: KZA Home Assistant integration.
         briefing: Morning briefing subsystem.
+        ha_alert_source: Optional read-only source for explicitly selected HA conditions.
     """
 
     def __init__(
@@ -49,12 +52,14 @@ class FeatureManager:
         alert_scheduler: AlertScheduler | None = None,
         ha_integration=None,
         briefing=None,
+        ha_alert_source: HAAlertSource | None = None,
     ):
         self.timer_manager = timer_manager
         self.intercom = intercom
         self.notifications = notifications
         self.alert_manager = alert_manager
         self.alert_scheduler = alert_scheduler
+        self.ha_alert_source = ha_alert_source
         self.ha_integration = ha_integration
         self.briefing = briefing
         self._running = False
@@ -76,7 +81,9 @@ class FeatureManager:
                 if service is not None:
                     self._started.append(service)
                     await service.start()
-            if self.alert_scheduler is not None:
+            if self.ha_alert_source is not None:
+                await self.start_ha_alerts()
+            elif self.alert_scheduler is not None:
                 self._started.append(self.alert_scheduler)
                 self._alert_scheduler_task = asyncio.create_task(self.alert_scheduler.start())
             if self.ha_integration is not None:
@@ -92,6 +99,10 @@ class FeatureManager:
         """Stop attempted producers even after a partial startup failure."""
         self._running = False
         errors = []
+        try:
+            await self.stop_ha_alerts()
+        except Exception as error:
+            errors.append(error)
         started, self._started = self._started, []
         for service in reversed(started):
             try:
@@ -106,6 +117,25 @@ class FeatureManager:
         if errors:
             raise ExceptionGroup("Feature producer shutdown failed", errors)
         logger.info("FeatureManager stopped")
+
+    async def start_ha_alerts(self, command_turns: CommandTurns | None = None) -> None:
+        """Start HA alert checks without waiting for the voice capture loop."""
+        if self.ha_alert_source is None or self.alert_scheduler is None or self._alert_scheduler_task is not None:
+            return
+        await self.ha_alert_source.start(command_turns)
+        self._alert_scheduler_task = asyncio.create_task(self.alert_scheduler.start(), name="ha-alert-scheduler")
+
+    async def stop_ha_alerts(self) -> None:
+        """Retire reconciliation and deltas before HA or the shared voice output closes."""
+        if self.ha_alert_source is None:
+            return
+        task, self._alert_scheduler_task = self._alert_scheduler_task, None
+        try:
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        finally:
+            await self.ha_alert_source.stop()
 
     # ------------------------------------------------------------------
     # Status
@@ -138,6 +168,10 @@ class FeatureManager:
             status["alerts"] = {"available": True, "active": len(self.alert_manager.get_active_alerts())}
         else:
             status["alerts"] = {"available": False, "active": None}
+        status["pattern_alerts"] = (self.alert_scheduler.get_status().get("pattern_alerts", "not_connected")
+                                    if self.alert_scheduler is not None else "not_connected")
+        if self.ha_alert_source is not None:
+            status["alerts"]["ha"] = self.ha_alert_source.get_status()
 
         if self.briefing:
             status["briefings"] = {
@@ -350,7 +384,7 @@ class FeatureManager:
     # ------------------------------------------------------------------
 
     def alerts_available(self) -> bool:
-        """Whether alerts reflect the house: a manager plus a running scheduler with producers.
+        """Whether configured alert producers have a current view of the house.
 
         Without producers (no handler registered in the scheduler) or while the
         scheduler is not running (never started, stopped, or its loop exited on
@@ -361,6 +395,9 @@ class FeatureManager:
         status = self.alert_scheduler.get_status()
         if status.get("running") is not True:
             return False
+        if self.ha_alert_source is not None:
+            ha_status = self.ha_alert_source.get_status()
+            return ha_status["running"] and ha_status["unknown"] == 0
         handlers = status.get("registered_handlers", {})
         return sum(handlers.values()) > 0
 
@@ -413,7 +450,7 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
     streaming = config.get("tts", {}).get("streaming", {})
     voice = LocalVoiceDelivery(response_handler, streaming.get("default_output_zone"), zone_manager is not None)
     alerts = config.get("alerts", {})
-    manager = scheduler = None
+    manager = scheduler = ha_source = None
     if alerts.get("enabled", True):
         general = alerts.get("general", {})
         manager = AlertManager(
@@ -430,11 +467,22 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
                 pattern_interval=schedule.get("pattern_interval_seconds", 300.0),
                 device_interval=schedule.get("device_interval_seconds", 600.0),
             )
+            ha_config = alerts.get("ha", {})
+            if ha_client is not None and ha_config:
+                source = HAAlertSource(ha_client, manager, ha_config, enabled_types=alerts.get("enabled_types"))
+                if source.configured:
+                    ha_source = source
+                    scheduler.register_ha_source(source.reconcile, ha_config.get("reconcile_interval_seconds", 5.0))
+                    if manager.tts_callback is not None:
+                        output_zone = ha_config.get("output_zone") or voice.default_zone
+                        if output_zone == "all":
+                            raise ValueError("alerts.ha.output_zone must name a local zone")
+                        manager.tts_callback = LocalVoiceDelivery(response_handler, output_zone, voice.require_zone).aspeak
     features = FeatureManager(
         timer_manager=NamedTimerManager(tts_callback=voice.aspeak),
         intercom=IntercomSystem(tts_callback=voice.aspeak, zone_manager=zone_manager, ha_client=ha_client),
         notifications=SmartNotificationManager(tts_callback=voice.aspeak, user_manager=user_manager, ha_client=ha_client),
-        alert_manager=manager, alert_scheduler=scheduler,
+        alert_manager=manager, alert_scheduler=scheduler, ha_alert_source=ha_source,
     )
     features.voice_delivery = voice
     return features

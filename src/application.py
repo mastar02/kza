@@ -321,6 +321,9 @@ class ApplicationGraph:
             except RuntimeError:
                 logger.warning("Application HA state sync unavailable; continuing with REST")
 
+        await self.voice_services.features.start_ha_alerts(
+            getattr(self.pipeline.audio_loop, "command_turns", None),
+        )
         if self.routine_scheduler is not None:
             try:
                 await self.routine_scheduler.start()
@@ -447,6 +450,7 @@ class ApplicationGraph:
             stopping.push_async_callback(self.pipeline.stop)
             if self.ambient_path is not None:
                 stopping.push_async_callback(_stop_task, self.ambient_path, ambient_task)
+            stopping.push_async_callback(self.voice_services.features.stop_ha_alerts)
             stopping.push_async_callback(self.voice_services.stop_reminders)
             if self.presence_detector is not None:
                 stopping.push_async_callback(self.presence_detector.stop)

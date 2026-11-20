@@ -546,6 +546,8 @@ class HomeAssistantClient:
                     published()
                 for identity, payloads in notices:
                     for callback, payload in zip(callbacks, payloads):
+                        if callback not in self._state_callbacks:
+                            continue
                         value = self._state_frame.entries.get(identity)
                         admitted = (self._state_scope_current(purpose, options)
                             and self._state_frame is replacement and value is not None
@@ -2314,6 +2316,11 @@ class HomeAssistantClient:
         cambios de state (ej: alerts, analytics).
         """
         self._state_callbacks.append(callback)
+
+    def unregister_state_callback(self, callback: Callable[[str, dict | None], None]) -> None:
+        """Detach an observer before its consumer is retired."""
+        if callback in self._state_callbacks:
+            self._state_callbacks.remove(callback)
 
     async def close(self) -> None:
         """Terminal admission seal with retained socket/session retirement."""
