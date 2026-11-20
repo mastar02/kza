@@ -77,6 +77,8 @@ async def voice_router(orchestrated, utterance, *, scheduler=None):
     ("para el próximo programa que cada noche se encienda el riego", "no creo rutinas por voz"),
     ("después del anochecer programa que veamos que se encienda el riego a las ocho", "no creo rutinas por voz"),
     ("para el jardín programa que veamos el momento en que se enciendan las luces al salir el sol", "no creo rutinas por voz"),
+    ("para el próximo programa que vamos a ver primero el momento en que se prenden las luces al salir el sol", "no creo rutinas por voz"),
+    ("para el próximo programa que vamos a ver cuándo se prenden las luces al salir el sol", "no creo rutinas por voz"),
     ("programa que arranque el riego al anochecer", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego, ¿podés?", "no creo rutinas por voz"),
@@ -108,6 +110,10 @@ async def test_retired_routine_requests_are_refused_before_a_producer(orchestrat
     "para el próximo programa que cada noche se encienda el riego",
     "después del anochecer programa que veamos que se encienda el riego a las ocho",
     "para el jardín programa que veamos el momento en que se enciendan las luces al salir el sol",
+    "para el próximo programa que vamos a ver primero el momento en que se prenden las luces al salir el sol",
+    "para el próximo programa que vamos a ver cuándo se prenden las luces al salir el sol",
+    "para el programa que vamos a ver cómo se prenden las luces al salir el sol",
+    "para el próximo programa que vamos a ver quiero que se enciendan las luces al salir el sol",
 ])
 async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(orchestrated, utterance):
     async with voice_router(orchestrated, utterance) as (router, dispatcher):
@@ -166,6 +172,8 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "para el próximo programa que grabemos buscá información sobre el premio",
     "después del último programa que escuché quiero hablar del premio",
     "para el próximo programa que vamos a grabar buscá información sobre el premio",
+    "después del último programa que se emitió anoche, hablemos del premio",
+    "para el programa que vamos a grabar mañana, me podés buscar información sobre el premio",
     "¿se configura el horario de la automatización de riego desde la web?",
     "podés decirme quién configura el horario de la automatización de riego",
     "¿Te parece que programa bien el horario la automatización de riego?",
@@ -202,10 +210,10 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
     "quiero ver un insólito programa de rutinas de ejercicio",
     "quiero ver el primer programa que el público votó",
     "quiero ver el programa a las ocho sobre rutinas de ejercicio",
-    "antes del polémico programa que ganó el premio",
-    "después del último programa que se emitió anoche",
-    "luego del último programa que se transmitió anoche",
-    "para el nuevo programa que se estrenó anoche",
+    "antes del polémico programa que ganó el premio, hablemos de la gala",
+    "después del último programa que se emitió anoche, hablemos del premio",
+    "luego del último programa que se transmitió anoche quiero hablar del premio",
+    "para el nuevo programa que se estrenó anoche, buscá información sobre el elenco",
     "después del último programa que grabé quiero hablar del premio",
     "después del último programa que miré quiero hablar del premio",
 ])
@@ -238,6 +246,13 @@ def test_accented_program_verb_survives_nominal_filtering():
     "después del último programa que veamos que se encienda el riego",
     "para el próximo programa que veamos el momento en que se enciendan las luces",
     "para el próximo programa que vamos a ver que se encienda el riego",
+    "para el próximo programa que vamos a ver si se enciende el riego al anochecer",
+    "para el próximo programa que vamos a ver dónde se enciende el riego al anochecer",
+    "para el próximo programa que vamos a ver hoy primero el momento en que se prenden las luces",
+    "después del último programa que vimos anoche, quisiera que las luces prendan a las ocho",
+    "para el próximo programa que vamos a ver nos enciendan las luces al salir el sol",
+    "después del último programa que vimos ayer",
+    "para el próximo programa que vamos a grabar mañana",
 ])
 def test_program_directive_survives_nominal_filtering(utterance):
     assert is_unclaimed_routine_creation(f"Nexa, {utterance}")
