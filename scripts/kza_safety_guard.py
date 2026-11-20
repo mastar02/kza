@@ -49,8 +49,8 @@ WRITE_TOOL_NAMES = frozenset(
 # Paths that must never be edited or written by KZA development agents.
 FORBIDDEN_WRITE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
-        re.compile(r"(^|/)home/kza/(kza|app)(/|$)"),
-        "Prohibido editar o escribir en el despliegue de producción /home/kza/{kza,app}.",
+        re.compile(r"(^|/)home/kza(/|$)"),
+        "Prohibido editar o escribir bajo la cuenta/despliegue de producción /home/kza.",
     ),
     (
         re.compile(r"(^|/)\.config/herdr-core/templates/(tu|gsm)-"),
@@ -65,7 +65,7 @@ FORBIDDEN_WRITE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "Prohibido modificar archivos fuera de KZA en proyectos vecinos.",
     ),
     (
-        re.compile(r"(^|/)\.env(\.local|\.prod)?$"),
+        re.compile(r"(^|/)\.env(?:\.(?!example$|docker\.example$)[A-Za-z0-9_.-]+)?$"),
         "Prohibido escribir secretos directamente en archivos .env.",
     ),
 )
@@ -73,8 +73,8 @@ FORBIDDEN_WRITE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
 # Command-level KZA hard prohibitions (checked across full command text and subshells).
 FORBIDDEN_CMD_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (
-        re.compile(r"/home/kza/(kza|app)\b"),
-        "Prohibido operar sobre el despliegue de producción /home/kza/{kza,app}.",
+        re.compile(r"/home/kza(?:/|\b)"),
+        "Prohibido operar sobre la cuenta/despliegue de producción /home/kza.",
     ),
     (
         re.compile(r"\b(?:sudo\s+-u\s+kza|su\s+(?:-\s+)?kza)\b"),
@@ -225,6 +225,37 @@ def _extract_nested_commands(tokens: list[str]) -> list[str]:
     return nested
 
 
+def _current_branch_is_main(cwd: str | None = None) -> bool:
+    """Fast local check (no subprocess) whether the current git HEAD points to `main`."""
+    cur = os.path.abspath(cwd or os.getcwd())
+    while True:
+        dot_git = os.path.join(cur, ".git")
+        head_path = ""
+        if os.path.isdir(dot_git):
+            head_path = os.path.join(dot_git, "HEAD")
+        elif os.path.isfile(dot_git):
+            try:
+                with open(dot_git, encoding="utf-8") as fh:
+                    first = fh.readline().strip()
+                if first.startswith("gitdir:"):
+                    gdir = first.split(":", 1)[1].strip()
+                    if not os.path.isabs(gdir):
+                        gdir = os.path.join(cur, gdir)
+                    head_path = os.path.join(gdir, "HEAD")
+            except OSError:
+                return False
+        if head_path:
+            try:
+                with open(head_path, encoding="utf-8") as fh:
+                    return fh.readline().strip() == "ref: refs/heads/main"
+            except OSError:
+                return False
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
+
+
 def _check_git_tokens(tokens: list[str]) -> GuardResult:
     """Validate git subcommand invocations."""
     # Parse global git options like -C <dir>, -c k=v, --git-dir=...
@@ -263,7 +294,14 @@ def _check_git_tokens(tokens: list[str]) -> GuardResult:
                     "git-add-all",
                 )
             norm = a[2:] if a.startswith("./") else a
-            if norm in (".env", ".env.local", ".env.prod") or norm.startswith(("data/", "models/")):
+            is_env_secret = (
+                norm == ".env"
+                or (
+                    norm.startswith(".env.")
+                    and not norm.endswith(".example")
+                )
+            )
+            if is_env_secret or norm.startswith(("data/", "models/")):
                 if norm != "models/.gitkeep":
                     return GuardResult(
                         False,
@@ -294,6 +332,12 @@ def _check_git_tokens(tokens: list[str]) -> GuardResult:
                     "Bloqueado: prohibido `git push --force` sobre `recovery/production-2026-10-25`.",
                     "git-force-push-protected",
                 )
+        if len(positionals) <= 1 and _current_branch_is_main():
+            return GuardResult(
+                False,
+                "Bloqueado: `git push` implícito desde rama `main` está prohibido.",
+                "git-push-main-implicit",
+            )
         if not positionals and is_force:
             return GuardResult(
                 False,

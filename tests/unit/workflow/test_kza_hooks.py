@@ -31,8 +31,10 @@ import kza_safety_guard  # noqa: E402
         ("Bash", "git reset --hard HEAD~1"),
         ("Bash", "git clean -fd"),
         ("Bash", "git add .env"),
+        ("Bash", "git add .env.production"),
         ("Bash", "git add data/users.json"),
         ("Bash", "rm -rf /home/kza/app/src"),
+        ("Bash", "rm -rf /home/kza"),
         ("Bash", "sudo -u kza systemctl restart kza-voice"),
         ("Bash", "rm ~/.config/herdr-core/templates/tu-qa.md"),
         ("Bash", "security add-generic-password -s kza-openai-decisions -w"),
@@ -54,6 +56,7 @@ def test_safety_guard_blocks_prohibited_commands(tool_name: str, cmd: str) -> No
         "pytest tests/unit/workflow/",
         "python3 scripts/kza_seat.py sync-templates",
         "git add models/.gitkeep",
+        "git add .env.example",
     ],
 )
 def test_safety_guard_allows_safe_commands(cmd: str) -> None:
@@ -61,6 +64,14 @@ def test_safety_guard_allows_safe_commands(cmd: str) -> None:
         {"tool_name": "Bash", "tool_input": {"command": cmd}}
     )
     assert res.allowed is True, f"Unexpected block for {cmd!r}: {res.reason}"
+
+
+def test_safety_guard_blocks_implicit_git_push_on_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    subprocess.run(["git", "init", "-b", "main"], cwd=str(tmp_path), check=True, capture_output=True)
+    monkeypatch.chdir(tmp_path)
+    for cmd in ("git push", "git push origin"):
+        res = kza_safety_guard.evaluate_hook_payload({"tool_name": "Bash", "tool_input": {"command": cmd}})
+        assert res.allowed is False and res.rule_id == "git-push-main-implicit"
 
 
 def test_safety_guard_blocks_forbidden_write_paths_and_cli_exit_code() -> None:
