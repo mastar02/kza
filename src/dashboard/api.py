@@ -1527,7 +1527,12 @@ class DashboardAPI:
                     self._ws_clients.remove(client)
 
     async def _purge_retired_personal_tasks(self, person: str | None = None) -> None:
-        """Use the durable account marks for both removal and restored task stores."""
+        """Purge tasks after a durable account retirement, atomically per store.
+
+        The account retirement mark precedes both independent transactions.
+        It blocks projection after a partial failure. A retry or operational
+        startup reapplies the same idempotent purge before serving those rows.
+        """
         if person is None and not self.authority.available:
             return
         for store in self._task_stores:

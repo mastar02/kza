@@ -3,6 +3,7 @@ import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager, closing
 import sqlite3
 import time
+from types import SimpleNamespace
 
 from httpx import ASGITransport, AsyncClient
 import pytest
@@ -187,39 +188,47 @@ class TestReminderFlow:
         assert active[0].text == "ir al dentista"
 
 
+@asynccontextmanager
+async def personal_tasks_dashboard(tmp_path):
+    async with AsyncExitStack() as stack:
+        users = UserManager(str(tmp_path / "users.json"), retirement_proof=lambda ids: authority.users_retired(ids))
+        authority = DashboardAuthority(tmp_path / "auth.db", account_provider=users.active_accounts)
+        stack.push_async_callback(authority.aclose)
+        await authority.initialize()
+        lists = ListStore(str(tmp_path / "lists.db"))
+        reminders = ReminderStore(str(tmp_path / "reminders.db"))
+        for store in (lists, reminders):
+            stack.push_async_callback(store.close)
+            await store.initialize()
+        ha, tts = AsyncMock(), voice_output()
+        actions = selected_actions(ha, ("light.jardin",))
+        scheduler = ReminderScheduler(reminders, tts, None, ha, config={"output_zone": "living"},
+                                      home_actions=actions)
+        api = DashboardAPI(authority=authority, user_manager=users, list_manager=ListManager(lists),
+                           reminder_manager=ReminderManager(reminders, home_actions=actions),
+                           reminder_scheduler=scheduler)
+        await stack.enter_async_context(api.app.router.lifespan_context(api.app))
+        client = await stack.enter_async_context(AsyncClient(
+            transport=ASGITransport(app=api.app), base_url="http://testserver"))
+        yield SimpleNamespace(users=users, authority=authority, client=client, reminders=reminders,
+                              scheduler=scheduler, ha=ha, tts=tts)
+
+
+def stored_ids(path, table):
+    with closing(sqlite3.connect(path)) as db:
+        return {row[0] for row in db.execute(f"SELECT id FROM {table}")}
+
+
 @pytest.mark.asyncio
 async def test_personal_task_retirement_survives_restoring_compatible_stores(tmp_path, dashboard_auth):
-    users_path = str(tmp_path / "users.json")
     lists_path, reminders_path = tmp_path / "lists.db", tmp_path / "reminders.db"
     lists_copy, reminders_copy = tmp_path / "lists.copy", tmp_path / "reminders.copy"
-
-    @asynccontextmanager
-    async def dashboard():
-        async with AsyncExitStack() as stack:
-            users = UserManager(users_path, retirement_proof=lambda ids: authority.users_retired(ids))
-            authority = DashboardAuthority(tmp_path / "auth.db", account_provider=users.active_accounts)
-            stack.push_async_callback(authority.aclose)
-            await authority.initialize()
-            lists, reminders = ListStore(str(lists_path)), ReminderStore(str(reminders_path))
-            for store in (lists, reminders):
-                stack.push_async_callback(store.close)
-                await store.initialize()
-            api = DashboardAPI(authority=authority, user_manager=users,
-                               list_manager=ListManager(lists), reminder_manager=ReminderManager(reminders))
-            await stack.enter_async_context(api.app.router.lifespan_context(api.app))
-            client = await stack.enter_async_context(AsyncClient(
-                transport=ASGITransport(app=api.app), base_url="http://testserver"))
-            yield users, authority, client
-
     def copy_database(source, destination):
         with closing(sqlite3.connect(source)) as original, closing(sqlite3.connect(destination)) as copy:
             original.backup(copy)
 
-    def stored_ids(path, table):
-        with closing(sqlite3.connect(path)) as db:
-            return {row[0] for row in db.execute(f"SELECT id FROM {table}")}
-
-    async with dashboard() as (users, authority, client):
+    async with personal_tasks_dashboard(tmp_path) as graph:
+        users, authority, client = graph.users, graph.authority, graph.client
         retired, _ = await asyncio.to_thread(users.add_user, "Synthetic person", PermissionLevel.ADULT)
         survivor, _ = await asyncio.to_thread(users.add_user, "Synthetic survivor", PermissionLevel.ADULT)
         admin = authority.resolve(dashboard_auth["Authorization"])
@@ -273,10 +282,79 @@ async def test_personal_task_retirement_survives_restoring_compatible_stores(tmp
     assert item["id"] in stored_ids(lists_path, "list_items")
     assert pending["id"] in stored_ids(reminders_path, "reminders")
 
-    async with dashboard() as (users, authority, client):
+    async with personal_tasks_dashboard(tmp_path) as graph:
+        authority, client = graph.authority, graph.client
         assert authority.users_retired(frozenset({retired.user_id}))
         assert (await client.get("/api/lists", headers=owner)).status_code == 401
         assert (await client.get(f"/api/lists/{personal['id']}/items", headers=other)).status_code == 404
         assert stored_ids(lists_path, "lists") == {shared["id"]}
         assert stored_ids(lists_path, "list_items") == {shared_item["id"]}
         assert stored_ids(reminders_path, "reminders") == {other_job["id"], shared_job["id"]}
+
+
+@pytest.mark.asyncio
+async def test_account_retirement_quarantines_tasks_after_second_store_failure(tmp_path, dashboard_auth):
+    async with personal_tasks_dashboard(tmp_path) as graph:
+        users, authority, client = graph.users, graph.authority, graph.client
+        person, _ = await asyncio.to_thread(users.add_user, "Synthetic person", PermissionLevel.ADULT)
+        other, _ = await asyncio.to_thread(users.add_user, "Synthetic other", PermissionLevel.ADULT)
+        admin = authority.resolve(dashboard_auth["Authorization"])
+        tokens = []
+        for account in (person, other):
+            credential = await authority.issue_credential(
+                admin, subject=account.user_id, role=DashboardRole.HOME, user_id=account.user_id,
+                expires_at=time.time() + 3600)
+            tokens.append({"Authorization": f"Bearer {credential.token}"})
+        owner, other_session = tokens
+
+        created = await client.post("/api/lists", headers=owner, json={"name": "owned list", "shared": False})
+        assert created.status_code == 200
+        item = await client.post(f"/api/lists/{created.json()['id']}/items", headers=owner,
+                                 json={"text": "owned item"})
+        assert item.status_code == 200
+        text = "private task marker"
+        created = await client.post("/api/reminders", headers=owner, json={
+            "text": text, "trigger_at": 1.,
+            "ha_actions": [{"domain": "light", "service": "turn_on", "entity_id": "light.jardin"}],
+        })
+        assert created.status_code == 200
+        reminder_id = created.json()["id"]
+        reminder = await graph.reminders.get_by_id(reminder_id, owner=person.user_id)
+        assert reminder and reminder.ha_actions
+
+        # Fail inside the real second transaction, with the first store free
+        # to commit. The temporary trigger only covers this connection.
+        await graph.reminders._work.write(lambda db: db.execute("""
+            CREATE TEMP TRIGGER fail_reminder_retirement BEFORE DELETE ON main.reminders
+            BEGIN SELECT RAISE(ABORT, 'synthetic reminder purge failure'); END
+        """).rowcount)
+        url = f"/api/admin/users/{person.user_id}"
+        refused = await client.delete(url, headers=dashboard_auth)
+        assert refused.status_code == 503
+        assert refused.json()["detail"] == {"code": "user_catalog_unavailable", "credentials_retired": True}
+        assert authority.users_retired(frozenset({person.user_id}))
+        assert users.get_user(person.user_id).is_active
+        assert stored_ids(tmp_path / "lists.db", "lists") == set()
+        assert stored_ids(tmp_path / "lists.db", "list_items") == set()
+        assert stored_ids(tmp_path / "reminders.db", "reminders") == {reminder_id}
+
+        assert (await client.get("/api/reminders", headers=owner)).status_code == 401
+        for headers in (dashboard_auth, other_session):
+            visible = await client.get("/api/reminders", headers=headers)
+            assert visible.status_code == 200 and visible.json() == []
+            notices = await client.get("/api/reminders/notices", headers=headers)
+            assert notices.status_code == 200 and notices.json()["notices"] == []
+        assert await graph.reminders.get_by_id(reminder_id, owner=person.user_id) is None
+        await graph.scheduler._deliver_due(time.time())
+        assert await graph.scheduler._fire_reminder(reminder) is False
+        graph.tts.aspeak.assert_not_awaited()
+        graph.ha.call_service_once.assert_not_called()
+        assert await graph.reminders._work.read(lambda db: db.execute(
+            "SELECT count(*) FROM reminder_home_actions").fetchone()[0]) == 0
+
+        await graph.reminders._work.write(lambda db: db.execute("DROP TRIGGER fail_reminder_retirement").rowcount)
+        retried = await client.delete(url, headers=dashboard_auth)
+        assert retried.status_code == 200 and retried.json()["ok"]
+        assert stored_ids(tmp_path / "reminders.db", "reminders") == set()
+        assert users.get_user(person.user_id) is None
+        assert authority.users_retired(frozenset({person.user_id}))
