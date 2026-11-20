@@ -22,6 +22,7 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import zlib
 from pathlib import Path
 
 from scripts.build_runtime import build_runtime
@@ -85,8 +86,10 @@ def _tar_sha256_and_verify_release(
     expected_manifest: dict,
     commit: str,
     magic: str,
+    expected_sha: str | None = None,
+    expected_size: int | None = None,
 ) -> tuple[str, int]:
-    """Compute SHA-256 and size of ``tar_path`` while verifying gzip/tar integrity and ``release.json``."""
+    """Compute SHA-256 and size of ``tar_path`` before opening gzip/tar to verify ``release.json``."""
     hasher = hashlib.sha256()
     size = 0
     with tar_path.open("rb") as fh:
@@ -96,6 +99,11 @@ def _tar_sha256_and_verify_release(
                 break
             hasher.update(chunk)
             size += len(chunk)
+    actual_sha = hasher.hexdigest()
+    if expected_size is not None and size != expected_size:
+        raise ValueError("cached tarball size mismatch")
+    if expected_sha is not None and actual_sha != expected_sha:
+        raise ValueError("cached tarball digest mismatch")
     with tarfile.open(tar_path, "r:gz") as archive:
         member = archive.getmember("release.json")
         if not member.isfile():
@@ -110,7 +118,7 @@ def _tar_sha256_and_verify_release(
         raise ValueError("embedded release.json differs from sidecar manifest")
     if embedded.get("git_commit") != commit or embedded.get("python_magic") != magic:
         raise ValueError("embedded release.json commit/magic mismatch")
-    return hasher.hexdigest(), size
+    return actual_sha, size
 
 
 def _is_valid_manifest(manifest: object, *, commit: str, magic: str) -> bool:
@@ -161,14 +169,29 @@ def _load_verified_cache_entry(
         ):
             raise ValueError("invalid cached meta identity")
         actual_sha, actual_size = _tar_sha256_and_verify_release(
-            cache_tar, expected_manifest=loaded_manifest, commit=commit, magic=magic
+            cache_tar,
+            expected_manifest=loaded_manifest,
+            expected_sha=expected_sha,
+            expected_size=expected_size,
+            commit=commit,
+            magic=magic,
         )
         if actual_sha != expected_sha or actual_size != expected_size:
             raise ValueError("cached tarball digest/size mismatch")
         if (cache_tar.stat().st_mode & 0o777) != _IMMUTABLE_TAR_MODE:
             os.chmod(cache_tar, _IMMUTABLE_TAR_MODE)
         return loaded_manifest
-    except (OSError, json.JSONDecodeError, tarfile.TarError, UnicodeDecodeError, ValueError, TypeError, KeyError):
+    except (
+        OSError,
+        EOFError,
+        zlib.error,
+        json.JSONDecodeError,
+        tarfile.TarError,
+        UnicodeDecodeError,
+        ValueError,
+        TypeError,
+        KeyError,
+    ):
         _unlink_cache_entry(cache_tar, cache_json, cache_meta)
         return None
 

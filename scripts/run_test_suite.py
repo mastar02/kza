@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 import datetime as dt
+import fcntl
 import importlib.util
 import json
 import os
@@ -22,6 +24,7 @@ import stat
 import subprocess
 import sys
 import time
+from typing import TextIO
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIN_SHM_FREE_BYTES = 16 * 1024**3  # 16 GiB safety margin on /dev/shm
@@ -30,6 +33,9 @@ INHERITED_OVERRIDE_VARS: tuple[str, ...] = (
     "PYTEST_ADDOPTS",
     "KZA_SC6B_MEASURE",
     "KZA_REQUIRE_REAL_SYSTEMD",
+    "KZA_LAUNCHER_ARTIFACTS_CACHE",
+    "KZA_COMPACTION_ARTIFACT",
+    "KZA_COMPACTION_ARTIFACT_EPOCH4",
 )
 
 # Five Linux/systemd integration modules reserved for Carril B on kza-yo.
@@ -137,53 +143,103 @@ def sanitize_env(base_env: dict[str, str] | None = None) -> dict[str, str]:
     return cleaned
 
 
+@dataclass
+class SoloWindowGuard:
+    """Host SOLO_WINDOW + flock exclusion handle released cleanly in nested finally."""
+
+    marker_path: Path | None = None
+    lock_fh: TextIO | None = None
+
+    def release(self) -> None:
+        try:
+            if self.marker_path is not None:
+                self.marker_path.unlink(missing_ok=True)
+        finally:
+            if self.lock_fh is not None:
+                try:
+                    fcntl.flock(self.lock_fh.fileno(), fcntl.LOCK_UN)
+                finally:
+                    self.lock_fh.close()
+                    self.lock_fh = None
+
+
+def _solo_lock_file(solo_file: Path) -> Path:
+    if solo_file.name == "SOLO_WINDOW":
+        return solo_file.parent / "feature-pytest.lock"
+    return solo_file.with_name(f".{solo_file.name}.lock")
+
+
 def acquire_solo_window(
     solo_file: Path,
     *,
     tier: int,
     platform: str | None = None,
-) -> Path | None:
-    """Enforce SOLO_WINDOW host exclusion on Linux (fail-closed if already held)."""
+) -> SoloWindowGuard:
+    """Enforce mutual exclusion on Linux via SOLO_WINDOW + non-blocking flock.
+
+    Tiers 0/1 hold ``LOCK_SH`` on the host lock file so a concurrent Tier 2 run
+    cannot start mid-suite; Tier 2 holds ``LOCK_EX`` + atomic ``O_EXCL`` marker.
+    """
     plat = platform or sys.platform
     if not plat.startswith("linux"):
-        return None
+        return SoloWindowGuard()
+
+    if solo_file == DEFAULT_SOLO_WINDOW_FILE and not solo_file.parent.is_dir():
+        if tier == 2:
+            raise RuntimeError(
+                f"Required SOLO_WINDOW directory missing at {solo_file.parent}; "
+                "refusing unprotected Tier 2 run on Linux"
+            )
+        if solo_file.exists() or solo_file.is_symlink():
+            raise RuntimeError(f"SOLO_WINDOW active at {solo_file}; refusing concurrent Tier {tier} run")
+        return SoloWindowGuard()
+
+    solo_file.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = _solo_lock_file(solo_file)
+    lock_fh = lock_path.open("a+", encoding="utf-8")
+    lock_mode = (fcntl.LOCK_EX if tier == 2 else fcntl.LOCK_SH) | fcntl.LOCK_NB
+    try:
+        fcntl.flock(lock_fh.fileno(), lock_mode)
+    except OSError as exc:
+        lock_fh.close()
+        raise RuntimeError(
+            f"Active test run holds host lock {lock_path}; refusing concurrent Tier {tier} run"
+        ) from exc
+
     if solo_file.exists() or solo_file.is_symlink():
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_fh.close()
         raise RuntimeError(f"SOLO_WINDOW active at {solo_file}; refusing concurrent Tier {tier} run")
+
     if tier != 2:
-        return None
-    if solo_file != DEFAULT_SOLO_WINDOW_FILE:
-        solo_file.parent.mkdir(parents=True, exist_ok=True)
-    elif not solo_file.parent.is_dir():
-        return None
+        return SoloWindowGuard(marker_path=None, lock_fh=lock_fh)
+
     try:
         fd = os.open(solo_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError as exc:
+        try:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            lock_fh.close()
         raise RuntimeError(f"SOLO_WINDOW already active at {solo_file}; refusing concurrent Tier 2 run") from exc
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write(f"run_test_suite tier=2 pid={os.getpid()} started={dt.datetime.now(dt.timezone.utc).isoformat()}\n")
-    return solo_file
+    return SoloWindowGuard(marker_path=solo_file, lock_fh=lock_fh)
 
 
 def safe_rmtree(path: Path) -> None:
-    """Remove directory trees containing read-only (0555/0444) slot trees without following symlinks."""
+    """Remove directory trees containing 0555 directories without touching hardlinked file modes or symlinks."""
     if not path.exists() and not path.is_symlink():
         return
     if path.is_symlink():
         path.unlink()
         return
-    for _root, _dirs, files, fd in os.fwalk(path, follow_symlinks=False):
+    for _root, _dirs, _files, fd in os.fwalk(path, follow_symlinks=False):
         mode = stat.S_IMODE(os.fstat(fd).st_mode)
         if (mode & stat.S_IRWXU) != stat.S_IRWXU:
             os.fchmod(fd, mode | stat.S_IRWXU)
-        for name in files:
-            st = os.lstat(name, dir_fd=fd)
-            if not stat.S_ISLNK(st.st_mode):
-                fmode = stat.S_IMODE(st.st_mode)
-                if (fmode & stat.S_IWUSR) == 0:
-                    try:
-                        os.chmod(name, fmode | stat.S_IWUSR, dir_fd=fd)
-                    except OSError:
-                        pass
     shutil.rmtree(path, ignore_errors=False)
 
 
@@ -444,12 +500,13 @@ def main(argv: list[str] | None = None) -> int:
     prebuild_s = 0.0
     basetemp_root: Path | None = None
     cleanup_basetemp = False
-    acquired_solo: Path | None = None
+    solo_guard = SoloWindowGuard()
     before_nr: int | None = None
+    after_nr: int | None = None
     steps: list[dict] = []
 
     try:
-        acquired_solo = acquire_solo_window(args.solo_window_file, tier=args.tier)
+        solo_guard = acquire_solo_window(args.solo_window_file, tier=args.tier)
         basetemp_root, cleanup_basetemp = choose_basetemp_root(args.basetemp, out_dir)
         before_nr = journald_nrestarts() if args.tier == 2 else None
 
@@ -506,13 +563,14 @@ def main(argv: list[str] | None = None) -> int:
                     run_node=not args.no_node,
                 )
             )
+            after_nr = journald_nrestarts()
     finally:
-        if cleanup_basetemp and basetemp_root is not None:
-            safe_rmtree(basetemp_root)
-        if acquired_solo is not None:
-            acquired_solo.unlink(missing_ok=True)
+        try:
+            if cleanup_basetemp and basetemp_root is not None:
+                safe_rmtree(basetemp_root)
+        finally:
+            solo_guard.release()
 
-    after_nr = journald_nrestarts() if args.tier == 2 else None
     overall_exit, nrestarts_ok = evaluate_summary(
         steps=steps,
         before_nrestarts=before_nr,

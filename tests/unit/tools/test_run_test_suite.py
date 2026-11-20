@@ -130,27 +130,55 @@ def test_sanitize_env_strips_inherited_overrides():
             "PYTEST_ADDOPTS": "-n 4 -k bad",
             "KZA_SC6B_MEASURE": "1",
             "KZA_REQUIRE_REAL_SYSTEMD": "1",
+            "KZA_LAUNCHER_ARTIFACTS_CACHE": "/tmp/fake",
+            "KZA_COMPACTION_ARTIFACT": "/tmp/x5.tar.gz",
+            "KZA_COMPACTION_ARTIFACT_EPOCH4": "/tmp/x4.tar.gz",
         }
     )
-    assert "PYTEST_ADDOPTS" not in cleaned
-    assert "KZA_SC6B_MEASURE" not in cleaned
-    assert "KZA_REQUIRE_REAL_SYSTEMD" not in cleaned
+    for var in runner.INHERITED_OVERRIDE_VARS:
+        assert var not in cleaned
     assert cleaned["PYTHONFAULTHANDLER"] == "1"
 
 
 def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path):
     solo = tmp_path / "runs" / "SOLO_WINDOW"
-    acquired = runner.acquire_solo_window(solo, tier=2, platform="linux")
-    assert acquired == solo and solo.is_file()
+    guard = runner.acquire_solo_window(solo, tier=2, platform="linux")
+    assert guard.marker_path == solo and solo.is_file()
     try:
         for tier in (0, 1, 2):
             try:
                 runner.acquire_solo_window(solo, tier=tier, platform="linux")
                 raise AssertionError("expected RuntimeError when SOLO_WINDOW is held")
             except RuntimeError as exc:
-                assert "SOLO_WINDOW" in str(exc)
+                assert "lock" in str(exc).lower() or "solo_window" in str(exc).lower()
     finally:
-        solo.unlink(missing_ok=True)
+        guard.release()
+    assert not solo.exists()
+
+    # An active Tier 0/1 holding LOCK_SH must block Tier 2 from starting mid-run.
+    tier1_guard = runner.acquire_solo_window(solo, tier=1, platform="linux")
+    assert tier1_guard.marker_path is None and tier1_guard.lock_fh is not None
+    try:
+        try:
+            runner.acquire_solo_window(solo, tier=2, platform="linux")
+            raise AssertionError("expected Tier 2 to fail closed while Tier 1 holds LOCK_SH")
+        except RuntimeError as exc:
+            assert "lock" in str(exc).lower()
+    finally:
+        tier1_guard.release()
+
+    # Missing default host directory must fail closed for Tier 2.
+    missing_default = tmp_path / "missing" / "runs" / "SOLO_WINDOW"
+    orig_default = runner.DEFAULT_SOLO_WINDOW_FILE
+    runner.DEFAULT_SOLO_WINDOW_FILE = missing_default
+    try:
+        try:
+            runner.acquire_solo_window(missing_default, tier=2, platform="linux")
+            raise AssertionError("expected Tier 2 to fail closed when default SOLO_WINDOW dir is missing")
+        except RuntimeError as exc:
+            assert "SOLO_WINDOW" in str(exc)
+    finally:
+        runner.DEFAULT_SOLO_WINDOW_FILE = orig_default
 
 
 def test_run_tier2_lanes_waits_for_a_and_b_and_runs_exact_compiled_nodeids(tmp_path, monkeypatch):
@@ -198,17 +226,69 @@ def test_run_tier2_lanes_waits_for_a_and_b_and_runs_exact_compiled_nodeids(tmp_p
 def test_safe_rmtree_ignores_symlinks_to_outside_files(tmp_path):
     outside = tmp_path / "outside.txt"
     outside.write_text("keep")
+    cache_tar = tmp_path / "cache.tar.gz"
+    cache_tar.write_bytes(b"tar")
+    os.chmod(cache_tar, 0o444)
+
     tree = tmp_path / "tree"
     (tree / "sub").mkdir(parents=True)
-    ro_file = tree / "sub" / "ro.tar.gz"
-    ro_file.write_bytes(b"tar")
-    os.chmod(ro_file, 0o444)
+    linked_tar = tree / "sub" / "ro.tar.gz"
+    os.link(cache_tar, linked_tar)
     os.symlink(outside, tree / "sub" / "link")
     os.chmod(tree / "sub", 0o555)
 
     runner.safe_rmtree(tree)
     assert not tree.exists()
     assert outside.read_text() == "keep"
+    assert stat.S_IMODE(cache_tar.stat().st_mode) == 0o444
+
+
+def test_main_reads_nrestarts_inside_solo_window_and_releases_on_rmtree_error(tmp_path, monkeypatch):
+    solo = tmp_path / "runs" / "SOLO_WINDOW"
+    out_dir = tmp_path / "out"
+    journald_states: list[bool] = []
+
+    monkeypatch.setattr(runner.sys, "platform", "linux")
+    monkeypatch.setattr(runner, "_xdist_available", lambda _p: True)
+    monkeypatch.setattr(
+        runner,
+        "choose_basetemp_root",
+        lambda *_a, **_kw: ((tmp_path / "bt").mkdir(parents=True, exist_ok=True) or (tmp_path / "bt"), True),
+    )
+
+    def fake_nrestarts():
+        journald_states.append(solo.exists())
+        return 111
+
+    monkeypatch.setattr(runner, "journald_nrestarts", fake_nrestarts)
+    monkeypatch.setattr(
+        runner,
+        "run_tier2_lanes",
+        lambda **_kw: [{"name": "lane-a", "exit_code": 0, "duration_s": 0.01, "log": "x"}],
+    )
+    monkeypatch.setattr(runner, "safe_rmtree", lambda _p: (_ for _ in ()).throw(OSError("rmtree failed")))
+
+    try:
+        runner.main(
+            [
+                "--tier",
+                "2",
+                "--no-prebuild",
+                "--no-node",
+                "--out-dir",
+                str(out_dir),
+                "--cache-dir",
+                str(tmp_path / "cache"),
+                "--solo-window-file",
+                str(solo),
+            ]
+        )
+        raise AssertionError("expected OSError from safe_rmtree")
+    except OSError as exc:
+        assert "rmtree failed" in str(exc)
+
+    assert journald_states == [True, True]
+    assert not solo.exists()
 
 
 def test_main_cleans_shm_basetemp_when_prebuild_fails(tmp_path, monkeypatch):

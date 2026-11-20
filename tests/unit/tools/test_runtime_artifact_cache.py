@@ -178,6 +178,7 @@ def test_corrupt_sidecar_or_tarball_rebuilds_cleanly(tmp_path, monkeypatch, corr
 
     # Now corrupt the tarball bytes while leaving sidecars intact.
     tar_path = cache_dir / "by-commit" / f"{key}.tar.gz"
+    meta_path = cache_dir / "by-commit" / f"{key}.meta.json"
     os.chmod(tar_path, 0o600)
     tar_path.write_bytes(b"corrupted tarball bytes")
     out3 = tmp_path / "three.tar.gz"
@@ -185,6 +186,24 @@ def test_corrupt_sidecar_or_tarball_rebuilds_cleanly(tmp_path, monkeypatch, corr
     assert len(calls) == 3
     assert m3["call_index"] == 3
     assert stat.S_IMODE(out3.stat().st_mode) == 0o444
+
+    # Truncate a valid gzip tarball in half (including matching meta to reach gzip EOFError directly).
+    import hashlib
+    raw_tar = tar_path.read_bytes()
+    truncated = raw_tar[: len(raw_tar) // 2]
+    os.chmod(tar_path, 0o600)
+    tar_path.write_bytes(truncated)
+    os.chmod(meta_path, 0o600)
+    meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta_payload["tar_sha256"] = hashlib.sha256(truncated).hexdigest()
+    meta_payload["tar_size"] = len(truncated)
+    meta_path.write_text(json.dumps(meta_payload), encoding="utf-8")
+
+    out4 = tmp_path / "four.tar.gz"
+    m4 = cache_mod.cached_build_runtime(tmp_path / "repo", out4, "HEAD")
+    assert len(calls) == 4
+    assert m4["call_index"] == 4
+    assert stat.S_IMODE(out4.stat().st_mode) == 0o444
 
 
 def test_prebuild_returns_only_cache_dir_without_launcher_bypass(tmp_path, monkeypatch):
