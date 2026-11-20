@@ -51,19 +51,29 @@ ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desd
 _UNCLAIMED_CREATION = re.compile(
     r"\b(?:(?:crea|crear) (?:una )?(?:rutina|automatizacion)|nueva (?:rutina|automatizacion)|automatiza)\b"
 )
+# Keep each lookbehind fixed-width for Python's regex engine.
+_CONFIGURATION_CONTEXT = (
+    r"(?<!\bse )(?<!\bqu[eé] )(?<!\b(?:c[oó]mo|cu[aá]l) )"
+    r"(?<!\b(?:d[oó]nde|qui[eé]n) )(?<!\bcu[aá]ndo )"
+)
 _ROUTINE_DIRECTIVE = re.compile(
-    r"\b(?:programa que|configura que|(?:quiero|necesito|haz|hace|pon|pone) que (?:cuando|cada vez que))\b"
+    rf"{_CONFIGURATION_CONTEXT}\b(?:programa|configura) que\b"
+    r"|\b(?:quiero|necesito|haz|hace|pon|pone) que (?:cuando|cada vez que)\b"
 )
 _RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
 _RECURRENCE_QUESTION = re.compile(r"\bcuando se\b")
-_CONFIGURATION_VERB = re.compile(r"\b(?:configur(?:a|ame|ar|e)|program(?:a|ame|ar|e))\b")
+_CONFIGURATION_VERB = re.compile(rf"{_CONFIGURATION_CONTEXT}\b(?:configur(?:a|ame|ar|e)|program(?:a|ame|ar|e))\b")
+_VOSEO_PROGRAM_VERB = re.compile(rf"{_CONFIGURATION_CONTEXT}\bprogramá\b", re.I)
 _NOMINAL_PROGRAM = re.compile(
     r"\b(?:el|del|al|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
-    r"(?: [a-z]+)? programa\b"
+    r"(?: (?:buen|buena|gran|mejor|nuevo|nueva|viejo|mismo|otro|primer|ultimo|pequeno|lindo|unico))? programa\b"
 )
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
+_INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"
 _QUESTION_OPENING = re.compile(
-    r"^(?:(?:a|con|de|en|hasta|para|por) )?(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)\b"
+    rf"^(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE}\b"
+    r"|^(?:(?:me )?(?:podes|podrias|puedes) )?(?:decime|dime|decirme|decir|contame|contarme|sabes) "
+    rf"(?:si|desde|(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE})\b"
 )
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
@@ -260,7 +270,10 @@ def _words(text: str) -> list[str]:
 
 def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) -> bool:
     """Recognize creation or configuration of routines outside the request grammar."""
-    words = strip_fillers(text, wake_words, extra_leads=_LEADS)
+    original = unicodedata.normalize("NFC", text)
+    # The accented imperative "programá" cannot be the noun "programa".
+    voseo_program = _VOSEO_PROGRAM_VERB.search(original)
+    words = strip_fillers(original, wake_words, extra_leads=_LEADS)
     phrase = " ".join(words)
     if _UNCLAIMED_CREATION.search(phrase):
         return True
@@ -270,14 +283,15 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     command_text = _NOMINAL_PROGRAM.sub(" ", phrase)
     names_routine = not _ROUTINE_VOCABULARY.isdisjoint(words)
     # A directive can have an embedded question or a trailing "¿podés?".
-    if _ROUTINE_DIRECTIVE.search(command_text) or (names_routine and _CONFIGURATION_VERB.search(command_text)):
+    if _ROUTINE_DIRECTIVE.search(command_text) or (
+        names_routine and (voseo_program or _CONFIGURATION_VERB.search(command_text))
+    ):
         return True
     recurrence = _RECURRENCE_CLAUSE.search(phrase)
     if recurrence is None or (recurrence.start() != 0 and not names_routine):
         return False
     # A bare recurrence clause may introduce a question even if STT dropped the accents.
-    return not (_QUESTION_MARKER.search(unicodedata.normalize("NFC", text))
-                or _RECURRENCE_QUESTION.search(phrase, recurrence.end()))
+    return not (_QUESTION_MARKER.search(original) or _RECURRENCE_QUESTION.search(phrase, recurrence.end()))
 
 
 def name_key(name: str) -> str:
