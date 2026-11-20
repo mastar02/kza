@@ -63,26 +63,28 @@ function HAView() {
                 </button>
               ))}
             </div>
-            <table className="k">
-              <thead>
-                <tr>
-                  <th>entity_id</th><th>dominio</th><th>nombre</th><th>estado</th>
-                  <th>similitud</th><th>último cambio</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map(e => (
-                  <tr key={e.id}>
-                    <td className="mono" style={{ fontSize: 11 }}>{e.id}</td>
-                    <td><span className="mono mute">{e.domain}</span></td>
-                    <td>{e.name}</td>
-                    <td><StatePill entity={e} /></td>
-                    <td><ScoreBar score={e.score} /></td>
-                    <td className="mono mute" style={{ fontSize: 10 }}>{e.state_changed_at ? window.KzaObsData.formatInstant(e.state_changed_at) : 'no observado'}</td>
+            <div className="table-scroll" role="region" aria-label="Entidades de Home Assistant" tabIndex={0}>
+              <table className="k">
+                <thead>
+                  <tr>
+                    <th>entity_id</th><th>dominio</th><th>nombre</th><th>estado</th>
+                    <th>similitud</th><th>último cambio</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {filtered.map(e => (
+                    <tr key={e.id}>
+                      <td className="mono" style={{ fontSize: 11 }}>{e.id}</td>
+                      <td><span className="mono mute">{e.domain}</span></td>
+                      <td>{e.name}</td>
+                      <td><StatePill entity={e} /></td>
+                      <td><ScoreBar score={e.score} /></td>
+                      <td className="mono mute" style={{ fontSize: 10 }}>{e.state_changed_at ? window.KzaObsData.formatInstant(e.state_changed_at) : 'no observado'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </>
         ) : (
           <Unavailable>{obs.available('HA_ENTITIES') ? 'Home Assistant no informó entidades.' : 'Entidades no disponibles: no se pudo leer Home Assistant.'}</Unavailable>
@@ -92,28 +94,30 @@ function HAView() {
       <SectionBar title="Acciones disparadas" meta={<SourceNote k="HA_ACTIONS" />} />
       <Card>
         {obs.available('HA_ACTIONS') && actions.length > 0 ? (
-          <table className="k">
-            <thead>
-              <tr>
-                <th>ts</th><th>idempotency</th><th>usuario</th><th>servicio</th>
-                <th>destino</th><th>args</th><th>resultado</th><th style={{ textAlign:'right' }}>lat</th>
-              </tr>
-            </thead>
-            <tbody>
-              {actions.map(a => (
-                <tr key={a.id}>
-                  <td><EventTime at={a.at} ts={a.ts} /></td>
-                  <td className="mono" style={{ fontSize: 10, color: 'var(--accent)' }}>{a.idem || '—'}</td>
-                  <td>{a.user || '—'}</td>
-                  <td className="mono" style={{ fontSize: 11 }}>{a.service}</td>
-                  <td className="mono mute" style={{ fontSize: 10 }}>{a.target}</td>
-                  <td className="mono mute" style={{ fontSize: 10 }}>{a.args ?? '—'}</td>
-                  <td><ActionResult a={a} /></td>
-                  <td className="num">{typeof a.lat_ms === 'number' ? `${a.lat_ms}ms` : '—'}</td>
+          <div className="table-scroll" role="region" aria-label="Acciones disparadas" tabIndex={0}>
+            <table className="k">
+              <thead>
+                <tr>
+                  <th>ts</th><th>idempotency</th><th>usuario</th><th>servicio</th>
+                  <th>destino</th><th>args</th><th>resultado</th><th style={{ textAlign:'right' }}>lat</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {actions.map(a => (
+                  <tr key={a.id}>
+                    <td><EventTime at={a.at} ts={a.ts} /></td>
+                    <td className="mono" style={{ fontSize: 10, color: 'var(--accent)' }}>{a.idem || '—'}</td>
+                    <td>{a.user || '—'}</td>
+                    <td className="mono" style={{ fontSize: 11 }}>{a.service}</td>
+                    <td className="mono mute" style={{ fontSize: 10 }}>{a.target}</td>
+                    <td className="mono mute" style={{ fontSize: 10 }}>{a.args ?? '—'}</td>
+                    <td><ActionResult a={a} /></td>
+                    <td className="num">{typeof a.lat_ms === 'number' ? `${a.lat_ms}ms` : '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <Unavailable>{obs.available('HA_ACTIONS') ? 'Sin acciones registradas.' : 'Acciones no disponibles: no se pudo leer el registro.'}</Unavailable>
         )}

@@ -86,6 +86,47 @@
       : metadata?.text_truncated === false ? 'Texto conservado sin recorte.' : 'No consta si el texto fue recortado.');
     return lines;
   }
+  function createSamplePlayer({ doc, store, row, preload, buttonClass = '' }) {
+    const player = doc.createElement('div'), audio = doc.createElement('audio');
+    const status = doc.createElement('p');
+    audio.preload = preload;
+    audio.src = row.audio_url;
+    status.setAttribute('role', 'status');
+    let phase = 'ready';
+    const current = () => audio.isConnected && !doc.hidden && store.snapshot()[0] === row;
+    function show(next, message = '') {
+      phase = next;
+      play.disabled = phase === 'starting';
+      play.textContent = phase === 'playing' ? 'Pausar' : 'Reproducir';
+      status.textContent = message;
+    }
+    function failed() {
+      if (current() && phase === 'starting') show('ready', 'No se pudo reproducir el audio. Tocá Reproducir para reintentar.');
+    }
+    const play = doc.createElement('button');
+    play.type = 'button';
+    play.className = buttonClass;
+    play.addEventListener('click', () => {
+      if (!current() || phase === 'starting') return;
+      if (phase === 'playing') { audio.pause(); return; }
+      show('starting', 'Iniciando reproducción…');
+      try { audio.play().catch(failed); }
+      catch { failed(); }
+    });
+    audio.addEventListener('playing', () => {
+      if (current() && phase === 'starting') show('playing', 'Reproduciendo…');
+    });
+    audio.addEventListener('pause', () => {
+      if (current() && phase === 'playing') show('ready', 'Reproducción pausada.');
+    });
+    audio.addEventListener('ended', () => {
+      if (current()) show('ready', 'Reproducción finalizada.');
+    });
+    show('ready');
+    player.append(audio, play, status);
+    store.attachMedia(audio);
+    return player;
+  }
   function createVoiceStore(kind, { monotonic = () => performance.now(), wall = Date.now,
       schedule = setTimeout, cancel = clearTimeout, url = root?.URL || URL, includePerson = false, personId = null } = {}) {
     if (typeof includePerson !== 'boolean' || personId !== null && (!includePerson || typeof personId !== 'string' || !personId.length || personId.length > 128)) throw Error('invalid voice person scope');
@@ -242,7 +283,7 @@
     return Object.assign(state,{ clear() { for (const key of ['profiles','captures','review']) state[key].clear(); },
       retired:() => Promise.all(['profiles','captures','review'].map(key => state[key].retired())) });
   }
-  const api = { createVoiceStore,createVoiceState,copyAudioMetadata,copyTranscriptMetadata,metadataDetails };
+  const api = { createSamplePlayer,createVoiceStore,createVoiceState,copyAudioMetadata,copyTranscriptMetadata,metadataDetails };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.KzaVoicePrivacy = api;
 })(typeof window === 'undefined' ? null : window);

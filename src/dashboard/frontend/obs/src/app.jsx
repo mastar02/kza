@@ -24,7 +24,7 @@ function navBadge(obs, id) {
   return active ? String(active) : null;
 }
 
-function Sidebar({ active, onNav }) {
+function Sidebar({ active, onNav, menuOpen, menuButtonRef, onToggleMenu }) {
   const obs = useObs();
   const groups = [...new Set(NAV.map(n => n.group))];
   return (
@@ -35,8 +35,12 @@ function Sidebar({ active, onNav }) {
           <div className="brand-name">KZA</div>
           <div className="brand-sub">panel técnico</div>
         </div>
+        <button type="button" className="btn menu-toggle" ref={menuButtonRef}
+                aria-expanded={menuOpen} aria-controls="obs-nav" onClick={onToggleMenu}>
+          Menú
+        </button>
       </div>
-      <nav className="nav" aria-label="Secciones del panel técnico">
+      <nav id="obs-nav" className="nav" data-open={menuOpen} aria-label="Secciones del panel técnico">
         {groups.map(g => (
           <React.Fragment key={g}>
             <div className="nav-section">{g}</div>
@@ -111,23 +115,56 @@ function App() {
   const nav = window.KzaObsNav;
   const [active, setActive] = useState(() => nav.viewFromHash(window.location.hash, NAV_IDS, DEFAULT_VIEW));
   const [announcement, setAnnouncement] = useState('');
+  const [menuOpen, setMenuOpen] = useState(false);
   const activeRef = useRef(active);
   const mainRef = useRef(null);
+  const menuButtonRef = useRef(null);
   const focusView = useRef(false);
+
+  function closeMenu() {
+    setMenuOpen(false);
+    menuButtonRef.current?.focus();
+  }
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const desktop = window.matchMedia('(min-width: 768px)');
+    function onEscape(event) {
+      if (event.key !== 'Escape' || event.defaultPrevented || desktop.matches) return;
+      event.preventDefault();
+      closeMenu();
+    }
+    function onBreakpoint(event) {
+      if (event.matches) setMenuOpen(false);
+    }
+    window.addEventListener('keydown', onEscape);
+    desktop.addEventListener('change', onBreakpoint);
+    return () => {
+      window.removeEventListener('keydown', onEscape);
+      desktop.removeEventListener('change', onBreakpoint);
+    };
+  }, [menuOpen]);
 
   // A view change by navigation (not the first render) clears the operation
   // notice, announces the view and moves focus to the view region.
   function showView(id) {
     activeRef.current = id;
     focusView.current = true;
+    setMenuOpen(false);
     window.__kzaObs.setNotice(null);
     setAnnouncement(nav.announcement(NAV.find(n => n.id === id).label));
     setActive(id);
   }
   function onNav(id) {
-    window.__kzaObs.setNotice(null);
     const step = nav.planNavigation(activeRef.current, id, window.location.hash, NAV_IDS);
     if (step.show) showView(id);
+    else {
+      window.__kzaObs.setNotice(null);
+      if (menuOpen) {
+        setMenuOpen(false);
+        mainRef.current?.focus();
+      }
+    }
     if (step.write) window.location.hash = step.write;
   }
   useEffect(() => {
@@ -170,7 +207,8 @@ function App() {
 
   return (
     <div className="app" data-screen-label={`${NAV.findIndex(n=>n.id===active)+1} ${NAV.find(n=>n.id===active).label}`}>
-      <Sidebar active={active} onNav={onNav} />
+      <Sidebar active={active} onNav={onNav} menuOpen={menuOpen} menuButtonRef={menuButtonRef}
+               onToggleMenu={() => menuOpen ? closeMenu() : setMenuOpen(true)} />
       <main className="main" ref={mainRef} tabIndex={-1} aria-label={NAV.find(n => n.id === active).label}>
         <Topbar activeNav={active} onRefresh={refresh} refreshing={refreshing} />
         <SourceBanner />

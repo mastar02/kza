@@ -1,6 +1,53 @@
 const assert=require('node:assert/strict');
 const {test}=require('node:test');
 const {A,B,C,review,profile,Media,fixture,flush}=require('../mocks/voice_browser.cjs');
+const {createSamplePlayer,createVoiceState}=require('../../src/dashboard/frontend/obs/src/voice-privacy.js');
+
+function samplePlayer() {
+  const f=fixture(), audio=new Media();
+  class Element extends EventTarget {
+    append(...children) { this.children=children; }
+    setAttribute() {}
+  }
+  const doc={hidden:false,createElement:tag=>tag==='audio'?audio:new Element()};
+  f.store.receive([review()],{mono:0,wall:2000000000000});
+  const player=createSamplePlayer({doc,store:f.store,row:f.store.snapshot()[0],preload:'metadata'});
+  const [,button,status]=player.children, click=()=>button.dispatchEvent(new Event('click'));
+  return { ...f,audio,button,status,click };
+}
+
+test('explicit play locks immediately, ignores readiness and confirms only the playing event',async()=>{
+  const {audio,button,status,click,store}=samplePlayer();
+  let calls=0,fail;
+  audio.play=()=>{
+    assert.equal(button.disabled,true);
+    assert.equal(status.textContent,'Iniciando reproducción…');
+    return ++calls===1 ? new Promise((_,reject)=>{fail=reject;}) : Promise.resolve();
+  };
+  assert.equal(button.textContent,'Reproducir');
+  click();click();assert.equal(calls,1);
+  audio.dispatchEvent(new Event('canplay'));
+  audio.dispatchEvent(new Event('loadedmetadata'));
+  assert.equal(status.textContent,'Iniciando reproducción…');
+  fail();await flush();
+  assert.equal(button.disabled,false);assert.match(status.textContent,/reintentar/);
+  click();await flush();
+  assert.equal(calls,2);assert.equal(status.textContent,'Iniciando reproducción…');
+  audio.dispatchEvent(new Event('playing'));
+  assert.equal(status.textContent,'Reproduciendo…');assert.equal(button.textContent,'Pausar');
+  store.clear();audio.emptied();await store.retired();
+});
+
+test('expiry revokes the URL and invalidates a pending rejection and media events',async()=>{
+  const {audio,status,click,store,advance,urls}=samplePlayer();
+  let fail;
+  audio.play=()=>new Promise((_,reject)=>{fail=reject;});
+  click();advance(60000);store.check();
+  assert.equal(urls.size,0);assert.equal(audio.isConnected,false);
+  audio.dispatchEvent(new Event('playing'));fail();await flush();
+  assert.equal(status.textContent,'Iniciando reproducción…');
+  audio.emptied();await store.retired();
+});
 
 test('voice preview becomes one bounded Blob URL and never caches its base64 response',async()=>{
   const f=fixture(),input=review();
@@ -79,7 +126,6 @@ test('emptied before the final native buffer reset keeps the lease until actual 
 });
 
 test('a review mutation owns its actual response body after headers arrive',async()=>{
-  const {createVoiceState}=require('../../src/dashboard/frontend/obs/src/voice-privacy.js');
   const {createVoiceController}=require('../../src/dashboard/frontend/obs/src/voice-channel.js');
   const state=createVoiceState(),acks=[];let finishBody;
   const controller=createVoiceController({state,emitAck:value=>{acks.push(value);return true;},fetch:async(path,options)=>{

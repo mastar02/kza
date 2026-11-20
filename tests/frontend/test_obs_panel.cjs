@@ -477,3 +477,37 @@ test('the active view is announced in Spanish and focus moves to a stable view r
     assert.ok(html.includes(selector), selector);
   assert.match(html, /outline: 2px solid var\(--focus\)/);
 });
+
+test('the mobile disclosure controls the named navigation and all grid sizes reflow', () => {
+  const toggle = APP.match(/<button[^>]+className="btn menu-toggle"[^>]*>/)?.[0];
+  assert.ok(toggle);
+  assert.match(toggle, /aria-expanded=\{menuOpen\}/);
+  const controlled = toggle.match(/aria-controls="([\w-]+)"/)?.[1];
+  assert.ok(controlled);
+  assert.ok(APP.includes(`<nav id="${controlled}" className="nav" data-open={menuOpen} aria-label=`));
+  const html = fs.readFileSync(path.join(OBS, 'index.html'), 'utf8');
+  assert.match(html, /@media \(width < 768px\) \{[\s\S]*?\.nav\[data-open="false"\][^{]*\{ display: none; \}/);
+  assert.match(html, /\.grid-2, \.grid-3, \.grid-4 \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+});
+
+test('each React data table is inside a named, tabbable scroll region', () => {
+  for (const [view, expected] of [['ha', 2], ['llm', 1], ['system', 2], ['admin', 1]]) {
+    const filename = path.join(OBS, 'src/views', `${view}.jsx`);
+    let tables = 0;
+    Babel.transform(fs.readFileSync(filename, 'utf8'), {
+      presets: ['react'], filename,
+      plugins: [() => ({ visitor: { JSXElement(table) {
+        if (table.node.openingElement.name.name !== 'table') return;
+        tables++;
+        const wrapper = table.parentPath.node.openingElement;
+        assert.equal(wrapper?.name.name, 'div', view);
+        const attrs = new Map(wrapper.attributes.map(attr => [attr.name.name, attr.value]));
+        assert.equal(attrs.get('className')?.value, 'table-scroll', view);
+        assert.equal(attrs.get('role')?.value, 'region', view);
+        assert.ok(attrs.get('aria-label')?.value || attrs.get('aria-label')?.expression, view);
+        assert.equal(attrs.get('tabIndex')?.expression.value, 0, view);
+      } } })],
+    });
+    assert.equal(tables, expected, view);
+  }
+});

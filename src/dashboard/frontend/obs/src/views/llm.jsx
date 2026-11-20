@@ -63,39 +63,41 @@ function LLMView() {
       <SectionBar title="Endpoints" meta={available ? `${endpoints.length} configurados` : null} />
       <Card>
         {available && endpoints.length > 0 ? (
-          <table className="k">
-            <thead>
-              <tr>
-                <th>id</th><th>rol</th><th>url</th><th>prio</th><th>estado</th>
-                <th>tok/s</th><th>ttft</th>
-                <th>fallos 7d</th><th>cooldown</th><th>última llamada</th><th>acción</th>
-              </tr>
-            </thead>
-            <tbody>
-              {endpoints.map(e => (
-                <tr key={e.id}>
-                  <td className="mono">{e.id}</td>
-                  <td className="mute">{e.role || '—'}</td>
-                  <td className="mono" style={{ fontSize: 10 }}>{e.url || '—'}</td>
-                  <td className="mono">{e.priority ?? '—'}</td>
-                  <td><StateBadge state={e.state} /></td>
-                  <td className="num">{typeof e.tps === 'number' ? e.tps : '—'}</td>
-                  <td className="num">{typeof e.ttft_ms === 'number' ? `${e.ttft_ms}ms` : '—'}</td>
-                  <td><Failures value={e.failures_7d} observed={failuresObserved} /></td>
-                  <td>{e.cooldown_ends || e.cooldown_until ? <Countdown until={e.cooldown_until} fallback={e.cooldown_ends} /> : <span className="mute">—</span>}</td>
-                  <td className="mono mute" style={{ fontSize: 10 }}>{e.last_call_at ? window.KzaObsData.formatInstant(e.last_call_at) : e.last_check || '—'}</td>
-                  <td>
-                    {e.cooldown_ends ? (
-                      <OperationButton kind="clearCooldown" target={e.id} label="Quitar cooldown" confirmLabel={`Confirmar: quitar cooldown de ${e.id}`} />
-                    ) : (
-                      <UnavailableButton id={`probe-reason-${String(e.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`} label="Probar"
-                        reason="Prueba no disponible: no existe una operación autenticada." />
-                    )}
-                  </td>
+          <div className="table-scroll" role="region" aria-label="Endpoints del LLM Router" tabIndex={0}>
+            <table className="k">
+              <thead>
+                <tr>
+                  <th>id</th><th>rol</th><th>url</th><th>prio</th><th>estado</th>
+                  <th>tok/s</th><th>ttft</th>
+                  <th>fallos 7d</th><th>cooldown</th><th>última llamada</th><th>acción</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {endpoints.map(e => (
+                  <tr key={e.id}>
+                    <td className="mono">{e.id}</td>
+                    <td className="mute">{e.role || '—'}</td>
+                    <td className="mono" style={{ fontSize: 10 }}>{e.url || '—'}</td>
+                    <td className="mono">{e.priority ?? '—'}</td>
+                    <td><StateBadge state={e.state} /></td>
+                    <td className="num">{typeof e.tps === 'number' ? e.tps : '—'}</td>
+                    <td className="num">{typeof e.ttft_ms === 'number' ? `${e.ttft_ms}ms` : '—'}</td>
+                    <td><Failures value={e.failures_7d} observed={failuresObserved} /></td>
+                    <td>{e.cooldown_ends || e.cooldown_until ? <Countdown until={e.cooldown_until} fallback={e.cooldown_ends} /> : <span className="mute">—</span>}</td>
+                    <td className="mono mute" style={{ fontSize: 10 }}>{e.last_call_at ? window.KzaObsData.formatInstant(e.last_call_at) : e.last_check || '—'}</td>
+                    <td>
+                      {e.cooldown_ends ? (
+                        <OperationButton kind="clearCooldown" target={e.id} label="Quitar cooldown" confirmLabel={`Confirmar: quitar cooldown de ${e.id}`} />
+                      ) : (
+                        <UnavailableButton id={`probe-reason-${String(e.id).replace(/[^a-zA-Z0-9_-]/g, '_')}`} label="Probar"
+                          reason="Prueba no disponible: no existe una operación autenticada." />
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         ) : (
           <Unavailable>{available ? 'No hay endpoints configurados.' : 'Endpoints no disponibles: no se pudo leer el estado del router.'}</Unavailable>
         )}

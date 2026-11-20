@@ -98,7 +98,11 @@
         for (const value of [row.ts, row.user, row.zone, row.path]) tr.append(node('td', value));
         const phrase = doc.createElement('td'); phrase.append(button); tr.append(phrase, node('td', row.latency_ms === null ? 'Sin medición' : `${row.latency_ms} ms`)); body.append(tr);
       }
-      table.append(body); container.append(table);
+      const scroll = node('div', '', 'table-scroll');
+      scroll.setAttribute('role', 'region');
+      scroll.setAttribute('aria-label', 'Turnos de conversación');
+      scroll.tabIndex = 0;
+      table.append(body); scroll.append(table); container.append(scroll);
       const detail = filtered.find(row => row.id === selected);
       if (detail) {
         const card = node('section', '', 'card'); card.setAttribute('aria-label', 'Detalle del turno');

@@ -7,7 +7,8 @@ runs the existing authenticated endpoint and reports only the server result.
 Keyboard navigation (WEB-03, WEB-05 /obs/) is driven with real key events: Tab
 order over the nine entries, Enter and Space, a visible focus ring, the hash
 written per view, Back/Forward and reload restoring it, focus moved to the view
-region and the active view announced. Synthetic fixtures only.
+region and the active view announced. The responsive audit adds the mobile
+disclosure, populated tables, forms and media at five widths. Synthetic fixtures only.
 """
 
 import asyncio
@@ -28,6 +29,7 @@ from websockets.asyncio.client import connect
 
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority
+from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_nexo_home import screenshot
 from tests.frontend.browser_support import (Page, _press_tab, browser_binary, browser_profile_root, evidence_directory,
                                             press_enter)
@@ -65,6 +67,79 @@ NAV_STATE = ("(()=>{const main=document.querySelector('main.main');return {hash:
              "current:[...document.querySelectorAll('.nav-item[aria-current=page]')].map(n=>n.children[1].textContent),"
              "crumbs:document.querySelector('.crumbs b')?.textContent,focusMain:document.activeElement===main,"
              "mainLabel:main.getAttribute('aria-label'),announced:document.querySelector('.sr-only[role=status]')?.textContent}})()")
+WIDTHS = (320, 390, 768, 1280, 1440)
+TABLES = {
+    'admin': {'Usuarios administrados'},
+    'conversations': {'Turnos de conversación'},
+    'ha': {'Entidades de Home Assistant', 'Acciones disparadas'},
+    'llm': {'Endpoints del LLM Router'},
+    'system': {'Procesos de Synthetic GPU', 'Servicios del sistema'},
+    'users': {'Tabla de muestras de voz'},
+}
+LAYOUT_PROBE = r"""(() => {
+  const bounds = el => el.getBoundingClientRect();
+  const visible = selector => [...document.querySelectorAll(selector)].filter(el => el.getClientRects().length);
+  const root = document.documentElement;
+  const fields = 'input:not([type=checkbox]):not([type=radio]), select, textarea';
+  return {
+    width: window.innerWidth, client: root.clientWidth,
+    page: Math.max(root.scrollWidth, document.body.scrollWidth),
+    targets: visible(`button, ${fields}`).filter(el => bounds(el).width < 44 || bounds(el).height < 44)
+      .map(el => el.getAttribute('aria-label') || el.textContent.trim()),
+    fields: visible(fields).filter(el => parseFloat(getComputedStyle(el).fontSize) < 16)
+      .map(el => el.outerHTML),
+    grids: visible('.grid-2, .grid-3, .grid-4').map(el => {
+      const columns = Number(el.className.match(/grid-(\d)/)[1]);
+      return [columns, getComputedStyle(el).gridTemplateColumns.split(' ').length];
+    }),
+    tables: visible('table.k').map(el => {
+      const region = el.parentElement;
+      return {name: region.getAttribute('aria-label'), role: region.getAttribute('role'),
+              tabindex: region.tabIndex, overflow: getComputedStyle(region).overflowX};
+    }),
+    audio: visible('audio').map(el => [el.getAttribute('aria-label'), bounds(el).width, el.parentElement.clientWidth]),
+    overlays: visible('.admin-overlay > .card').map(el => [bounds(el).left, bounds(el).right]),
+  };
+})()"""
+
+# Seed layout-specific rows at the stores' normal delivery boundaries, after the
+# authenticated HTTP and operation checks have run against the real routes.
+LAYOUT_OBSERVATIONS = r"""(() => {
+  const store = window.__kzaObs, observation = {source: 'real'};
+  const longId = 'synthetic_' + 'layout_'.repeat(20);
+  store.accept('HA_ENTITIES', observation, [{id: `sensor.${longId}`, domain: 'sensor', name: 'Synthetic sensor', state: 'on', score: .9}]);
+  store.accept('HA_ACTIONS', observation, [{id: 'synthetic-action', service: 'light.turn_on', target: longId, ok: true, lat_ms: 100}]);
+  store.accept('LLM_ENDPOINTS', observation, [{id: 'synthetic-model', role: 'local', url: `http://synthetic.test/${longId}`, state: 'healthy'}]);
+  store.accept('GPUS', observation, [{id: 0, name: 'Synthetic GPU', util: 10, procs: [{name: longId, vram: 2}]}]);
+  store.accept('SERVICES', observation, [{name: 'kza-voice', status: 'active'}]);
+})()"""
+LAYOUT_CONVERSATION = r"""(() => {
+  const wall = Date.now(), now = wall / 1000;
+  return window.__kzaConversationState.receive([{
+    id: 'turn_1_00000000-0000-0000-0000-000000000001', ts: '12:00', user: 'Synthetic speaker',
+    zone: 'Synthetic room', path: 'command', stt: 'Synthetic conversation phrase', tts: '', intent: '', target: '',
+    observed_at: now, expires_at: now + 60,
+  }], {wall, mono: performance.now()});
+})()"""
+LAYOUT_VOICE = r"""(async () => {
+  const state = window.__kzaVoiceState, wall = Date.now(), now = wall / 1000;
+  const started = {wall, mono: performance.now()};
+  const id = 'vf_' + 'a'.repeat(64);
+  const timing = {observed_at: now, expires_at: now + 60};
+  const captures = state.captures.receive([{
+    id, ...timing, created_at: now, duration_s: 1, review_available: true,
+    suggested_profile: null, similarity: null, group_id: '00000000-0000-0000-0000-000000000001',
+    group_revision: 1, group_size: 1, group_state: 'unknown', group_reason: 'unreviewed',
+    group_similarity: null, group_expires_at: timing.expires_at,
+  }], started);
+  const wav = await encodeWav(new Int16Array(16000), 16000).arrayBuffer();
+  const audio_base64 = btoa(String.fromCharCode(...new Uint8Array(wav)));
+  return captures && state.review.receive([{
+    id, ...timing, room_id: 'Synthetic room', transcript: 'Synthetic audio phrase',
+    duration_s: 1, clip_duration_s: 1, clip_truncated: false, transcript_scope: 'full_segment',
+    audio_mime: 'audio/wav', audio_base64, audio_metadata: null, transcript_metadata: null,
+  }], started);
+})()"""
 
 
 async def _press(page, key: str, code: str, keycode: int, *, text: str | None = None, modifiers: int = 0) -> None:
@@ -107,6 +182,145 @@ async def history_step(page, delta: int) -> None:
     history = await page.command('Page.getNavigationHistory')
     entry = history['entries'][history['currentIndex'] + delta]
     await page.command('Page.navigateToHistoryEntry', {'entryId': entry['id']})
+
+
+async def resize(page: Page, width: int) -> None:
+    """Emulate the viewport and mobile layout below the panel breakpoint."""
+    await page.command('Emulation.setDeviceMetricsOverride',
+                       {'width': width, 'height': 844, 'deviceScaleFactor': 1, 'mobile': width < 768})
+
+
+async def check_layout(page: Page, width: int, view: str, *, names=(), overlay: bool = False) -> dict:
+    """Check actual geometry and accessible names in Chromium at one width."""
+    probe = await page.evaluate(LAYOUT_PROBE)
+    assert probe['width'] == width and probe['page'] <= probe['client'], (width, view, probe)
+    assert not probe['targets'] and not probe['fields'], (width, view, probe)
+    assert all(actual == (1 if width < 768 else configured) for configured, actual in probe['grids']), (width, view, probe)
+    assert len(probe['overlays']) == int(overlay), (width, view, probe)
+    assert all(0 <= left < right <= probe['client'] for left, right in probe['overlays']), (width, view, probe)
+    regions = TABLES.get(view, set())
+    assert {item['name'] for item in probe['tables']} == regions, (width, view, probe)
+    for item in probe['tables']:
+        assert item['role'] == 'region' and item['tabindex'] == 0 and item['overflow'] == 'auto', item
+    if view == 'users':
+        assert len(probe['audio']) == 1, (width, probe)
+        name, actual, available = probe['audio'][0]
+        assert name == 'Audio de la muestra' and abs(actual - available) < 1, (width, probe)
+    tree = (await page.command('Accessibility.getFullAXTree'))['nodes']
+    exposed = {(item.get('role', {}).get('value'), item.get('name', {}).get('value'))
+               for item in tree if not item.get('ignored')}
+    for name in regions:
+        assert ('region', name) in exposed, (width, view, name)
+    exposed_names = {name for _, name in exposed}
+    for name in names:
+        assert name in exposed_names, (width, view, name)
+    return probe
+
+
+async def mobile_keyboard(page: Page) -> None:
+    """Exercise disclosure, Escape and history with real key events at 320 px."""
+    await page.evaluate("location.hash = 'live'")
+    await page.wait_for(NAV[0][2])
+    await page.wait_for("document.activeElement.matches('main')")
+    toggle = "document.querySelector('.menu-toggle')"
+    menu = f"document.getElementById({toggle}.getAttribute('aria-controls'))"
+    collapsed = f"{toggle}.getAttribute('aria-expanded') === 'false' && !{menu}.getClientRects().length"
+    expanded = f"{toggle}.getAttribute('aria-expanded') === 'true' && {menu}.getClientRects().length"
+    assert await page.evaluate(collapsed)
+    await press_shift_tab(page)
+    assert await page.evaluate(f"document.activeElement === {toggle}")
+    assert_ring(await page.evaluate(FOCUS_PROBE))
+    await _press_tab(page)
+    assert await page.evaluate("document.activeElement.matches('.topbar button')")
+    await press_shift_tab(page)
+    await press_space(page)
+    await page.wait_for(expanded)
+    await check_layout(page, 320, 'live', names=('Menú', 'Secciones del panel técnico'))
+    await screenshot(page, EVIDENCE / 'obs-mobile-menu-320.png', full=False)
+    await _press_tab(page)
+    probe = await page.evaluate(FOCUS_PROBE)
+    assert probe['nav'] == 0, probe
+    assert_ring(probe)
+    await _press(page, 'Escape', 'Escape', 27)
+    await page.wait_for(collapsed)
+    assert await page.evaluate(f"document.activeElement === {toggle}")
+    assert_ring(await page.evaluate(FOCUS_PROBE))
+
+    await press_enter(page)
+    await page.wait_for(expanded)
+    await _press_tab(page)
+    await press_enter(page)  # Selecting the current view also closes and moves focus.
+    await page.wait_for(collapsed)
+    assert await page.evaluate(NAV_STATE) == expected_state(0)
+    await press_shift_tab(page)
+    await press_enter(page)
+    await page.wait_for(expanded)
+    for _ in range(4):
+        await _press_tab(page)
+    assert (await page.evaluate(FOCUS_PROBE))['nav'] == 3
+    await press_space(page)
+    await page.wait_for(NAV[3][2])
+    await page.wait_for(collapsed)
+    assert await page.evaluate(NAV_STATE) == expected_state(3)
+
+    await press_shift_tab(page)
+    await press_enter(page)
+    await page.wait_for(expanded)
+    await history_step(page, -1)
+    await page.wait_for(NAV[0][2])
+    await page.wait_for(collapsed)
+    assert await page.evaluate(NAV_STATE) == expected_state(0)
+    await history_step(page, +1)
+    await page.wait_for(NAV[3][2])
+    await page.wait_for("document.activeElement.matches('main')")
+    assert await page.evaluate(NAV_STATE) == expected_state(3)
+
+
+async def responsive_layout(page: Page) -> dict:
+    """Check all nine views and the enrolment overlay at each requested width."""
+    await page.evaluate(LAYOUT_OBSERVATIONS)
+    await resize(page, 320)
+    await mobile_keyboard(page)
+    result = {}
+    for width in WIDTHS:
+        await resize(page, width)
+        visibility = await page.evaluate("[...document.querySelectorAll('.menu-toggle, .nav')].map(el => !!el.getClientRects().length)")
+        assert visibility == [width < 768, width >= 768], (width, visibility)
+        result[width] = {}
+        for view, _, ready in NAV:
+            await page.evaluate(f"location.hash = '{view}'")
+            await page.wait_for(ready)
+            names = ('Actualizar datos',)
+            if view == 'conversations':
+                assert await page.evaluate(LAYOUT_CONVERSATION)
+                names += ('Todas las voces', 'Todos los recorridos')
+            if view == 'users':
+                assert await page.evaluate(LAYOUT_VOICE)
+                names += ('Nombre del perfil', 'Audio de la muestra')
+            if view == 'admin':
+                await page.wait_for("!!document.querySelector('.user-actions button')")
+                names += ('Nombre del usuario', 'Nivel de permiso', 'Enrolar voz de Synthetic account',
+                          'Eliminar usuario Synthetic account')
+            result[width][view] = await check_layout(page, width, view, names=names)
+            if width == 390 and view == 'live':
+                await screenshot(page, EVIDENCE / 'obs-view-live-390.png', full=False)
+
+        if width == 320:
+            await page.evaluate("document.querySelector('.user-form button').focus()")
+            await _press_tab(page)
+            assert await page.evaluate("document.activeElement.matches('.table-scroll')")
+            assert_ring(await page.evaluate(FOCUS_PROBE))
+            await _press(page, 'ArrowRight', 'ArrowRight', 39)
+            await page.wait_for("document.activeElement.matches('.table-scroll') && document.activeElement.scrollLeft > 0")
+
+        await page.evaluate("document.querySelector('.user-actions button').focus()")
+        await press_enter(page)
+        await page.wait_for("!!document.querySelector('[role=dialog]')")
+        result[width]['enrollment'] = await check_layout(page, width, 'admin', overlay=True,
+                                                         names=('Cerrar enrolamiento', '🎙 grabar muestra 1'))
+        await page.evaluate("document.querySelector('[aria-label=\"Cerrar enrolamiento\"]').click()")
+        await page.wait_for("!document.querySelector('[role=dialog]')")
+    return result
 
 
 class Priority(Enum):
@@ -158,7 +372,9 @@ async def main() -> None:
         directory = Path(temporary)
         authority = DashboardAuthority(directory / 'auth.db', session_ttl_s=600)
         await authority.initialize()
-        dashboard = DashboardAPI(authority=authority, alert_manager=alerts)
+        users = UserManager(str(directory / 'users.json'))
+        users.add_user('Synthetic account', permission_level=PermissionLevel.ADULT)
+        dashboard = DashboardAPI(authority=authority, alert_manager=alerts, user_manager=users)
 
         @dashboard.app.middleware('http')
         async def record(request, call_next):
@@ -195,6 +411,11 @@ async def main() -> None:
                                        {'width': 1440, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False})
                     await page.command('Page.navigate', {'url': f'http://127.0.0.1:{port}/obs/'})
                     await page.wait_for("!!document.querySelector('input[type=password]')")
+                    login = {}
+                    for width in WIDTHS:
+                        await resize(page, width)
+                        login[width] = await check_layout(page, width, 'login', overlay=True,
+                                                          names=('Acceso admin', 'Token de administración', 'Entrar'))
                     await page.evaluate(
                         "(()=>{const input=document.querySelector('input[type=password]');"
                         "Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,"
@@ -278,9 +499,9 @@ async def main() -> None:
                     keyboard = await keyboard_navigation(page, port, checks)
 
 
-                    await page.command('Emulation.setDeviceMetricsOverride',
-                                       {'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
-                    await visit('Live', 'view-live')
+                    responsive = await responsive_layout(page)
+                    checks.append('responsive layout, accessible names and populated table regions at 320/390/768/1280/1440 px')
+                    checks.append('mobile keyboard disclosure, Escape, focus return, hash history and keyboard table scrolling')
                     assert not page.errors, page.errors
                     checks.append('no runtime exceptions')
         finally:
@@ -291,9 +512,10 @@ async def main() -> None:
             await serving
             await authority.aclose()
     result = {'passed': True, 'synthetic_fixture': True, 'checks': checks, 'keyboard': keyboard,
+              'responsive': {width: {'login': login[width], **responsive[width]} for width in WIDTHS},
               'requests': [item for item in requests if item['method'] != 'GET' or item['path'].startswith('/api/alerts')]}
     (EVIDENCE / 'browser-result.json').write_text(json.dumps(result, indent=2) + '\n')
-    print(json.dumps(result))
+    print(json.dumps({**result, 'responsive': list(responsive)}))
 
 
 async def keyboard_navigation(page: Page, port: int, checks: list) -> dict:
