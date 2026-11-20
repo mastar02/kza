@@ -103,8 +103,9 @@ def choose_basetemp_root(
     """Select basetemp root; use /dev/shm only for Tier 0 on Linux when free.
 
     Tier 1 and Tier 2 retain tens of GiB across the full pytest session, which can
-    exhaust cgroup MemoryHigh/tmpfs RAM; those runs use disk under ``out_dir/basetemp``
-    and are still cleaned up on exit so only logs/XML/summary remain.
+    exhaust cgroup MemoryHigh/tmpfs RAM; those runs reserve a unique per-run
+    directory under ``out_dir/basetemp-<pid>-*`` via ``mkdtemp`` and are cleaned up
+    on exit so only logs/XML/summary remain without colliding or following symlinks.
     Returns ``(root_path, cleanup_on_exit)``.
     """
     if explicit is not None:
@@ -117,9 +118,10 @@ def choose_basetemp_root(
         shm_tmp = Path(tempfile.mkdtemp(prefix=f"kza-pytest-{os.getpid()}-", dir=shm_root))
         return shm_tmp, True
 
-    fallback = (out_dir / "basetemp").resolve()
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback, True
+    out_dir_resolved = Path(out_dir).resolve()
+    out_dir_resolved.mkdir(parents=True, exist_ok=True)
+    disk_tmp = Path(tempfile.mkdtemp(prefix=f"basetemp-{os.getpid()}-", dir=out_dir_resolved))
+    return disk_tmp, True
 
 
 def choose_cache_dir(

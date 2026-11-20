@@ -45,22 +45,49 @@ def test_choose_basetemp_root_prefers_shm_on_linux_when_free(tmp_path, monkeypat
     assert bt.parent == shm and bt.exists() and should_clean is True
 
     for full_tier in (1, 2):
+        expected_parent = (tmp_path / f"out-{full_tier}").resolve()
         bt_tier, clean_tier = runner.choose_basetemp_root(
-            None, tmp_path / f"out-{full_tier}", tier=full_tier, platform="linux", shm_root=shm
+            None, expected_parent, tier=full_tier, platform="linux", shm_root=shm
         )
-        assert bt_tier == (tmp_path / f"out-{full_tier}" / "basetemp").resolve()
+        assert bt_tier.parent == expected_parent and bt_tier.name.startswith("basetemp-")
         assert bt_tier.exists() and clean_tier is True
 
     monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=1 * 1024**3, f_frsize=1))
+    low_parent = (tmp_path / "out-low").resolve()
     bt_fallback, should_clean_fb = runner.choose_basetemp_root(
-        None, tmp_path / "out-low", tier=0, platform="linux", shm_root=shm
+        None, low_parent, tier=0, platform="linux", shm_root=shm
     )
-    assert bt_fallback == (tmp_path / "out-low" / "basetemp").resolve() and should_clean_fb is True
+    assert bt_fallback.parent == low_parent and bt_fallback.name.startswith("basetemp-") and should_clean_fb is True
 
     explicit_bt, clean_explicit = runner.choose_basetemp_root(
         tmp_path / "explicit-bt", tmp_path / "out-explicit", tier=2, platform="linux", shm_root=shm
     )
     assert explicit_bt == (tmp_path / "explicit-bt").resolve() and clean_explicit is False
+
+
+def test_choose_basetemp_root_never_adopts_preexisting_or_symlinked_basetemp(tmp_path, monkeypatch):
+    shm = tmp_path / "dev_shm"
+    shm.mkdir()
+    monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=32 * 1024**3, f_frsize=1))
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("keep")
+
+    out_dir = tmp_path / "shared-out"
+    out_dir.mkdir()
+    os.symlink(outside, out_dir / "basetemp")
+
+    bt1, clean1 = runner.choose_basetemp_root(None, out_dir, tier=2, platform="linux", shm_root=shm)
+    bt2, clean2 = runner.choose_basetemp_root(None, out_dir, tier=2, platform="linux", shm_root=shm)
+    assert clean1 is True and clean2 is True
+    assert bt1 != bt2 and bt1.parent == out_dir.resolve() and not bt1.is_symlink()
+
+    runner.safe_rmtree(bt1)
+    runner.safe_rmtree(bt2)
+    assert sentinel.read_text() == "keep"
+    assert (out_dir / "basetemp").is_symlink()
 
 
 def test_safe_rmtree_removes_readonly_slot_directories(tmp_path):
@@ -418,3 +445,43 @@ def test_main_cleans_shm_basetemp_when_prebuild_fails(tmp_path, monkeypatch):
     assert not (shm / "reserved-bt").exists()
     guard = runner.acquire_solo_window(tier=2, platform="linux")
     guard.release()
+
+
+def test_main_disk_basetemp_cleanup_preserves_symlink_on_prebuild_error(tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "keep.txt"
+    sentinel.write_text("keep")
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    os.symlink(outside, out_dir / "basetemp")
+
+    solo = tmp_path / "runs" / "SOLO_WINDOW"
+    solo.parent.mkdir(parents=True)
+    monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", solo)
+    monkeypatch.setattr(runner.sys, "platform", "linux")
+
+    from tests.mocks import runtime_artifact_cache as cache_mod
+    monkeypatch.setattr(cache_mod, "prebuild_standard_artifacts", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    try:
+        runner.main(
+            [
+                "--tier",
+                "1",
+                "--no-node",
+                "--prebuild",
+                "--out-dir",
+                str(out_dir),
+                "--cache-dir",
+                str(tmp_path / "cache"),
+            ]
+        )
+        raise AssertionError("expected RuntimeError")
+    except RuntimeError as exc:
+        assert "boom" in str(exc)
+
+    assert not list(out_dir.glob("basetemp-*"))
+    assert (out_dir / "basetemp").is_symlink()
+    assert sentinel.read_text() == "keep"
