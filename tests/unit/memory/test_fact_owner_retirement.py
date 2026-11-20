@@ -410,6 +410,7 @@ def _attribute_uses(names):
 def test_retirement_participant_has_exactly_the_wired_production_callers():
     assert _attribute_uses(_PARTICIPANT) == {
         "src/dashboard/admin.py": ["clear_user_facts"],
+        "src/dashboard/api.py": ["memory_owner_active"],  # T035-U3 personal task person verifier
         "src/dashboard/memory_api.py": ["memory_owner_retired", "memory_owner_active"],  # U3b-2 assign route
         # U3b-2 R1: the boot prune passes memory_owner_retired as the tri-state probe.
         "src/main.py": ["memory_owner_retired", "prune_retired_owners", "memory_owner_retired", "owner_refs_cleared"],
