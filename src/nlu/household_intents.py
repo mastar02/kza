@@ -298,19 +298,23 @@ def _tokens(text: str) -> _Utterance:
 
 def _quote_spans(text: str) -> list[tuple[int, int]]:
     """Find balanced quotes across lines, keeping each outer span intact."""
-    def opening_boundary(before: str) -> bool:
-        return not before or before.isspace() or before in "«([{\"':,;¡¿"
+    def opening_boundary(before: str, char: str) -> bool:
+        return before != char and (not before or before.isspace() or before in "«([{\"':,;¡¿")
 
     def starts_content(offset: int) -> bool:
         start = offset + 1
-        nested_openers = False
-        while start < len(text) and (text[start].isspace() or text[start] in "«\"'"):
-            nested_openers |= text[start] in "«\"'"
+        seen = {text[offset]}
+        while start < len(text):
+            char = text[start]
+            if not char.isspace():
+                if char not in _QUOTE_CLOSERS or char in seen:
+                    break
+                seen.add(char)
             start += 1
         after = text[start:start + 1]
         if not after or after in ")]}»\"'":
             return False
-        if nested_openers and after in ",.;:?!…":
+        if len(seen) > 1 and after in ",.;:?!…":
             # Punctuation alone after an empty pair does not start nested content.
             return re.match(r"[,.;:?!…\s¡¿«\"'([{—-]*[^\W_]", text[start:]) is not None
         following = text[start + 1:start + 2]
@@ -330,7 +334,7 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
             before, after = text[max(0, offset - 1):offset], text[offset + 1:offset + 2]
             if char == "'" and before.isalnum() and after.isalnum():
                 continue  # Apostrophe inside a word.
-            markers.append((offset, char, opening_boundary(before) and starts_content(offset),
+            markers.append((offset, char, opening_boundary(before, char) and starts_content(offset),
                             bool(before) and before not in "«([{¡¿"))
 
     if not markers:
@@ -396,7 +400,9 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         if len(next_stack) > len(stack):
             starts.append(offset)
         elif len(next_stack) < len(stack):
-            spans.append((starts.pop(), offset + 1))
+            start = starts.pop()
+            if text[start + 1:offset].strip():
+                spans.append((start, offset + 1))
         stack = next_stack
     return sorted(spans)
 
@@ -690,6 +696,7 @@ INTERCOM_BROADCAST_TARGETS = frozenset({
     "todos los parlantes",
 })
 _INTERCOM_PUNCTUATION = re.compile(r"[^\w]*")
+_INTERCOM_EMPTY_QUOTE_PREFIX = re.compile(r'''(?:[^\w"'«»]|"\s*"|'\s*'|«\s*»)*''')
 _INTERCOM_DIRECTION = re.compile(
     r"(?:" + "|".join(sorted(_INTERCOM_DESTINATION_HEADS)) + r")\b\s*", re.IGNORECASE,
 )
@@ -1161,7 +1168,8 @@ def intercom_slots(complement: str) -> tuple[str | None, int]:
     """
     start = _INTERCOM_PUNCTUATION.match(complement).end()
     quotes = _quote_spans(complement)
-    if quotes and quotes[0][0] < start:
+    # A span inferred across adjacent empty pairs cannot hide room syntax.
+    if quotes and quotes[0][0] < start and not _INTERCOM_EMPTY_QUOTE_PREFIX.fullmatch(complement, 0, start):
         return None, quotes[0][0]
     direction = _INTERCOM_DIRECTION.match(complement, start)
     marker = _INTERCOM_MESSAGE_MARKER.search(complement, start)

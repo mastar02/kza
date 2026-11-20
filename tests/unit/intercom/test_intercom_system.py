@@ -284,6 +284,44 @@ def test_empty_straight_quotes_are_not_treated_as_nested_openers(empty, suffix):
     assert _quote_spans(empty + suffix) == []
 
 
+@pytest.mark.parametrize("empty", [
+    '""', "''", "«»", '"   "', "' \n\t '", "« \n »", '"   "... —""', "' \n '… —''",
+])
+@pytest.mark.parametrize("separator", [" ", "... —", "… —"])
+@pytest.mark.parametrize(("destination", "expected_zone"), [("la cocina", "zone_cocina"), ("el fogón", None)])
+@pytest.mark.parametrize("message", ["El mensaje es privado.", '"El mensaje es privado."'])
+async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destination(
+    empty, separator, destination, expected_zone, message,
+):
+    attempts = []
+
+    async def speak(text, zone):
+        attempts.append((text, zone))
+        return ResponseResult(text, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    intercom = IntercomSystem(speak, room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("sala", "Sala")
+    await intercom.start()
+    try:
+        text = f"Avisá: {empty}{separator}en {destination}: {message}"
+        assert CommandAcceptanceGate().evaluate(text).accept
+        intent = classify_household_intent(text)
+        assert intent.family is HouseholdFamily.INTERCOM
+        outcome, response, announcement = await intercom.announce_from_voice(intent.complement)
+        if expected_zone is None:
+            assert outcome.status is TaskStatus.NEEDS_INPUT
+            assert "sala configurada" in response and announcement is None
+            assert attempts == []
+            assert intercom.get_history() == []
+        else:
+            assert outcome.task_completed
+            assert announcement.receipt()["zones"] == {expected_zone: "confirmed"}
+            assert attempts == [(message, expected_zone)]
+    finally:
+        await intercom.stop()
+
+
 @pytest.mark.parametrize("text", [
     "Avisa, en el fogon: Llego Ana",
     "Avisa, en el ambiente: Llego Ana",
