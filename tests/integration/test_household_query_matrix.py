@@ -120,7 +120,7 @@ DEVICE_STATE = (
 
 @dataclass(frozen=True)
 class Part:
-    """Expected reply prefix, verdict and HA receipt for one spoken part."""
+    """Expected reply, verdict and HA receipt for one spoken part."""
 
     segment: str
     entity: str | None = None
@@ -130,6 +130,7 @@ class Part:
     status: str = "completed"
     dispatch: str = "accepted"
     effect: str = "observed"
+    speech: str = "hecho."
 
 
 LIVING_OFF = Part("Apagá la luz del living", "light.living", "turn_off", "confirmed")
@@ -139,15 +140,19 @@ KITCHEN_ON = Part("Prendé la luz de la cocina", "light.second", "turn_on", "con
 DESK_OFF = Part("Apagá la luz del escritorio", "light.third", "turn_off", "confirmed")
 LOCAL_OFF = replace(LIVING_OFF, segment="Apagá la luz")
 SECURITY_REFUSAL = Part("Abrí la cerradura", verdict="not_done", status="unsupported",
-                        dispatch="not_sent", effect="not_observed")
+                        dispatch="not_sent", effect="not_observed",
+                        speech="no lo hice. Las cerraduras, las puertas y la alarma no las manejo por voz.")
 UNKNOWN_ROOM = Part("Apagá la luz del quincho", verdict="not_done", status="needs_input",
-                    dispatch="not_sent", effect="not_observed")
+                    dispatch="not_sent", effect="not_observed",
+                    speech="no lo hice. ¿En qué ambiente querés controlar la luz?")
 DUPLICATE = Part("Apagá la luz del living", verdict="duplicate", status="cancelled",
-                 dispatch="not_sent", effect="not_observed")
+                 dispatch="not_sent", effect="not_observed",
+                 speech="no lo repetí porque era lo mismo que lo anterior.")
 HA_403 = replace(LIVING_OFF, receipt="failed", verdict="not_done", status="failed",
-                 dispatch="rejected", effect="not_observed")
+                 dispatch="rejected", effect="not_observed", speech="no lo hice. No pude hacerlo.")
 HA_503 = replace(LIVING_OFF, receipt="uncertain", verdict="uncertain", status="uncertain",
-                 dispatch="uncertain", effect="uncertain")
+                 dispatch="uncertain", effect="uncertain",
+                 speech="no sé si se hizo; fijate antes de repetirlo.")
 
 COMPOUND_ELLIPSIS = (
     pytest.param("apagá la luz del living y prendé la luz de la cocina", (LIVING_OFF, KITCHEN_ON),
@@ -317,8 +322,11 @@ async def test_device_state(tmp_path: Path, leaves: ApplicationFactories, dashbo
                     subject="synthetic-home", role=DashboardRole.HOME, expires_at=time.time() + 120)
                 login = await client.post("/api/admin/auth/login", json={"token": grant.token})
                 assert login.status_code == 200
+            reads_before = len(transport.entity_reads)
             result = await client.get(f"/api/entities/{entity}")
         assert result.status_code == status
+        expected_reads = [] if status in (401, 403) else [entity]
+        assert transport.entity_reads[reads_before:] == expected_reads
         if status == 200:
             assert result.json() == payload
             assert result.headers["x-kza-source-id"] == "ha-rest-entity"
@@ -357,7 +365,9 @@ async def test_compound_ellipsis(tmp_path: Path, leaves: ApplicationFactories, t
         assert result["outcome"]["status"] == status
         assert result["task_completed"] is (status == "completed")
         assert result["response_completed"]
-        assert graph.models.tts.texts == [result["response"]]
+        expected_response = " ".join(f"{part.segment}: {part.speech}" for part in parts)
+        assert result["response"] == expected_response
+        assert graph.models.tts.texts == [expected_response]
         assert [part["status"] for part in result["outcome"]["parts"]] == [part.status for part in parts]
         assert [
             (part["index"], part["request_id"], part["verdict"], part["task_status"], part["dispatch"], part["effect"])
@@ -378,15 +388,6 @@ async def test_compound_ellipsis(tmp_path: Path, leaves: ApplicationFactories, t
                 if part.receipt == "confirmed":
                     assert receipt.observation_scope == "ha_state"
                     assert transport.states[part.entity]["state"] == ("on" if part.service == "turn_on" else "off")
-        spoken_verdicts = {
-            "done": "hecho.",
-            "not_done": "no lo hice.",
-            "uncertain": "no sé si se hizo; fijate antes de repetirlo.",
-            "duplicate": "no lo repetí porque era lo mismo que lo anterior.",
-        }
-        fragments = [f"{part.segment}: {spoken_verdicts[part.verdict]}" for part in parts]
-        positions = [result["response"].index(fragment) for fragment in fragments]
-        assert positions == sorted(positions)
         expected_sends = [(p.entity, p.service, {"entity_id": p.entity}) for p in parts if p.entity is not None]
         assert transport.sends == expected_sends
         if repeat:
@@ -435,11 +436,17 @@ async def test_C02_outside_local_clock_uses_the_normal_veto(
 
     def provider(request: httpx.Request) -> httpx.Response:
         if request.method == "GET" and request.url.path == "/v1/models":
-            return httpx.Response(200, json={"object": "list", "data": [{"id": model, "object": "model"}]})
+            return httpx.Response(200, json={
+                "object": "list",
+                "data": [{"id": model, "object": "model", "created": 0, "owned_by": "synthetic"}],
+            })
         assert (request.method, request.url.path) == ("POST", "/v1/completions")
         prompts.append(json.loads(request.content)["prompt"])
-        verdict = {"is_command": False, "confidence": 0.99, "rejection_reason": "noise"}
-        return httpx.Response(200, json={"choices": [{"text": json.dumps(verdict)}]})
+        verdict = {"is_command": False, "confidence": 0.99, "rejection_reason": "incomplete"}
+        return httpx.Response(200, json={
+            "id": "cmpl-synthetic", "object": "text_completion", "created": 0, "model": model,
+            "choices": [{"text": json.dumps(verdict), "index": 0, "finish_reason": "stop"}],
+        })
 
     class ProviderHTTP:
         """Swap the 7B transport while keeping its SDK, classifier and veto."""
@@ -459,7 +466,8 @@ async def test_C02_outside_local_clock_uses_the_normal_veto(
         graph = await build_application(config, shutdown=stack, factories=leaves)
         before = transport.state_reads
         result = await say(graph, text)
-        assert result["intent"] == "llm_rejected:noise"
+        # Empty or malformed provider replies fall back to "noise".
+        assert result["intent"] == "llm_rejected:incomplete"
         assert result["response"] == "" and not result["task_completed"]
         assert len(prompts) == 1 and text.casefold().strip("¿?") in prompts[0].casefold()
         assert graph.models.tts.texts == []
