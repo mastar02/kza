@@ -187,22 +187,43 @@ def test_corrupt_sidecar_or_tarball_rebuilds_cleanly(tmp_path, monkeypatch, corr
     assert m3["call_index"] == 3
     assert stat.S_IMODE(out3.stat().st_mode) == 0o444
 
-    # Truncate a valid gzip tarball in half (including matching meta to reach gzip EOFError directly).
-    import hashlib
+    # Truncate a valid gzip tarball in half keeping the ORIGINAL meta -> rejected before tarfile.open.
     raw_tar = tar_path.read_bytes()
     truncated = raw_tar[: len(raw_tar) // 2]
     os.chmod(tar_path, 0o600)
     tar_path.write_bytes(truncated)
+
+    real_tar_open = tarfile.open
+
+    def _forbid_corrupt_cache_tar_read(name, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if Path(name) == tar_path and str(mode).startswith("r"):
+            raise AssertionError("tarfile.open must not read cached tarball when digest/size already mismatches")
+        return real_tar_open(name, *args, **kwargs)
+
+    monkeypatch.setattr(cache_mod.tarfile, "open", _forbid_corrupt_cache_tar_read)
+    out4_precheck = tmp_path / "four-precheck.tar.gz"
+    m4_pre = cache_mod.cached_build_runtime(tmp_path / "repo", out4_precheck, "HEAD")
+    assert len(calls) == 4
+    assert m4_pre["call_index"] == 4
+    monkeypatch.setattr(cache_mod.tarfile, "open", real_tar_open)
+
+    # Now truncate AND adjust meta to reach gzip EOFError directly in tarfile.open and still recover.
+    import hashlib
+    raw_tar2 = tar_path.read_bytes()
+    truncated2 = raw_tar2[: len(raw_tar2) // 2]
+    os.chmod(tar_path, 0o600)
+    tar_path.write_bytes(truncated2)
     os.chmod(meta_path, 0o600)
     meta_payload = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta_payload["tar_sha256"] = hashlib.sha256(truncated).hexdigest()
-    meta_payload["tar_size"] = len(truncated)
+    meta_payload["tar_sha256"] = hashlib.sha256(truncated2).hexdigest()
+    meta_payload["tar_size"] = len(truncated2)
     meta_path.write_text(json.dumps(meta_payload), encoding="utf-8")
 
     out4 = tmp_path / "four.tar.gz"
     m4 = cache_mod.cached_build_runtime(tmp_path / "repo", out4, "HEAD")
-    assert len(calls) == 4
-    assert m4["call_index"] == 4
+    assert len(calls) == 5
+    assert m4["call_index"] == 5
     assert stat.S_IMODE(out4.stat().st_mode) == 0o444
 
 

@@ -23,6 +23,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from typing import TextIO
 
@@ -107,8 +108,7 @@ def choose_basetemp_root(
 
     plat = platform or sys.platform
     if plat.startswith("linux") and _shm_has_capacity(shm_root, min_shm_bytes):
-        shm_tmp = shm_root / f"kza-pytest-{os.getpid()}-{int(time.time())}"
-        shm_tmp.mkdir(parents=True, exist_ok=True)
+        shm_tmp = Path(tempfile.mkdtemp(prefix=f"kza-pytest-{os.getpid()}-", dir=shm_root))
         return shm_tmp, True
 
     fallback = (out_dir / "basetemp").resolve()
@@ -170,32 +170,29 @@ def _solo_lock_file(solo_file: Path) -> Path:
 
 
 def acquire_solo_window(
-    solo_file: Path,
+    solo_file: Path | None = None,
     *,
     tier: int,
     platform: str | None = None,
 ) -> SoloWindowGuard:
-    """Enforce mutual exclusion on Linux via SOLO_WINDOW + non-blocking flock.
+    """Enforce mutual exclusion on Linux via the single canonical host lock + SOLO_WINDOW.
 
-    Tiers 0/1 hold ``LOCK_SH`` on the host lock file so a concurrent Tier 2 run
-    cannot start mid-suite; Tier 2 holds ``LOCK_EX`` + atomic ``O_EXCL`` marker.
+    All Linux tiers (0, 1 and 2) share the same canonical host directory and
+    lock file so no invocation can overlap or start unlocked before Tier 2.
+    Tiers 0/1 hold ``LOCK_SH`` while Tier 2 holds ``LOCK_EX`` + ``O_EXCL`` marker.
     """
     plat = platform or sys.platform
     if not plat.startswith("linux"):
         return SoloWindowGuard()
 
-    if solo_file == DEFAULT_SOLO_WINDOW_FILE and not solo_file.parent.is_dir():
-        if tier == 2:
-            raise RuntimeError(
-                f"Required SOLO_WINDOW directory missing at {solo_file.parent}; "
-                "refusing unprotected Tier 2 run on Linux"
-            )
-        if solo_file.exists() or solo_file.is_symlink():
-            raise RuntimeError(f"SOLO_WINDOW active at {solo_file}; refusing concurrent Tier {tier} run")
-        return SoloWindowGuard()
+    target_solo = DEFAULT_SOLO_WINDOW_FILE if solo_file is None else solo_file
+    if not target_solo.parent.is_dir():
+        raise RuntimeError(
+            f"Required host exclusion directory missing at {target_solo.parent}; "
+            f"refusing unlocked Tier {tier} run on Linux"
+        )
 
-    solo_file.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = _solo_lock_file(solo_file)
+    lock_path = _solo_lock_file(target_solo)
     lock_fh = lock_path.open("a+", encoding="utf-8")
     lock_mode = (fcntl.LOCK_EX if tier == 2 else fcntl.LOCK_SH) | fcntl.LOCK_NB
     try:
@@ -206,27 +203,56 @@ def acquire_solo_window(
             f"Active test run holds host lock {lock_path}; refusing concurrent Tier {tier} run"
         ) from exc
 
-    if solo_file.exists() or solo_file.is_symlink():
+    if target_solo.exists() or target_solo.is_symlink():
         try:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
         finally:
             lock_fh.close()
-        raise RuntimeError(f"SOLO_WINDOW active at {solo_file}; refusing concurrent Tier {tier} run")
+        raise RuntimeError(f"SOLO_WINDOW active at {target_solo}; refusing concurrent Tier {tier} run")
 
     if tier != 2:
         return SoloWindowGuard(marker_path=None, lock_fh=lock_fh)
 
     try:
-        fd = os.open(solo_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(target_solo, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
     except FileExistsError as exc:
         try:
             fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
         finally:
             lock_fh.close()
-        raise RuntimeError(f"SOLO_WINDOW already active at {solo_file}; refusing concurrent Tier 2 run") from exc
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(f"run_test_suite tier=2 pid={os.getpid()} started={dt.datetime.now(dt.timezone.utc).isoformat()}\n")
-    return SoloWindowGuard(marker_path=solo_file, lock_fh=lock_fh)
+        raise RuntimeError(f"SOLO_WINDOW already active at {target_solo}; refusing concurrent Tier 2 run") from exc
+
+    try:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+    except BaseException:
+        try:
+            os.close(fd)
+        finally:
+            try:
+                target_solo.unlink(missing_ok=True)
+            finally:
+                try:
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                finally:
+                    lock_fh.close()
+        raise
+
+    try:
+        with fh:
+            fh.write(
+                f"run_test_suite tier=2 pid={os.getpid()} started={dt.datetime.now(dt.timezone.utc).isoformat()}\n"
+            )
+            fh.flush()
+    except BaseException:
+        try:
+            target_solo.unlink(missing_ok=True)
+        finally:
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_fh.close()
+        raise
+    return SoloWindowGuard(marker_path=target_solo, lock_fh=lock_fh)
 
 
 def safe_rmtree(path: Path) -> None:
@@ -467,7 +493,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", type=Path, default=None, help="Directory for logs, XML reports, and summary.json")
     parser.add_argument("--cache-dir", type=Path, default=None, help="Shared runtime artifact cache directory")
     parser.add_argument("--basetemp", type=Path, default=None, help="Explicit pytest basetemp root")
-    parser.add_argument("--solo-window-file", type=Path, default=DEFAULT_SOLO_WINDOW_FILE, help="Host SOLO_WINDOW exclusion lock file path on Linux")
     parser.add_argument("--targets", nargs="*", default=[], help="Target test files/dirs for Tier 0")
     prebuild_group = parser.add_mutually_exclusive_group()
     prebuild_group.add_argument("--prebuild", action="store_true", help="Prebuild runtime artifacts cache before running (default for Tiers 1 and 2)")
@@ -483,8 +508,13 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--tier 2 (Linux real systemd gate) must run on Linux (kza-yo)")
 
     run_stamp = time.strftime("%Y%m%d-%H%M%S")
-    out_dir = (args.out_dir or (Path.home() / ".local" / "state" / "kza-test-runs" / f"tier{args.tier}-{run_stamp}")).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.out_dir is not None:
+        out_dir = Path(args.out_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        runs_root = Path.home() / ".local" / "state" / "kza-test-runs"
+        runs_root.mkdir(parents=True, exist_ok=True)
+        out_dir = Path(tempfile.mkdtemp(prefix=f"tier{args.tier}-{run_stamp}-", dir=runs_root)).resolve()
 
     cache_dir = choose_cache_dir(args.cache_dir)
     python_exe = Path(sys.executable)
@@ -506,7 +536,7 @@ def main(argv: list[str] | None = None) -> int:
     steps: list[dict] = []
 
     try:
-        solo_guard = acquire_solo_window(args.solo_window_file, tier=args.tier)
+        solo_guard = acquire_solo_window(tier=args.tier)
         basetemp_root, cleanup_basetemp = choose_basetemp_root(args.basetemp, out_dir)
         before_nr = journald_nrestarts() if args.tier == 2 else None
 

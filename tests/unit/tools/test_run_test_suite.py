@@ -142,6 +142,7 @@ def test_sanitize_env_strips_inherited_overrides():
 
 def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path):
     solo = tmp_path / "runs" / "SOLO_WINDOW"
+    solo.parent.mkdir(parents=True)
     guard = runner.acquire_solo_window(solo, tier=2, platform="linux")
     assert guard.marker_path == solo and solo.is_file()
     try:
@@ -167,18 +168,54 @@ def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path):
     finally:
         tier1_guard.release()
 
-    # Missing default host directory must fail closed for Tier 2.
+    # Missing host directory must fail closed for ALL tiers (0, 1, and 2) on Linux.
     missing_default = tmp_path / "missing" / "runs" / "SOLO_WINDOW"
-    orig_default = runner.DEFAULT_SOLO_WINDOW_FILE
-    runner.DEFAULT_SOLO_WINDOW_FILE = missing_default
-    try:
+    for tier in (0, 1, 2):
         try:
-            runner.acquire_solo_window(missing_default, tier=2, platform="linux")
-            raise AssertionError("expected Tier 2 to fail closed when default SOLO_WINDOW dir is missing")
+            runner.acquire_solo_window(missing_default, tier=tier, platform="linux")
+            raise AssertionError(f"expected Tier {tier} to fail closed when host dir is missing")
         except RuntimeError as exc:
-            assert "SOLO_WINDOW" in str(exc)
+            assert "host exclusion directory" in str(exc).lower()
+
+
+def test_acquire_solo_window_cleans_marker_and_lock_if_write_fails(tmp_path, monkeypatch):
+    solo = tmp_path / "runs" / "SOLO_WINDOW"
+    solo.parent.mkdir(parents=True)
+
+    class _FailWriter:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+        def write(self, _text):
+            raise OSError(28, "No space left on device")
+
+        def flush(self):
+            pass
+
+    real_fdopen = os.fdopen
+
+    def fail_fdopen(fd, *args, **kwargs):
+        os.close(fd)
+        return _FailWriter()
+
+    monkeypatch.setattr(runner.os, "fdopen", fail_fdopen)
+    try:
+        runner.acquire_solo_window(solo, tier=2, platform="linux")
+        raise AssertionError("expected OSError")
+    except OSError:
+        pass
+    monkeypatch.setattr(runner.os, "fdopen", real_fdopen)
+    assert not solo.exists()
+
+    # Subsequent Tier 2 acquisition must still succeed cleanly.
+    guard = runner.acquire_solo_window(solo, tier=2, platform="linux")
+    try:
+        assert solo.exists()
     finally:
-        runner.DEFAULT_SOLO_WINDOW_FILE = orig_default
+        guard.release()
 
 
 def test_run_tier2_lanes_waits_for_a_and_b_and_runs_exact_compiled_nodeids(tmp_path, monkeypatch):
@@ -245,9 +282,11 @@ def test_safe_rmtree_ignores_symlinks_to_outside_files(tmp_path):
 
 def test_main_reads_nrestarts_inside_solo_window_and_releases_on_rmtree_error(tmp_path, monkeypatch):
     solo = tmp_path / "runs" / "SOLO_WINDOW"
+    solo.parent.mkdir(parents=True)
     out_dir = tmp_path / "out"
     journald_states: list[bool] = []
 
+    monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", solo)
     monkeypatch.setattr(runner.sys, "platform", "linux")
     monkeypatch.setattr(runner, "_xdist_available", lambda _p: True)
     monkeypatch.setattr(
@@ -279,8 +318,6 @@ def test_main_reads_nrestarts_inside_solo_window_and_releases_on_rmtree_error(tm
                 str(out_dir),
                 "--cache-dir",
                 str(tmp_path / "cache"),
-                "--solo-window-file",
-                str(solo),
             ]
         )
         raise AssertionError("expected OSError from safe_rmtree")
@@ -291,11 +328,41 @@ def test_main_reads_nrestarts_inside_solo_window_and_releases_on_rmtree_error(tm
     assert not solo.exists()
 
 
+def test_same_second_runs_allocate_distinct_out_dir_and_basetemp(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(runner.time, "strftime", lambda *_a: "20261120-080000")
+    monkeypatch.setattr(runner.sys, "platform", "darwin")
+
+    seen_cmds: list[list[str]] = []
+    monkeypatch.setattr(
+        runner,
+        "_run_subprocess",
+        lambda name, cmd, *, cwd, env, log_path: (seen_cmds.append(list(cmd)) or {"name": name, "exit_code": 0, "duration_s": 0.0, "log": str(log_path)}),
+    )
+    monkeypatch.setattr(runner, "_xdist_available", lambda _p: False)
+
+    assert runner.main(["--tier", "0", "--no-node", "--targets", "tests/a.py", "--cache-dir", str(tmp_path / "c")]) == 0
+    assert runner.main(["--tier", "0", "--no-node", "--targets", "tests/b.py", "--cache-dir", str(tmp_path / "c")]) == 0
+    assert len(seen_cmds) == 2
+    bt1 = next(arg for arg in seen_cmds[0] if arg.startswith("--basetemp="))
+    bt2 = next(arg for arg in seen_cmds[1] if arg.startswith("--basetemp="))
+    xml1 = next(arg for arg in seen_cmds[0] if arg.startswith("--junitxml="))
+    xml2 = next(arg for arg in seen_cmds[1] if arg.startswith("--junitxml="))
+    assert bt1 != bt2 and xml1 != xml2
+
+
+def test_cli_refuses_solo_window_override_flag():
+    import pytest
+    with pytest.raises(SystemExit):
+        runner.main(["--tier", "0", "--targets", "tests/a.py", "--solo-window-file", "/tmp/other"])
+
+
 def test_main_cleans_shm_basetemp_when_prebuild_fails(tmp_path, monkeypatch):
     shm = tmp_path / "dev_shm"
     shm.mkdir()
     out_dir = tmp_path / "out"
     solo = tmp_path / "runs" / "SOLO_WINDOW"
+    monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", solo)
     monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=32 * 1024**3, f_frsize=1))
     monkeypatch.setattr(runner, "_shm_has_capacity", lambda *_args, **_kw: True)
     monkeypatch.setattr(
@@ -321,8 +388,6 @@ def test_main_cleans_shm_basetemp_when_prebuild_fails(tmp_path, monkeypatch):
                 str(out_dir),
                 "--cache-dir",
                 str(tmp_path / "cache"),
-                "--solo-window-file",
-                str(solo),
             ]
         )
         raise AssertionError("expected RuntimeError")
