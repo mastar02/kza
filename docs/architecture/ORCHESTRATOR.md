@@ -165,7 +165,7 @@ from src.orchestrator import RequestDispatcher
 dispatcher = RequestDispatcher(
     chroma_sync=chroma,
     ha_client=ha,
-    routine_manager=routines,
+    voice_routines=voice_routines,  # VoiceRoutineService vinculado al scheduler
     router=router_7b,       # Para fast path
     llm=llm_72b,            # Para slow path
     context_manager=context_manager,
@@ -291,7 +291,7 @@ from src.orchestrator import MultiUserOrchestrator
 orchestrator = MultiUserOrchestrator(
     chroma_sync=chroma,
     ha_client=ha,
-    routine_manager=routines,
+    voice_routines=voice_routines,  # VoiceRoutineService compartido con el router de voz
     router=router_7b,
     llm=llm_72b,
     tts=tts,

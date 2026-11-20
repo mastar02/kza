@@ -182,10 +182,12 @@ class CommandAcceptanceGate:
         self._voice_routines = voice_routines
         self._ring_stop_open = ring_stop_open
 
-    def evaluate(self, text: str, stt_confidence: "STTResult | None" = None) -> AcceptanceDecision:
-        """Evaluate a capture. Fail-open: on internal error, accept."""
+    def evaluate(
+        self, text: str, stt_confidence: "STTResult | None" = None, *, reply_to_deferred_routine: bool = False,
+    ) -> AcceptanceDecision:
+        """Evaluate a capture. The deferred-routine option allows a refusal or factual reply only."""
         try:
-            return self._evaluate(text, stt_confidence)
+            return self._evaluate(text, stt_confidence, reply_to_deferred_routine=reply_to_deferred_routine)
         except Exception as e:  # fail-open: never drop voice control on an internal bug
             logger.error(f"CommandAcceptanceGate error (fail-open accept): {e}")
             return AcceptanceDecision(True, "gate_error", {"error": str(e)})
@@ -238,7 +240,7 @@ class CommandAcceptanceGate:
             text = text[:start] + " [mensaje] " + text[end:]
         return text
 
-    def _hard_reason(self, text: str, ring_stop: bool = False) -> str | None:
+    def _hard_reason(self, text: str, ring_stop: bool = False, *, reply_to_deferred_routine: bool = False) -> str | None:
         """Return the first matching hard rule name, or None. Migrated from _is_noise_text.
 
         ``ring_stop`` lifts only the "listo" noise phrase (T030-U2b); every other rule still applies.
@@ -248,7 +250,8 @@ class CommandAcceptanceGate:
         from src.nlu.command_grammar import non_immediate_action_reason
 
         action_block = non_immediate_action_reason(text)
-        if action_block and not self._claimed_non_immediate(text) and not self._routine_read(text):
+        reply_only = reply_to_deferred_routine and action_block == "non_immediate:deferred"
+        if action_block and not reply_only and not self._claimed_non_immediate(text) and not self._routine_read(text):
             command_text = self._without_intercom_message(text)
             if command_text == text:
                 return action_block
@@ -319,9 +322,11 @@ class CommandAcceptanceGate:
             return f"high_compression:{cr:.2f}>{self._max_compression_ratio}", cr
         return None, cr
 
-    def _evaluate(self, text: str, stt_confidence: "STTResult | None") -> AcceptanceDecision:
+    def _evaluate(
+        self, text: str, stt_confidence: "STTResult | None", *, reply_to_deferred_routine: bool = False,
+    ) -> AcceptanceDecision:
         ring_stop = self._ring_stop(text)
-        hard = self._hard_reason(text, ring_stop)
+        hard = self._hard_reason(text, ring_stop, reply_to_deferred_routine=reply_to_deferred_routine)
         conf_reason, signals = self._confidence_reason(stt_confidence)
         comp_reason, comp_ratio = self._compression_reason(stt_confidence)
         signals["compression_ratio"] = comp_ratio

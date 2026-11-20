@@ -290,7 +290,7 @@ async def test_both_voice_modes_use_the_same_expanded_effects(composite_graph, o
     processor = MagicMock()
     processor.process_command = AsyncMock(return_value=ProcessedCommand(text=text, timings={}, success=True))
     chroma = MagicMock()
-    orchestrator = MultiUserOrchestrator(chroma, ha, MagicMock(), home_actions=actions)
+    orchestrator = MultiUserOrchestrator(chroma, ha, home_actions=actions)
     rooms = {"test_room": RoomConfig("test_room", "Test", "el salón", default_light=GROUP, aliases=["salón"])}
     router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator=orchestrator, orchestrator_enabled=orchestrated,
         chroma_sync=chroma, ha_client=ha, home_actions=actions, command_gate=CommandAcceptanceGate(),
@@ -308,7 +308,7 @@ async def test_scene_speech_keeps_shared_non_immediate_blockers(composite_graph,
     ha, actions = composite_graph
     processor = MagicMock()
     processor.process_command = AsyncMock(return_value=ProcessedCommand(text=text, timings={}, success=True))
-    orchestrator = MultiUserOrchestrator(MagicMock(), ha, MagicMock(), home_actions=actions)
+    orchestrator = MultiUserOrchestrator(MagicMock(), ha, home_actions=actions)
     router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator_enabled=orchestrated, orchestrator=orchestrator,
         ha_client=ha, home_actions=actions, command_gate=CommandAcceptanceGate())
     result = await router.process_command(np.zeros(16000, dtype=np.float32))
@@ -411,7 +411,7 @@ async def test_hook_rewrites_cannot_hide_restricted_effects_in_a_group(composite
         return RewriteResult(modified=modified, rule_name="test")
 
     hooks.register_before("before_ha_action", change, priority=10)
-    dispatcher = RequestDispatcher(MagicMock(), ha, MagicMock(), home_actions=actions, hooks=hooks)
+    dispatcher = RequestDispatcher(MagicMock(), ha, home_actions=actions, hooks=hooks)
     assert not await dispatcher._fire_and_reconcile_ha({"entity_id": GROUP, "domain": "light", "service": "turn_on"})
     assert ha.sends == []
 

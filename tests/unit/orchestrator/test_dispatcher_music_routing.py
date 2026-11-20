@@ -19,7 +19,6 @@ def dispatcher_with_music():
     d = RequestDispatcher(
         chroma_sync=MagicMock(),
         ha_client=MagicMock(),
-        routine_manager=MagicMock(),
         router=None,
         llm=None,
         context_manager=ContextManager(),

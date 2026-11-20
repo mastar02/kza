@@ -24,7 +24,7 @@ def test_terminal_grace_cannot_overflow():
 @pytest.mark.parametrize('value', [True, 0, -1, math.nan, math.inf, -math.inf, '1'])
 def test_orchestrator_timeout_is_validated_before_work(value):
     with pytest.raises(ValueError):
-        MultiUserOrchestrator(None, None, None, response_timeout_s=value)
+        MultiUserOrchestrator(None, None, response_timeout_s=value)
 
 
 @pytest.mark.asyncio

@@ -28,12 +28,9 @@ def _light_command():
 def _dispatcher(require_known: bool):
     chroma = MagicMock()
     chroma.asearch_command = AsyncMock(return_value=_light_command())
-    routine = MagicMock()
-    routine.handle = AsyncMock(return_value={"handled": False, "response": "", "success": False})
     d = RequestDispatcher(
         chroma_sync=chroma,
         ha_client=MagicMock(),
-        routine_manager=routine,
         router=None,
         llm=None,
         context_manager=ContextManager(),

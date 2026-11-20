@@ -245,7 +245,8 @@ def test_the_plan_review_names_the_closed_chroma_list():
         assert f"`{store}`" in plan and f'`["{name}"]`' in plan, (store, name)
     for key in ("`dropped_collections`", "`other_files`", "`other_files: 0`", "`rebuilt: 1`", "`dropped: 1`"):
         assert key in plan, key
-    assert "**en cada transición** «listar mis rutinas» por voz queda vacío" in plan
+    assert "el arranque de K deja ausente la colección retirada" in plan
+    assert "«listar mis rutinas» consulta `routines.db` a través del scheduler persistente" in plan
     source = (REPO / "scripts/compaction.py").read_text()
     assert '"dropped_collections"' in source and '"other_files"' in source
 
@@ -493,7 +494,7 @@ def test_deployment_points_to_the_runbook_and_drops_the_owner_limit_text():
     assert "La constante del límite sigue en el código" not in flat
     assert "SC-5b retiró del código la constante del límite" in flat
     for item in ("**Punto de aceptación.**", "**Reparaciones que V no ejercita (SC-D6 A).**",
-                 "**`home_assistant_routines` se descarta en cada transición**", "**Colas de borrado de audio.**",
+                 "**La compactación descarta `home_assistant_routines` si está presente**", "**Colas de borrado de audio.**",
                  "**Raíces con dueños sólo en ensayos.**", "**Residuos aceptados.**"):
         assert item in flat, item
 

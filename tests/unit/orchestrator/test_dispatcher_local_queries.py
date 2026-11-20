@@ -55,7 +55,7 @@ def make_dispatcher(clock: HouseholdClock, router=None, **kwargs) -> RequestDisp
     chroma = MagicMock()
     chroma.asearch_command = AsyncMock(side_effect=AssertionError("vector search called"))
     return RequestDispatcher(
-        chroma_sync=chroma, ha_client=AsyncMock(), routine_manager=MagicMock(),
+        chroma_sync=chroma, ha_client=AsyncMock(),
         router=router if router is not None else spy_router(), llm=llm,
         context_manager=ContextManager(household_clock=clock), priority_queue=PriorityRequestQueue(),
         household_clock=clock, **kwargs,
@@ -305,7 +305,7 @@ class BlockingSyncRouter:
 async def test_sync_router_fallback_runs_off_the_event_loop():
     router = BlockingSyncRouter()
     clock = clock_at(BEFORE_MIDNIGHT)
-    d = RequestDispatcher(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(),
+    d = RequestDispatcher(chroma_sync=MagicMock(), ha_client=AsyncMock(),
                           router=router, llm=None, context_manager=ContextManager(household_clock=clock),
                           priority_queue=PriorityRequestQueue(), household_clock=clock)
     turn = asyncio.create_task(d.dispatch(user_id="unknown", text="hola", zone_id="zone_living"))

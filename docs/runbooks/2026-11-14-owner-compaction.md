@@ -61,8 +61,9 @@ colección de memoria de política recibe sólo los registros de hechos vivos
 (sin vencer, sin tombstone, sin borrado registrado) cuyo dueño no está
 retirado; el índice de comandos de Home Assistant se copia entero;
 `home_assistant_routines` de `data/chroma_db` (texto de rutinas dictadas)
-no se copia y el arranque de K la recrea vacía (SC4C-Q6: sólo en ese
-almacén, el de `vectordb.path`); la colección heredada `user_memories` de
+no se copia (SC4C-Q6: sólo en ese almacén, el de `vectordb.path`). Desde
+T033-U4, el arranque de K deja la colección ausente y el listado por voz
+consulta el scheduler persistente; la colección heredada `user_memories` de
 `data/memory_db` (anterior a la política de memoria, en cuarentena y nunca
 leída) tampoco se copia (SC4C-Q2b): queda en H y se borra para siempre
 cuando el retiro destruye H. El snapshot de la compactación
@@ -337,9 +338,9 @@ R5V-1 no informa esos campos: ahí `pending_browser_recorders` y
      cuarentena, que K no recibe), los dos con `other_files: 0`. Si
      `other_files` no es 0, mirar qué se dejó a mano dentro del almacén
      antes de seguir (SC4C-Q5).
-     Después de la transición, «listar mis rutinas» por voz responde vacío
-     hasta que se dicte una rutina nueva (las rutinas programadas de
-     `routines.db` no cambian);
+     Con una versión que incluye T033-U4, «listar mis rutinas» lee del
+     scheduler persistente las rutinas guardadas en `routines.db`. Si H ya
+     carece de la colección heredada, esa baja no aparece en el plan;
    - `plan_sha256` y `untouched_sha256`.
 
 3. Iniciar (escribe la intención, crea K, lo materializa, lo autoriza y lo

@@ -18,7 +18,7 @@ PARITY_GAPS vs canonical runtime:
   - No latency monitoring (canonical: LatencyMonitor with per-stage tracking)
   - No timers, intercom, or notifications (canonical: NamedTimerManager, IntercomSystem)
   - No presence detection (canonical: PresenceDetector BLE per room)
-  - No routine management (canonical: RoutineManager creates HA automations)
+  - No routine management (the canonical runtime uses the persistent KZA scheduler)
   - No wake word detection (canonical: WakeWordDetector per room)
   - HA command execution is a stub — finds nearest vector but does NOT call HA API
   - No streaming TTS (canonical: ResponseHandler streams audio as tokens arrive)

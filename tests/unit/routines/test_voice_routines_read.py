@@ -14,7 +14,6 @@ from src.core.task_outcome import TaskStatus
 from src.nlu.command_gate import CommandAcceptanceGate
 from src.orchestrator.dispatcher import PathType
 from src.routines.models import ActionStatus, RoutineActionResult, RunStatus, parse_routine_spec
-from src.routines.routine_manager import RoutineManager
 from src.routines.routine_scheduler import RoutineScheduler
 from src.routines.routine_store import RoutineStore
 from src.routines.voice_routines import RoutineReadKind, RoutineReadQuery, VoiceRoutineService, name_key
@@ -87,8 +86,8 @@ LIST_TEXTS = [
     "¿qué rutina corre a las 7?", "¿qué rutina apaga las luces?", "¿qué automatización prende la luz del living?",
     # T033-U1-RV2: an indefinite determiner after an existence question still lists.
     "¿tengo alguna rutina para la noche?", "¿existen algunas rutinas?",
-    # The legacy RoutineManager list phrases now read the scheduler store.
-    *RoutineManager.LIST_PATTERNS,
+    "qué rutinas tengo", "lista de rutinas", "muestra las rutinas",
+    "cuáles son mis rutinas", "mis automatizaciones",
 ]
 
 CONSULT_TEXTS = [
@@ -374,15 +373,6 @@ async def test_routine_controls_without_capture_authority_skip_the_store(leaves,
     assert result.response == "" and counted.calls == []
 
 
-@pytest.mark.parametrize(("success", "status"), [(True, TaskStatus.UNCERTAIN), (False, TaskStatus.FAILED)])
-async def test_legacy_routine_results_carry_an_outcome_without_completion(leaves, success, status):
-    leaves.routines.handle.return_value = {"handled": True, "success": success, "response": "legacy"}
-    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService())
-    result = await dispatcher.dispatch(user_id="unknown", text="algo rutinario")
-    assert (result.path, result.intent) == (PathType.FAST_ROUTINE, "routine")
-    assert result.outcome.status is status and not result.outcome.task_completed
-
-
 async def test_cuando_questions_no_longer_route_to_routines(leaves, routines):
     scheduler, _ = routines
     dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
@@ -412,7 +402,7 @@ async def test_claimed_and_unclaimed_list_questions_read_the_store_with_an_outco
     leaves.chroma.list_routines.assert_not_called()
 
 
-async def test_unclaimed_consult_reads_the_store_and_never_the_legacy_handler(leaves, routines):
+async def test_unclaimed_consult_reads_the_store_without_side_effects(leaves, routines):
     scheduler, store = routines
     routine = await store.save(spec("Riego"), actor="admin")
     await run_with(store, routine.routine_id, RunStatus.SKIPPED)
@@ -426,7 +416,6 @@ async def test_unclaimed_consult_reads_the_store_and_never_the_legacy_handler(le
                                "La última vez no se ejecutó porque no se cumplían sus condiciones.")
     assert result.outcome.status is TaskStatus.COMPLETED and "routine" in result.timings
     assert leaves.effects(before) == effects()
-    assert leaves.routines.method_calls == []
 
 
 async def test_unknown_routine_name_is_needs_input_not_completion(leaves, routines):
@@ -528,12 +517,9 @@ async def test_an_uncued_consult_is_declined_only_when_no_saved_routine_matches(
 
 @pytest.mark.parametrize("text", ["¿qué rutina de skincare me recomendás?", "¿qué hago en mi rutina de ejercicios?"])
 async def test_general_questions_about_routines_go_to_the_conversation_path(leaves, routines, text):
-    """T033-U1-RV2: at base these reached the real RoutineManager, which handled none of them, and the
-    slow path answered. A consult with no saved name and no routine cue is passed on to the slow
-    path, never to the legacy handler; it never hears 'No encontré una rutina con ese nombre'."""
+    """A consult with no saved name or state cue is passed on to the slow path."""
     scheduler, store = routines
     await store.save(spec("Riego"), actor="admin")
-    leaves.routines.handle.return_value = {"handled": False}
     dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
     assert dispatcher.household_intents.classify(text) is None
     counted = CountedStore(store)
@@ -569,11 +555,8 @@ def test_gate_exemption_is_only_for_reads_that_are_always_answered():
 async def test_an_indefinite_routine_question_keeps_its_base_path_without_reading_the_store(leaves, routines):
     scheduler, store = routines
     await store.save(spec("Riego"), actor="admin")
-    leaves.routines.handle.return_value = {"handled": False}
     dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler))
     counted = CountedStore(store)
     result = await dispatcher.dispatch(user_id="unknown", text="¿cuál es una buena rutina de ejercicios?")
-    # Base: FAST_ROUTINE -> RoutineManager.handle (not handled) -> slow path.
     assert (result.path, result.response) == (PathType.SLOW_LLM, "Respuesta del modelo.")
-    leaves.routines.handle.assert_awaited_once()
     assert counted.calls == []

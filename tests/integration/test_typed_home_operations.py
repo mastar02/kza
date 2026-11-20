@@ -169,7 +169,7 @@ async def test_malformed_or_unselected_temperature_fails_before_observation(type
 ])
 async def test_voice_dispatcher_consumes_typed_service_after_policy(typed_graph, entity, service, data):
     ha, actions = typed_graph
-    dispatcher = RequestDispatcher(MagicMock(), ha, MagicMock(), home_actions=actions)
+    dispatcher = RequestDispatcher(MagicMock(), ha, home_actions=actions)
     assert await dispatcher._fire_and_reconcile_ha({"entity_id": entity, "domain": entity.partition(".")[0], "service": service, "data": data})
     assert ha.sends[0][3] == data
 

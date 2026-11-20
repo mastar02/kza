@@ -109,8 +109,6 @@ def _build_router(**overrides):
         "suggestion_engine": None,
         "latency_monitor": None,
         "features": None,
-        "voice_routine_handler": None,
-        "routine_manager": MagicMock(),
         "vector_search_threshold": 0.65,
         "latency_target_ms": 300,
         "suggestion_interval": 50,
@@ -122,14 +120,6 @@ def _build_router(**overrides):
     if not isinstance(defaults["command_processor"].process_command, AsyncMock):
         defaults["command_processor"].process_command = AsyncMock(
             return_value=_make_cmd_result()
-        )
-
-    # Make routine_manager.handle async by default
-    if defaults["routine_manager"] and not isinstance(
-        defaults["routine_manager"].handle, AsyncMock
-    ):
-        defaults["routine_manager"].handle = AsyncMock(
-            return_value={"handled": False}
         )
 
     # Make ha_client.call_service_ws async by default
@@ -173,7 +163,6 @@ class TestRequestRouterInit:
             chroma_sync=chroma,
             ha_client=ha,
             llm_reasoner=llm,
-            routine_manager=MagicMock(),
         )
 
         assert router.command_processor is cp
@@ -423,55 +412,6 @@ class TestProcessCommandLegacy:
         ha.call_service_once.assert_not_awaited()
         ha.call_service_ws.assert_not_awaited()
         router.response_handler.aspeak.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-class TestLegacyRoutineOutcome:
-    """T033-U1-RV4: the legacy routine handlers (stage 7, until T033-U4) report a TaskOutcome.
-
-    They return no evidence of a stored or executed change: a reply they mark
-    successful is UNCERTAIN, never COMPLETED; a refusal is FAILED.
-    """
-
-    @staticmethod
-    def _router(**overrides):
-        from src.routines.voice_routines import VoiceRoutineService
-
-        cp = MagicMock()
-        cp.process_command = AsyncMock(return_value=_make_cmd_result(text="nexa algo rutinario"))
-        # The read-only service is wired as in main; "algo rutinario" is not a routine question.
-        return _build_router(command_processor=cp, orchestrator_enabled=False,
-                             voice_routines=VoiceRoutineService(), **overrides)
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("success, status", [(True, "uncertain"), (False, "failed")])
-    async def test_voice_routine_handler_result_carries_an_outcome(self, success, status):
-        handler = MagicMock()
-        handler.handle = AsyncMock(return_value={"handled": True, "success": success, "response": "legacy"})
-        manager = MagicMock()
-        manager.handle = AsyncMock(side_effect=AssertionError("RoutineManager reached"))
-        router = self._router(voice_routine_handler=handler, routine_manager=manager)
-
-        result = await router.process_command(np.zeros(16000, dtype=np.float32))
-
-        assert (result["intent"], result["response"]) == ("routine", "legacy")
-        assert result["outcome"]["status"] == status and result["task_completed"] is False
-        handler.handle.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("success, status", [(True, "uncertain"), (False, "failed")])
-    async def test_routine_manager_result_carries_an_outcome(self, success, status):
-        handler = MagicMock()
-        handler.handle = AsyncMock(return_value={"handled": False})
-        manager = MagicMock()
-        manager.handle = AsyncMock(return_value={"handled": True, "success": success, "response": "legacy"})
-        router = self._router(voice_routine_handler=handler, routine_manager=manager)
-
-        result = await router.process_command(np.zeros(16000, dtype=np.float32))
-
-        assert (result["intent"], result["response"]) == ("routine", "legacy")
-        assert result["outcome"]["status"] == status and result["task_completed"] is False
-        manager.handle.assert_awaited_once()
 
 
 class TestFeedbackDetection:

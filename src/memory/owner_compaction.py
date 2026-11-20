@@ -44,9 +44,9 @@ pages or index files):
   not in retired_users, with the deletion ledger as a second gate;
 * the command-index collections (home_assistant_commands, its pointer and
   its versioned staging collections) are copied whole;
-* home_assistant_routines of the command store (data/chroma_db, settings
-  vectordb.path, where ChromaSync makes it) is not copied (a named drop:
-  dictated routine text with no erasure path; K's boot recreates it empty;
+* the historical home_assistant_routines collection of the command store
+  (data/chroma_db, settings vectordb.path) is not copied (a named drop:
+  dictated routine text with no erasure path; current runtime leaves it absent;
   SC4C-Q6: by exact name in that store only, like the legacy collection);
 * the legacy 'user_memories' collection of the memory store (data/memory_db,
   where LongTermMemory made it before the memory policy; quarantined, never
@@ -116,7 +116,7 @@ CHROMA_POLICY_SUFFIX = "_policy_v1"
 CHROMA_COMMAND_NAMES = re.compile(re.escape(CHROMA_COMMAND_INDEX) + r"(__pointer|__[0-9]{14}[0-9a-f]{6})?")
 # The named drops, each by exact name and only in its own store (never read, recorded by name only):
 # V4R2-C1 and SC4C-Q6: the routines of the command store (settings vectordb.path / ChromaSync's
-# routines_collection), not copied, K's boot recreates it empty; SC4C-Q2b: the pre-policy memory collection
+# historical routines collection), not copied or reopened; SC4C-Q2b: the pre-policy memory collection
 # (settings memory.chroma_path / long_term_collection), quarantined and never read.
 CHROMA_DROPPED_IN_STORE = frozenset({("data/chroma_db", "home_assistant_routines"),
                                      ("data/memory_db", "user_memories")})

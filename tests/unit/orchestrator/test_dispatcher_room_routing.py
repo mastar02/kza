@@ -52,19 +52,13 @@ def ha_mock():
     return ha
 
 
-@pytest.fixture
-def routine_mock():
-    r = MagicMock()
-    r.handle = AsyncMock(return_value={"handled": False, "response": "", "success": False})
-    return r
 
 
 @pytest.fixture
-def dispatcher(chroma_with_search, ha_mock, routine_mock):
+def dispatcher(chroma_with_search, ha_mock):
     return RequestDispatcher(
         chroma_sync=chroma_with_search,
         ha_client=ha_mock,
-        routine_manager=routine_mock,
         router=None,
         llm=None,
         context_manager=ContextManager(),

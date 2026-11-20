@@ -361,11 +361,10 @@ async def test_voice_events_keep_actual_provenance_when_memory_catalogue_is_disa
         processor = SimpleNamespace(process_command=AsyncMock(return_value=SimpleNamespace(
             text='Nexa explicame el cielo', user=None, emotion=None, timings={}, stt_confidence=None)))
         audio = MagicMock(); audio.detect_source_zone.return_value = 'zone_origin'
-        orchestrator = MultiUserOrchestrator(None, None, None, llm=owner.llm, response_handler=owner) if orchestrated else None
+        orchestrator = MultiUserOrchestrator(None, None, llm=owner.llm, response_handler=owner) if orchestrated else None
         router = RequestRouter(processor, owner, audio, orchestrator=orchestrator,
             orchestrator_enabled=orchestrated, llm_reasoner=owner.llm, asr_event_logger=events,
-            chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None),
-            routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
+            chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None))
         worker = None
         if orchestrator:
             orchestrator._running = True

@@ -664,7 +664,6 @@ llm:
 vectordb:
   path: "./data/chroma_db"
   commands_collection: "home_assistant_commands"
-  routines_collection: "home_assistant_routines"
   search_threshold: 0.65  # Similitud mínima para match
   # Entidades que NO se indexan en el vector search (no resolubles por voz).
   # - exclude_entities: lista de entity_id exactos. Default interno: light.hogar

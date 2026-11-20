@@ -508,10 +508,10 @@ async def test_reminder_creation_text_never_reaches_query_or_cancel_branches(lea
 async def test_orchestrator_forwards_the_shared_classifier(tmp_path):
     from unittest.mock import AsyncMock, MagicMock
     classifier = HouseholdIntentClassifier(HouseholdIntentSettings(compound_max_parts=2))
-    orchestrator = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(),
+    orchestrator = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock(),
                                          household_intents=classifier)
     assert orchestrator.dispatcher.household_intents is classifier
-    default = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock())
+    default = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock())
     assert isinstance(default.dispatcher.household_intents, HouseholdIntentClassifier)
 
 
@@ -637,20 +637,13 @@ async def test_sync_request_after_a_wake_word_is_still_the_explicit_request(leav
 ])
 async def test_unclaimed_routine_creation_never_reaches_cloud_extraction(leaves, text, claimed):
     """Review F5 (user answer Q15): no routine proposal is extracted by the cloud reasoner."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from src.routines.routine_manager import RoutineManager
-    reasoner = MagicMock()
-    ha = AsyncMock()
     dispatcher = leaves.dispatcher()
-    dispatcher.routines = RoutineManager(ha_client=ha, chroma_sync=MagicMock(), llm_reasoner=reasoner)
     before = leaves.snapshot()
     assert (dispatcher.household_intents.classify(text) is not None) is claimed
-    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    result = await dispatcher.dispatch(user_id="unknown", text=text, service_filter="turn_off")
     assert (result.path, result.outcome.status.value) == (PathType.FAST_ROUTINE, "unsupported")
     assert result.response == ROUTINE_CREATE
-    ha.get_domotics_entities.assert_not_awaited()
-    assert reasoner.mock_calls == []
+    leaves.ha.get_domotics_entities.assert_not_awaited()
     assert leaves.effects(before) == ZERO
 
 
@@ -1690,7 +1683,7 @@ async def test_the_hour_question_waits_on_the_same_speaker_and_room(leaves):
 
 async def test_the_orchestrator_tells_the_router_when_a_household_answer_is_awaited(leaves):
     orchestrator = MultiUserOrchestrator(
-        chroma_sync=leaves.chroma, ha_client=leaves.ha, routine_manager=leaves.routines, router=leaves.router,
+        chroma_sync=leaves.chroma, ha_client=leaves.ha, router=leaves.router,
         list_manager=leaves.list_manager, reminder_manager=leaves.reminder_manager)
     leaves.attach(orchestrator.dispatcher)
     await leaves.apply_state(orchestrator.dispatcher, TWO_SIMILAR)

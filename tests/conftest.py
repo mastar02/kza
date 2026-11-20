@@ -255,7 +255,7 @@ def mock_chroma():
     """Mock ChromaDB sync"""
     chroma = MagicMock()
     chroma.initialize = MagicMock()
-    chroma.get_stats = MagicMock(return_value={"commands_phrases": 100, "routines": 5})
+    chroma.get_stats = MagicMock(return_value={"commands_phrases": 100})
     chroma.search_command = MagicMock(return_value={
         "domain": "light",
         "service": "turn_on",
@@ -268,16 +268,6 @@ def mock_chroma():
     return chroma
 
 
-@pytest.fixture
-def mock_routine_manager():
-    """Mock routine manager"""
-    manager = MagicMock()
-    manager.handle = AsyncMock(return_value={
-        "handled": False,
-        "response": "",
-        "success": False
-    })
-    return manager
 
 
 # ==================== Sample Data Fixtures ====================

@@ -34,7 +34,6 @@ def dispatcher():
     d = RequestDispatcher(
         chroma_sync=MagicMock(),
         ha_client=MagicMock(),
-        routine_manager=MagicMock(),
         router=None,
         llm=None,
         context_manager=ContextManager(),
@@ -254,7 +253,6 @@ def dispatcher_with_async_ha():
     d = RequestDispatcher(
         chroma_sync=MagicMock(),
         ha_client=AsyncMock(),
-        routine_manager=MagicMock(),
         router=None,
         llm=None,
         context_manager=ContextManager(),
@@ -457,7 +455,6 @@ def test_orchestrator_forwards_weather_entity_to_dispatcher_via_real_init():
     orchestrator = MultiUserOrchestrator(
         chroma_sync=MagicMock(),
         ha_client=MagicMock(),
-        routine_manager=MagicMock(),
         weather_entity="weather.casa_de_prueba",
     )
     assert orchestrator.dispatcher.weather_entity == "weather.casa_de_prueba"
@@ -474,7 +471,7 @@ def test_dispatcher_default_weather_entity_matches_the_shipped_config():
     from src.orchestrator.dispatcher import RequestDispatcher
 
     d = RequestDispatcher(
-        chroma_sync=MagicMock(), ha_client=MagicMock(), routine_manager=MagicMock()
+        chroma_sync=MagicMock(), ha_client=MagicMock()
     )
     with open("config/settings.yaml") as fh:
         configured = yaml.safe_load(fh)["home_assistant"]["weather_entity"]
@@ -899,7 +896,7 @@ def test_command_with_an_indoor_temperature_question_is_refused_with_no_effects(
 def test_configured_room_names_count_for_indoor_temperature():
     from src.core.household_clock import RoomNamespace
 
-    d = RequestDispatcher(chroma_sync=MagicMock(), ha_client=MagicMock(), routine_manager=MagicMock(),
+    d = RequestDispatcher(chroma_sync=MagicMock(), ha_client=MagicMock(),
                           room_namespace=RoomNamespace(("quincho",)))
     assert d._classify_request("qué temperatura hay en el quincho")[0] is PathType.FAST_HOUSEHOLD
 

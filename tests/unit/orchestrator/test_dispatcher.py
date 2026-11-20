@@ -65,16 +65,6 @@ def mock_ha():
     return ha
 
 
-@pytest.fixture
-def mock_routine_manager():
-    """Mock routine manager"""
-    manager = MagicMock()
-    manager.handle = AsyncMock(return_value={
-        "handled": False,
-        "response": "",
-        "success": False
-    })
-    return manager
 
 
 @pytest.fixture
@@ -100,13 +90,12 @@ def mock_router():
 
 
 @pytest.fixture
-def dispatcher(mock_chroma, mock_ha, mock_routine_manager, mock_router):
+def dispatcher(mock_chroma, mock_ha, mock_router):
     """Create dispatcher with mocks"""
     return RequestDispatcher(
         chroma_sync=mock_chroma,
         ha_client=mock_ha,
         home_actions=selected_actions(mock_ha, ("light.living",)),
-        routine_manager=mock_routine_manager,
         router=mock_router,
         llm=None,
         context_manager=ContextManager(),

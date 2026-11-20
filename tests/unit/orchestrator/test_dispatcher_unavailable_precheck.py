@@ -168,7 +168,6 @@ def test_dispatcher_default_precheck_is_enabled_via_real_init():
     d = RequestDispatcher(
         chroma_sync=_MM(),
         ha_client=_MM(),
-        routine_manager=_MM(),
     )
     assert d._unavailable_precheck_enabled is True
 
@@ -184,7 +183,6 @@ def test_orchestrator_forwards_precheck_flag_to_dispatcher_via_real_init():
     orchestrator = MultiUserOrchestrator(
         chroma_sync=_MM(),
         ha_client=_MM(),
-        routine_manager=_MM(),
         unavailable_precheck_enabled=False,
     )
     assert orchestrator.dispatcher._unavailable_precheck_enabled is False

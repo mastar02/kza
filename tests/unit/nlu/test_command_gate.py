@@ -76,6 +76,33 @@ def _conf(no_speech, logprob):
     return STTResult("x", 1.0, no_speech_prob=no_speech, avg_logprob=logprob)
 
 
+@pytest.mark.parametrize("text", [
+    "para el último programa que vimos, prendé la luz a las 8",
+    "necesito que prendas las luces a las ocho",
+])
+def test_deferred_routine_refusal_still_requires_wake_and_confidence(text):
+    gate = _gate(enforce_confidence=True)
+    assert gate.evaluate(f"nexa {text}").reason == "non_immediate:deferred"
+    no_wake = gate.evaluate(text, reply_to_deferred_routine=True)
+    assert not no_wake.accept and no_wake.reason.startswith("missing_wake:")
+    low_confidence = gate.evaluate(f"nexa {text}", _conf(0.9, -2.0), reply_to_deferred_routine=True)
+    assert not low_confidence.accept and "low_confidence" in low_confidence.reason
+    assert gate.evaluate(f"nexa {text}", reply_to_deferred_routine=True).accept
+
+
+@pytest.mark.parametrize("text", [
+    "después del último programa que vimos, ¿a las ocho entregaron el premio?",
+    "despues del ultimo programa que vimos, ¿a las ocho entregaron el premio?",
+    "necesito que me digas qué partido empieza a las ocho",
+    "necesito que me digas que partido empieza a las ocho",
+    "quiero que me cuentes qué pasa cada vez que hay un empate",
+    "quiero que me cuentes que pasa cada vez que hay un empate",
+])
+def test_questions_about_schedules_do_not_require_the_deferred_routine_exception(text):
+    decision = _gate().evaluate(f"nexa {text}")
+    assert decision.accept and decision.reason == "ok"
+
+
 def test_low_confidence_rejected_when_enforcing():
     g = _gate(enforce_confidence=True, max_no_speech_prob=0.6, min_avg_logprob=-1.2)
     d = g.evaluate("nexa prendé la luz", _conf(0.9, -2.0))

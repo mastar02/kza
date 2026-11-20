@@ -21,7 +21,7 @@ async def graph(monkeypatch, parts):
     endpoint = Endpoint(SSEBody(parts))
     reasoner = HttpReasoner(model="configured-model", api_style="chat", cloud_consent=True, consent_gate=CloudConsentGate())
     monkeypatch.setattr(reasoner, "_new_async_client", endpoint.build)
-    orchestrator = MultiUserOrchestrator(None, None, None, llm=reasoner)
+    orchestrator = MultiUserOrchestrator(None, None, llm=reasoner)
     assert orchestrator.dispatcher.queue is orchestrator.queue
     orchestrator.context_manager.get_household("origin")
     orchestrator._running = True

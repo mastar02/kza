@@ -35,7 +35,6 @@ class TestChromaSyncUnit:
         stats = mock_chroma.get_stats()
 
         assert "commands_phrases" in stats
-        assert "routines" in stats
         assert stats["commands_phrases"] >= 0
 
     async def test_sync_commands(self, mock_chroma):
@@ -101,48 +100,3 @@ class TestChromaSyncSearchPatterns:
         response = mock_search_responses["persiana"]
         assert response["domain"] == "cover"
         assert response["service"] == "open_cover"
-
-
-class TestChromaSyncRoutines:
-    """Test routine-related ChromaDB operations"""
-
-    def test_save_routine(self, mock_chroma):
-        """Test saving a routine"""
-        mock_chroma.save_routine = MagicMock(return_value=True)
-
-        result = mock_chroma.save_routine(
-            routine_id="routine_123",
-            description="Rutina de llegada a casa",
-            phrases=["cuando llegue a casa", "al llegar"]
-        )
-
-        assert result is True
-
-    def test_search_routine(self, mock_chroma):
-        """Test searching for a routine"""
-        mock_chroma.search_routine = MagicMock(return_value={
-            "routine_id": "routine_123",
-            "description": "Rutina de llegada a casa",
-            "similarity": 0.85
-        })
-
-        result = mock_chroma.search_routine("rutina de llegada")
-        assert result is not None
-        assert "routine_id" in result
-
-    def test_list_routines(self, mock_chroma):
-        """Test listing all routines"""
-        mock_chroma.list_routines = MagicMock(return_value=[
-            {"id": "routine_1", "description": "Rutina 1"},
-            {"id": "routine_2", "description": "Rutina 2"}
-        ])
-
-        routines = mock_chroma.list_routines()
-        assert len(routines) == 2
-
-    def test_delete_routine(self, mock_chroma):
-        """Test deleting a routine"""
-        mock_chroma.delete_routine = MagicMock(return_value=True)
-
-        result = mock_chroma.delete_routine("routine_123")
-        assert result is True

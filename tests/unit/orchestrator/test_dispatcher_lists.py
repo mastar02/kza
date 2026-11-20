@@ -10,7 +10,6 @@ def dispatcher():
     d = RequestDispatcher(
         chroma_sync=MagicMock(),
         ha_client=AsyncMock(),
-        routine_manager=MagicMock(),
     )
     return d
 

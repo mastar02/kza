@@ -342,10 +342,10 @@ datos personales en la salida:
   Chroma de H, `rebuilt`, `copied`, `dropped`, `dropped_collections` y
   `other_files`. Lo esperado en producción:
   - `data/chroma_db`: `dropped_collections` `["home_assistant_routines"]`
-    (el índice de rutinas dictadas; el arranque de K lo recrea vacío, así
-    que **en cada transición** «listar mis rutinas» por voz queda vacío
-    hasta que se dicte una rutina nueva; las rutinas programadas de
-    `routines.db` no cambian), `copied` según el índice de comandos;
+    si H aún tiene el índice de rutinas dictadas, y `copied` según el
+    índice de comandos. Desde T033-U4, el arranque de K deja ausente la
+    colección retirada y «listar mis rutinas» consulta `routines.db` a
+    través del scheduler persistente;
   - `data/memory_db`: `rebuilt: 1`, `dropped: 1` y `dropped_collections`
     `["user_memories"]` (las 876 memorias heredadas en cuarentena: K no las
     recibe y se borran para siempre cuando el retiro destruye H);

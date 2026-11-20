@@ -28,7 +28,7 @@ def _build_voice_graph(orchestrator_enabled: bool, hooks: HookRegistry | None = 
     processor.process_command = AsyncMock()
     chroma = MagicMock()
     # Real orchestrator: typed controls must be handled before vector/LLM paths.
-    orchestrator = MultiUserOrchestrator(chroma, ha, MagicMock(), home_actions=actions)
+    orchestrator = MultiUserOrchestrator(chroma, ha, home_actions=actions)
     manager = MagicMock()
     manager.check_entity_permission.side_effect = AssertionError("Voice profiles are not authorization")
     router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator=orchestrator,

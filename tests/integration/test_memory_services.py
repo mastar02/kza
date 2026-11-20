@@ -75,12 +75,11 @@ async def test_voice_proposal_can_only_become_permanent_through_authenticated_re
             text='Nexa recordá que prefiero cocinar temprano', user=None, emotion=None,
             timings={}, stt_confidence=None)))
         audio = MagicMock(); audio.detect_source_zone.return_value = 'zone_origin'
-        orchestrator = MultiUserOrchestrator(None, None, None, llm=owner.llm,
+        orchestrator = MultiUserOrchestrator(None, None, llm=owner.llm,
             response_handler=owner, memory_manager=services.manager) if orchestrated else None
         router = RequestRouter(processor, owner, audio, orchestrator=orchestrator,
             orchestrator_enabled=orchestrated, memory_manager=services.manager,
-            chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None),
-            routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
+            chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None))
         event = CommandEvent(np.zeros(16000, dtype=np.float32), 'origin', timestamp=clock.now, captured_at=clock.now)
         result = await router.process_command(event)
         assert result['handled'] and result['intent'] == 'memory_proposal'
@@ -226,7 +225,7 @@ async def test_both_voice_routes_skip_private_memory_and_record_actual_capture_o
                 user_id='known-profile', name='PRIVATE_PROFILE_NAME_572', permission_level=100), emotion=None,
             timings={}, stt_confidence=None)))
         audio = MagicMock(); audio.detect_source_zone.return_value = 'zone_origin'
-        orchestrator = MultiUserOrchestrator(None, None, None, llm=owner.llm,
+        orchestrator = MultiUserOrchestrator(None, None, llm=owner.llm,
             response_handler=owner, memory_manager=services.manager) if orchestrated else None
         if orchestrator:
             orchestrator.speaker_identifier = SimpleNamespace(identify=MagicMock())
@@ -234,8 +233,7 @@ async def test_both_voice_routes_skip_private_memory_and_record_actual_capture_o
         router = RequestRouter(processor, owner, audio, orchestrator=orchestrator,
             orchestrator_enabled=orchestrated, memory_manager=services.manager, llm_reasoner=owner.llm,
             event_logger=events, asr_event_logger=events,
-            chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None),
-            routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
+            chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None))
         worker = None
         if orchestrator:
             orchestrator._running = True

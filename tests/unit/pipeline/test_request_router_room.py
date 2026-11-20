@@ -77,9 +77,6 @@ def _make_router(room_context_manager=None, orchestrator=None, orchestrator_enab
     audio_manager = MagicMock()
     audio_manager.detect_source_zone = MagicMock(return_value=None)
 
-    # Legacy path needs routines
-    routines = MagicMock()
-    routines.handle = AsyncMock(return_value={"handled": False})
 
     chroma = MagicMock()
     chroma.search_command = MagicMock(return_value=None)
@@ -92,7 +89,6 @@ def _make_router(room_context_manager=None, orchestrator=None, orchestrator_enab
         orchestrator=orchestrator,
         orchestrator_enabled=orchestrator_enabled,
         chroma_sync=chroma,
-        routine_manager=routines,
     )
     return router
 
@@ -454,7 +450,7 @@ class TestOriginRoomReachesDispatch:
         for room in ("living", "hall"):
             room_mgr.add_room(RoomConfig(room_id=room, name=room.title(), display_name=f"el {room}"))
         orchestrator = MultiUserOrchestrator(
-            chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(),
+            chroma_sync=MagicMock(), ha_client=AsyncMock(),
             household_clock=HouseholdClock(), room_namespace=RoomNamespace(("living", "hall")))
         results = []
 

@@ -9,6 +9,7 @@ must all read and write that same collection.
 import json
 import sys
 import types
+from unittest.mock import MagicMock
 
 import chromadb
 from chromadb.config import Settings
@@ -16,7 +17,8 @@ import numpy as np
 import pytest
 
 from src.vectordb.command_index import (
-    LEGACY_COMMANDS_COLLECTION, POINTER_MISSING_TARGET, open_active_commands, pointer_name, pointer_target,
+    LEGACY_COMMANDS_COLLECTION, POINTER_MISSING_TARGET, POINTER_RETIRED_TARGET,
+    open_active_commands, pointer_name, pointer_target,
 )
 
 ACTIVE = "home_assistant_commands__20261112000000abcdef"
@@ -66,6 +68,27 @@ def test_a_missing_pointer_target_is_degraded_and_never_created(tmp_path, caplog
     assert collection.name == LEGACY_COMMANDS_COLLECTION and active.degraded == POINTER_MISSING_TARGET
     assert ACTIVE not in [c.name for c in client.list_collections()]
     assert "the pointer names a missing collection" in caplog.text
+
+
+@pytest.mark.parametrize("create_base", [True, False])
+def test_pointer_to_retired_routines_never_opens_the_collection(tmp_path, monkeypatch, create_base):
+    retired = "home_assistant_routines"
+    client = _pointed_index(tmp_path)
+    try:
+        client.create_collection(retired)
+        client.get_collection(pointer_name()).modify(metadata={"active": retired})
+        lookup = MagicMock(wraps=client.get_collection)
+        monkeypatch.setattr(client, "get_collection", lookup)
+
+        collection, active = open_active_commands(client, create_base=create_base)
+
+        assert collection.name == active.name == LEGACY_COMMANDS_COLLECTION
+        assert active.pointer_target == pointer_target(client) == retired
+        assert active.degraded == POINTER_RETIRED_TARGET
+        assert retired in {entry.name for entry in client.list_collections()}
+        assert all(retired not in call.args and call.kwargs.get("name") != retired for call in lookup.call_args_list)
+    finally:
+        client.close()
 
 
 def test_clean_contaminated_reads_the_active_collection(tmp_path, monkeypatch, capsys):

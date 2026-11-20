@@ -11,9 +11,10 @@ Rules:
     * No pointer, or a pointer naming the base: the base (legacy) collection
       is active. This is every index written before 0d2.
     * A pointer naming another collection: that collection is opened with
-      ``get_collection``. It is never created implicitly. If it is missing,
-      the error is logged, the base collection is used and the result is
-      marked degraded so health reports it.
+      ``get_collection``. It is never created implicitly. If it is missing or
+      names the retired routines collection, use the base and mark the
+      result degraded so health reports it. The retired collection is never
+      opened from a pointer.
     * The base collection is never dropped by a sync while rollback to
       pre-0d2 code is possible (pre-0d2 code opens only the base name).
 
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 LEGACY_COMMANDS_COLLECTION = "home_assistant_commands"
 COSINE = {"hnsw:space": "cosine"}
 POINTER_MISSING_TARGET = "pointer_target_missing"
+POINTER_RETIRED_TARGET = "pointer_target_retired"
+_RETIRED_ROUTINES_COLLECTION = "home_assistant_routines"
 
 
 def pointer_name(base: str = LEGACY_COMMANDS_COLLECTION) -> str:
@@ -98,7 +101,11 @@ def open_active_commands(client, base: str = LEGACY_COMMANDS_COLLECTION, *,
     """
     target = pointer_target(client, base)
     degraded = None
-    if target is not None and target != base:
+    if target == _RETIRED_ROUTINES_COLLECTION:
+        degraded = POINTER_RETIRED_TARGET
+        logger.error("[CommandIndex] the pointer names the retired routines collection; "
+                     "falling back to the base collection (index degraded)")
+    elif target is not None and target != base:
         try:
             return client.get_collection(name=target), ActiveCommandIndex(target, target)
         except Exception as error:

@@ -17,6 +17,7 @@ scheduler once it exists.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import StrEnum
 import logging
@@ -28,8 +29,9 @@ from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus,
 )
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
-from src.nlu.command_grammar import WAKE_TERMS
-from src.nlu.household_intents import HouseholdFamily, HouseholdIntent, HouseholdOperation
+from src.nlu.command_grammar import WAKE_TERMS, extract_entity, match_intent_rules
+from src.nlu.household_intents import HouseholdFamily, HouseholdIntent, HouseholdOperation, strip_fillers
+from src.nlu.slot_extractor import classify_intent
 from src.routines.models import (
     ActionStatus, BrakeStatus, RoutineBrake, RoutineConflict, RoutineNameConflict, RoutineNotFound, RoutineRun,
     RunStatus, ScheduledRoutine, TimeSchedule,
@@ -42,13 +44,150 @@ from src.routines.voice_proposal_extractor import ProposalIssue, VoiceProposalEr
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "RoutineCatalogEntry", "RoutineProposalResult", "RoutineReadKind", "RoutineReadQuery", "RoutineReadResult",
-    "VoiceRoutineService",
-    "legacy_routine_outcome",
+    "ROUTINE_CREATE_REFUSAL", "RoutineCatalogEntry", "RoutineProposalResult", "RoutineReadKind", "RoutineReadQuery",
+    "RoutineReadResult", "VoiceRoutineService", "is_factual_question", "is_polite_scheduled_device_request",
+    "is_unclaimed_routine_creation",
 ]
+
+ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
+_UNCLAIMED_CREATION = re.compile(
+    r"\b(?:(?:crea|crear) (?:una )?(?:rutina|automatizacion)|nueva (?:rutina|automatizacion)|automatiza)\b"
+)
+# Keep each lookbehind fixed-width for Python's regex engine.
+_INDICATIVE_CONTEXT = (
+    r"(?<!\bse )(?<!\b(?:como|cual) )(?<!\b(?:donde|quien) )(?<!\bcuando )"
+)
+_SUBORDINATE_DIRECTIVE = (
+    r"(?:quiero|queria|queremos|quisiera|necesito|necesitamos|preciso|haz|hace|haceme|haga"
+    r"|pon|pone|ponga|deja|deje|manda|pedi|pide|(?:me )?(?:podes|podrias) hacer)(?: *,)? que"
+)
+_CLOCK_TIME = (
+    r"a las? (?:[0-9]+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)"
+    r"(?:(?::| )[0-5][0-9]| y (?:media|cuarto))?(?: de la (?:manana|tarde|noche))?"
+)
+_ROUTINE_SCHEDULE = re.compile(
+    r"\b(?:al (?:salir|ponerse|caer) el sol|al (?:amanecer|atardecer|anochecer)"
+    rf"|{_CLOCK_TIME}"
+    r"|cada (?:vez que|dia|semana|hora|[0-9]+)|tod[oa]s l[oa]s)\b"
+)
+_ROUTINE_DIRECTIVE = re.compile(rf"{_INDICATIVE_CONTEXT}\b(?:programa|configura) que\b")
+_SUBORDINATE_REQUEST = re.compile(
+    rf"\b{_SUBORDINATE_DIRECTIVE}\b +(?P<complement>.*?)(?=\b{_SUBORDINATE_DIRECTIVE}\b|$)"
+)
+_RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
+_RECURRENCE_QUESTION = re.compile(r"\bcuando se\b")
+# Subjunctive forms can follow "que se" in a request ("hacé que se programe").
+_CONFIGURATION_VERB = re.compile(
+    rf"{_INDICATIVE_CONTEXT}(?<!\bque )\b(?:configura|programa)\b"
+    r"|\b(?:configur|program)(?:ame|ar|e)\b"
+)
+_VOSEO_PROGRAM_VERB = re.compile(r"\bprogramá\b", re.I)
+_PROGRAM_PLAIN_DETERMINER = r"(?:el|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
+_PROGRAM_DETERMINER = rf"(?:del|al|{_PROGRAM_PLAIN_DETERMINER})"
+_PROGRAM_OBJECT = r"(?:el|la|los|las|un|una|unos|unas|mi|tu|su|este|esta|ese|esa)"
+_PROGRAM_PRENOMINAL_MODIFIER = (
+    r"(?:buen(?:a)?|mal(?:a)?|gran|mejor|peor|mayor|menor|nuev[oa]|viej[oa]|primer[oa]?|segund[oa]"
+    r"|tercer[oa]?|cuart[oa]|quint[oa]|ultim[oa]|proxim[oa]|mism[oa]|otr[oa]|unic[oa]"
+    r"|excelente|fantastic[oa]|maravillos[oa]|magnific[oa]|estupend[oa]|fabulos[oa]|genial|increible"
+    r"|hermos[oa]|lind[oa]|bonit[oa]|pequen[oa]|famos[oa]|popular|clasic[oa]|conocid[oa]"
+    r"|interesante|importante|brillante|apasionante|fascinante|emocionante|impresionante|entretenid[oa]"
+    r"|divertid[oa]|favorit[oa]|preferid[oa]|siguiente|anterior|pasad[oa]|reciente|especial"
+    r"|complet[oa]|enter[oa]|cort[oa]|larg[oa]|polemic[oa])"
+)
+_PROGRAM_NOMINAL_END = rf"programa\b(?!\s*[,;:]| {_PROGRAM_OBJECT}\b)"
+_PROGRAM_SCHEDULE_TAIL = r"(?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|[0-9]+|cuando|cada|tod[oa]s?)"
+_PROGRAM_COMPLEMENT_CONTEXT = (
+    r"(?<!\bpara )(?<!\bdespues )(?<!\bluego )(?<!\bantes )"
+    r"(?<!\bdespues de )(?<!\bluego de )(?<!\bantes de )"
+)
+_INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"
+_PROGRAM_DESIRE = r"(?:quiero|queria|queremos|quisiera)"
+_PROGRAM_EXPLICIT_DIRECTIVE = re.compile(
+    rf"\b(?:{_SUBORDINATE_DIRECTIVE}|(?:me|te|nos|le|les) (?:program|configur)(?:a|as|e|en|es)"
+    rf"|(?:program|configur)(?:a|ame|e) (?:que|{_PROGRAM_OBJECT}))\b"
+)
+# Keep the accent that distinguishes "escuché" from the subjunctive "escuche".
+_ACCENTED_MEDIA_PRETERITE = re.compile(r"(\b(?:grab|escuch|mir)é\b)", re.I)
+# A past event can identify the program without a main clause. Keep an
+# explicit instruction in the same clause eligible for routine refusal.
+_PROGRAM_PAST_RELATIVE = (
+    r"(?:vi|viste|vio|vimos|vieron|(?:grab|escuch|mir)(?:é|aste|o|amos|aron)"
+    r"|gan(?:o|aron)(?: (?:el|un) premio)?"
+    r"|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron)|estren(?:o|aron)))"
+    r"\b(?P<past_program_tail>[^¿?!.;]*)(?:¿ *(?P<past_program_question>[^¿?!.;]*))?"
+    r"(?P<past_program_question_mark>\?)?"
+)
+# A prospective relative can still be the complement of "programa que".
+# Require a conversational clause or a clearly separated question.
+_PROGRAM_CONVERSATIONAL_HEAD = (
+    rf"(?:{_PROGRAM_DESIRE}\b(?!(?: *,)? que\b)"
+    r"|buscame|busca|decime|dime|contame|mostrame|explicame|resumi|resumime|anota|recordame|acordate"
+    r"|prepara|preparame|hablemos|charlemos|comentame|avisame|pensaba|tengo|tenemos|puedo|podemos|podes|podrias"
+    r"|(?:me|te|nos) (?:podes|puedes|podrias|puede|pueden|ayudas|buscas|contas|cuentas|cuento"
+    r"|decis|dices|digo|explicas|explico|mostras|muestras|muestro))"
+)
+_PROGRAM_QUESTION_WORD = rf"(?:{_INTERROGATIVE}|por que)\b"
+_PROGRAM_DIRECT_QUESTION = (
+    rf"(?: *, *| +)¿ *{_PROGRAM_QUESTION_WORD}"
+    rf"| *, *(?P<unmarked_program_question>{_PROGRAM_QUESTION_WORD}[^¿?!.;]*)"
+)
+_PROGRAM_PROSPECTIVE_RELATIVE = (
+    r"(?:vemos|veamos|(?:grab|escuch|mir)(?:e|emos)"
+    r"|(?:voy|vas|va|vamos|van) a (?:ver|mirar|grabar|escuchar|pasar|dar|emitir|transmitir)"
+    r"|se (?:(?:emiti|(?:re)?transmiti)ran?|estrenaran?))"
+    r"\b(?: (?:ayer|anoche|hoy|manana|recien|juntos))?"
+    rf"(?:(?: *,)? {_PROGRAM_CONVERSATIONAL_HEAD}\b|{_PROGRAM_DIRECT_QUESTION})"
+)
+_PROGRAM_MEDIA_RELATIVE = rf"que (?:ya )?(?:{_PROGRAM_PAST_RELATIVE}|{_PROGRAM_PROSPECTIVE_RELATIVE})"
+# A temporal complement may end at an ordinal ("después del último, programa ...").
+# After one of those complements, "programa a las" can also be a command.
+# A "de" complement or a relative describing the show can still identify a noun.
+_NOMINAL_PROGRAM = re.compile(
+    rf"\b{_PROGRAM_DETERMINER} {_PROGRAM_NOMINAL_END}(?! (?:a las|que)\b)"
+    rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_DETERMINER}(?: {_PROGRAM_PRENOMINAL_MODIFIER})?"
+    rf" {_PROGRAM_NOMINAL_END}(?! {_PROGRAM_SCHEDULE_TAIL}\b)"
+    rf"|\b{_PROGRAM_DETERMINER} {_PROGRAM_PRENOMINAL_MODIFIER} {_PROGRAM_NOMINAL_END}(?= de\b)"
+    rf"|\b{_PROGRAM_DETERMINER}(?: {_PROGRAM_PRENOMINAL_MODIFIER})? {_PROGRAM_NOMINAL_END}"
+    rf"(?= {_PROGRAM_MEDIA_RELATIVE})"
+    rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_PLAIN_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= (?:de|que)\b)"
+)
+_QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
+_QUESTION_OPENING = re.compile(
+    rf"^(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE}\b"
+    r"|^(?:(?:me )?(?:podes|podrias|puedes) )?(?:decime|dime|decirme|decir|contame|contarme|sabes) "
+    rf"(?:si|desde|(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE})\b"
+)
+_INFORMATION_COMPLEMENT = re.compile(
+    r"(?:(?:me|te|nos|le|les) )?(?:"
+    r"diga[sn]?|contes|cuente[sn]?|explique[sn]?|mostres|muestre[sn]?|confirme[sn]?|busque[sn]?"
+    r"|averigue[sn]?|responda[sn]?|aclare[sn]?|lea[sn]?|recuerde[sn]?"
+    r"|(?:consultes|compruebes|investigues|revises|verifiques) "
+    rf"(?:si|(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE}))\b"
+)
+_IRRIGATION_ACTION = re.compile(r"\b(?:rieg(?:a[sn]?|ue[sn]?)|regar|(?:pon\w*|activ\w*) (?:el )?riego)\b")
+_CONTROL_CLAUSE_SEPARATOR = re.compile(r"\by\b(?! +(?:media|cuarto)\b)|\b(?:e|pero|ademas|luego|despues)\b|[,;¿]")
+_CONTROL_SCHEDULE_PREFIX = rf"(?:{_ROUTINE_SCHEDULE.pattern} +)?"
+_COURTESY_MODAL = r"(?:podes|puedes|podrias|podria)"
+_COURTESY_HEAD = re.compile(rf"{_CONTROL_SCHEDULE_PREFIX}(?:(?:me|te|nos) +)?{_COURTESY_MODAL}\b")
+_CONTROL_LEAD = rf"(?:{_ROUTINE_SCHEDULE.pattern}|que|me|te|nos|le|les|{_COURTESY_MODAL}|por favor)"
+_CONTROL_HEAD = re.compile(
+    rf"(?:{_CONTROL_LEAD} +)*(?:(?P<reflexive>se +)(?:{_CONTROL_LEAD} +)*)?"
+    r"(?:(?P<object>lo|la|los|las) +)?(?P<verb>[a-z]+)\b"
+)
+_CONTROL_VERB = re.compile(
+    r"(?:prend|encend|sub|abr)(?:e[rs]?|i[rs]?|a[sn]?)|enciend(?:es?|a[sn]?)|cierr(?:as?|e[sn]?)"
+    r"|(?:apag|baj|cerr|activ|desactiv|dej|ajust|regul|bloque|desbloque|cambi|ilumin|cort|atenu)(?:a[rs]?|e[sn]?)"
+    r"|(?:apague|intensifique)[sn]?|pon(?:e[rs]?|g[ae][sn]?)?"
+)
+_SUBJUNCTIVE_CONTROL_VERB = re.compile(
+    r"(?:prend|enciend|abr|sub|pong)a[sn]?"
+    r"|(?:apagu|desactiv|activ|cambi|cierr|baj|dej|ajust|regul|bloque|desbloque|ilumin|cort|riegu|atenu|intensifiqu)e[sn]?"
+)
+_CONTROL_ENTITY = re.compile(r"\b(?:riego|puertas?|porton|cerraduras?|aspersores?|enchufes?)\b")
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
 _PLURAL_NOUNS = frozenset({"rutinas", "automatizaciones"})
+_ROUTINE_VOCABULARY = _SINGULAR_NOUNS | _PLURAL_NOUNS | {"rutinario", "rutinaria", "rutinarios", "rutinarias"}
 # Words heard before the request itself: wake words, fillers and courtesy.
 _LEADS = frozenset(WAKE_TERMS | {"che", "oye", "oi", "hola", "bueno", "dale", "eh", "ehh", "em", "y", "ahora",
                                   "entonces", "porfa", "por", "favor", "disculpa", "perdon"})
@@ -229,22 +368,6 @@ class RoutineProposalResult:
     outcome: TaskOutcome
 
 
-def legacy_routine_outcome(success: bool) -> TaskOutcome:
-    """Outcome of a turn the legacy routine handlers answered (until T033-U4 retires them).
-
-    Those handlers return no evidence of a stored or executed change, so a
-    reply they mark successful is UNCERTAIN, never COMPLETED; a refusal is
-    FAILED with nothing written, sent or observed.
-
-    Args:
-        success: The legacy handler's own ``success`` flag.
-    """
-    if success:
-        return TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN)
-    return TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN,
-                       dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED)
-
-
 def _fold(text: str) -> str:
     decomposed = unicodedata.normalize("NFD", text.lower())
     return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
@@ -252,6 +375,151 @@ def _fold(text: str) -> str:
 
 def _words(text: str) -> list[str]:
     return re.sub(r"[^a-z0-9]+", " ", _fold(text)).split()
+
+
+def _fold_program_text(original: str) -> str:
+    # Keep clause punctuation and the accented preterite until nominal filtering.
+    return " ".join("".join(
+        part.lower() if index % 2 else _fold(part)
+        for index, part in enumerate(_ACCENTED_MEDIA_PRETERITE.split(original))
+    ).split())
+
+
+def _has_device_action(text: str) -> bool:
+    text = _fold(text)
+    # Check the verb at the beginning of each request or coordinated clause.
+    # A verb inside a factual question ("a qué hora prenden las luces") is its topic.
+    for clause in _CONTROL_CLAUSE_SEPARATOR.split(text):
+        clause = clause.strip()
+        head = _CONTROL_HEAD.match(clause)
+        if head is None:
+            continue
+        verb = head["verb"]
+        target = text if head["object"] else clause
+        if head["reflexive"]:
+            # A passive indicative ("se abre") describes an event. A subjunctive can request one.
+            action_verb = _SUBJUNCTIVE_CONTROL_VERB.fullmatch(verb)
+            if not action_verb:
+                continue
+        else:
+            # The broad slot classifier also accepts indicative forms such as "ponen".
+            # Require the explicit verb pattern for conjugated forms ending in o/s/n.
+            action_verb = _CONTROL_VERB.fullmatch(verb) or (
+                not verb.endswith(("o", "s", "n")) and classify_intent(verb)
+            )
+        if _IRRIGATION_ACTION.match(clause, head.start("verb")) or (
+            action_verb and (extract_entity(target) or _CONTROL_ENTITY.search(target))
+        ):
+            return True
+    return False
+
+
+def _is_informational_complement(text: str) -> bool:
+    """A request to tell or check something can mention a schedule as its topic."""
+    return bool(_INFORMATION_COMPLEMENT.match(text)) and not (
+        _has_device_action(text) or _ROUTINE_DIRECTIVE.search(text) or _UNCLAIMED_CREATION.search(text)
+        or (_CONFIGURATION_VERB.search(text) and not _ROUTINE_VOCABULARY.isdisjoint(text.split()))
+    )
+
+
+def _mask_nominal_program(match: re.Match[str]) -> str:
+    tail = match["past_program_tail"]
+    question = match["past_program_question"]
+    if question and (_PROGRAM_EXPLICIT_DIRECTIVE.search(question) or _has_device_action(question)):
+        return match[0]
+    if tail:
+        continuation = tail.lstrip(" ,")
+        request = _SUBORDINATE_REQUEST.fullmatch(continuation)
+        if request and _is_informational_complement(request["complement"]):
+            return " "
+        if _PROGRAM_EXPLICIT_DIRECTIVE.search(tail) or _has_device_action(tail):
+            return match[0]
+        if not match["past_program_question_mark"] and (_ROUTINE_SCHEDULE.search(tail) or re.search(r"\briego\b", tail)):
+            return match[0]
+    # Neither a past media verb nor a comma makes an embedded device action nominal.
+    continuation = match["unmarked_program_question"]
+    if continuation and (
+        match_intent_rules(continuation, extract_entity(continuation)) or re.search(r"\briego\b", continuation)
+    ):
+        return match[0]
+    return " "
+
+
+def is_factual_question(text: str, *, wake_words: Iterable[str] = (), reflexive_only: bool = False) -> bool:
+    """Recognize factual questions in information requests or after a past-program relative."""
+    original = unicodedata.normalize("NFC", text)
+    if not reflexive_only:
+        phrase = " ".join(strip_fillers(original, wake_words, extra_leads=_LEADS))
+        requests = tuple(_SUBORDINATE_REQUEST.finditer(phrase))
+        if requests and requests[0].start() == 0 and all(
+            _is_informational_complement(request["complement"]) for request in requests
+        ):
+            return True
+    if not original.rstrip().endswith("?"):
+        return False
+    folded = _fold_program_text(original)
+    for match in _NOMINAL_PROGRAM.finditer(folded):
+        if match.end("past_program_question_mark") != len(folded) or _mask_nominal_program(match) != " ":
+            continue
+        if not reflexive_only:
+            return True
+        question = match["past_program_question"] or match["past_program_tail"]
+        head = _CONTROL_HEAD.match(question.lstrip(" ,"))
+        if head and head["reflexive"]:
+            return True
+    return False
+
+
+def is_polite_scheduled_device_request(text: str, *, wake_words: Iterable[str] = ()) -> bool:
+    """Recognize an independent, polite request to control a device later."""
+    # The household filler rule strips "podés" along with the wake word.
+    words = _words(text)
+    leads = _LEADS | set(_words(" ".join(wake_words)))
+    start = next((index for index, word in enumerate(words) if word not in leads), len(words))
+    phrase = " ".join(words[start:])
+    return bool(_COURTESY_HEAD.match(phrase) and _ROUTINE_SCHEDULE.search(phrase) and _has_device_action(phrase))
+
+
+def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) -> bool:
+    """Recognize creation or configuration of routines outside the request grammar."""
+    original = unicodedata.normalize("NFC", text)
+    # The accented imperative "programá" cannot be the noun "programa".
+    voseo_program = _VOSEO_PROGRAM_VERB.search(original)
+    wake_words = tuple(wake_words)
+    words = strip_fillers(original, wake_words, extra_leads=_LEADS)
+    phrase = " ".join(words)
+    if _UNCLAIMED_CREATION.search(phrase):
+        return True
+    # A question that leads with an interrogative can mention a configuration verb.
+    if _QUESTION_OPENING.match(phrase):
+        return False
+    folded = _fold_program_text(original)
+    without_nominal_programs = _NOMINAL_PROGRAM.sub(_mask_nominal_program, folded)
+    command_text = phrase
+    if without_nominal_programs != folded:
+        command_text = " ".join(strip_fillers(without_nominal_programs, wake_words, extra_leads=_LEADS))
+    names_routine = not _ROUTINE_VOCABULARY.isdisjoint(words)
+    # A directive can have an embedded question or a trailing "¿podés?".
+    if _ROUTINE_DIRECTIVE.search(command_text) or (
+        names_routine and (voseo_program or _CONFIGURATION_VERB.search(command_text))
+    ):
+        return True
+    if _ROUTINE_SCHEDULE.search(command_text) and _has_device_action(command_text):
+        return True
+    informational = False
+    for request in _SUBORDINATE_REQUEST.finditer(command_text):
+        complement = request["complement"]
+        if _is_informational_complement(complement):
+            informational = True
+        elif complement.startswith("cuando ") or _ROUTINE_SCHEDULE.search(complement):
+            return True
+    if informational and not _has_device_action(command_text):
+        return False
+    recurrence = _RECURRENCE_CLAUSE.search(phrase)
+    if recurrence is None or (recurrence.start() != 0 and not names_routine):
+        return False
+    # A bare recurrence clause may introduce a question even if STT dropped the accents.
+    return not (_QUESTION_MARKER.search(original) or _RECURRENCE_QUESTION.search(phrase, recurrence.end()))
 
 
 def name_key(name: str) -> str:

@@ -1277,14 +1277,13 @@ compactación podía pasar del snapshot.
   hex>`, exactamente los nombres que crea `ChromaSync`) se copian
   enteras: registros, metadata (el puntero conserva `active`) y
   configuración. (3) `home_assistant_routines` de `data/chroma_db` **no se
-  copia** (texto de rutinas dictadas, sin camino de borrado); el arranque de
-  K la recrea vacía (`ChromaSync._construct`). Es una baja con nombre exacto
+  copia** (texto de rutinas dictadas, sin camino de borrado). Desde T033-U4,
+  el arranque de K deja la colección ausente. Es una baja con nombre exacto
   y sólo en ese almacén (respuesta SC4C-Q6 del usuario, 2026-11-17: el par
   `("data/chroma_db", "home_assistant_routines")` de
   `CHROMA_DROPPED_IN_STORE`, igual en el plan y en el trabajador y fijado
-  por un test a `vectordb.path` y `vectordb.routines_collection` de
-  `config/settings.yaml`, al valor por defecto de `routines_collection` de
-  `ChromaSync` y a la ruta por defecto de `src/main.py`); el mismo nombre en
+  por un test a `vectordb.path` de `config/settings.yaml` y a la ruta por
+  defecto de `src/main.py`); el mismo nombre en
   cualquier otro almacén rechaza como en (4). (3b) La colección heredada `user_memories` de
   `data/memory_db` (anterior a la política de memoria, en cuarentena y
   nunca leída: `long_term.get_stats` informa `legacy_policy:
@@ -1362,12 +1361,9 @@ compactación podía pasar del snapshot.
   server, con la `user_memories` heredada) y su copia opaca en el snapshot
   también, hasta
   el retiro o el `abort`; K no lo recibe porque cada almacén lo escribe un
-  hijo limpio. SC-0 encontró un lector en producción
-  (`routine_manager._handle_list` → `list_routines`, el intent de voz
-  «listar mis rutinas»): después de la transición esa lista sale vacía hasta
-  que se dicte una rutina nueva. El diseño deja a SC-R decidir entre la baja
-  y una reconstrucción desde la tabla protegida `routines`; el usuario
-  aceptó la baja (SC4C-Q1, 2026-11-16).
+  hijo limpio. El usuario aceptó la baja de la colección en SC4C-Q1
+  (2026-11-16). Desde T033-U4, «listar mis rutinas» por voz consulta las
+  rutinas guardadas en `routines.db` a través del scheduler persistente.
 - **Residuo de heap en el servicio (SC4C-Q3, corregido).** El mismo
   comportamiento de Chroma valía para el servicio: los archivos HNSW que
   escribe `kza-voice` podían guardar fragmentos de su heap (cualquier dato
@@ -1522,10 +1518,10 @@ en 0 en el paso 0). Lo que el operador tiene que saber de antemano:
   una vez y los bucles de mantenimiento (lista medida por SC-0): un defecto
   ahí aparece recién después de aceptar, y arreglarlo no devuelve lo que
   borró.
-- **`home_assistant_routines` se descarta en cada transición** (SC4C-Q1,
-  SC4C-Q6): el arranque de K' la recrea vacía, así que después de cada
-  transición «listar mis rutinas» por voz responde vacío hasta que se dicte
-  una rutina nueva. La `user_memories` heredada de `data/memory_db` se
+- **La compactación descarta `home_assistant_routines` si está presente**
+  (SC4C-Q1, SC4C-Q6). Desde T033-U4, el arranque de K' deja ausente la
+  colección y «listar mis rutinas» consulta el scheduler persistente.
+  La `user_memories` heredada de `data/memory_db` se
   descarta en la primera (SC4C-Q2b).
 - **Colas de borrado de audio.** La premisa anterior («una cola de borrados
   pendiente deja rutas viejas de H») estaba equivocada: una cola no vacía

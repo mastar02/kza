@@ -19,7 +19,6 @@ from src.monitoring.loop_lag import LoopLagConfig, LoopLagProbe
 from src.nlu.llm_router import CommandClassification
 from src.pipeline.command_event import CommandEvent
 from src.routines.models import RunStatus, parse_routine_spec
-from src.routines.routine_manager import RoutineManager
 from src.routines.voice_routines import VoiceRoutineService
 from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, offline_config, offline_home
 from tests.mocks.audio_output import AudioBackend
@@ -101,14 +100,15 @@ async def test_spoken_listing_matches_the_web_catalog(leaves, tmp_path, dashboar
             assert [(e.routine_id, e.name, e.enabled, e.revision, e.latest_run_status) for e in entries] == web
             assert [row[1] for row in web] == ["Buenos días", "Buenas noches", "Riego"]
 
-            graph.models.stt.text = "qué rutinas hay"
-            result = await graph.pipeline.process_command(event())
-            assert result["intent"] == "routine" and result["handled"]
-            assert result["response"] == "Hay 3 rutinas: Buenos días, Buenas noches (desactivada) y Riego."
-            assert result["task_completed"] and result["outcome"]["status"] == "completed"
-            assert result["outcome"]["persistence"] == "not_required"
-            if orchestrated:
-                assert result["path"] == "fast_routine"
+            for text in ("qué rutinas hay", "Nexa, qué rutinas tengo y cuál automatiza el riego"):
+                graph.models.stt.text = text
+                result = await graph.pipeline.process_command(captured(**OWN_WAKE))
+                assert result["intent"] == "routine" and result["handled"]
+                assert result["response"] == "Hay 3 rutinas: Buenos días, Buenas noches (desactivada) y Riego."
+                assert result["task_completed"] and result["outcome"]["status"] == "completed"
+                assert result["outcome"]["persistence"] == "not_required"
+                if orchestrated:
+                    assert result["path"] == "fast_routine"
 
             graph.models.stt.text = "¿cómo salió la rutina riego?"
             consult = await graph.pipeline.process_command(event())
@@ -223,7 +223,11 @@ async def test_list_and_consult_phrases_reach_the_read_in_the_real_graph(leaves,
             await seed(graph)
             listing = "Hay 3 rutinas: Buenos días, Buenas noches (desactivada) y Riego."
             night = "La rutina Buenas noches está desactivada. Todavía no se ejecutó."
-            turns = [(text, listing) for text in RoutineManager.LIST_PATTERNS] + [
+            list_phrases = (
+                "qué rutinas tengo", "lista de rutinas", "muestra las rutinas",
+                "cuáles son mis rutinas", "mis automatizaciones",
+            )
+            turns = [(text, listing) for text in list_phrases] + [
                 ("¿Se ejecutó la rutina Buenas Noches?", night),
                 ("¿qué hace la rutina buenas noches?", night),
                 ("¿la rutina buenas noches anduvo bien hoy?", night),
