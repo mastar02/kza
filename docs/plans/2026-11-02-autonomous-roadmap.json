@@ -1401,10 +1401,20 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": "Complete persistence/restart/voice journeys; include temporizador synonym observed missing in T010 (see T010 validation limits and retained graph-third.log)."
+      "status": "in_progress",
+      "implementation_commits": [
+        "d0704fc2b8e1068d97ba4009c6dea355b1cfafce",
+        "72e6ed957956005119518cf1863b9b3f4811d63a",
+        "155b519d00db2b1e4db299196baec360269373f9",
+        "7d8016668e67bafeb19b539a13f166ad120e6a0d"
+      ],
+      "evidence": [
+        "tests/unit/intercom/test_intercom_system.py",
+        "tests/unit/notifications/test_smart_notifications.py",
+        "tests/unit/nlu/test_household_intents.py",
+        "tests/integration/test_voice_compound_commands.py"
+      ],
+      "next_action": "Completar T030-U3."
     },
     {
       "id": "T031",
@@ -1459,10 +1469,25 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "in_progress",
+      "implementation_commits": [
+        "cd517505eb94b170568b6f0f138db438ce94bc4f",
+        "14727f583abe2e3af46af804d033b98cba0e79d1",
+        "ae17737e43a5f07c6350328cf70fc38ad949935b",
+        "66026e244d41c4f0d87dedb1a239968a3035a2b3",
+        "4a3499ba62079d71554447ea78a2371401161468",
+        "5f539af2a267755b746fa32eb6dd49a5591da707",
+        "43a7d001d0de53994367962bb1b8fe4483f2f721",
+        "50f626be258f085a1e1cce6827ec5c0990e8243d"
+      ],
+      "evidence": [
+        "tests/integration/test_routine_voice_creation.py",
+        "tests/integration/test_home_control_policy.py",
+        "tests/unit/routines/test_voice_routines_read.py",
+        "tests/integration/test_routine_voice_factory.py",
+        "tests/integration/test_routine_voice_proposals.py"
+      ],
+      "next_action": "Completar T033-U5."
     },
     {
       "id": "T034",
@@ -1497,10 +1522,19 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "in_progress",
+      "implementation_commits": [
+        "2662eff7a7e914de67538afdbc24cfe072492175",
+        "bdd7cdf0807b8dd2087471db001e4c8ea4c89df6",
+        "5202e7c5c6f6ccb40e33ce08843217978743eb8c"
+      ],
+      "evidence": [
+        "tests/unit/dashboard/test_authority.py",
+        "tests/unit/reminders/test_reminder_store.py",
+        "tests/integration/test_lists_reminders_e2e.py",
+        "tests/integration/test_scope_visitor_matrix.py"
+      ],
+      "next_action": "Completar T035-U2 (vista NEXO Mis tareas / visitante)."
     },
     {
       "id": "T036",
@@ -1643,10 +1677,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "in_progress",
+      "implementation_commits": [
+        "a739e96199699858616edb5050b657ac0691b5ce",
+        "2a602ab03e3a63de57949270521c1733d83d3879"
+      ],
+      "evidence": [
+        "docs/research/2026-11-20-t042-a11y-inventory.json",
+        "tests/frontend/test_audit_support.py"
+      ],
+      "next_action": "Completar T042-U5."
     },
     {
       "id": "T043",
@@ -1683,9 +1723,18 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "7e1996f497edf3710a3839a2a701680e37a5abc9",
+        "dee9c896053c8f62ed524ef74f2448f8a7622d0e"
+      ],
+      "evidence": [
+        "tests/integration/test_voice_capture_order.py",
+        "tests/frontend/test_voice_privacy.cjs",
+        "tests/frontend/test_voice_order.cjs",
+        "tests/frontend/browser_nexo_voices.py",
+        "tests/frontend/browser_voice_review.py"
+      ],
       "next_action": null
     },
     {
@@ -2240,11 +2289,17 @@
       "optional": false,
       "inclusion": "required",
       "status": "in_progress",
-      "implementation_commits": [],
-      "evidence": [
-        "docs/plans/2026-11-20-test-suite-acceleration.md"
+      "implementation_commits": [
+        "81a46b671b88f16938d81d5ad80a7d9823813df8"
       ],
-      "next_action": "Validar T090-U1 y T090-U2 en Mac Tier 0/1 y kza-yo Tier 2 antes de Batch R"
+      "evidence": [
+        "docs/plans/2026-11-20-test-suite-acceleration.md",
+        "scripts/run_test_suite.py",
+        "tests/mocks/runtime_artifact_cache.py",
+        "tests/unit/tools/test_run_test_suite.py",
+        "tests/unit/tools/test_runtime_artifact_cache.py"
+      ],
+      "next_action": "Ejecutar T090-U3..U5 tras promover Batch R."
     }
   ],
   "finding_trace": [
@@ -2622,12 +2677,12 @@
     "units": [
       {
         "id": "T090-U1",
-        "status": "in_progress",
+        "status": "verified_local",
         "summary": "Portable multi-worker tier runner (scripts/run_test_suite.py) with pytest-xdist, /dev/shm basetemp, prebuild cache, and parallel systemd/core/compiled-solo lanes"
       },
       {
         "id": "T090-U2",
-        "status": "in_progress",
+        "status": "verified_local",
         "summary": "Unified content-addressed build_runtime artifact cache (tests/mocks/runtime_artifact_cache.py) wired into test helpers/fixtures"
       },
       {
