@@ -56,6 +56,7 @@ from src.routines.routine_manager import RoutineManager
 from src.routines.factory import build_routine_scheduler
 from src.routines.proposals import RoutineProposalTray
 from src.routines.routine_scheduler import RoutineScheduler
+from src.routines.voice_proposal_extractor import VoiceProposalExtractor
 from src.routines.voice_routines import VoiceRoutineService
 from src.timers.voice_commands import TimerVoiceCommands
 from src.home_assistant.home_actions import HomeActionService
@@ -881,13 +882,8 @@ async def build_application(
             llm.load()
             logger.info("LLM 72B cargado en proceso (mode=local)")
 
-    # Routine Manager
-    routine_manager = RoutineManager(ha_client, chroma, llm)
-    # Voice routines use the persistent scheduler. The
-    # scheduler is built after the orchestrator and the RequestRouter (it needs
-    # the shared Casa services), so both receive this one service now and the
-    # scheduler is bound below, once _initialize_routines returns.
-    voice_routines = VoiceRoutineService(voice_brake=(config.get("routines") or {}).get("voice_brake") is True)
+    # Legacy reads/refusals never get a reasoner for routine creation.
+    routine_manager = RoutineManager(ha_client, chroma, llm_reasoner=None)
 
     # Fast Router (GPU 2) - para clasificación rápida con KV-Cache
     router_config = config.get("router", {})
@@ -970,6 +966,11 @@ async def build_application(
     suggestion_erasure = await build_suggestion_erasure(config, privacy=privacy_services, owner=erasure_services,
                                                         verify_only=verify_only)
     routine_proposals = RoutineProposalTray(privacy_services.ledger)
+    # Both voice paths share the review tray now and bind the scheduler below.
+    voice_routines = VoiceRoutineService(
+        voice_brake=(config.get("routines") or {}).get("voice_brake") is True,
+        proposal_extractor=VoiceProposalExtractor(home_action_service), proposal_tray=routine_proposals,
+    )
     privacy_services.add_borrower(routine_proposals.begin_close)
     context_erasure = await build_context_erasure(config, privacy=privacy_services, owner=erasure_services,
                                                   memory=memory_manager, verify_only=verify_only,
@@ -2190,6 +2191,10 @@ async def build_application(
         )
         speaker_models.add_borrower(dashboard.admin_work.begin_close)
         shutdown.push_async_callback(dashboard.stop)
+        if dashboard_authority is not None:
+            voice_routines.bind_proposal_review(
+                lambda: dashboard_authority.available and not dashboard.admin_work.status()["closed"],
+            )
         if destination_registration is not None:
             # Original stop is installed first; attachment failure still drains it.
             await destination_registration.attach_accounts(user_manager, dashboard)

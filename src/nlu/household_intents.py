@@ -711,6 +711,16 @@ def _routine_name_after(utt: _Utterance, noun: int) -> str:
     return utt.source[utt.word_ends[noun]:].strip() if utt.word_ends else _rest(utt, noun + 1)
 
 
+def _routine_proposal_after(utt: _Utterance, head: int) -> str:
+    """Keep punctuation inside the clause, including clock times and entity IDs."""
+    if not utt.word_ends:
+        return _rest(utt, head + 1)
+    end = utt.word_ends[-1]
+    if _WORD_RE.search(utt.source, end) is None:
+        end = len(utt.source)
+    return utt.source[utt.word_ends[head]:end].strip().lower()
+
+
 def _clause_head(utt: _Utterance, j: int) -> bool:
     """An imperative verb, or a reminder verb, opens a clause at token ``j``."""
     return _verb_at(utt, j, strict=True) is not None or _REMINDER_HEAD.match(" ".join(utt.folded[j:])) is not None
@@ -1019,7 +1029,7 @@ def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
         new = new or (form is None and not slot)
         k += 1
     if form in _ROUTINE_CREATE_FORMS or indefinite or new:
-        return HouseholdIntent(HouseholdFamily.ROUTINE, HouseholdOperation.PROPOSE, "R6", _rest(utt, k + 1),
+        return HouseholdIntent(HouseholdFamily.ROUTINE, HouseholdOperation.PROPOSE, "R6", _routine_proposal_after(utt, k),
                                form or "", reason="new_routine")
     return None
 
@@ -1030,7 +1040,8 @@ def _r6(utt: _Utterance) -> HouseholdIntent | None:
         return created
     verb = _verb_at(utt, 0)
     if verb is not None and _AUTOMATE in verb.classes:
-        return HouseholdIntent(HouseholdFamily.ROUTINE, HouseholdOperation.PROPOSE, "R6", _rest(utt, verb.end),
+        return HouseholdIntent(HouseholdFamily.ROUTINE, HouseholdOperation.PROPOSE, "R6",
+                               _routine_proposal_after(utt, verb.end - 1),
                                verb.form, reason="new_routine")
     if verb is not None:
         governed = _governed_object(utt, verb.end, allow_adjective=True)
