@@ -69,17 +69,24 @@ _CONFIGURATION_VERB = re.compile(
 _VOSEO_PROGRAM_VERB = re.compile(r"\bprogramá\b", re.I)
 _PROGRAM_DETERMINER = r"(?:el|del|al|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
 _PROGRAM_OBJECT = r"(?:el|la|los|las|un|una|unos|unas|mi|tu|su|este|esta|ese|esa)"
-_PROGRAM_WITH_MODIFIER = rf"{_PROGRAM_DETERMINER} [a-z]+ programa\b"
-_PROGRAM_DIRECTIVE_TAIL = (
-    rf"(?:{_PROGRAM_OBJECT}|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|[0-9]+"
-    r"|cuando|cada|todos|todas|todo|toda|que (?:cuando|se|el|la|arranque|empiece|funcione|corra|encienda|apague|prenda))"
+_PROGRAM_PRENOMINAL_MODIFIER = (
+    r"(?:buen(?:a)?|mal(?:a)?|gran|mejor|peor|mayor|menor|nuev[oa]|viej[oa]|primer[oa]?|segund[oa]"
+    r"|tercer[oa]?|cuart[oa]|quint[oa]|ultim[oa]|proxim[oa]|mism[oa]|otr[oa]|unic[oa]"
+    r"|excelente|fantastic[oa]|maravillos[oa]|magnific[oa]|estupend[oa]|fabulos[oa]|genial|increible"
+    r"|hermos[oa]|lind[oa]|bonit[oa]|pequen[oa]|famos[oa]|popular|clasic[oa]|conocid[oa]"
+    r"|interesante|importante|brillante|apasionante|fascinante|emocionante|impresionante|entretenid[oa]"
+    r"|divertid[oa]|favorit[oa]|preferid[oa]|siguiente|anterior|pasad[oa]|reciente|especial"
+    r"|complet[oa]|enter[oa]|cort[oa]|larg[oa])"
 )
-# After "para", an intervening word may be the object of the preposition
-# ("para el riego programa ..."). A following "de" still marks a nominal phrase.
+_PROGRAM_NOMINAL_END = rf"programa\b(?!\s*[,;:]| {_PROGRAM_OBJECT}\b)"
+_PROGRAM_SCHEDULE_TAIL = r"(?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|[0-9]+|cuando|cada|tod[oa]s?)"
+# The open modifier needs "programa de" and excludes purpose and time complements.
+# Relative clauses ("el primer programa que se emitió") are nominal as well.
 _NOMINAL_PROGRAM = re.compile(
-    rf"\b{_PROGRAM_DETERMINER} programa\b(?! {_PROGRAM_OBJECT}\b)"
-    rf"|(?<!\bpara )\b{_PROGRAM_WITH_MODIFIER}(?! {_PROGRAM_DIRECTIVE_TAIL}\b)"
-    rf"|\b{_PROGRAM_WITH_MODIFIER}(?= de\b)"
+    rf"\b{_PROGRAM_DETERMINER} {_PROGRAM_NOMINAL_END}"
+    rf"|\b{_PROGRAM_DETERMINER} {_PROGRAM_PRENOMINAL_MODIFIER} {_PROGRAM_NOMINAL_END}(?! {_PROGRAM_SCHEDULE_TAIL}\b)"
+    r"|(?<!\bpara )(?<!\bdespues )(?<!\bluego )(?<!\bdespues de )(?<!\bluego de )"
+    rf"\b{_PROGRAM_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= de\b)"
 )
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
 _INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"
@@ -294,7 +301,7 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     # A question that leads with an interrogative can mention a configuration verb.
     if _QUESTION_OPENING.match(phrase):
         return False
-    # Preserve the comma in "para el riego, programa" until nominal filtering.
+    # Preserve clause punctuation on either side of "programa" until nominal filtering.
     folded = " ".join(_fold(original).split())
     without_nominal_programs = _NOMINAL_PROGRAM.sub(" ", folded)
     command_text = phrase

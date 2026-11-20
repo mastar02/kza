@@ -64,6 +64,11 @@ async def voice_router(orchestrated, utterance, *, scheduler=None):
     ("para el riego programa dos rutinas para las ocho", "no creo rutinas por voz"),
     ("para el riego, programa que arranque a las ocho", "no creo rutinas por voz"),
     ("para el riego programa que arranque a las ocho", "no creo rutinas por voz"),
+    ("después del riego programa, la rutina de jardín para las ocho", "no creo rutinas por voz"),
+    ("después del riego programa la rutina de jardín para las ocho", "no creo rutinas por voz"),
+    ("después del riego, programa que vuelva a arrancar a las ocho", "no creo rutinas por voz"),
+    ("después del riego programa, que vuelva a arrancar a las ocho", "no creo rutinas por voz"),
+    ("después del riego programa que vuelva a arrancar a las ocho", "no creo rutinas por voz"),
     ("programa que arranque el riego al anochecer", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego, ¿podés?", "no creo rutinas por voz"),
@@ -112,6 +117,7 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "quiero escuchar algún programa de rutinas de ejercicio",
     "quiero escuchar un buen programa de rutinas de ejercicio",
     "quiero escuchar un excelente programa de rutinas de ejercicio",
+    "quiero ver el primer programa que se emitió anoche",
     "¿se configura el horario de la automatización de riego desde la web?",
     "podés decirme quién configura el horario de la automatización de riego",
     "¿Te parece que programa bien el horario la automatización de riego?",
@@ -144,6 +150,8 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
     "¿quién programa el horario de la automatización de riego?",
     "para el programa de rutinas de ejercicio",
     "para el excelente programa de rutinas de ejercicio",
+    "quiero ver un insólito programa de rutinas de ejercicio",
+    "quiero ver el primer programa que el público votó",
 ])
 def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance):
     assert not is_unclaimed_routine_creation(f"Nexa, {utterance}")
@@ -159,6 +167,11 @@ def test_accented_program_verb_survives_nominal_filtering():
     "después del riego programa dos rutinas para las ocho",
     "después del riego programa 2 rutinas para las ocho",
     "después del riego programa que arranque a las ocho",
+    "después del último, programa ahora la rutina de jardín",
+    "después del último programa, ahora la rutina de jardín",
+    "después del riego programa de nuevo el horario de la automatización",
+    "luego del riego programa de nuevo el horario de la automatización",
+    "para el riego programa de nuevo el horario de la automatización",
 ])
 def test_program_directive_survives_nominal_filtering(utterance):
     assert is_unclaimed_routine_creation(f"Nexa, {utterance}")
