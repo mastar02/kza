@@ -13,7 +13,7 @@ import tarfile
 
 import pytest
 
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from scripts.stage_runtime import activate_slot, prepare_slot
 from tests.mocks.runtime_tree import writable_runtime
 

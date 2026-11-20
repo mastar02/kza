@@ -118,7 +118,7 @@ def prepare_case(task, evidence, repo, new_revision, *, copy_cleanup_seed=False,
     old_revision defaults to schema_compatible_revision; an explicit one must be
     an exact managed-capable commit (exercise_pre_u3b_derivation).
     """
-    from scripts.build_runtime import build_runtime
+    from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
     from scripts.stage_runtime import prepare_slot
     from tests.mocks import compiled_restore as compiled
     from tests.mocks import slot_rollback as original

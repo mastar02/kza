@@ -49,7 +49,7 @@ import pytest
 from scripts import adoption_commands as commands
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from tests.integration import test_adoption_commands as adoption_tests
 from tests.mocks import compaction_world as cw
 from tests.mocks import launcher_rehearsal

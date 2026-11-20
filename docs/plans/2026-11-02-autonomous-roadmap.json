@@ -2229,6 +2229,22 @@
       "implementation_commits": [],
       "evidence": [],
       "next_action": null
+    },
+    {
+      "id": "T090",
+      "phase": "P6",
+      "title": "Aceleración exponencial de la suite de tests (Tiers 0/1/2, pytest-xdist, caché de artefactos y /dev/shm)",
+      "criteria": [],
+      "findings": [],
+      "human_gate": false,
+      "optional": false,
+      "inclusion": "required",
+      "status": "in_progress",
+      "implementation_commits": [],
+      "evidence": [
+        "docs/plans/2026-11-20-test-suite-acceleration.md"
+      ],
+      "next_action": "Validar T090-U1 y T090-U2 en Mac Tier 0/1 y kza-yo Tier 2 antes de Batch R"
     }
   ],
   "finding_trace": [
@@ -2586,5 +2602,49 @@
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
     "last_verified_unit": "T024-F0/artifact-build-process-independence",
     "user_priority_after_admin_unit": "T047"
+  },
+  "test_suite_acceleration": {
+    "task_id": "T090",
+    "plan_doc": "docs/plans/2026-11-20-test-suite-acceleration.md",
+    "baseline_measured_batch_q": {
+      "host": "kza-yo",
+      "xml_testcases": 17536,
+      "xml_cumulative_seconds": 8340.2,
+      "compiled_solo_seconds": 1096.36,
+      "sc6b_approx_seconds": 1510,
+      "total_wall_minutes_approx": "100-115"
+    },
+    "user_decision_2026_11_20": {
+      "priority": "Execute T090-U1 + T090-U2 before Batch R",
+      "mac_tier0_tier1_enabled": true,
+      "systemd_and_full_gate_host": "kza-yo"
+    },
+    "units": [
+      {
+        "id": "T090-U1",
+        "status": "in_progress",
+        "summary": "Portable multi-worker tier runner (scripts/run_test_suite.py) with pytest-xdist, /dev/shm basetemp, prebuild cache, and parallel systemd/core/compiled-solo lanes"
+      },
+      {
+        "id": "T090-U2",
+        "status": "in_progress",
+        "summary": "Unified content-addressed build_runtime artifact cache (tests/mocks/runtime_artifact_cache.py) wired into test helpers/fixtures"
+      },
+      {
+        "id": "T090-U3",
+        "status": "planned",
+        "summary": "Optimize slow fixtures (test_private_access TestClient reuse, immutable base worlds) without weakening oracles"
+      },
+      {
+        "id": "T090-U4",
+        "status": "planned",
+        "summary": "Accelerate systemd lane (sc6b + test_linux_*) and compiled-solo preserving journald NRestarts and real budgets"
+      },
+      {
+        "id": "T090-U5",
+        "status": "planned",
+        "summary": "Wire Tiers 0/1/2 into runbooks, multi-console orchestrator workflow, and ci.yml"
+      }
+    ]
   }
 }

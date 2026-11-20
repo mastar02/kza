@@ -449,6 +449,7 @@ NO_SRC_ENTRIES = {
     "scripts/kza_router.py": "developer multi-console model router CLI; calls Decisions API and writes router state only, opens no KZA store",
     "scripts/kza_safety_guard.py": "developer session PreToolUse safety hook; inspects stdin tool payload only, opens no KZA store",
     "scripts/kza_seat.py": "developer multi-console herdr/worktree launcher CLI; manages local dev seats only, opens no KZA store",
+    "scripts/run_test_suite.py": "parallel pytest/node test suite tier runner; orchestrates test subprocesses only, opens no KZA store",
 }
 
 

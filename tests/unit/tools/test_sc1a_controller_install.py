@@ -24,7 +24,8 @@ import pytest
 from scripts import compaction
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
-from scripts.build_runtime import build_runtime, controller_closure
+from scripts.build_runtime import controller_closure
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from tests.mocks import compaction_world as cw
 from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks.epoch4 import edited_commit, epoch4_commit, epoch4_in_process

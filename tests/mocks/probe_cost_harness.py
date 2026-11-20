@@ -117,7 +117,7 @@ def build_state(source: Path, scale: int) -> dict:
 def _working_tree_archives(work: Path) -> dict:
     """Build X (committed HEAD, pre-0b) and Y (this working tree, committed only in a clone)."""
     import subprocess
-    from scripts.build_runtime import build_runtime
+    from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 
     def git(cwd, *arguments, **kwargs):
         return subprocess.run(["git", *arguments], cwd=cwd, check=True, capture_output=True, text=True,
@@ -259,7 +259,7 @@ def main() -> None:
                         help="U3b-0b: 2 owners, 5 delegated targets; 0b and pre-0b candidate probes")
     args = parser.parse_args()
     from scripts import stage_runtime as stage
-    from scripts.build_runtime import build_runtime
+    from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 
     work = args.work.resolve()
     if work.exists() or work.is_relative_to(REPO):

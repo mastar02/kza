@@ -8,7 +8,7 @@ import stat
 import pytest
 
 from scripts import stage_runtime as stage
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 
 
 @pytest.fixture(scope="module")

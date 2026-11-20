@@ -178,3 +178,8 @@ pytest-cov==7.1.0
 # (mismo agujero de los dos lados, que es justo por que nadie lo vio).
 # Agregado 2026-08-02 durante el triage de los 10 tests en rojo.
 openai==2.52.0
+
+# pytest-xdist + execnet: ejecucion paralela multi-worker en Tiers 0/1/2 (T090-U1).
+# Agregado 2026-11-20.
+execnet==2.1.2
+pytest-xdist==3.8.0

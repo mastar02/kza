@@ -344,7 +344,7 @@ def exercise_compiled_restore(tmp_path):
             raise CompiledRestoreFailure("compiled_restore_requires_native_venv")
         # These existing checkout scripts are parent-only. No src module or
         # copied fixture is imported to run either graph in this process.
-        from scripts.build_runtime import build_runtime
+        from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
         from scripts.stage_runtime import activate_slot, prepare_slot
 
         requested, revision = _revision(repo)

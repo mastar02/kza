@@ -66,7 +66,7 @@ import yaml
 
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks import real_systemd
 

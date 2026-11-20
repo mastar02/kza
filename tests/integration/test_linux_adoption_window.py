@@ -86,7 +86,7 @@ from scripts import adoption
 from scripts import adoption_commands as commands
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
-from scripts.build_runtime import build_runtime
+from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from tests.mocks import adoption_legacy as fixture
 from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks import r1_runbook
