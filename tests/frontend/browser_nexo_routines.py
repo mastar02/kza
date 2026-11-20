@@ -397,6 +397,10 @@ async def main() -> None:
                     # WEB-11: complete a held refresh with a non-collapsed selection in the field reached by Tab.
                     await page.wait_for("document.querySelector('#routines-refresh').getAttribute('aria-disabled')==='false'")
                     await fill('description', 'Descripción sintética')
+                    card_title = f"document.querySelector({card(risky.routine_id, 'h3')})?.textContent"
+                    renamed = await scheduler.update_routine(
+                        risky.routine_id, replace(risky.spec, name='Actualizada durante la edición'),
+                        expected_revision=risky.revision, actor='synthetic-other')
                     await rule('GET', '/api/routines', 'hold')
                     await page.evaluate('window.__qaHeld=null')
                     await click('#routines-refresh')
@@ -409,11 +413,15 @@ async def main() -> None:
                     focus_before = await page.evaluate(editor_focus)
                     assert focus_before == {'tag': 'INPUT', 'id': None, 'key': 'description', 'dialog': 'routine-dialog',
                                             'selectionStart': 2, 'selectionEnd': 7}, focus_before
+                    title_before = await page.evaluate(card_title)
+                    assert title_before == risky.spec.name and title_before != renamed.spec.name, title_before
                     await page.evaluate('window.__qaRelease()')
                     await page.wait_for("document.querySelector('#routines-refresh').getAttribute('aria-disabled')==='false'")
+                    await page.wait_for(f"{card_title} === {json.dumps(renamed.spec.name)}")
                     focus_after = await page.evaluate(editor_focus)
                     assert focus_after == focus_before, (focus_before, focus_after)
-                    web11 = {'before': focus_before, 'after': focus_after}
+                    web11 = {'before': focus_before, 'after': focus_after, 'refreshed_card': risky.routine_id,
+                             'title_before': title_before, 'title_after': renamed.spec.name}
                     checks.append('WEB-11: the editor field reached by real Tab keeps both selection endpoints after refresh')
 
                     await click('#routine-dialog [data-key="close"]')
