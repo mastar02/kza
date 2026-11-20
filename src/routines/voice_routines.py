@@ -1,4 +1,4 @@
-"""Voice access to persistent routines (T033-U1/U2).
+"""Voice access to persistent routines and to the web review tray.
 
 ``VoiceRoutineService`` answers "¿qué rutinas hay?" and "¿cómo salió la
 rutina de la mañana?" from the RoutineScheduler's store (``routines.db``), the
@@ -27,19 +27,23 @@ from src.core.sqlite_work import AuthorityGuard
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus,
 )
+from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.nlu.command_grammar import WAKE_TERMS
-from src.nlu.household_intents import HouseholdOperation
+from src.nlu.household_intents import HouseholdFamily, HouseholdIntent, HouseholdOperation
 from src.routines.models import (
     ActionStatus, BrakeStatus, RoutineBrake, RoutineConflict, RoutineNameConflict, RoutineNotFound, RoutineRun,
     RunStatus, ScheduledRoutine, TimeSchedule,
 )
+from src.routines.proposals import ProposalOperation, ProposalUnavailable, RoutineProposalTray
 from src.routines.routine_scheduler import RoutineScheduler
 from src.routines.routine_store import HOUSEHOLD_VOICE
+from src.routines.voice_proposal_extractor import ProposalIssue, VoiceProposalError, VoiceProposalExtractor
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "RoutineCatalogEntry", "RoutineReadKind", "RoutineReadQuery", "RoutineReadResult", "VoiceRoutineService",
+    "RoutineCatalogEntry", "RoutineProposalResult", "RoutineReadKind", "RoutineReadQuery", "RoutineReadResult",
+    "VoiceRoutineService",
     "legacy_routine_outcome",
 ]
 
@@ -217,6 +221,14 @@ class RoutineControlResult:
     receipt_id: str | None = None
 
 
+@dataclass(frozen=True)
+class RoutineProposalResult:
+    """Reply and evidence for an attempted admission to web review."""
+
+    response: str
+    outcome: TaskOutcome
+
+
 def legacy_routine_outcome(success: bool) -> TaskOutcome:
     """Outcome of a turn the legacy routine handlers answered (until T033-U4 retires them).
 
@@ -327,11 +339,65 @@ class VoiceRoutineService:
         scheduler: The application's RoutineScheduler, or None until
             ``bind_scheduler`` attaches it (late binding in main).
         voice_brake: Whether STOP and DISABLE are available by voice.
+        proposal_extractor: Optional local extractor for new definitions.
+        proposal_tray: The dashboard's shared, conversation-scoped review tray.
     """
 
-    def __init__(self, scheduler: RoutineScheduler | None = None, *, voice_brake: bool = False) -> None:
+    def __init__(
+        self, scheduler: RoutineScheduler | None = None, *, voice_brake: bool = False,
+        proposal_extractor: VoiceProposalExtractor | None = None,
+        proposal_tray: RoutineProposalTray | None = None,
+    ) -> None:
+        if (proposal_extractor is None) != (proposal_tray is None):
+            raise ValueError("incomplete_voice_proposal_dependencies")
         self._scheduler = scheduler
         self._voice_brake = voice_brake
+        self._proposal_extractor = proposal_extractor
+        self._proposal_tray = proposal_tray
+
+    def claims_proposal(self, intent: HouseholdIntent | None) -> bool:
+        """Whether this voice request can enter the local proposal path."""
+        return (self._proposal_extractor is not None and intent is not None
+                and intent.family is HouseholdFamily.ROUTINE
+                and intent.operation is HouseholdOperation.PROPOSE and intent.reason == "new_routine")
+
+    async def propose(self, complement: str, *, sources: tuple[MemorySource, ...],
+                      guard: AuthorityGuard | None) -> RoutineProposalResult:
+        """Admit a volatile creation proposal from a current, unmuted capture."""
+        tray, extractor = self._proposal_tray, self._proposal_extractor
+        if tray is None or extractor is None:
+            return RoutineProposalResult("Podés crear la rutina desde la web.", TaskOutcome(TaskStatus.UNSUPPORTED))
+
+        def current() -> bool:
+            return (guard is not None and guard() and len(sources) == 1
+                    and sources[0].origin is MemoryOrigin.VOICE and not sources[0].fact_dependencies
+                    and tray.source_policy.sources_available(sources))
+
+        cancelled = RoutineProposalResult("", TaskOutcome(TaskStatus.CANCELLED,
+                                                           persistence=PersistenceState.NOT_WRITTEN))
+        if not current():
+            return cancelled
+        source = sources[0]
+        try:
+            spec = await extractor.extract(complement)
+            if not current():
+                return cancelled
+            tray.submit(ProposalOperation.CREATE, conversation_id=source.conversation_id, spec=spec,
+                        expires_at=source.expires_at)
+        except (PermissionError, ProposalUnavailable):
+            return cancelled
+        except ValueError as error:
+            if not current():
+                return cancelled
+            if isinstance(error, VoiceProposalError) and error.issue is ProposalIssue.TIME:
+                return RoutineProposalResult("¿A qué hora exacta? Decime el horario y la acción de nuevo.",
+                                             TaskOutcome(TaskStatus.NEEDS_INPUT))
+            return RoutineProposalResult("Para proponer una rutina necesito una acción sobre un dispositivo seleccionado.",
+                                         TaskOutcome(TaskStatus.UNSUPPORTED))
+        return RoutineProposalResult("Dejé la propuesta para confirmar en la web.", TaskOutcome(
+            TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE, effect=EffectState.OBSERVED,
+            observation_scope="software_state",
+        ))
 
     @property
     def scheduler(self):

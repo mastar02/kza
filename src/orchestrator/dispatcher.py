@@ -1173,7 +1173,7 @@ class RequestDispatcher:
                 logger.info("[Household] dispatch %s", household.summary())
                 result = await self._dispatch_household(household, text, user_id=user_id, zone_id=zone_id,
                                                         origin_room=origin, choice_key=choice_key,
-                                                        routine_guard=routine_guard)
+                                                        routine_guard=routine_guard, memory_sources=memory_sources)
             self._stats["fast_path"] += 1
             self._stats["by_path"][result.path] += 1
             result.timings["total"] = (time.perf_counter() - start_time) * 1000
@@ -1597,7 +1597,8 @@ class RequestDispatcher:
     async def _dispatch_household(self, household: HouseholdIntent, text: str, *, user_id: str,
                                   zone_id: str | None, origin_room: str | None = None,
                                   choice_key: tuple[str, str | None] | None = None,
-                                  routine_guard: AuthorityGuard | None = None) -> DispatchResult:
+                                  routine_guard: AuthorityGuard | None = None,
+                                  memory_sources: tuple[MemorySource, ...] = ()) -> DispatchResult:
         """Send a claimed household turn to its family path (P3-F2 D1).
 
         Families without a handler yet answer honestly (UNSUPPORTED or
@@ -1613,6 +1614,7 @@ class RequestDispatcher:
             choice_key: Speaker id and room a numbered reminder choice
                 waits on (T032-U1); None opens no choice.
             routine_guard: Live authority for an admitted routine capture.
+            memory_sources: Scope of the current turn, supplied by the router.
         """
         family, operation = household.family, household.operation
         if family is HouseholdFamily.COMPOUND:
@@ -1655,6 +1657,14 @@ class RequestDispatcher:
                                                TaskStatus.NEEDS_INPUT)
             return await self._fast_list_path(text, user_id, zone_id, household=household)
         if family is HouseholdFamily.ROUTINE:
+            if self.voice_routines is not None and self.voice_routines.claims_proposal(household):
+                proposal = await self.voice_routines.propose(household.complement, sources=memory_sources,
+                                                            guard=routine_guard)
+                return DispatchResult(
+                    path=PathType.FAST_ROUTINE, priority=Priority.MEDIUM, success=proposal.outcome.task_completed,
+                    response=proposal.response, intent="routine", outcome=proposal.outcome,
+                    response_requirement=(ResponseRequirement.REQUIRED if proposal.response else ResponseRequirement.SILENT),
+                )
             if operation is HouseholdOperation.QUERY and self.voice_routines is not None:
                 # T033-U1: a claimed routine question reads the scheduler store; one
                 # without a recognizable name lists every routine.

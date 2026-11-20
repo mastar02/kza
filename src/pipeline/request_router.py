@@ -759,6 +759,26 @@ class RequestRouter:
         """Attach the total-mute gate built after the audio loop."""
         self._routine_capture_allowed = capture_allowed
 
+    def _admitted_routine_guard(self, gate: AcceptanceDecision, *, room_id: str | None, wake_score: float,
+                                textual_wake: bool, ambient_strict: bool,
+                                capture_trigger: str | None) -> AuthorityGuard | None:
+        # A successful gate and a clear acoustic wake belong to this capture.
+        if (gate.reason != "ok" or textual_wake or ambient_strict or not self.wake_acoustically_confirmed
+                or capture_trigger not in _OWN_WAKE_TRIGGERS or not finite_number(wake_score)
+                or not _GRAMMAR_BONUS_MIN_WAKE_SCORE <= wake_score <= 1
+                or (gate.signals or {}).get("would_reject")):
+            return None
+        capture_allowed, privacy = self._routine_capture_allowed, self._privacy
+        source, sources = self._memory_source.get(), self._active_sources()
+
+        def current() -> bool:
+            return (not self._closed and capture_allowed is not None and capture_allowed()
+                    and privacy is not None and source is not None
+                    and privacy.scopes.buffer_boundary(room_id, origin=source.origin).allows(source.captured_at)
+                    and privacy.sources_available(sources))
+
+        return current if current() else None
+
     async def process_command(self, audio_or_event, *, request_id: str | None = None) -> dict:
         """Compose operation and actual speech receipts for one captured turn."""
         from uuid import uuid4
@@ -909,6 +929,7 @@ class RequestRouter:
                         audio, room_id=room_id, pretranscribed_text=pretranscribed_text,
                         wake_score=wake_score, wake_rms=wake_rms,
                         textual_wake=textual_wake, ambient_strict=ambient_strict,
+                        capture_trigger=getattr(audio_or_event, "capture_trigger", None),
                         **review_options,
                     )
         except SourcesInvalidated:
@@ -964,18 +985,16 @@ class RequestRouter:
         return merged
 
     def _legacy_household_drop(self, text: str, gate_decision: AcceptanceDecision) -> AcceptanceDecision:
-        """Legacy path: the non-immediate rule without the household exemption.
+        """Keep only household exemptions handled by the legacy path.
 
         The command gate lets a claimed reminder ("recordame apagar la luz a
         las once") or routine creation ("creá una rutina para apagar las luces
         a las once") through its non-immediate rule because the orchestrated
-        household layer claims the turn and answers it. The legacy path has no
-        household layer (its refusal is a later unit, P3F2-R1-Q3), so the
-        reminder's or routine's content would reach the extended home command,
-        the grammar and the vector search as an immediate action (review
-        Q4-RV-1). An accepted turn that carries a non-immediate reason is
-        dropped with that reason, as before the exemption; with the real gate
-        only an exempted (claimed) turn gets here. A bare "listo" the gate
+        household layer claims the turn and answers it. This path exempts
+        routine reads and locally handled proposals. Other non-immediate
+        commands retain their drop reason so their content cannot reach the
+        home command, the grammar or the vector search as an immediate action
+        (review Q4-RV-1). A bare "listo" the gate
         let through because a ring is open (signal ``ring_stop``, T030-U2b)
         is dropped as the noise phrase it is on every other turn: the legacy
         timer commands do not stop a ring. Never fails the turn on an
@@ -993,6 +1012,8 @@ class RequestRouter:
         household = self.household_intents.classify(text)
         if household is not None and household.controls_routine:
             return AcceptanceDecision(False, "legacy_routine_control", gate_decision.signals)
+        if self.voice_routines is not None and self.voice_routines.claims_proposal(household):
+            return gate_decision
         if (gate_decision.signals or {}).get("ring_stop") is True:
             # T030-U2b: the legacy timer commands do not stop a ring, so a bare "listo" stays noise here.
             return AcceptanceDecision(False, "noise_phrase:'listo'", gate_decision.signals)
@@ -1139,25 +1160,14 @@ class RequestRouter:
 
         household = self.household_intents.classify(text)
         routine_control = household is not None and household.controls_routine
+        routine_proposal = self.voice_routines is not None and self.voice_routines.claims_proposal(household)
         routine_guard = None
-        if routine_control:
-            capture_allowed = self._routine_capture_allowed
-            sources = self._active_sources()
-            privacy = self._privacy
-            source = self._memory_source.get()
-
-            def routine_guard() -> bool:
-                return (not self._closed and capture_allowed is not None and capture_allowed()
-                        and privacy is not None and source is not None
-                        and privacy.scopes.buffer_boundary(room_id, origin=source.origin).allows(source.captured_at)
-                        and privacy.sources_available(sources))
-
-            # The command gate can accept as a fallback after an internal error.
-            # Routine effects require a successful evaluation.
-            if (gate_decision.reason != "ok" or textual_wake or ambient_strict or not self.wake_acoustically_confirmed
-                    or capture_trigger not in _OWN_WAKE_TRIGGERS
-                    or not finite_number(wake_score) or not _GRAMMAR_BONUS_MIN_WAKE_SCORE <= wake_score <= 1
-                    or (gate_decision.signals or {}).get("would_reject") or not routine_guard()):
+        if routine_control or routine_proposal:
+            routine_guard = self._admitted_routine_guard(
+                gate_decision, room_id=room_id, wake_score=wake_score, textual_wake=textual_wake,
+                ambient_strict=ambient_strict, capture_trigger=capture_trigger,
+            )
+            if routine_guard is None:
                 result["intent"] = "gate_rejected:routine_capture"
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
@@ -1172,7 +1182,7 @@ class RequestRouter:
         self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
-        if not routine_control and await self._try_memory_proposal(text, result):
+        if not (routine_control or routine_proposal) and await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
             return result
 
@@ -1687,7 +1697,10 @@ class RequestRouter:
                 text, household, tv_signal=tv_signal, capture_trigger=capture_trigger):
             logger.info("[Routines] clear wake, skipping the household 7B veto: %r", text)
             weak_wake = False
-        if weak_wake and not await self._household_veto_passes(text, result, room_id=room_id, tv_signal=tv_signal):
+        # Proposals already require a clear acoustic capture and use local grammar.
+        local_proposal = self.voice_routines is not None and self.voice_routines.claims_proposal(household)
+        if weak_wake and not local_proposal and not await self._household_veto_passes(
+                text, result, room_id=room_id, tv_signal=tv_signal):
             logger.info("[Household] vetoed %s", summary)
             result["intent"] = "llm_rejected:household"
             result["success"] = False
@@ -1929,6 +1942,7 @@ class RequestRouter:
                                         wake_rms: float = 0.0,
                                         textual_wake: bool = False,
                                         ambient_strict: bool = False,
+                                        capture_trigger: str | None = None,
                                         audio_provenance=None, transcript_provenance=None,
                                         transcript_span=None, transcript_truncated=None) -> dict:
         """Legacy processing (single-user) for backwards compatibility."""
@@ -2003,6 +2017,23 @@ class RequestRouter:
         # parts of a compound still running in this room.
         self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
+
+        household = self.household_intents.classify(text)
+        if self.voice_routines is not None and self.voice_routines.claims_proposal(household):
+            guard = self._admitted_routine_guard(
+                gate_decision, room_id=room_id, wake_score=wake_score, textual_wake=textual_wake,
+                ambient_strict=ambient_strict, capture_trigger=capture_trigger,
+            )
+            source = self._memory_source.get()
+            proposal = await self.voice_routines.propose(
+                household.complement, sources=(source,) if source is not None else (), guard=guard,
+            )
+            result.update(intent="routine", response=proposal.response, success=proposal.outcome.task_completed,
+                          _task_outcome=proposal.outcome)
+            if proposal.response:
+                await self._speak_response(proposal.response)
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
 
         if await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
