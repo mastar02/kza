@@ -148,6 +148,31 @@ def test_nested_quote_starting_with_ellipsis_preserves_its_outer_message(quote, 
     assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
 
 
+@pytest.mark.parametrize("depth", [1, 2, 3])
+@pytest.mark.parametrize(("opening", "closing"), [('"', '"'), ("'", "'"), ("«", "»")])
+@pytest.mark.parametrize("separator", [" ", "\n"])
+@pytest.mark.parametrize("ellipsis", ["", "... "])
+@pytest.mark.parametrize("trailing_filler", ["", ", por favor"])
+def test_balanced_quote_depth_preserves_all_literal_layers(depth, opening, closing, separator, ellipsis,
+                                                          trailing_filler):
+    intercom = IntercomSystem(room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    layers = []
+    body = f"En la cocina:{separator}{ellipsis}esperen, por favor."
+    if depth > 1:
+        instruction = f"{ellipsis}esperen"
+        if depth == 3:
+            layers.append(f"{opening}ya{closing}")
+            instruction += f" a que diga {layers[0]}"
+        layers.insert(0, f"{opening}{instruction}, por favor{closing}")
+        body = f"En la cocina:{separator}Deciles {layers[0]}, por favor."
+    message = f"{opening}{body}{closing}"
+    assert [message[start:end] for start, end in _quote_spans(message)] == [message, *layers]
+    text = f"Anunciá: {message}{trailing_filler}"
+    assert CommandAcceptanceGate().evaluate(text).accept
+    intent = classify_household_intent(text)
+    assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
+
+
 @pytest.mark.parametrize(("message", "quoted_spans"), [
     ('"hola ", "chau"', ['"hola "', '"chau"']),
     ('"hola ", por favor', ['"hola "']),
@@ -174,6 +199,20 @@ def test_sibling_quotes_stay_separate_and_preserve_broadcast(quote, prefix, sepa
     text = f"{prefix}{message}, por favor"
     assert CommandAcceptanceGate().evaluate(text).accept
     intent = classify_household_intent(text)
+    assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
+
+
+def test_ellipsis_can_separate_siblings_with_different_quote_types():
+    siblings = ['"En la cocina: esperen "', "«chau»", '"por favor"']
+    message = "... y ".join(siblings)
+    assert [message[start:end] for start, end in _quote_spans(message)] == siblings
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+def test_quote_starting_on_the_next_line_stays_literal(quote):
+    message = f"{quote}\nEn la cocina: esperen, por favor.{quote}"
+    intent = classify_household_intent(f"Anunciá: {message}, por favor")
+    intercom = IntercomSystem(room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
     assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
 
 

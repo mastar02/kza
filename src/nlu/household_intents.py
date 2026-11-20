@@ -302,49 +302,95 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         return not before or before.isspace() or before in "«([{:,;¡¿"
 
     def starts_content(offset: int) -> bool:
-        after = text[offset + 1:offset + 2]
-        if not after or after.isspace() or after in ")]}»\"'":
+        start = offset + 1
+        while start < len(text) and text[start].isspace():
+            start += 1
+        after = text[start:start + 1]
+        if not after or after in ")]}»\"'":
             return False
-        following = text[offset + 2:offset + 3]
+        following = text[start + 1:start + 2]
         return (
             after not in ",.;:?!"
-            or text.startswith("...", offset + 1)
+            or text.startswith("...", start)
             or bool(following) and not following.isspace() and following not in ",.;:?!)]}»\"'"
         )
 
-    def has_two_closers(char: str, start: int, *, first_must_close: bool) -> bool:
-        remaining = 2
-        offset = text.find(char, start)
-        while offset != -1:
-            if char != "'" or not (text[offset - 1].isalnum() and text[offset + 1:offset + 2].isalnum()):
-                if (remaining == 2 and first_must_close
-                        and opening_boundary(text[offset - 1]) and starts_content(offset)):
-                    return False  # The next delimiter starts a sibling after the exterior dots.
-                remaining -= 1
-                if not remaining:
-                    return True
-            offset = text.find(char, offset + 1)
-        return False
-
-    open_quotes: list[tuple[str, int]] = []
-    spans: list[tuple[int, int]] = []
+    markers: list[tuple[int, str, bool, bool]] = []
     for offset, char in enumerate(text):
         if char == "«":
-            open_quotes.append(("»", offset))
-        elif char in ("»", '"', "'"):
+            markers.append((offset, char, True, False))
+        elif char == "»":
+            markers.append((offset, char, False, True))
+        elif char in ('"', "'"):
             before, after = text[max(0, offset - 1):offset], text[offset + 1:offset + 2]
             if char == "'" and before.isalnum() and after.isalnum():
                 continue  # Apostrophe inside a word.
-            opens = opening_boundary(before)
-            if open_quotes and open_quotes[-1][0] == char:
-                if (char != "»" and opens and starts_content(offset)
-                        and has_two_closers(char, offset + 1, first_must_close=after in (".", "…"))):
-                    open_quotes.append((char, offset))
-                    continue
-                _, start = open_quotes.pop()
-                spans.append((start, offset + 1))
-            elif char in _QUOTE_CLOSERS and opens:
-                open_quotes.append((_QUOTE_CLOSERS[char], offset))
+            markers.append((offset, char, opening_boundary(before) and starts_content(offset),
+                            bool(before) and before not in "«([{¡¿"))
+
+    if not markers:
+        return []
+
+    sibling_connector = re.compile(
+        r"(?:\.{3}|…)\s*(?:[,;]\s*)?(?:y|e|o|u|pero|(?:y\s+)?(?:luego|despu[eé]s))\s*", re.IGNORECASE,
+    )
+
+    def continuations(index: int, stack: str) -> tuple[str, ...]:
+        offset, char, can_open, can_close = markers[index]
+        if not stack or stack[-1] != char:
+            return (stack + _QUOTE_CLOSERS[char],) if can_open else (stack,)
+        closed = stack[:-1]
+        # Leading whitespace can start an outer quote. For the same delimiter,
+        # it marks a closing edge, rather than an ambiguous inner opening.
+        if not can_open or text[offset + 1].isspace():
+            return (closed,)
+        opened = stack + _QUOTE_CLOSERS[char]
+        if not can_close:
+            return (opened,)
+        if index + 1 < len(markers):
+            next_offset, _, next_can_open, _ = markers[index + 1]
+            if next_can_open and sibling_connector.fullmatch(text, offset + 1, next_offset):
+                return closed, opened
+        return opened, closed
+
+    # A state only needs the expected closers, not their source offsets.
+    # Prefer a fully balanced continuation. For malformed speech, retain
+    # the spans that did close along the path with the fewest unclosed marks.
+    choices: dict[tuple[int, str], tuple[int, str]] = {}
+    pending = [(0, "")]
+    while pending:
+        state = pending[-1]
+        index, stack = state
+        if index == len(markers):
+            choices[state] = (len(stack), stack)
+        else:
+            best = (len(markers) + 1, stack)
+            for next_stack in continuations(index, stack):
+                successor = (index + 1, next_stack)
+                if successor not in choices:
+                    pending.append(successor)
+                    break
+                unclosed, _ = choices[successor]
+                if unclosed < best[0]:
+                    best = (unclosed, next_stack)
+                if unclosed == 0:
+                    choices[state] = best
+                    break
+            else:
+                choices[state] = best
+        if state in choices:
+            pending.pop()
+
+    starts: list[int] = []
+    spans: list[tuple[int, int]] = []
+    stack = ""
+    for index, (offset, _, _, _) in enumerate(markers):
+        _, next_stack = choices[index, stack]
+        if len(next_stack) > len(stack):
+            starts.append(offset)
+        elif len(next_stack) < len(stack):
+            spans.append((starts.pop(), offset + 1))
+        stack = next_stack
     return sorted(spans)
 
 
