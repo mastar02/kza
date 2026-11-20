@@ -105,7 +105,7 @@ SCOPE_PROBES = (
     Probe("qué recordatorios tengo", "reminder", "completed", SHARED_REMINDER),
     Probe("cancelá el recordatorio de trámite lunar", "reminder", "needs_input", "No encontré un recordatorio"),
     Probe("crea una lista de cuentas", "list", "needs_input", "Indicá que querés crear una lista compartida"),
-    Probe("crea una rutina de visitas", "routine", "unsupported", "Todavía no creo rutinas por voz"),
+    Probe("crea una rutina de visitas", "routine", "needs_input", "¿A qué hora exacta?"),
     Probe("qué rutinas hay", "routine", "completed", "Mañana"),
 )
 
@@ -261,10 +261,12 @@ async def test_visitor_shared_task_lifecycle(tmp_path: Path, offline_audio: Audi
                 "pasta": ("household", TimerState.CANCELLED), "salsa": ("household", TimerState.RUNNING),
             }
 
-            # T033-U2 supports execution and braking. Creation is web-managed
-            # at this base, so ask by voice and check that only the admin can save.
-            refused = await voice.say("crea una rutina de visitas")
-            assert_receipt(refused, "routine", "unsupported", "Podés crearlas desde la web")
+            # T033-U3c admits complete local voice proposals into the volatile web
+            # review tray, never saving a routine directly. An incomplete request
+            # leaves both the tray and scheduler empty, and only an admin can save.
+            incomplete = await voice.say("crea una rutina de visitas")
+            assert_receipt(incomplete, "routine", "needs_input", "¿A qué hora exacta?")
+            assert voice.graph.dashboard.routine_proposals._entries == {}
             assert await voice.graph.routine_scheduler.get_all_routines() == []
             created = await voice.client.post("/api/routines", json=ROUTINE, headers=dashboard_auth)
             assert created.status_code == 200, created.text
@@ -421,6 +423,7 @@ async def run_probes(voice: VoiceHarness, scope: PrivateScope, category: str, tr
     spoken = voice.tts.texts[tts_start:]
     assert spoken and all(marker not in " ".join(spoken) for marker in scope.forbidden)
     assert await snapshot(voice.graph, scope) == before, category
+    assert voice.graph.dashboard.routine_proposals._entries == {}, category
     assert (authority._credentials, authority._sessions) == grants
     context = voice.graph.pipeline.request_router._orchestrator.context_manager
     assert all(context.get(user_id) is None for user_id in (scope.account.user_id, "household", "unknown"))
