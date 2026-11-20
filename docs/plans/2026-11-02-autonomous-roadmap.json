@@ -1538,8 +1538,10 @@
       "inclusion": "required",
       "status": "planned",
       "implementation_commits": [],
-      "evidence": [],
-      "next_action": "T012 source bridge retains positional weather.describe_forecast horizon selection. Validate reordered forecasts, first entry not today, missing requested day and invalid dates via the actual pipeline; retrieval time does not prove forecast issue time/date alignment. Preserve compound-command/ellipsis regression followups and consolidate in T060. No C01/C02/C05/C13 acceptance credited."
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-t037-validation.json"
+      ],
+      "next_action": "Matriz determinista preparada. Ejecutar la suite completa en Linux con cero xfails nuevos antes de considerar verified_local y consolidar la regresión en T060. Confirmar el alcance de Q22: la evidencia de estado cubre HTTP de diagnóstico. Quedan pendientes C13 en P7 y la fuente real de pronóstico. Sin aceptación C01/C02/C05/C13."
     },
     {
       "id": "T040",

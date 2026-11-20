@@ -17,6 +17,7 @@ class TaskTransport:
     states_hold: bool = False
     states_status: int = 200
     state_reads: int = 0
+    entity_reads: list[str] = field(default_factory=list, init=False)
     states_entered: asyncio.Event = field(default_factory=asyncio.Event)
     states_release: asyncio.Event = field(default_factory=asyncio.Event)
     forecast_payload: object = None
@@ -52,9 +53,11 @@ class TaskTransport:
             return web.json_response(list(self.states.values()))
 
         async def state(request):
+            entity = request.match_info["entity"]
+            self.entity_reads.append(entity)
             if self.mode == "observation_error" and self.sends:
                 return web.Response(status=503)
-            return web.json_response(self.states[request.match_info["entity"]])
+            return web.json_response(self.states[entity])
 
         async def send(request):
             body = await request.json()
