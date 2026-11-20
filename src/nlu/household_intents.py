@@ -298,6 +298,17 @@ def _tokens(text: str) -> _Utterance:
 
 def _quote_spans(text: str) -> list[tuple[int, int]]:
     """Find balanced quotes across lines, keeping each outer span intact."""
+    def has_two_closers(char: str, start: int) -> bool:
+        remaining = 2
+        offset = text.find(char, start)
+        while offset != -1:
+            if char != "'" or not (text[offset - 1].isalnum() and text[offset + 1:offset + 2].isalnum()):
+                remaining -= 1
+                if not remaining:
+                    return True
+            offset = text.find(char, offset + 1)
+        return False
+
     open_quotes: list[tuple[str, int]] = []
     spans: list[tuple[int, int]] = []
     for offset, char in enumerate(text):
@@ -308,9 +319,18 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
             if char == "'" and before.isalnum() and after.isalnum():
                 continue  # Apostrophe inside a word.
             opens = not before or before.isspace() or before in "«([{:,;¡¿"
-            # Straight quotes can nest when a new opener precedes a word.
-            opens_inner = opens and bool(after) and not after.isspace() and after not in ",.;:?!)]}»\"'"
-            if open_quotes and open_quotes[-1][0] == char and (char == "»" or not opens_inner):
+            if open_quotes and open_quotes[-1][0] == char:
+                if char != "»" and opens and after and not after.isspace() and after not in ")]}»\"'":
+                    following = text[offset + 2:offset + 3]
+                    follows_content = (
+                        after not in ",.;:?!"
+                        or text.startswith("...", offset + 1)
+                        or (following and not following.isspace() and following not in ",.;:?!)]}»\"'")
+                    )
+                    # Ambiguous marks can open an inner quote only if both can close.
+                    if follows_content and has_two_closers(char, offset + 1):
+                        open_quotes.append((char, offset))
+                        continue
                 _, start = open_quotes.pop()
                 spans.append((start, offset + 1))
             elif char in _QUOTE_CLOSERS and opens:

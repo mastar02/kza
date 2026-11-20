@@ -10,7 +10,7 @@ from src.core.task_outcome import DispatchState, EffectState, TaskStatus
 from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.intercom.intercom_system import AnnouncementPriority, IntercomSystem, ZoneDelivery
 from src.nlu.command_gate import CommandAcceptanceGate
-from src.nlu.household_intents import HouseholdFamily, classify_household_intent
+from src.nlu.household_intents import HouseholdFamily, _quote_spans, classify_household_intent
 
 
 @pytest.mark.asyncio
@@ -134,6 +134,27 @@ def test_nested_quote_keeps_outer_message_and_stays_a_broadcast(message):
     assert CommandAcceptanceGate().evaluate(text).accept
     intent = classify_household_intent(text)
     assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
+
+
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize("separator", [" ", "\n"])
+@pytest.mark.parametrize("trailing_filler", ["", ", por favor"])
+def test_nested_quote_starting_with_ellipsis_preserves_its_outer_message(quote, separator, trailing_filler):
+    intercom = IntercomSystem(room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    message = f"{quote}En la cocina:{separator}Deciles {quote}... esperen{quote}, por favor.{quote}"
+    text = f"Anunciá: {message}{trailing_filler}"
+    assert CommandAcceptanceGate().evaluate(text).accept
+    intent = classify_household_intent(text)
+    assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
+
+
+@pytest.mark.parametrize(("message", "quoted_spans"), [
+    ('"hola ", "chau"', ['"hola "', '"chau"']),
+    ('"hola ", por favor', ['"hola "']),
+    ("'hola ',d'Artagnan vio a O'Neil", ["'hola '"]),
+])
+def test_ambiguous_quote_closure_requires_two_future_delimiters(message, quoted_spans):
+    assert [message[start:end] for start, end in _quote_spans(message)] == quoted_spans
 
 
 @pytest.mark.parametrize("text", [
