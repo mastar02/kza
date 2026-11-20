@@ -47,22 +47,21 @@
       return true;
     }
     function canRefreshRoom(token) {
-      // A completed empty page can recheck its selected room. Options from
-      // an older page cannot invalidate the rows or request that replaced it.
+      // Recheck the selected room once no live rows remain. An older summary
+      // cannot invalidate the page or the request that replaced it.
       return filters.room?.kind === 'room' && !channels.captures.busy()
-        && (capturePageToken === token || capturePageToken === null);
+        && (capturePageToken === token || capturePageToken === null)
+        && state.captures.snapshot().length === 0;
     }
     function checkSummary() {
-      const roomExpired = expired(rooms), countExpired = expired(count);
-      const refreshRoom = roomExpired && canRefreshRoom(rooms.token);
+      const expiredRooms = expired(rooms) ? rooms : null, countExpired = expired(count);
       if (countExpired) count = null;
-      if (roomExpired) rooms = null;
+      if (expiredRooms) rooms = null;
+      if (countExpired || expiredRooms) channels.captures.flush();
+      const refreshRoom = expiredRooms && canRefreshRoom(expiredRooms.token);
       if (refreshRoom && filters.text !== null) resetMissingRoom();
       armSummary();
-      if (countExpired || roomExpired) {
-        notifyFilters();
-        channels.captures.flush();
-      }
+      if (countExpired || expiredRooms) notifyFilters();
       if (refreshRoom) void reapplyCaptures();
     }
     function capturePage(cursor,page,started) {

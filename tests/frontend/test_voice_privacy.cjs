@@ -400,6 +400,34 @@ test('room options expire with their snapshot when its deadline is earlier',asyn
   f.latest().respond(); await c.settled(); c.dispose();
 });
 
+test('an earlier room-options deadline preserves the selected room and its live capture lease',async t=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  t.after(()=>c.dispose());
+  const room={kind:'room',id:'Synthetic room'};
+  const acknowledged=()=>f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket);
+  await c.setFilters({room});
+  f.latest().respond({rows:[groupedCapture()],fields:{expires_at:NOW+10,next_cursor:CURSOR,
+    matching_count:1,scan_complete:true,count_expires_at:NOW+10,
+    room_options:[room.id,'Other synthetic room'],room_options_expires_at:NOW+3}});
+  await c.settled();
+  const [capture]=state.captures.snapshot();
+  f.advance(3000); await flush();
+  assert.deepEqual(c.captureSummary(),{count:1,rooms:[],roomNotice:''});
+  assert.deepEqual(c.captureFilters().room,room);
+  assert.equal(state.captures.snapshot()[0],capture);
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.equal(c.hasNext('captures'),true);
+  assert.equal(f.calls.length,1);
+  assert.deepEqual(acknowledged(),[]);
+  f.advance(6999); await flush();
+  assert.equal(state.captures.snapshot()[0],capture);
+  assert.deepEqual(acknowledged(),[]);
+  f.advance(1); await flush();
+  assert.deepEqual(state.captures.snapshot(),[]);
+  assert.equal(c.captureSummary().count,null);
+  assert.deepEqual(acknowledged(),[B]);
+});
+
 test('room options can expire without unmounting a live unfiltered capture during review',async t=>{
   const f=controllerFixture(), {controller:c,state}=f;
   t.after(()=>c.dispose());

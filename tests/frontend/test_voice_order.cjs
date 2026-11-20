@@ -37,13 +37,22 @@ function fixture(rows, admin = false) {
   }
   const requested=[], transcripts=[], filters=[], subscribers=new Set();
   let filterState={room:null,window:null,group_state:null,association:null,listenable_only:false,text:null};
+  let roomOptions=['Habitación sintética'];
+  function setFilters(changes) {
+    filters.push(changes); filterState={...filterState,...changes};
+    for (const draw of subscribers) draw();
+  }
+  function setRoomOptions(rooms) {
+    roomOptions=rooms;
+    for (const draw of subscribers) draw();
+  }
   const stop=root.KzaVoiceView.mountVoices(container,{state,refresh(){},hasNext:()=>false,leave(){},
-    searchAllowed:()=>admin,captureFilters:()=>filterState,captureSummary:()=>({rooms:['Habitación sintética'],count:rows.length}),
-    setFilters(changes){filters.push(changes);filterState={...filterState,...changes};for (const draw of subscribers) draw();},
+    searchAllowed:()=>admin,captureFilters:()=>filterState,captureSummary:()=>({rooms:roomOptions,count:rows.length}),
+    setFilters,
     subscribeFilters(draw){subscribers.add(draw);return ()=>subscribers.delete(draw);},
     review(id){requested.push(id);state.review.update([],'loading');return true;},
     transcript(id){transcripts.push(id);state.review.update([],'loading');return true;}});
-  return {container,stop,state,requested,transcripts,filters};
+  return {container,stop,state,requested,transcripts,filters,setFilters,setRoomOptions};
 }
 
 test('capture rows remain newest first across interleaved groups and tied timestamps',()=>{
@@ -149,4 +158,25 @@ test('filter controls remain mounted and the admin search only sends explicit su
   assert.ok(descendants(admin.container).includes(room));
   assert.ok(descendants(admin.container).some(node=>node.attributes['aria-live']==='polite'));
   reviewer.stop(); admin.stop();
+});
+
+test('the room selector keeps the active room until the controller clears the filter',t=>{
+  const f=fixture([capture('b',1,groupA)]), id='Habitación sintética';
+  t.after(f.stop);
+  const room=descendants(f.container).find(node=>node.tagName==='select');
+  const options=()=>room.children.map(node=>[node.value,node.textContent]);
+  const selected=['room:'+id,id], all=['','Todas'], unrecorded=['unrecorded','Sin habitación registrada'];
+  room.value=selected[0]; room.listeners.change();
+  assert.deepEqual({...f.filters.at(-1).room},{kind:'room',id});
+  assert.deepEqual(options(),[all,selected,unrecorded]);
+  f.setRoomOptions([]);
+  assert.equal(room.value,selected[0]);
+  assert.deepEqual(options(),[all,selected,unrecorded]);
+  f.setRoomOptions([id,'Otra habitación']);
+  assert.equal(room.value,selected[0]);
+  assert.deepEqual(options(),[all,selected,['room:Otra habitación','Otra habitación'],unrecorded]);
+  f.setRoomOptions([]);
+  f.setFilters({room:null});
+  assert.equal(room.value,'');
+  assert.deepEqual(options(),[all,unrecorded]);
 });
