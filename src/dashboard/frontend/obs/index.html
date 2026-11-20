@@ -152,6 +152,12 @@
 
   /* Tables */
   .table-scroll { max-width: 100%; overflow-x: auto; }
+  .voice-filters { display:flex; flex-wrap:wrap; align-items:end; gap:12px; margin:12px 0; }
+  .voice-filters label { display:grid; gap:4px; max-width:100%; font-size:12px; }
+  .voice-filters [hidden] { display:none; }
+  .voice-filters input:not([type=checkbox]), .voice-filters select { max-width:100%; min-height:36px; font-size:16px; }
+  .voice-filter-status { flex-basis:100%; margin:0; min-height:1em; }
+  .voice-sample-actions { display:flex; flex-wrap:wrap; gap:6px; }
   .table-scroll table.k { overflow-wrap: normal; }
   table.k {
     width: 100%; border-collapse: collapse; font-size: 12px;
@@ -282,6 +288,7 @@
 <script src="src/conversation-channel.js"></script>
 <script src="src/voice-privacy.js"></script>
 <script src="src/voice-channel.js"></script>
+<script src="src/voice-filters.js"></script>
 <script src="src/voice-view.js"></script>
 <script type="text/babel" src="src/app.jsx"></script>
 

@@ -7,6 +7,7 @@ import '../../obs/src/live-privacy.js';
 import '../../obs/src/conversation-channel.js';
 import '../../obs/src/voice-privacy.js';
 import '../../obs/src/voice-channel.js';
+import '../../obs/src/voice-filters.js';
 import './voice-owner.js';
 import './voices.js';
 import './access-owner.js';

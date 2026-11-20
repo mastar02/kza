@@ -1,10 +1,15 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const fs = require('node:fs');
+const vm = require('node:vm');
 const { createVoiceOwner, permittedPath } = require('../../src/dashboard/frontend/home/nexo/voice-owner.js');
 const { createSession } = require('../../src/dashboard/frontend/home/nexo/state.js');
 const UUID = '10000000-0000-4000-8000-000000000001';
 const RESET = { type: 'live_reset', payload: { id: UUID, nonce: '20000000-0000-4000-8000-000000000002' }, ts: '' };
 const READY = { type: 'rest_ready', connection_id: UUID, channels: ['voices:captures', 'voices:profiles', 'voices:review'], ts: '' };
+const QUERY = '/api/voices/captures/query', CAPTURE = 'vf_'+'a'.repeat(64);
+const TRANSCRIPT = '/api/voices/captures/'+CAPTURE+'/transcript';
+const FILTERS = {room:null,window:null,group_state:null,association:null,listenable_only:false,text:null,cursor:null};
 const deferred = () => { let resolve; const promise = new Promise(yes => { resolve = yes; }); return { promise, resolve }; };
 const turn = async () => { for (let index = 0; index < 12; index++) await new Promise(resolve => setImmediate(resolve)); };
 class Socket extends EventTarget {
@@ -30,6 +35,76 @@ async function ready(graph) { await graph.owner.open(); const socket = graph.soc
 test('closed voice routes and methods exclude conversation, identity and grant APIs', () => {
   for (const [path, method] of [['/api/voices', 'GET'], ['/api/voices/profiles?cursor=abc%2Fdef', 'GET'], ['/api/voices/profiles', 'POST'], ['/api/voices/profiles/' + UUID, 'DELETE']]) assert.equal(permittedPath(path, method), true);
   for (const [path, method] of [['https://elsewhere/api/voices', 'GET'], ['/api/conversations', 'GET'], ['/api/admin/users', 'GET'], ['/api/voices/profiles', 'PUT'], ['/api/voices?other=1', 'GET'], ['/api/voices?cursor=a?cursor=b', 'GET']]) assert.equal(permittedPath(path, method), false);
+});
+
+function assertCaptureFence(fence) {
+  const body = JSON.stringify(FILTERS);
+  assert.equal(fence(QUERY,'POST',false,null,body),true);
+  assert.equal(fence(TRANSCRIPT,'GET'),true);
+  for (const key of Object.keys(FILTERS)) {
+    const {[key]:removed,...incomplete} = FILTERS;
+    assert.equal(fence(QUERY,'POST',false,null,JSON.stringify(incomplete)),false,'missing '+key);
+    assert.equal(fence(QUERY,'POST',false,null,JSON.stringify({...incomplete,extra:null})),false,'replaced '+key);
+  }
+  assert.equal(fence(QUERY,'POST',false,null,body.replace('{','{"cursor":null,')),false,'duplicate key');
+  for (const [path,method,value] of [
+    [QUERY,'GET',body],[QUERY,'POST',undefined],
+    [QUERY+'?room=synthetic','POST',body],[QUERY+'?','POST',body],[QUERY+'#section','POST',body],
+    ['/api/voices/captures/search','POST',body],[TRANSCRIPT,'POST',body],
+    [TRANSCRIPT+'?cursor=synthetic','GET',undefined],[TRANSCRIPT+'?','GET',undefined],
+    [TRANSCRIPT,'GET',body],[TRANSCRIPT.replace(CAPTURE,'other'),'GET',undefined],
+  ]) assert.equal(fence(path,method,false,null,value),false,path);
+  const text = JSON.stringify({...FILTERS,text:'synthetic phrase'});
+  for (const variant of [{room:{kind:'unrecorded',id:'extra'}},{window:{since:1,until:2,extra:true}},{listenable_only:1}]) {
+    assert.equal(fence(QUERY,'POST',false,null,JSON.stringify({...FILTERS,...variant})),false);
+  }
+  assert.equal(fence(QUERY,'POST',false,null,text),false);
+  assert.equal(fence(QUERY,'POST',true,null,text,true),true);
+  assert.equal(fence(QUERY,'POST',true,{profilesOnly:true,personId:'A'},body,true),false);
+  assert.equal(fence(TRANSCRIPT,'GET',true,{profilesOnly:true,personId:'A'}),false);
+}
+
+test('the capture fence admits the exact POST and query-free transcript GET',()=>{
+  assertCaptureFence(permittedPath);
+  const path = '../../src/dashboard/frontend/home/nexo/voice-owner.js';
+  const original = fs.readFileSync(require.resolve(path),'utf8'), expected = 'JSON.stringify(value) !== body';
+  assert.ok(original.includes(expected));
+  const module = {exports:{}};
+  vm.runInNewContext(original.replace(expected,'false'),{module,URLSearchParams,require:name=>require(require('node:path').resolve(
+    require('node:path').dirname(require.resolve(path)),name))});
+  assert.throws(()=>assertCaptureFence(module.exports.permittedPath),/duplicate key/);
+});
+
+test('the owner admits text search only in the admin view and a transcript stays on voices:review',async()=>{
+  const calls=[];
+  const g = setup({fetch:async(path,options)=>{
+    calls.push([path,options]);
+    const channel = path===TRANSCRIPT ? 'voices:review' : path.endsWith('/profiles') ? 'voices:profiles' : 'voices:captures';
+    const observed = Date.now()/1000;
+    return {ok:true,status:200,json:async()=>({connection_id:UUID,channel,snapshot:path===TRANSCRIPT ? {
+      event_id:UUID,observed_at:observed,expires_at:observed+60,channel,receipt:{ticket:UUID,nonce:RESET.payload.nonce},
+      rows:[{id:CAPTURE,variant:'text',transcript:'Synthetic retained text',room_id:null,duration_s:1,
+        transcript_scope:'full_segment',transcript_metadata:null}],
+    } : null})};
+  }});
+  await ready(g);
+  const reviewer = g.controllers.at(-1);
+  assert.equal(reviewer.searchAllowed(),false);
+  assert.equal(reviewer.setFilters({text:'synthetic term'}),false);
+  assert.deepEqual(JSON.parse(calls.at(-1)[1].body),FILTERS);
+  await g.owner.leave();
+  g.session.accept({ok:true,role:'operator',expires_at:1e12,permissions:['voices:read','voices:review','admin:manage']});
+  const socket = await ready(g), admin = g.controllers.at(-1);
+  assert.equal(admin.searchAllowed(),true);
+  await admin.setFilters({text:'synthetic term'}); await admin.settled();
+  assert.deepEqual(JSON.parse(calls.at(-1)[1].body),{...FILTERS,text:'synthetic term'});
+  assert.equal(admin.transcript(CAPTURE),true); await admin.settled();
+  assert.equal(calls.at(-1)[0],TRANSCRIPT);
+  assert.equal(calls.at(-1)[1].method,undefined);
+  assert.equal(admin.state.review.snapshot()[0].transcript,'Synthetic retained text');
+  socket.event('message',{type:'rest_retire',channel:'voices:review',payload:{event_ids:[UUID],receipts:[]}});
+  await turn(); assert.deepEqual(admin.state.review.snapshot(),[]);
+  await g.owner.leave(); assert.equal(admin.captureFilters().text,null);
 });
 test('both voice permissions precede socket creation; REST waits for reset ACK and ready', async () => {
   const g = setup(); g.session.accept({ ok: true, role: 'home', expires_at: 1e12, permissions: ['voices:read'] });
@@ -111,7 +186,7 @@ test('a mutation body remains owned through leave and cannot start its automatic
   const body = deferred(), entered = deferred(); let requests = 0;
   const g = setup({ fetch: async (path, options) => {
     requests++;
-    if (options.method === 'POST') return { ok: true, status: 200, arrayBuffer: () => { entered.resolve(); return body.promise; } };
+    if (path === '/api/voices/profiles' && options.method === 'POST') return { ok: true, status: 200, arrayBuffer: () => { entered.resolve(); return body.promise; } };
     return { ok: true, status: 200, json: async () => ({ connection_id: UUID, channel: path.endsWith('/profiles') ? 'voices:profiles' : 'voices:captures', snapshot: null }) };
   } });
   const socket = await ready(g), before = socket.sent.length;
@@ -136,7 +211,7 @@ test('closing a review in flight clears its loading state and cannot restore the
 test('lost confirmation receipts reuse their command ID across view reentry, independently of login B', async () => {
   const commands = []; let lose = true;
   const g = setup({ fetch: async (path, options) => {
-    if (options.method === 'POST') { commands.push(JSON.parse(options.body)); return { ok: true, status: 200, arrayBuffer: async () => { if (lose) { lose = false; throw Error('synthetic lost receipt'); } return new ArrayBuffer(0); } }; }
+    if (path === '/api/voices/profiles' && options.method === 'POST') { commands.push(JSON.parse(options.body)); return { ok: true, status: 200, arrayBuffer: async () => { if (lose) { lose = false; throw Error('synthetic lost receipt'); } return new ArrayBuffer(0); } }; }
     if (options.method === 'DELETE') return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) };
     return { ok: true, status: 200, json: async () => ({ connection_id: UUID, channel: path.endsWith('/profiles') ? 'voices:profiles' : 'voices:captures', snapshot: null }) };
   } });
@@ -170,7 +245,7 @@ test('confirmation works on the HTTP LAN without crypto.randomUUID', async () =>
   try {
     let identity;
     const g = setup({ fetch: async (path, options) => {
-      if (options.method === 'POST') { identity = JSON.parse(options.body).request_id; return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) }; }
+      if (path === '/api/voices/profiles' && options.method === 'POST') { identity = JSON.parse(options.body).request_id; return { ok: true, status: 200, arrayBuffer: async () => new ArrayBuffer(0) }; }
       return { ok: true, status: 200, json: async () => ({ connection_id: UUID, channel: path.endsWith('/profiles') ? 'voices:profiles' : 'voices:captures', snapshot: null }) };
     } });
     await ready(g); assert.equal(await g.controllers[0].confirm(['a', 'b', 'c'], 'Synthetic LAN'), true);
@@ -188,7 +263,7 @@ test('retiring the view drops its previously delivered page cursors', async () =
 test('uncertain command identities are bounded and clear with the browser session', async () => {
   const commands = [];
   const g = setup({ fetch: async (path, options) => {
-    if (options.method === 'POST') { commands.push(JSON.parse(options.body)); return { ok: false, status: 503, arrayBuffer: async () => new ArrayBuffer(0) }; }
+    if (path === '/api/voices/profiles' && options.method === 'POST') { commands.push(JSON.parse(options.body)); return { ok: false, status: 503, arrayBuffer: async () => new ArrayBuffer(0) }; }
     return { ok: true, status: 200, json: async () => ({ connection_id: UUID, channel: path.endsWith('/profiles') ? 'voices:profiles' : 'voices:captures', snapshot: null }) };
   } });
   await ready(g); const controller = g.controllers[0];

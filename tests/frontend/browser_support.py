@@ -11,12 +11,15 @@ DevTools Protocol and page JavaScript.
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import asynccontextmanager
+import errno
 import json
 import os
 from pathlib import Path
 import shutil
 import sys
+import tempfile
 import time
 
 
@@ -45,10 +48,15 @@ class Page:
             result = json.loads(await asyncio.wait_for(self.connection.recv(), 15))
             if result.get("method") == "Runtime.exceptionThrown":
                 self.errors.append(result["params"])
+            elif result.get("method") == "Network.requestWillBeSent":
+                self.on_request(result["params"]["request"])
             if result.get("id") == identity:
                 if "error" in result:
                     raise RuntimeError(result["error"])
                 return result.get("result", {})
+
+    def on_request(self, request):
+        """Observe a CDP request when a harness enables the Network domain."""
 
     async def evaluate(self, expression):
         """Evaluate an expression in the page and return its value."""
@@ -104,6 +112,25 @@ def browser_profile_root(mode: int = 0o777) -> Path | None:
     return root
 
 
+@asynccontextmanager
+async def temporary_browser_profile(prefix: str) -> AsyncIterator[Path]:
+    """Create a profile and retry cleanup if Chromium finishes writing during removal."""
+    directory = tempfile.TemporaryDirectory(prefix=prefix, dir=browser_profile_root())
+    try:
+        yield Path(directory.name)
+    finally:
+        for delay in (0.05, 0.1, 0.2):
+            try:
+                await asyncio.to_thread(directory.cleanup)
+                break
+            except OSError as exc:
+                if exc.errno != errno.ENOTEMPTY:
+                    raise
+                await asyncio.sleep(delay)
+        else:
+            await asyncio.to_thread(directory.cleanup)
+
+
 def evidence_directory(variable: str, default_parent: str) -> Path:
     """Resolve the evidence directory for one browser run.
 
@@ -150,6 +177,8 @@ async def install_login_session(page, base_url: str, token: str) -> None:
 C08_WIDTHS = (320, 390, 768, 1280, 1425, 1440)
 TOUCH_TARGET_WIDTHS = frozenset({320, 390})
 TOUCH_TARGET_MIN_PX = 44
+WCAG_TARGET_MIN_PX = 24
+WCAG_SCRIPT = Path(__file__).with_name('browser_wcag.js').read_text(encoding='utf-8')
 VIEWPORT_HEIGHTS = {320: 760, 390: 844, 768: 1024, 1280: 800, 1425: 1180, 1440: 900}
 INTERACTIVE_ROLES = frozenset({
     'button', 'link', 'textbox', 'searchbox', 'combobox', 'listbox', 'checkbox', 'radio',
@@ -313,18 +342,22 @@ AUDIT_SCRIPT = r"""(() => {
 })()"""
 
 
-async def _press_tab(page) -> None:
+async def _press_tab(page, *, backward: bool = False) -> None:
     for kind in ('rawKeyDown', 'keyUp'):
-        await page.command('Input.dispatchKeyEvent', {'type': kind, 'key': 'Tab', 'code': 'Tab',
-                                                      'windowsVirtualKeyCode': 9, 'nativeVirtualKeyCode': 9})
+        await dispatch_key(page, kind, 'Tab', 'Tab', 9, modifiers=8 if backward else 0)
+
+
+async def dispatch_key(page: Page, kind: str, key: str, code: str, key_code: int, **params: str | int) -> None:
+    """Send a trusted key event to the page without routing it to Chrome's window."""
+    # A native virtual key code can route unhandled events to the browser and hide its Mac headless target.
+    await page.command('Input.dispatchKeyEvent', {'type': kind, 'key': key, 'code': code,
+                                                  'windowsVirtualKeyCode': key_code, **params})
 
 
 async def press_enter(page) -> None:
     """Activate the focused control with a real Enter key event, as a keyboard user does."""
-    await page.command('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'text': '\r',
-                                                  'windowsVirtualKeyCode': 13, 'nativeVirtualKeyCode': 13})
-    await page.command('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'Enter', 'code': 'Enter',
-                                                  'windowsVirtualKeyCode': 13, 'nativeVirtualKeyCode': 13})
+    await dispatch_key(page, 'keyDown', 'Enter', 'Enter', 13, text='\r')
+    await dispatch_key(page, 'keyUp', 'Enter', 'Enter', 13)
 
 
 async def _nameless_controls(page) -> list[str]:
@@ -390,10 +423,87 @@ async def _keyboard(page, width: int) -> tuple[dict, list[str]]:
     return {'expected': len(expected), 'focused': len(focused), 'sequence': [step['element'] for step in focused]}, findings
 
 
+async def audit_wcag(page, key_controls: Sequence[tuple[str, str | None]] = (),
+                     status_messages: Sequence[tuple[str, str]] = ()) -> list[dict]:
+    """Collect deterministic, non-blocking WCAG and product findings for the current viewport."""
+    await page.evaluate(WCAG_SCRIPT)
+    return await page.evaluate(
+        f'window.__kzaWcag.scan({json.dumps(key_controls)}, {WCAG_TARGET_MIN_PX}, {TOUCH_TARGET_MIN_PX}, '
+        f'{json.dumps(status_messages)})'
+    )
+
+
+async def audit_modal_focus(page, selector: str, *, initial: str | None = None) -> dict:
+    """Observe opening focus and follow a complete Tab cycle in each direction."""
+    await page.evaluate(WCAG_SCRIPT)
+    report = await page.evaluate(f'window.__kzaWcag.beginModal({json.dumps(selector)}, {json.dumps(initial)})')
+    findings = report['findings'] = []
+
+    def add(issue: str, **detail: str | int) -> None:
+        findings.append({'criterion': 'APG-modal', 'issue': issue, 'selector': selector, **detail})
+
+    if not report['found']:
+        add('dialog_missing')
+        return report
+    try:
+        if not report['modal_semantics']:
+            add('modal_semantics_missing')
+        if not report['initial_ok']:
+            add('initial_focus_incorrect')
+        tabbables = report['tabbables']
+        if not tabbables:
+            add('no_tabbable_control')
+            return report
+        for backward, direction in ((False, 'Tab'), (True, 'Shift+Tab')):
+            argument = json.dumps(backward)
+            if not await page.evaluate(f'window.__kzaWcag.focusModalStart({argument})'):
+                add('boundary_unavailable', direction=direction)
+                continue
+            for step in range(1, tabbables + 1):
+                await _press_tab(page, backward=backward)
+                issue = await page.evaluate(f'window.__kzaWcag.checkModalStep({argument}, {step})')
+                if issue:
+                    add(issue, direction=direction, step=step)
+                    if issue == 'dialog_closed':
+                        return report
+                    break
+    finally:
+        await page.evaluate('window.__kzaWcag.endModal()')
+    return report
+
+
+def _write_a11y(evidence: Path, view: str, report: dict) -> None:
+    (evidence / f'a11y-{view}.json').write_text(
+        json.dumps(report, indent=2, ensure_ascii=False) + '\n', encoding='utf-8'
+    )
+
+
+async def audit_modal_return(page, evidence: Path, view: str, report: dict, *,
+                             dialog: str, opener: str) -> None:
+    """Record focus return after the harness closes the modal in its normal workflow."""
+    await page.evaluate(WCAG_SCRIPT)
+    issue = await page.evaluate(f'window.__kzaWcag.returnFocus({json.dumps(dialog)}, {json.dumps(opener)})')
+    if issue:
+        report['findings'].append({'criterion': 'APG-modal', 'issue': issue, 'selector': dialog})
+    report['focus_return_ok'] = issue is None
+    _write_a11y(evidence, view, {'view': view, 'dialog': dialog, **report})
+
+
+async def audit_status(page, evidence: Path, view: str, state: str, selector: str) -> None:
+    """Record live semantics for an already-reached asynchronous UI state."""
+    await page.evaluate(WCAG_SCRIPT)
+    findings = await page.evaluate(f'window.__kzaWcag.statuses({json.dumps([(state, selector)])})')
+    _write_a11y(evidence, f'{view}-{state}', {
+        'view': view, 'state': state, 'selector': selector, 'findings': findings,
+    })
+
+
 async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tuple[str, str | None]],
                      screenshot: Callable[..., Awaitable[None]], *, widths: Sequence[int] = C08_WIDTHS,
                      restore: tuple[int, int, bool] = (1425, 1180, False), fresh: str | None = None,
-                     fresh_timeout_ms: int = 12000) -> dict:
+                     fresh_timeout_ms: int = 12000,
+                     status_messages: Sequence[tuple[str, str]] = (),
+                     focus_dialog: str | None = None) -> dict:
     """Check one NEXO view at every C08 width and record C07 accessibility findings.
 
     Per width: no horizontal overflow (document and visible elements), key
@@ -401,6 +511,8 @@ async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tup
     from the browser accessibility tree, a real Tab traversal (reachability,
     document order, :focus-visible, a visible indicator, not obscured) and, at
     320/390 px, 44x44 CSS px touch targets. The page language must be Spanish.
+    Additional WCAG and product probes record structured findings at every
+    width without changing the legacy assertion or the meaning of ``passed``.
 
     Args:
         page: Connected CDP page exposing ``command`` and ``evaluate``.
@@ -413,6 +525,9 @@ async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tup
             Key controls are checked only once it holds, in the same task; if it
             never holds within ``fresh_timeout_ms`` every key control fails.
         fresh_timeout_ms: Bound for that wait (the catalog request timeout).
+        status_messages: Expected ``(state, message selector)`` pairs for this view.
+        focus_dialog: Selector of a modal already opened by the caller. Return
+            focus is sampled separately after the caller closes it.
         restore: Viewport ``(width, height, mobile)`` applied after the audit.
 
     Returns:
@@ -429,6 +544,8 @@ async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tup
         findings.append(f'html lang is {language["lang"]!r}, expected "es"')
     findings += [f'non-Spanish lang attribute: {item}' for item in language['foreign']]
     report = {'view': view, 'language': language, 'widths': {}}
+    if focus_dialog is not None:
+        report['modal_focus'] = await audit_modal_focus(page, focus_dialog)
     for width in widths:
         await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': VIEWPORT_HEIGHTS.get(width, 900),
                                                                   'deviceScaleFactor': 1, 'mobile': width <= 390})
@@ -454,17 +571,19 @@ async def audit_view(page, evidence: Path, view: str, key_controls: Sequence[tup
             small = await page.evaluate(f'window.__kzaAudit.targets({TOUCH_TARGET_MIN_PX})')
             local += [f'touch target below {TOUCH_TARGET_MIN_PX}x{TOUCH_TARGET_MIN_PX}: {item}' for item in small]
         keyboard, keyboard_findings = await _keyboard(page, width)
+        wcag = await audit_wcag(page, key_controls, status_messages)
         local += keyboard_findings
         report['widths'][str(width)] = {'screenshot': shot.name, 'overflow': overflow, 'key_controls': controls,
                                         'freshness': freshness,
-                                        'small_targets': small, 'keyboard': keyboard, 'findings': local}
+                                        'small_targets': small, 'keyboard': keyboard, 'findings': local,
+                                        'wcag_findings': wcag}
         findings += [f'{width}px: {item}' for item in local]
     await page.command('Emulation.setDeviceMetricsOverride', {'width': restore[0], 'height': restore[1],
                                                               'deviceScaleFactor': 1, 'mobile': restore[2]})
     report['findings'] = findings
     report['passed'] = not findings
     path = evidence / f'a11y-{view}.json'
-    path.write_text(json.dumps(report, indent=2, ensure_ascii=False) + '\n')
+    _write_a11y(evidence, view, report)
     assert not findings, f'NEXO {view} reflow/accessibility findings ({len(findings)}), see {path.name}: ' + '; '.join(findings[:12])
     return report
 

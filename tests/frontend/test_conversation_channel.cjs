@@ -6,7 +6,7 @@ const A = '00000000-0000-4000-8000-000000000001';
 const B = '00000000-0000-4000-8000-000000000002';
 const C = '00000000-0000-4000-8000-000000000003';
 const flush = async () => { for (let i=0; i<6; i++) await Promise.resolve(); };
-function fixture(view = false) {
+function fixture(view = false, options = {}) {
   let finishResponse, finishJSON, latest;
   const acks = [], states = [], timers = new Map(); let next=0, unauthorized=0;
   const store = createConversationState({ monotonic:()=>0, wall:()=>2000000000000,
@@ -15,7 +15,7 @@ function fixture(view = false) {
     onUnauthorized:()=>{unauthorized++;},
     onState:state=>states.push(state),
     emitAck:message=>{acks.push(message); return true;},
-    fetch:(path,options)=>{ latest={path,options}; return new Promise(resolve=>{ finishResponse=resolve; }); } });
+    fetch:(path,options)=>{ latest={path,options}; return new Promise(resolve=>{ finishResponse=resolve; }); },...options });
   const document = { connection_id:A, snapshot:{ event_id:B, expires_at:2000000060, observed_at:2000000000,
     receipt:{ticket:B,nonce:C}, rows:[{id:`turn_1_${C}`,ts:'12:00:00',user:'Synthetic voice',zone:'Synthetic room',path:'fast',
       stt:'Synthetic private REST turn',tts:'Synthetic response',intent:'light.turn_on',target:'light.synthetic',
@@ -83,4 +83,29 @@ test('a stale response cannot publish real source status after reset', async () 
   const f=fixture(); f.channel.open(A); await f.respond();
   const resetting=f.channel.reset(); await f.body(); await resetting;
   assert.equal(f.states.at(-1),'waiting'); assert(!f.states.includes('real')); f.channel.dispose();
+});
+test('method and JSON body are optional, but an in-flight decode still refuses refresh',async()=>{
+  const pages=[], f=fixture(false,{loadOnOpen:false,onPage:(...args)=>pages.push(args)});
+  f.channel.open(A);
+  assert.equal(f.channel.refresh('/api/conversations',{method:'POST',body:'{}'}),true);
+  assert.equal(f.latest().options.method,'POST'); assert.equal(f.latest().options.body,'{}');
+  assert.deepEqual(f.latest().options.headers,{'X-KZA-Live-Connection':A,'Content-Type':'application/json'});
+  await f.respond();
+  assert.equal(f.channel.refresh('/api/conversations',{method:'POST',body:'{"another":true}'}),false);
+  assert.equal(f.latest().options.signal.aborted,false);
+  const summary={next_cursor:'opaque',matching_count:2,scan_complete:true,count_observed_at:2000000000,
+    count_expires_at:2000000020,room_options:['Synthetic room'],room_options_expires_at:2000000030};
+  Object.assign(f.document.snapshot,summary);
+  await f.body();
+  assert.deepEqual(pages,[['opaque',{event_id:B,observed_at:2000000000,expires_at:2000000060,...summary},{mono:0,wall:2000000000000}]]);
+  f.channel.dispose();
+});
+
+test('an empty page reports its safe count and cursor without accepting unticketed rooms',async()=>{
+  const pages=[], f=fixture(false,{onPage:(cursor,page)=>pages.push({cursor,page})});
+  f.channel.open(A); await f.respond();
+  await f.body({connection_id:A,snapshot:null,next_cursor:'opaque',empty_page:{matching_count:0,
+    scan_complete:true,count_observed_at:2000000000,room_options:['Synthetic stale room']}});
+  assert.deepEqual(pages,[{cursor:'opaque',page:{matching_count:0,scan_complete:true,count_observed_at:2000000000}}]);
+  assert.deepEqual(f.store.snapshot(),[]); f.channel.dispose();
 });

@@ -29,7 +29,10 @@ from src.memory.privacy_services import PrivacyServices
 from src.users.user_manager import PermissionLevel
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import Page, audit_view, browser_binary, browser_profile_root, evidence_directory
+from tests.frontend.browser_support import (
+    Page, audit_modal_focus, audit_modal_return, audit_status, audit_view, browser_binary,
+    browser_profile_root, evidence_directory,
+)
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import AUDIO, Encoder
@@ -180,17 +183,27 @@ async def main():
                         await page.wait_for("document.querySelector('#login-error')?.textContent.length>0")
                         await login(page, operator.token, 'Administración')
                         await page.wait_for("!document.querySelector('#access-view').hidden && !document.querySelector('#add-access').disabled")
-                        await page.evaluate("document.querySelector('#add-access').click()")
+                        await page.evaluate("(()=>{const trigger=document.querySelector('#add-access');trigger.focus();trigger.click()})()")
+                        await page.wait_for("document.querySelector('#access-dialog').open && document.querySelectorAll('#access-dialog form select')[1].options.length===3")
+                        access_focus = await audit_modal_focus(page, '#access-dialog')
+                        await page.evaluate("document.querySelector('#access-dialog .icon-button').click()")
+                        await audit_modal_return(page, EVIDENCE, 'accesos-alta', access_focus,
+                                                 dialog='#access-dialog', opener='#add-access')
+                        await page.evaluate("(()=>{const trigger=document.querySelector('#add-access');trigger.focus();trigger.click()})()")
                         await page.wait_for("document.querySelector('#access-dialog').open && document.querySelectorAll('#access-dialog form select')[1].options.length===3")
                         assert await page.evaluate("[...document.querySelectorAll('#access-dialog form select')[1].options].filter(option=>option.value).every(option=>option.textContent.includes(option.value))")
                         await page.evaluate("(()=>{const form=document.querySelector('#access-dialog form');form.querySelector('input[type=text]').value='Synthetic browser home';form.querySelectorAll('select')[1].value="+json.dumps(person_b.user_id)+";form.dispatchEvent(new Event('input',{bubbles:true}));form.requestSubmit()})()")
                         await page.wait_for("document.querySelector('#access-secret-dialog').open && document.querySelector('#access-secret-dialog input').type==='password'")
+                        secret_focus = await audit_modal_focus(page, '#access-secret-dialog')
                         assert await page.evaluate("window.__copyRequests===0 && !document.querySelector('#token').value")
                         await screenshot(page, EVIDENCE/'access-secret-masked.png')
                         await click_text(page, '#access-secret-dialog button', 'Copiar credencial')
                         await page.wait_for("window.__copyRequests===1 && window.__copiedShape && document.querySelector('.access-secret-status').textContent.includes('copiada')")
+                        await audit_status(page, EVIDENCE, 'accesos-credencial', 'copied', '.access-secret-status')
                         await escape(page)
                         await page.wait_for("!document.querySelector('#access-secret-dialog').open && !document.querySelector('#access-secret-dialog').children.length")
+                        await audit_modal_return(page, EVIDENCE, 'accesos-credencial', secret_focus,
+                                                 dialog='#access-secret-dialog', opener='#add-access')
                         catalog = authority.commands.catalog(root)['rows']
                         home = next(row for row in catalog if row['subject'] == 'Synthetic browser home')
                         assert home['user_id'] == person_b.user_id and home['role'] == 'home'
@@ -324,6 +337,7 @@ async def main():
                         checks.append('native credential revocation removes playback and Blob while decoder retirement is held')
                         await page.evaluate("document.querySelector('#logout').click()")
                         await page.wait_for("document.querySelector('#login-error').textContent==='La sesión ya no está vigente.' && !document.querySelector('#token').disabled")
+                        await audit_status(page, EVIDENCE, 'accesos-sesion', '401', '#login-error')
                         assert await page.evaluate("!document.querySelector('#evaluation-content').children.length && window.__urls.size===0 && document.querySelector('#token').value===''")
                         assert not any(row['path'].startswith(('/api/home', '/api/voices', '/api/admin/users', '/api/conversations')) for row in requests[evaluator_start:])
                         checks.append('mobile 390/320; hidden view clears payload, show loads metadata only; audio-only second grant; logout clears')

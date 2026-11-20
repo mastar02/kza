@@ -277,6 +277,7 @@ function mountWsLiveBridge() {
   });
   const voices = window.KzaVoiceChannel.createVoiceController({ state:window.__kzaVoiceState,
     fetch:window.fetch.bind(window), emitAck, hasView:() => !!document.querySelector('#view-users'),
+    canSearch:() => window.__kzaObs.can('admin:manage'),
     onUnauthorized:() => window.dispatchEvent(new CustomEvent('kza:auth-required')),
     onStatus:status => { window.__kzaObs.setSource('VOICES', status); },
   });
@@ -384,4 +385,5 @@ window.addEventListener('kza:auth-required', event => {
   else session.expire();
 });
 window.addEventListener('pagehide', () => session.stop());
+window.addEventListener('pageshow', event => { if (event.persisted) session.start(); });
 session.start();
