@@ -25,6 +25,9 @@
     }
     return count >= minimum && new TextEncoder().encode(value).length <= maximumBytes;
   }
+  function validRoom(value) {
+    return value === null || boundedText(value,128,512,1) && !/[\x00-\x1f\x7f]/.test(value);
+  }
   function copyProvenance(value) {
     const names = ['source', 'source_ref', 'lane', 'stream_generation', 'segment_generation',
       'source_channels', 'selected_channel', 'sample_rate_hz', 'frame_count', 'dsp'];
@@ -185,7 +188,7 @@
       const delay = Math.min(...entries.map(entry => Math.min(entry.mono-monotonic(),entry.wall-wall())));
       timer = schedule(() => { timer = null; prune(); arm(); },Math.max(1,Math.min(delay,2147483647)));
     }
-    function copy(value) {
+    function copy(value, variant) {
       if (kind === 'profiles') {
         if (!ID.test(value.id) || typeof value.name !== 'string' || !value.name.trim() || value.name.length>64
             || !Number.isInteger(value.revision) || value.revision<1 || !Number.isFinite(value.confirmed_at)) throw Error('invalid voice profile');
@@ -205,6 +208,7 @@
       if (kind === 'captures') {
         if (!Number.isFinite(value.duration_s) || value.duration_s<.8 || value.duration_s>30
             || !Number.isFinite(value.created_at) || typeof value.review_available !== 'boolean'
+            || !validRoom(value.room_id)
             || value.suggested_profile !== null && !ID.test(value.suggested_profile)
             || value.similarity !== null && (!Number.isFinite(value.similarity) || Math.abs(value.similarity)>1)
             || !ID.test(value.group_id) || !Number.isInteger(value.group_revision) || value.group_revision<1
@@ -214,19 +218,24 @@
             || !Number.isFinite(value.group_expires_at) || value.group_expires_at<=value.observed_at
             || value.group_expires_at-value.observed_at>172800
             || value.group_similarity!==null && (!Number.isFinite(value.group_similarity) || Math.abs(value.group_similarity)>1)) throw Error('invalid capture metadata');
-        return { id:value.id, duration_s:value.duration_s, created_at:value.created_at, review_available:value.review_available,
+        return { id:value.id, duration_s:value.duration_s, created_at:value.created_at, review_available:value.review_available, room_id:value.room_id,
           expires_at:Math.min(value.expires_at,value.group_expires_at),
           suggested_profile:value.suggested_profile, similarity:value.similarity, group_id:value.group_id,
           group_revision:value.group_revision, group_size:value.group_size, group_state:value.group_state,
           group_reason:value.group_reason, group_similarity:value.group_similarity, group_expires_at:value.group_expires_at };
       }
-      if (kind !== 'review' || !closed(value, ['id', 'observed_at', 'expires_at', 'transcript', 'room_id',
-          'duration_s', 'clip_duration_s', 'clip_truncated', 'transcript_scope', 'audio_mime', 'audio_base64',
-          'audio_metadata', 'transcript_metadata'])
+      const common = ['id','observed_at','expires_at','transcript','room_id','duration_s','transcript_scope','transcript_metadata'];
+      if (kind !== 'review' || !['audio','text'].includes(variant)
           || !boundedText(value.transcript, 8192, 32768)
-          || value.room_id !== null && !boundedText(value.room_id, 128, 512, 1)
-          || value.audio_mime !== 'audio/wav' || value.transcript_scope !== 'full_segment'
-          || !Number.isFinite(value.duration_s) || value.duration_s<.8 || value.duration_s>30
+          || value.room_id !== null && !boundedText(value.room_id,128,512,1) || value.transcript_scope !== 'full_segment'
+          || !Number.isFinite(value.duration_s) || value.duration_s<.8 || value.duration_s>30) throw Error('invalid review sample');
+      if (variant === 'text') {
+        if (!closed(value,[...common,'variant']) || value.variant !== 'text' || !validRoom(value.room_id)) throw Error('invalid transcript sample');
+        return {id:value.id,variant,transcript:value.transcript,room_id:value.room_id,duration_s:value.duration_s,
+          transcript_metadata:copyTranscriptMetadata(value.transcript_metadata)};
+      }
+      if (!closed(value,[...common,'clip_duration_s','clip_truncated','audio_mime','audio_base64','audio_metadata'])
+          || value.audio_mime !== 'audio/wav'
           || !Number.isFinite(value.clip_duration_s) || value.clip_duration_s<.8 || value.clip_duration_s>Math.min(value.duration_s,6)
           || typeof value.clip_truncated !== 'boolean' || value.clip_truncated !== (value.clip_duration_s<value.duration_s)
           || typeof value.audio_base64 !== 'string' || value.audio_base64.length>256060
@@ -242,13 +251,13 @@
           || text(36,4)!=='data' || view.getUint32(40,true)!==bytes.length-44
           || (bytes.length-44)%2 || value.clip_duration_s!==(bytes.length-44)/32000) throw Error('invalid listening WAV');
       const audioMetadata = copyAudioMetadata(value.audio_metadata, { previewFrames:(bytes.length-44)/2, durationS:value.duration_s });
-      return { id:value.id, transcript:value.transcript, room_id:value.room_id, duration_s:value.duration_s,
+      return { id:value.id, variant, transcript:value.transcript, room_id:value.room_id, duration_s:value.duration_s,
         clip_duration_s:value.clip_duration_s, clip_truncated:value.clip_duration_s<value.duration_s,
         audio_metadata:audioMetadata, transcript_metadata:transcriptMetadata,
         audio_url:url.createObjectURL(new Blob([bytes],{type:'audio/wav'})) };
     }
     return {
-      receive(rows,started) {
+      receive(rows,started,{variant = 'audio',rowId} = {}) {
         const next = [];
         try {
           const elapsed = started && Math.max(0,monotonic()-started.mono,wall()-started.wall);
@@ -257,12 +266,13 @@
           for (const value of rows) {
             if (!value || !Number.isFinite(value.observed_at) || !Number.isFinite(value.expires_at)
                 || !Number.isFinite(value.expires_at*1000) || value.expires_at<=value.observed_at
-                || value.expires_at-value.observed_at>(kind==='profiles'?300:172800) || ids.has(value.id)) throw Error('invalid voice deadline');
+                || value.expires_at-value.observed_at>(kind==='profiles'?300:172800) || ids.has(value.id)
+                || kind === 'review' && rowId !== undefined && value.id !== rowId) throw Error('invalid voice deadline');
             const deadline = kind==='captures' ? Math.min(value.expires_at,value.group_expires_at) : value.expires_at;
             if (!Number.isFinite(deadline)) throw Error('invalid voice group deadline');
             const budget = (deadline-value.observed_at)*1000-elapsed;
             if (budget<=0 || deadline*1000<=wall()) continue;
-            const row = copy(value); ids.add(row.id);
+            const row = copy(value,variant); ids.add(row.id);
             next.push({ row:Object.freeze(row), mono:monotonic()+budget, wall:Math.min(deadline*1000,wall()+budget) });
           }
           clear(); entries = next; status = 'real'; prune(); arm(); notify(); return true;

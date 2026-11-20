@@ -125,6 +125,23 @@ test('operator text uses bounded Unicode code points with native UTF8 limits', (
     assert.deepEqual(g.allocated, []); assert.deepEqual(g.value.snapshot(), []); g.value.clear();
   }
 });
+test('the requested text variant admits a closed row without allocating audio', () => {
+  const g = store(), audio = review(), text = { id:audio.id, observed_at:audio.observed_at, expires_at:audio.expires_at,
+    transcript:audio.transcript, room_id:'Synthetic room', duration_s:audio.duration_s, transcript_scope:audio.transcript_scope,
+    transcript_metadata:audio.transcript_metadata, variant:'text' };
+  const expectText = {variant:'text',rowId:audio.id};
+  assert.equal(g.value.receive([text], started),false);
+  assert.equal(g.value.receive([audio], started, expectText),false);
+  for (const key of ['audio_base64','audio_mime','audio_metadata','clip_duration_s','clip_truncated']) {
+    assert.equal(g.value.receive([{...text,[key]:audio[key]}],started,expectText),false);
+  }
+  assert.equal(g.value.receive([text],started,{...expectText,rowId:'vf_'+'b'.repeat(64)}),false);
+  assert.equal(g.value.receive([text],started,expectText),true);
+  const [row] = g.value.snapshot();
+  assert.equal(row.transcript,text.transcript); assert.equal(row.room_id,text.room_id); assert.equal(row.variant,'text');
+  assert.equal(Object.hasOwn(row,'audio_url'),false);
+  assert.deepEqual(g.allocated,[]); g.value.clear();
+});
 test('user-facing details preserve unknown/truncation without showing opaque IDs or implying DSP observation', () => {
   const lines = [...metadataDetails('audio', audioMetadata()), ...metadataDetails('transcript', textMetadata({ text_truncated: true }))];
   assert.ok(lines.some(value => value.includes('recortado')));

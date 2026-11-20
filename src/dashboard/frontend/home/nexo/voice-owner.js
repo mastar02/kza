@@ -21,7 +21,24 @@
     const hex = bytes.map(byte => byte.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
-  function permittedPath(path, method, includePerson = false, scope = null) {
+  function captureQueryBody(body, canSearch) {
+    if (typeof body !== 'string' || body.length > 4096) return false;
+    try {
+      const value = JSON.parse(body), keys = channelAPI.CAPTURE_QUERY_KEYS;
+      // This request is constructed by JSON.stringify in the controller. A
+      // round trip also rejects repeated keys and noncanonical encodings.
+      if (value === null || Object.keys(value).length !== keys.length || !(keys.every(key => Object.hasOwn(value,key)))
+          || JSON.stringify(value) !== body) return false;
+      const {room,window,group_state,association,listenable_only,text,cursor} = value;
+      return (room === null || room?.kind === 'room' && Object.keys(room).length === 2 && typeof room.id === 'string'
+          || room?.kind === 'unrecorded' && Object.keys(room).length === 1)
+        && (window === null || window && Object.keys(window).length === 2 && Number.isFinite(window.since) && Number.isFinite(window.until))
+        && [null,'suggested','manual','unknown'].includes(group_state) && [null,'suggested','unknown'].includes(association)
+        && typeof listenable_only === 'boolean' && (text === null || canSearch && typeof text === 'string')
+        && (cursor === null || typeof cursor === 'string');
+    } catch { return false; }
+  }
+  function permittedPath(path, method, includePerson = false, scope = null, body, canSearch = false) {
     if (typeof path !== 'string' || path.length > 8192 || path.split('?').length > 2) return false;
     const [pathname, query] = path.split('?'), params = new URLSearchParams(query || '');
     if (query !== undefined && !query || [...params.keys()].some(key => !['cursor','include_person','person_id'].includes(key))
@@ -32,8 +49,9 @@
       && params.get('include_person') === 'true' && params.get('person_id') === scope.personId;
     if (params.has('person_id')) return false;
     if (method === 'GET') return ['/api/voices', '/api/voices/profiles'].includes(pathname)
-      || query === undefined && /^\/api\/voices\/captures\/vf_[a-f0-9]{64}\/review$/.test(pathname);
+      || query === undefined && body === undefined && /^\/api\/voices\/captures\/vf_[a-f0-9]{64}\/(review|transcript)$/.test(pathname);
     if (query !== undefined) return false;
+    if (pathname === '/api/voices/captures/query') return method === 'POST' && captureQueryBody(body,canSearch);
     return method === 'POST' && ['/api/voices/profiles', '/api/voices/groups/corrections'].includes(pathname)
       || method === 'DELETE' && pathname.startsWith('/api/voices/profiles/') && UUID.test(pathname.slice('/api/voices/profiles/'.length))
       || includePerson && method === 'PUT' && /^\/api\/voices\/profiles\/([a-f0-9-]+)\/person$/.test(pathname)
@@ -151,7 +169,8 @@
         return true;
       }
       async function boundFetch(path, options = {}) {
-        if (!owns(context) || context.phase !== 'ready' || !permittedPath(path, options.method || 'GET', context.includePerson && session.can('admin:manage'),context.request)) throw Error('voice_reader_retired');
+        if (!owns(context) || context.phase !== 'ready' || !permittedPath(path, options.method || 'GET',
+          context.includePerson && session.can('admin:manage'),context.request,options.body,session.can('admin:manage'))) throw Error('voice_reader_retired');
         const response = await rawFetch(path, { ...options, credentials: 'same-origin', cache: 'no-store' });
         if (!owns(context) || context.phase !== 'ready') {
           // The channel still owns this fetch until cancellation of its body settles.
@@ -169,6 +188,7 @@
       }
       context.live = createLive({ onChange() {}, emitAck });
       context.controller = createController({ state: context.state, fetch: boundFetch, emitAck, includePerson:context.includePerson,profilesOnly:context.request.profilesOnly,personId:context.request.personId,
+        canSearch:() => context.includePerson && session.can('admin:manage'),
         hasView: () => owns(context) && context.phase === 'ready' && !!context.unmount,
         onUnauthorized:verifyOriginal, onStatus() {} });
       context.controller.loadPeople = accept => {

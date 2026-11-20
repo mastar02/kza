@@ -45,10 +45,15 @@ class Page:
             result = json.loads(await asyncio.wait_for(self.connection.recv(), 15))
             if result.get("method") == "Runtime.exceptionThrown":
                 self.errors.append(result["params"])
+            elif result.get("method") == "Network.requestWillBeSent":
+                self.on_request(result["params"]["request"])
             if result.get("id") == identity:
                 if "error" in result:
                     raise RuntimeError(result["error"])
                 return result.get("result", {})
+
+    def on_request(self, request):
+        """Observe a CDP request when a harness enables the Network domain."""
 
     async def evaluate(self, expression):
         """Evaluate an expression in the page and return its value."""

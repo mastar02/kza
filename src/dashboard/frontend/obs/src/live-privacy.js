@@ -35,7 +35,7 @@
   }
 
   function createLiveState({ onChange, emitAck = () => false, now = Date.now,
-      schedule = setTimeout, cancel = clearTimeout, defer = queueMicrotask }) {
+      schedule = setTimeout, cancel = clearTimeout, defer = queueMicrotask, retains = () => false }) {
     let current = null, timer = null, disposed = false, rendered;
     let reset = null, queued = false;
     const pending = new Map();
@@ -46,7 +46,8 @@
         if (current === null && rendered === null && emitAck({ type: 'live_reset_ack', ...reset }) === true) reset = null;
         return;
       }
-      const retired = [...pending.values()].filter(row => row.eventId !== current?.event_id && row.eventId !== rendered);
+      // Capture controls may still use room options from an earlier page.
+      const retired = [...pending.values()].filter(row => row.eventId !== current?.event_id && row.eventId !== rendered && !retains(row.eventId));
       for (let index = 0; index < retired.length; index += 16) {
         const batch = retired.slice(index, index + 16);
         if (emitAck({ type:'live_ack', receipts:batch.map(row => ({ ticket:row.ticket, nonce:row.nonce })) }) !== true) return;

@@ -4,12 +4,12 @@
   function mountVoices({ container, dialog, linkDialog, controller, icon, onEvaluate, profileNote = () => null, onProfileNotes = null }) {
     const doc = container.ownerDocument, state = controller.state, selected = new Set();
     const listeningButtons = new Map();
-    let active = true, profileId = null, renderedAudio = null, busy = false, needsRefresh = false;
+    let active = true, profileId = null, renderedReview = null, busy = false, needsRefresh = false, dialogActive = false;
     let requestedReview = null, startingReview = false;
     let linkToken = null, catalogue = null, catalogueStatus = 'waiting', linkDraft = null;
     function node(tag, text = '', className = '') { const value = doc.createElement(tag); value.textContent = text; value.className = className; return value; }
     function button(text, callback, className = 'identity-secondary') { const value = node('button', text, className); value.type = 'button'; value.addEventListener('click', callback); return value; }
-    function message(store, empty) { return ({ waiting: 'Esperando conexión…', loading: 'Consultando…', unavailable: 'No se pudo consultar. Volvé a actualizar.', expired: 'La consulta venció. Actualizá para ver los datos vigentes.', closed: 'La sesión se cerró.' })[store.status()] || empty; }
+    function message(store, empty) { return ({ waiting: 'Esperando conexión…', loading: 'Consultando…', unavailable: 'No se pudo consultar. Volvé a actualizar.', expired: 'La consulta venció. Actualizá para ver los datos vigentes.', closed: 'La sesión se cerró.', forbidden: 'Sin permiso para consultar estas muestras.' })[store.status()] || empty; }
     const header = node('header', '', 'identity-heading'), title = node('div'), headerActions = node('div', '', 'identity-heading-side');
     title.append(node('p', 'IDENTIDAD QUE SE CONSTRUYE', 'eyebrow'), node('h2', 'Voces que tienen nombre.'), node('p', 'Revisá las muestras locales y confirmá un perfil vocal.'));
     const headerRefresh = button('Actualizar', refresh), dialogRefresh = button('Actualizar', refresh);
@@ -30,6 +30,8 @@
     for (const status of [progress, dialogProgress]) status.setAttribute('role', 'status');
     headerActions.append(progress);
     const sampleList = node('div', '', 'nexo-voice-samples'), review = node('section', '', 'nexo-voice-review'), form = node('form', '', 'identity-form'); review.setAttribute('aria-label', 'Escuchar muestra');
+    const filterView = root.KzaVoiceFilters.mountVoiceFilters({doc,controller,button});
+    const dialogPage = node('div','','voice-list-foot');
     const label = node('label', 'Nombre del perfil'), name = node('input'), selection = node('p', '', 'review-selection'), error = node('p', '', 'identity-form-error'); error.setAttribute('role', 'alert');
     name.type = 'text'; name.maxLength = 64; name.autocomplete = 'off'; name.required = true; label.append(name);
     const confirm = button('Confirmar perfil', () => {}, 'identity-primary'); confirm.type = 'submit';
@@ -52,11 +54,25 @@
       }
       evaluation.append(prepareEvaluation);
     }
-    const modal = node('div', '', 'nexo-voice-modal'); modal.append(sampleList, review); form.append(selection, label, confirm);
-    dialog.replaceChildren(button('Cerrar', closeDialog), dialogRefresh, node('h2', 'Revisá antes de confirmar.'), node('p', 'El perfil confirmado se conserva hasta que lo borres. El audio y la transcripción siguen venciendo con su captura original.', 'modal-description'), modal, corrections,
+    const modal = node('div', '', 'nexo-voice-modal'), results = node('div','','nexo-voice-results');
+    results.append(sampleList,dialogPage); modal.append(results,review); form.append(selection, label, confirm);
+    dialog.replaceChildren(button('Cerrar', closeDialog), dialogRefresh, node('h2', 'Revisá antes de confirmar.'), node('p', 'El perfil confirmado se conserva hasta que lo borres. El audio y la transcripción siguen venciendo con su captura original.', 'modal-description'), filterView.element, modal, corrections,
       node('p', 'Unir incluye todas las muestras de los grupos elegidos, también las de otras páginas. Separar crea otro grupo sólo con las muestras marcadas.', 'relationship-note'), form, ...(onEvaluate ? [evaluation] : []), dialogProgress, error);
-    function closeDialog() { if (dialog.open) dialog.close(); selected.clear(); name.value = ''; for (const input of evaluationModes) input.checked = false; renderedAudio = null; state.review.detachMedia(); review.replaceChildren(); controller.closeReview(); state.review.committed(null); updateSelection(); }
-    function openDialog() { if (!active) return; error.textContent = ''; if (!dialog.open) dialog.showModal(); drawSamples(); }
+    function closeDialog() {
+      if (dialog.open) dialog.close();
+      if (!dialogActive) return;
+      dialogActive = false; selected.clear(); name.value = '';
+      for (const input of evaluationModes) input.checked = false;
+      renderedReview = null; state.review.detachMedia(); review.replaceChildren();
+      controller.closeReview(); state.review.committed(null);
+      if (active) controller.resetFilters();
+      updateSelection();
+    }
+    function openDialog() {
+      if (!active) return;
+      error.textContent = ''; if (!dialog.open) dialog.showModal();
+      dialogActive = true; drawSamples();
+    }
     function updateSelection() {
       const chosen = state.captures.snapshot().filter(row => selected.has(row.id)), chosenGroups = new Map(chosen.map(row => [row.group_id, row]));
       selection.textContent = `${selected.size} muestras seleccionadas · elegí de 3 a 32 para confirmar.`;
@@ -191,31 +207,38 @@
     function reviewPending() { return requestedReview !== null || state.review.status() === 'loading'; }
     function updateListeningButtons() {
       const loading = reviewPending();
-      for (const [id, { control, available }] of listeningButtons) {
-        control.disabled = !available || busy || loading;
-        control.textContent = requestedReview === id ? 'Cargando audio…' : 'Escuchar';
+      for (const [id, { listen, read, available }] of listeningButtons) {
+        listen.disabled = read.disabled = !available || busy || loading;
+        listen.textContent = requestedReview?.id === id && requestedReview.variant === 'audio' ? 'Cargando audio…' : 'Escuchar';
+        read.textContent = requestedReview?.id === id && requestedReview.variant === 'text' ? 'Cargando transcripción…' : 'Leer transcripción';
       }
     }
-    function openReview(id) {
-      if (!active || !dialog.open || doc.hidden || busy || reviewPending() || state.review.snapshot()[0]?.id === id) return;
-      requestedReview = id; startingReview = true; updateSelection();
-      try {
-        if (controller.review(id)) review.scrollIntoView({ block: 'nearest', behavior: 'auto' });
-        else requestedReview = null;
+    function openReview(id,variant) {
+      if (!active || !dialog.open || doc.hidden || busy || reviewPending()) return;
+      const [row] = state.review.snapshot();
+      if (row?.id !== id || variant === 'audio' && row.variant !== 'audio') {
+        requestedReview = {id,variant}; startingReview = true; updateSelection();
+        try { if (!(variant === 'text' ? controller.transcript(id) : controller.review(id))) requestedReview = null; }
+        finally { startingReview = false; updateSelection(); }
       }
-      finally { startingReview = false; updateSelection(); }
+      review.scrollIntoView({ block: 'nearest', behavior: 'auto' });
     }
     function drawSamples() {
       const rows = state.captures.snapshot().slice().sort((a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id));
       for (const id of selected) if (!rows.some(row => row.id === id)) selected.delete(id); sampleList.replaceChildren(); listeningButtons.clear();
-      if (!rows.length) sampleList.append(node('p', message(state.captures, 'No hay muestras vigentes.'), 'identity-empty'));
+      if (!rows.length) sampleList.append(node('p', message(state.captures, 'Ninguna muestra vigente coincide con estos filtros.'), 'identity-empty'));
       for (const row of rows) {
         const item = node('div', '', 'review-sample'), choice = node('input'), copy = node('div', '', 'sample-content'); choice.type = 'checkbox'; choice.checked = selected.has(row.id); choice.dataset.available = String(row.review_available);
         choice.setAttribute('aria-label', `Seleccionar muestra de ${new Date(row.created_at * 1000).toLocaleString()}`);
         choice.addEventListener('change', () => { if (choice.checked && selected.size < 32) selected.add(row.id); else { selected.delete(row.id); choice.checked = false; } updateSelection(); });
-        copy.append(node('strong', new Date(row.created_at * 1000).toLocaleString()), node('span', `${row.duration_s.toFixed(1)} s · grupo ${row.group_id.slice(0, 8)}`));
-        const listen = button('Escuchar', () => openReview(row.id)); listeningButtons.set(row.id, { control: listen, available: row.review_available });
-        item.dataset.captureId = row.id; item.append(choice, copy, listen); sampleList.append(item);
+        copy.append(node('strong', new Date(row.created_at * 1000).toLocaleString()),
+          node('span', `${row.duration_s.toFixed(1)} s · grupo ${row.group_id.slice(0, 8)}`),
+          node('span',row.room_id ?? 'Sin habitación registrada'));
+        const listen = button('Escuchar', () => openReview(row.id,'audio'));
+        const read = button('Leer transcripción', () => openReview(row.id,'text'));
+        const sampleActions = node('div','','voice-sample-actions'); sampleActions.append(listen,read);
+        listeningButtons.set(row.id, { listen, read, available: row.review_available });
+        item.dataset.captureId = row.id; item.append(choice, copy, sampleActions); sampleList.append(item);
       } updateSelection();
     }
     function drawCaptures() {
@@ -224,38 +247,46 @@
       const real = state.captures.status() === 'real'; counts[1].textContent = real ? String(rows.length) : '—'; counts[2].textContent = real ? String(grouped.size) : '—'; groups.replaceChildren(); capturePage.replaceChildren();
       if (!rows.length) groups.append(node('p', message(state.captures, 'No hay muestras vigentes para revisar.'), 'identity-empty'));
       for (const members of grouped.values()) { const row = members[0], card = node('article', '', 'capture-card panel'); card.dataset.voiceGroup = row.group_id; card.append(node('span', { suggested: 'GRUPO SUGERIDO', manual: 'AGRUPACIÓN MANUAL', unknown: 'DESCONOCIDO' }[row.group_state], 'identity-badge purple'), node('h3', `${members.length} de ${row.group_size} muestras visibles`), node('p', `Última captura: ${new Date(row.created_at * 1000).toLocaleString()}`), button('Revisar muestras →', openDialog)); groups.append(card); }
-      if (controller.hasNext('captures')) capturePage.append(button('Más muestras', () => controller.next('captures'))); drawSamples(); state.captures.committed(state.captures.deliveryToken());
+      dialogPage.replaceChildren();
+      if (controller.hasNext('captures')) {
+        for (const page of [capturePage,dialogPage]) page.append(button('Más muestras', () => controller.next('captures')));
+      }
+      drawSamples(); state.captures.committed(state.captures.deliveryToken());
     }
     function drawReview() {
       const row = state.review.snapshot()[0], loading = state.review.status() === 'loading';
       if (!startingReview && (row || !loading)) requestedReview = null;
       review.setAttribute('aria-busy', String(loading));
       updateSelection();
-      if (row && row.audio_url === renderedAudio) { state.review.committed(state.review.deliveryToken()); return; }
-      state.review.detachMedia(); renderedAudio = row?.audio_url ?? null; review.replaceChildren(node('h3', 'Escuchar muestra'));
+      if (row && row === renderedReview) { state.review.committed(state.review.deliveryToken()); return; }
+      state.review.detachMedia(); renderedReview = row ?? null; review.replaceChildren(node('h3', 'Escuchar muestra'));
       if (!row) {
-        const status = node('p', loading ? 'Cargando audio…' : message(state.review, 'Elegí una muestra para escucharla.'));
+        const status = node('p', loading ? requestedReview?.variant === 'text' ? 'Cargando transcripción…' : 'Cargando audio…'
+          : message(state.review, 'Elegí una muestra para escucharla o leer su transcripción.'));
         status.setAttribute('role', 'status'); review.append(status);
       }
       else {
-        const audioDetails = root.KzaVoicePrivacy.metadataDetails('audio', row.audio_metadata);
         const transcriptDetails = root.KzaVoicePrivacy.metadataDetails('transcript', row.transcript_metadata);
-        const player = root.KzaVoicePrivacy.createSamplePlayer({ doc, store: state.review, row, preload: 'metadata', buttonClass: 'identity-primary' });
-        review.append(player, node('p', row.room_id ? `Habitación: ${row.room_id}` : 'Habitación sin registrar', 'identity-muted'),
-          node('p', `Fragmento de ${row.clip_duration_s.toFixed(1)} s${row.clip_truncated ? ` de un segmento de ${row.duration_s.toFixed(1)} s` : ''}.`, 'identity-muted'),
-          ...audioDetails.map(text => node('p', text, 'identity-muted')),
-          node('h4', 'Transcripción del segmento'),
+        review.append(node('p', row.room_id ? `Habitación: ${row.room_id}` : 'Sin habitación registrada', 'identity-muted'));
+        if (row.variant === 'audio') {
+          const player = root.KzaVoicePrivacy.createSamplePlayer({ doc, store: state.review, row, preload: 'metadata', buttonClass: 'identity-primary' });
+          review.append(player,node('p', `Fragmento de ${row.clip_duration_s.toFixed(1)} s${row.clip_truncated ? ` de un segmento de ${row.duration_s.toFixed(1)} s` : ''}.`, 'identity-muted'),
+            ...root.KzaVoicePrivacy.metadataDetails('audio',row.audio_metadata).map(text => node('p',text,'identity-muted')));
+        }
+        review.append(node('h4', 'Transcripción del segmento'),
           ...transcriptDetails.map(text => node('p', text, 'identity-muted')),
-          node('p', row.transcript || 'Sin transcripción disponible.'),
-          node('p', 'El fragmento de audio y la transcripción pueden corresponder a ventanas y canales distintos.', 'identity-muted'));
+          node('p', row.transcript || 'Sin transcripción disponible.'));
+        if (row.variant === 'audio') review.append(node('p', 'El fragmento de audio y la transcripción pueden corresponder a ventanas y canales distintos.', 'identity-muted'));
       }
       state.review.committed(state.review.deliveryToken());
     }
-    const stops = [state.profiles.subscribe(drawProfiles), state.captures.subscribe(drawCaptures), state.review.subscribe(drawReview), ...(typeof onProfileNotes === 'function' ? [onProfileNotes(() => { if (active) drawProfiles(); })] : [])], check = () => { for (const key of ['profiles', 'captures', 'review']) state[key].check(); };
+    const stops = [state.profiles.subscribe(drawProfiles), state.captures.subscribe(drawCaptures), state.review.subscribe(drawReview), filterView.stop, ...(typeof onProfileNotes === 'function' ? [onProfileNotes(() => { if (active) drawProfiles(); })] : [])], check = () => { controller.checkFilters(); for (const key of ['profiles', 'captures', 'review']) state[key].check(); };
     const onVisibility = () => { if (doc.hidden) controller.closeReview(); else check(); };
-    const cancelDialog = event => { event.preventDefault(); closeDialog(); }, cancelLink = event => { event.preventDefault(); closeLink(); }; dialog.addEventListener('cancel', cancelDialog); linkDialog?.addEventListener('cancel',cancelLink); doc.addEventListener('visibilitychange', onVisibility); root.addEventListener('focus', check);
+    const cancelDialog = event => { event.preventDefault(); closeDialog(); }, cancelLink = event => { event.preventDefault(); closeLink(); };
+    const onDialogClosed = () => { if (!dialog.open) closeDialog(); };
+    dialog.addEventListener('cancel', cancelDialog); dialog.addEventListener('close',onDialogClosed); linkDialog?.addEventListener('cancel',cancelLink); doc.addEventListener('visibilitychange', onVisibility); root.addEventListener('focus', check);
     drawProfiles(); drawCaptures(); drawReview();
-    return () => { active = false; clearPeople(); linkToken = null; linkDialog?.removeEventListener('cancel',cancelLink); for (const stop of stops) stop(); dialog.removeEventListener('cancel', cancelDialog); doc.removeEventListener('visibilitychange', onVisibility); root.removeEventListener('focus', check); closeDialog(); selected.clear(); name.value = ''; container.replaceChildren(); dialog.replaceChildren(); listeningButtons.clear(); profileId = renderedAudio = requestedReview = null; controller.leave(); for (const key of ['profiles', 'captures', 'review']) state[key].committed(null); };
+    return () => { active = false; clearPeople(); linkToken = null; linkDialog?.removeEventListener('cancel',cancelLink); for (const stop of stops) stop(); dialog.removeEventListener('cancel', cancelDialog); dialog.removeEventListener('close',onDialogClosed); doc.removeEventListener('visibilitychange', onVisibility); root.removeEventListener('focus', check); closeDialog(); selected.clear(); name.value = ''; container.replaceChildren(); dialog.replaceChildren(); listeningButtons.clear(); profileId = renderedReview = requestedReview = null; controller.leave(); for (const key of ['profiles', 'captures', 'review']) state[key].committed(null); };
   }
   root.NexoVoices = { mountVoices };
 })(typeof window !== 'undefined' ? window : globalThis);

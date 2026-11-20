@@ -10,6 +10,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from urllib.parse import urlsplit
 
 import aiohttp
 import numpy as np
@@ -26,7 +27,7 @@ from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
 from src.users.voice_registry import build_voice_registry
-from tests.frontend.browser_support import Page, browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session
+from tests.frontend.browser_support import Page, browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session, press_enter
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import AUDIO,Encoder
@@ -36,6 +37,64 @@ EVIDENCE = evidence_directory('KZA_VOICE_REVIEW_EVIDENCE','data/browser-runs/voi
 OBS_REVIEW = '#view-users [aria-label="Escuchar muestra"]'
 NEXO_REVIEW = '#voice-dialog [aria-label="Escuchar muestra"]'
 EVALUATION = '[data-evaluation-sample]'
+CAPTURE_QUERY = '/api/voices/captures/query'
+VOICE_FILTERS = '.voice-filters'
+
+
+class VoicePage(Page):
+    """Record voice request method and URL from Chromium without retaining body data."""
+
+    def __init__(self, connection):
+        super().__init__(connection)
+        self.voice_requests = []
+
+    def on_request(self, request):
+        url = urlsplit(request['url'])
+        if url.path.startswith('/api/voices/'):
+            self.voice_requests.append((request['method'], url))
+
+
+async def filter_with_keyboard(page, total):
+    """Apply a filter with a native key and keep focus while the list updates."""
+    checkbox = f'document.querySelector({json.dumps(VOICE_FILTERS + " input[type=checkbox]")})'
+    marker = len(page.voice_requests)
+    await page.evaluate(f'{checkbox}.focus()')
+    for kind in ('rawKeyDown','keyUp'):
+        await page.command('Input.dispatchKeyEvent', {'type':kind,'key':' ','code':'Space',
+            'windowsVirtualKeyCode':32,'nativeVirtualKeyCode':32})
+    await page.wait_for(f'{checkbox}?.checked && document.querySelector(".voice-filter-status")?.textContent==="{total} muestras vigentes."')
+    assert await page.evaluate(f'document.activeElement==={checkbox}')
+    assert [(method,url.path,url.query) for method,url in page.voice_requests[marker:]] == [('POST',CAPTURE_QUERY,'')]
+
+
+async def search_voice(page, term):
+    """Submit an admin search and check that it sends no transcript or review request."""
+    search = f'document.querySelector({json.dumps(VOICE_FILTERS + " input[type=search]")})'
+    private_locations = '''JSON.stringify([location.href,history.length,history.state,{...localStorage},{...sessionStorage}])'''
+    before = await page.evaluate(private_locations)
+    assert await page.evaluate('''[...document.querySelectorAll('.voice-filters input,.voice-filters select')].every(
+        input=>input.getAttribute('autocomplete')==='off' && !input.hasAttribute('name') && !input.closest('form'))''')
+    marker = len(page.voice_requests)
+    await page.evaluate(f'{search}.focus()')
+    await page.command('Input.insertText', {'text':term})
+    assert len(page.voice_requests) == marker
+    await press_enter(page)
+    await page.wait_for('document.querySelector(".voice-filter-status")?.textContent==="1 muestra vigente."')
+    assert await page.evaluate(private_locations) == before
+    assert [(method,url.path,url.query) for method,url in page.voice_requests[marker:]] == [('POST', CAPTURE_QUERY, '')]
+
+
+async def read_transcript(page, identity, panel, text):
+    """Open one transcript and check the real HTTP and DOM contracts."""
+    selector = f'[data-capture-id="{identity}"] button'
+    marker = len(page.voice_requests)
+    await click_button(page, selector,'Leer transcripción')
+    target = f'document.querySelector({json.dumps(panel)})'
+    await page.wait_for(f'{target}?.textContent.includes({json.dumps(text)}) && !{target}.querySelector("audio")')
+    assert [(method,url.path,url.query) for method,url in page.voice_requests[marker:]] == [
+        ('GET', f'/api/voices/captures/{identity}/transcript', '')]
+    assert not await page.evaluate('''JSON.stringify([location.href,history.state,{...localStorage},{...sessionStorage}]).includes('''
+        + json.dumps(text) + ')')
 
 
 async def click_button(page, selector, label):
@@ -274,7 +333,7 @@ async def main(*,browser_binary=None):
                         async with session.get(f'http://127.0.0.1:{debugging}/json/list') as response:
                             target = next(item for item in await response.json() if item['type']=='page')
                     async with connect(target['webSocketDebuggerUrl'],max_size=None) as connection:
-                        page = Page(connection)
+                        page = VoicePage(connection)
                         await page.command('Runtime.enable')
                         await page.command('Page.enable')
                         await instrument_audio(page)
@@ -320,6 +379,13 @@ async def main(*,browser_binary=None):
                         assert corrected[identities[2]]['group_reason']=='manual_unknown'
                         assert corrected[identities[0]]['group_state']=='manual'
                         assert await page.evaluate("document.body.textContent.includes('Synthetic browser profile')")
+                        assert await page.evaluate("[...document.querySelectorAll('[data-capture-id]')].every(row=>row.textContent.includes('Synthetic listening room'))")
+                        await filter_with_keyboard(page,4)
+                        await search_voice(page,'retirement phrase')
+                        await read_transcript(page,extra_id,OBS_REVIEW,'Synthetic audio retirement phrase')
+                        await click_button(page,VOICE_FILTERS+' button','Quitar filtros')
+                        await page.wait_for("document.querySelectorAll('[data-capture-id]').length===4")
+                        assert await page.evaluate(f'document.querySelector({json.dumps(OBS_REVIEW)})?.textContent.includes("Synthetic audio retirement phrase") && !document.querySelector("audio")')
                         loading_timings = []
                         async def listen(identity,text):
                             try:
@@ -359,6 +425,10 @@ async def main(*,browser_binary=None):
                             })()'''%json.dumps('[data-capture-id="'+identity+'"] button'))
                             assert sum(item['path'].endswith('/review') for item in requests)==review_requests
                         await listen(extra_id,'Synthetic audio retirement phrase')
+                        same_sample = len(page.voice_requests)
+                        await click_button(page,f'[data-capture-id="{extra_id}"] button','Leer transcripción')
+                        assert await page.evaluate("document.querySelector('audio')?.src===window.__lastPreviewUrl")
+                        assert len(page.voice_requests)==same_sample
                         await click_button(page,OBS_REVIEW+' button','Pausar')
                         await page.wait_for("document.querySelector('audio').paused && document.querySelector('audio').parentElement.querySelector('button').textContent==='Reproducir'")
                         await page.evaluate('window.__rejectVoicePlay=true')
@@ -404,6 +474,18 @@ async def main(*,browser_binary=None):
                         except TimeoutError:
                             print(json.dumps({'diagnostic':'voice_idle_ack','client':await page.evaluate("({status:window.__kzaVoiceState.review.status(),pending:window.__kzaVoiceState.review.retirementStatus(),captureToken:window.__kzaVoiceState.captures.deliveryToken(),reviewToken:window.__kzaVoiceState.review.deliveryToken(),socket:window.__kzaLiveWs?.readyState})")}))
                             raise
+                        expiring_text,expiring_text_id = await sample('Synthetic independent text expiry',ttl=3)
+                        await click_button(page,'#view-users button','Actualizar')
+                        await page.wait_for(f'document.querySelector({json.dumps(f"[data-capture-id={expiring_text_id}] button")})')
+                        await read_transcript(page,expiring_text_id,OBS_REVIEW,'Synthetic independent text expiry')
+                        await page.wait_for("!document.body.textContent.includes('Synthetic independent text expiry')")
+                        assert voices.privacy.sources_available((expiring_text,))
+                        retired_text,retired_text_id = await sample('Synthetic erased text')
+                        await click_button(page,'#view-users button','Actualizar')
+                        await page.wait_for(f'document.querySelector({json.dumps(f"[data-capture-id={retired_text_id}] button")})')
+                        await read_transcript(page,retired_text_id,OBS_REVIEW,'Synthetic erased text')
+                        await owner.request(retired_text.conversation_id,MemoryReviewer('synthetic-admin'))
+                        await page.wait_for("!document.body.textContent.includes('Synthetic erased text')")
                         leaving,leaving_id = await sample('Synthetic leaving voice view')
                         await page.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='Actualizar').click()")
                         await listen(leaving_id,'Synthetic leaving voice view')
@@ -434,6 +516,7 @@ async def main(*,browser_binary=None):
                             'selected_audio_ready_before_play':True,'audio_loading_timings':loading_timings,
                             'immediate_visible_feedback_before_delayed_http':True,'trusted_reproducir_playing_and_rejection_retry':True,'reselect_keeps_current_playing_sample':True,
                             'visibility_clears_obs_and_old_rejection_is_ignored':True,'nexo_timings':nexo_timings,
+                            'filtered_captures_and_explicit_transcript':True,'transcript_expiry_and_retirement':True,
                             'browser_binary':browser_binary,
                             'grouping_calibration_all_browser_copies_or_hardware_acceptance':False}))
             finally:

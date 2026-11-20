@@ -51,3 +51,12 @@
 .voice-evaluation-selection label{display:flex;align-items:center;gap:8px;font-size:11px}
 .voice-evaluation-selection input{accent-color:var(--mint)}
 @media(max-width:600px){#access-dialog .access-sample{grid-template-columns:minmax(0,1fr)}#evaluation-view .panel{padding:16px}#access-view .access-table th,#access-view .access-table td{padding:10px}}
+
+.nexo-voice-dialog .voice-filters{display:flex;flex-wrap:wrap;align-items:end;gap:12px;margin:16px 0}
+.nexo-voice-dialog .voice-filters label{display:grid;gap:4px;max-width:100%;font-size:12px;color:#bfcce0}
+.nexo-voice-dialog .voice-filters [hidden]{display:none}
+.nexo-voice-dialog .voice-filters input:not([type=checkbox]),.nexo-voice-dialog .voice-filters select{min-height:40px;max-width:100%;padding:6px 8px;border:1px solid #ffffff24;border-radius:6px;background:#0c1522;color:#d4deee;font-size:16px;color-scheme:dark}
+.nexo-voice-dialog .voice-filters input[type=checkbox]{accent-color:#b29af4}
+.nexo-voice-dialog .voice-filter-status{flex-basis:100%;min-height:1.25em;margin:0;color:#bfcce0;font-size:12px}
+.nexo-voice-dialog .nexo-voice-results{min-width:0}
+.nexo-voice-dialog .voice-sample-actions{grid-column:2/-1;display:flex;flex-wrap:wrap;gap:6px}
