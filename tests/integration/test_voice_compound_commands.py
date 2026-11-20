@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from src.audio.zone_manager import Zone, ZoneManager
 from src.core.household_clock import RoomNamespace
 from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.home_assistant.control_policy import EntityGrant, HomeActor, HomeControlPolicy
@@ -27,11 +28,14 @@ from src.orchestrator.dispatcher import MultiUserOrchestrator
 from src.pipeline.command_event import CommandEvent
 from src.pipeline.command_processor import ProcessedCommand
 from src.pipeline.request_router import RequestRouter
+from src.pipeline.response_handler import ResponseHandler
 from src.rooms.room_context import RoomConfig, RoomContextManager
 from src.timers.named_timers import NamedTimerManager
 from tests.integration.test_home_control_policy import ObservedHA
+from tests.mocks.audio_output import GatedZones
 from tests.mocks.c02_matrix import effects
 from tests.mocks.responses import response_handler_mock
+from tests.mocks.speech import PCMEngine
 
 LIGHTS = ("light.escritorio", "light.cocina")
 
@@ -274,6 +278,77 @@ async def test_compound_intercom_replay_during_delivery_and_after_settlement(gra
                 task.cancel()
         await asyncio.gather(original, started, return_exceptions=True)
         await intercom.stop()
+
+
+@pytest.mark.parametrize("replay", [True, False])
+async def test_intercom_replay_does_not_interrupt_the_active_room_output(graph, monkeypatch, replay):
+    zones = ZoneManager([
+        Zone("zone_cocina", "Cocina", 0, 1),
+        Zone("zone_escritorio", "Escritorio", 1, 2),
+        Zone("zone_sala", "Sala", 2, 3),
+    ], ma1260_controller=object())
+    gated = GatedZones(block="after_first_chunk", gated={"zone_escritorio"})
+    monkeypatch.setattr(zones, "play_stream_to_zone", gated.play_stream_to_zone)
+    engine = PCMEngine(frames=240)
+    owner = ResponseHandler(engine, zone_manager=zones)
+    graph.router.response_handler = owner
+    graph.orchestrator.dispatcher.response_handler = owner
+    intercom = IntercomSystem(owner.aspeak, zone_manager=zones, room_catalog={
+        "zone_cocina": ("Cocina",), "zone_escritorio": ("Escritorio",), "zone_sala": ("Sala",),
+    })
+    graph.orchestrator.dispatcher.intercom = intercom
+    await intercom.start()
+
+    second = None
+    second_dispatched = asyncio.Event()
+    finish_turn = graph.router._finish_orchestrated_turn
+
+    async def observe_finish(*args, **kwargs):
+        if asyncio.current_task() is second:
+            second_dispatched.set()
+        return await finish_turn(*args, **kwargs)
+
+    monkeypatch.setattr(graph.router, "_finish_orchestrated_turn", observe_finish)
+    body = "El pedido está listo."
+    text = f"Poné un timer de 5 minutos y anunciá en toda la casa: {body}"
+    request_id = "voice:compound-active-output"
+    original = asyncio.create_task(graph.turn(text, room_id="cocina", request_id=request_id))
+    dispatched = None
+    try:
+        assert await asyncio.to_thread(gated.waiting.wait, 3)
+        active = owner._owner
+        assert active.zone_id == "zone_escritorio" and active.output_started
+        if replay:
+            second = asyncio.create_task(graph.turn(text, room_id="escritorio", request_id=request_id))
+        else:
+            second = asyncio.create_task(graph.turn("Poné un timer de 7 minutos", room_id="escritorio"))
+        dispatched = asyncio.create_task(second_dispatched.wait())
+        await asyncio.wait((second, dispatched), return_when=asyncio.FIRST_COMPLETED)
+        assert second_dispatched.is_set()
+        assert active.cancel_requested.is_set() is (not replay)
+
+        gated.release.set()
+        first, following = await asyncio.gather(original, second)
+        receipt = first["compound_parts"][1]["intercom_receipt"]
+        assert receipt["zones"] == {
+            "zone_cocina": "confirmed", "zone_escritorio": "confirmed" if replay else "uncertain",
+            "zone_sala": "confirmed",
+        }
+        assert engine.calls.count(body) == 3
+        if replay:
+            current = following["compound_parts"][1]["intercom_receipt"]
+            assert current["in_flight"] and current["announcement_id"] == receipt["announcement_id"]
+        else:
+            assert following["intent"] == "timer"
+    finally:
+        gated.release.set()
+        tasks = [task for task in (original, second, dispatched) if task is not None]
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await intercom.stop()
+        await owner.aclose()
 
 
 async def test_compound_replay_distinguishes_quoted_message_from_directed_destination(graph):

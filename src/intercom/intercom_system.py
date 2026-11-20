@@ -195,20 +195,29 @@ class IntercomSystem:
         matches = [zone for zone, names in self._room_names.items() if label and label in names]
         return message, matches if len(matches) == 1 else []
 
+    def _voice_attempt(self, request_id: str) -> _VoiceAttempt | None:
+        return self._voice_in_flight.get(request_id) or self._voice_receipts.get(request_id)
+
+    def is_voice_replay(self, request_id: str, complement: str) -> bool:
+        """Check the playback owner's ID and exact voice payload before barge-in."""
+        attempt = self._voice_attempt(request_id)
+        return attempt is not None and attempt.fingerprint == sha256(complement.encode("utf-8")).digest()
+
     async def announce_from_voice(self, complement: str) -> tuple[TaskOutcome, str, Announcement | None]:
         """Deliver an admitted P3-F2 request at the ordinary configured volume."""
         request_id = CURRENT_REQUEST_ID.get()
         fingerprint = sha256(complement.encode("utf-8")).digest() if request_id is not None else b""
         if request_id is not None:
-            pending = self._voice_in_flight.get(request_id)
-            previous = pending or self._voice_receipts.get(request_id)
+            previous = self._voice_attempt(request_id)
             if previous is not None:
                 if previous.fingerprint != fingerprint:
                     return TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN,
                                        dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED), (
                         "Esa solicitud ya corresponde a otro anuncio."
                     ), None
-                receipt = previous.announcement if pending else previous.announcement._receipt_copy()
+                receipt = previous.announcement
+                if receipt._settled.is_set():
+                    receipt = receipt._receipt_copy()
                 return self._voice_result(receipt)
         if not self._running or not self._room_names or self.tts is None:
             return TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,

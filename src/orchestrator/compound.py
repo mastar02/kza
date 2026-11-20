@@ -341,6 +341,11 @@ def compose_reply(reports: Iterable[CompoundPartReport]) -> str:
 RunPart = Callable[[CompoundPartContext], Awaitable[object]]
 
 
+def compound_part_request_id(request_id: str, index: int) -> str:
+    """Return the identity checked by the runner and the part's effect owner."""
+    return f"{request_id}:part{index}"
+
+
 class CompoundRunner:
     """Run the parts of compound turns; one instance per caller (router or dispatcher).
 
@@ -375,7 +380,7 @@ class CompoundRunner:
         reports: list[CompoundPartReport] = []
         stopped = False
         for index, part in enumerate(parts, start=1):
-            request_id = f"{base}:part{index}"
+            request_id = compound_part_request_id(base, index)
             segment = getattr(part, "segment", "")
             intent = getattr(part, "intent", None)
             reply_label = "El anuncio" if getattr(intent, "family", None) is HouseholdFamily.INTERCOM else None

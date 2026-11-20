@@ -89,13 +89,16 @@ def test_voice_resolves_only_configured_room_labels(text, message, zones):
 
 
 @pytest.mark.parametrize(("opening", "closing"), [("«", "»"), ('"', '"'), ("'", "'")])
+@pytest.mark.parametrize("trailing_filler", ["", ", por favor"])
 @pytest.mark.parametrize("body", [
     "En la cocina: se corto el agua.",
     "En la cocina se corto el agua.",
     "En la cocina: esperen, por favor.",
     "En la cocina esperen, por favor.",
+    "En la cocina:\nesperen.",
+    "En la cocina:\nesperen, por favor.",
 ])
-async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, closing, body):
+async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, closing, body, trailing_filler):
     attempts = []
 
     async def speak(message, zone):
@@ -108,7 +111,7 @@ async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, clo
     await intercom.start()
     try:
         message = f"{opening}{body}{closing}"
-        intent = classify_household_intent(f"Anuncia: {message}")
+        intent = classify_household_intent(f"Anuncia: {message}{trailing_filler}")
         assert intent.family is HouseholdFamily.INTERCOM
         outcome, _, announcement = await intercom.announce_from_voice(intent.complement)
         assert outcome.task_completed
@@ -116,6 +119,21 @@ async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, clo
         assert attempts == [(message, "zone_cocina"), (message, "zone_sala")]
     finally:
         await intercom.stop()
+
+
+@pytest.mark.parametrize("message", [
+    "«En la cocina: «esperen», por favor.»",
+    "«En la cocina:\n«esperen», por favor.»",
+    "«En la cocina: «esperen», dijo Ana, por favor.»",
+    '"En la cocina: "esperen", por favor."',
+    "'En la cocina: \"esperen\", por favor.'",
+])
+def test_nested_quote_keeps_outer_message_and_stays_a_broadcast(message):
+    intercom = IntercomSystem(room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    text = f"Anunciá: {message}, por favor"
+    assert CommandAcceptanceGate().evaluate(text).accept
+    intent = classify_household_intent(text)
+    assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
 
 
 @pytest.mark.parametrize("text", [

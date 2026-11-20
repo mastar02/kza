@@ -75,7 +75,7 @@ from src.nlu.household_intents import (
 )
 from src.notifications.smart_notifications import VOICE_DND_WEB_REQUIRED
 from src.orchestrator.cancellation import CancellationReason
-from src.orchestrator.compound import CompoundPartContext, CompoundRunner
+from src.orchestrator.compound import CompoundPartContext, CompoundRunner, compound_part_request_id
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -3404,6 +3404,19 @@ class MultiUserOrchestrator:
         so the choice is the one opened by a household cancel in that room.
         """
         return self.dispatcher.awaits_reminder_choice("unknown", context_room_id, text)
+
+    def is_intercom_replay(self, request_id: str, household: HouseholdIntent) -> bool:
+        """Check admitted intercom IDs in a voice turn before cancelling local audio."""
+        intercom = self.dispatcher.intercom
+        if intercom is None:
+            return False
+        if household.family is HouseholdFamily.INTERCOM:
+            return intercom.is_voice_replay(request_id, household.complement)
+        return any(
+            part.intent is not None and part.intent.family is HouseholdFamily.INTERCOM
+            and intercom.is_voice_replay(compound_part_request_id(request_id, index), part.intent.complement)
+            for index, part in enumerate(household.parts, start=1)
+        )
 
     def drop_reminder_choice(self, context_room_id: str | None) -> bool:
         """Drop the household reminder choice open in this room (review T032-NUM-FV-2).

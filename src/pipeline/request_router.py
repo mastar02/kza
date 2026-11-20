@@ -1172,10 +1172,7 @@ class RequestRouter:
             self._asr_signals(gate_decision.signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
-        # T037-U6: an accepted turn (a barge-in included) stops the remaining
-        # parts of a compound still running in this room.
-        self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
-        await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
+        await self._begin_accepted_turn(room_id, household)
 
         if not routine_control and await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
@@ -1661,6 +1658,17 @@ class RequestRouter:
         drop = getattr(self._orchestrator, "drop_reminder_choice", None)
         if callable(drop) and drop(room_id) is True:
             logger.info("[Household] reminder choice dropped by another turn room=%s", room_id)
+
+    async def _begin_accepted_turn(self, room_id: str | None, household: HouseholdIntent | None) -> None:
+        """Interrupt the room for a new turn; a known intercom replay only reads its receipt."""
+        request_id = CURRENT_REQUEST_ID.get()
+        if request_id is not None and household is not None:
+            check_replay = getattr(self._orchestrator, "is_intercom_replay", None)
+            if callable(check_replay) and check_replay(request_id, household) is True:
+                return
+        # T037-U6: a new accepted turn stops the remaining compound parts in this room.
+        self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
+        await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
     async def _process_household_turn(self, text: str, household: HouseholdIntent | None, result: dict, *, cmd,
                                       audio, room_id: str | None, pipeline_start: float, tv_signal: bool,

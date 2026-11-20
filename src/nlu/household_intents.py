@@ -235,7 +235,7 @@ class HouseholdIntentClassifier:
 
 # A one-digit decimal ("1,5 horas") stays one token, as in src.timers.voice_request.
 _WORD_RE = re.compile(r"\d+(?:[:.]\d{2}|[.,]\d(?!\d))?|[^\W\d_]+")
-_EXPLICIT_QUOTE = re.compile(r"""«[^»]*»|"[^"]*"|(?<!\w)'[^\n]*?'(?!\w)""")
+_QUOTE_CLOSERS = {"«": "»", '"': '"', "'": "'"}
 _LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras", "bueno",
                          "bue", "dale"})
 # Fillers dropped at the end of a turn ("..., por favor", "... porfa"); "por favor" is matched as a pair
@@ -296,6 +296,28 @@ def _tokens(text: str) -> _Utterance:
     return _Utterance(original, tuple(_fold(t) for t in original), source, tuple(word.end() for word in words))
 
 
+def _quote_spans(text: str) -> list[tuple[int, int]]:
+    """Find balanced quotes across lines, keeping each outer span intact."""
+    open_quotes: list[tuple[str, int]] = []
+    spans: list[tuple[int, int]] = []
+    for offset, char in enumerate(text):
+        if char == "«":
+            open_quotes.append(("»", offset))
+        elif char in ("»", '"', "'"):
+            before, after = text[max(0, offset - 1):offset], text[offset + 1:offset + 2]
+            if char == "'" and before.isalnum() and after.isalnum():
+                continue  # Apostrophe inside a word.
+            opens = not before or before.isspace() or before in "«([{:,;¡¿"
+            # Straight quotes can nest when a new opener precedes a word.
+            opens_inner = opens and bool(after) and not after.isspace() and after not in ",.;:?!)]}»\"'"
+            if open_quotes and open_quotes[-1][0] == char and (char == "»" or not opens_inner):
+                _, start = open_quotes.pop()
+                spans.append((start, offset + 1))
+            elif char in _QUOTE_CLOSERS and opens:
+                open_quotes.append((_QUOTE_CLOSERS[char], offset))
+    return sorted(spans)
+
+
 def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str], extra_leads: frozenset[str],
                    extra_trails: frozenset[str], paused_trails: frozenset[str] = frozenset()) -> tuple[int, int]:
     """Token range of ``utt`` (the tokens of ``text``) without its lead and trail fillers.
@@ -306,7 +328,7 @@ def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str], extra_
     """
     lowered = (text or "").lower()
     spans = [m.span() for m in _WORD_RE.finditer(lowered)]
-    quotes = [match.span() for match in _EXPLICIT_QUOTE.finditer(lowered)]
+    quotes = _quote_spans(lowered)
 
     def crosses_quote(first: int, last: int) -> bool:
         return any(left < spans[last][1] and spans[first][0] < right for left, right in quotes)
@@ -1055,9 +1077,9 @@ def intercom_slots(complement: str) -> tuple[str | None, int]:
     room syntax is considered. Ordinary punctuation can precede a destination.
     """
     start = _INTERCOM_PUNCTUATION.match(complement).end()
-    quote = _EXPLICIT_QUOTE.search(complement)
-    if quote is not None and quote.start() < start:
-        return None, quote.start()
+    quotes = _quote_spans(complement)
+    if quotes and quotes[0][0] < start:
+        return None, quotes[0][0]
     direction = _INTERCOM_DIRECTION.match(complement, start)
     marker = _INTERCOM_MESSAGE_MARKER.search(complement, start)
     target_start = direction.end() if direction else start
