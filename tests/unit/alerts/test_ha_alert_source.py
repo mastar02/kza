@@ -195,13 +195,13 @@ async def test_disconnection_retained_snapshot_and_reconnection_do_not_close_an_
             assert transport.state_reads == 1
             assert source.get_status()["unknown"] == 1 and original.resolved_at is None
             assert features.get_alert_summary() == ALERTS_UNAVAILABLE
-            transport.response(status=503)
+            transport.response(None, status=503)
             await source.reconcile()
             assert source.get_status()["unknown"] == 1 and original.resolved_at is None
 
             retry.set()
             await _reached(recovered.stream_waiting)
-            transport.response(status=503)
+            transport.response(None, status=503)
             await source.reconcile()
             assert source.get_status()["known"] == 1
             assert manager.get_history() == [original] and original.resolved_at is None
