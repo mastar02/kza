@@ -77,7 +77,7 @@ _PROGRAM_PRENOMINAL_MODIFIER = (
     r"|hermos[oa]|lind[oa]|bonit[oa]|pequen[oa]|famos[oa]|popular|clasic[oa]|conocid[oa]"
     r"|interesante|importante|brillante|apasionante|fascinante|emocionante|impresionante|entretenid[oa]"
     r"|divertid[oa]|favorit[oa]|preferid[oa]|siguiente|anterior|pasad[oa]|reciente|especial"
-    r"|complet[oa]|enter[oa]|cort[oa]|larg[oa])"
+    r"|complet[oa]|enter[oa]|cort[oa]|larg[oa]|polemic[oa])"
 )
 _PROGRAM_NOMINAL_END = rf"programa\b(?!\s*[,;:]| {_PROGRAM_OBJECT}\b)"
 _PROGRAM_SCHEDULE_TAIL = r"(?:dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|[0-9]+|cuando|cada|tod[oa]s?)"
@@ -85,9 +85,15 @@ _PROGRAM_COMPLEMENT_CONTEXT = (
     r"(?<!\bpara )(?<!\bdespues )(?<!\bluego )(?<!\bantes )"
     r"(?<!\bdespues de )(?<!\bluego de )(?<!\bantes de )"
 )
+# The program fills the object gap in "que vimos". An explicit object or
+# complement clause usually fills it instead. "Ganó el premio" describes the program as subject.
 _PROGRAM_MEDIA_RELATIVE = (
-    r"que (?:ya )?(?:vi|viste|vio|vimos|vieron|vemos|veamos|(?:grab|escuch)(?:aste|o|amos|aron|emos)"
-    r"|gan(?:o|aron)|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron|ra|ran)|estren(?:o|aron|ara|aran)))"
+    r"que (?:ya )?(?:"
+    r"(?:vi|viste|vio|vimos|vieron|vemos|veamos|(?:grab|escuch|mir)(?:e|aste|o|amos|aron|emos)"
+    r"|gan(?:o|aron)(?: (?:el|un) premio)?"
+    r"|(?:voy|vas|va|vamos|van) a (?:ver|mirar|grabar|escuchar|pasar|dar|emitir|transmitir))"
+    rf"\b(?! (?:que|{_PROGRAM_OBJECT})\b)"
+    r"|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron|ra|ran)|estren(?:o|aron|ara|aran)))"
 )
 # A temporal complement may end at an ordinal ("después del último, programa ...").
 # After one of those complements, "programa a las" can also be a command.
@@ -97,7 +103,8 @@ _NOMINAL_PROGRAM = re.compile(
     rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_DETERMINER}(?: {_PROGRAM_PRENOMINAL_MODIFIER})?"
     rf" {_PROGRAM_NOMINAL_END}(?! {_PROGRAM_SCHEDULE_TAIL}\b)"
     rf"|\b{_PROGRAM_DETERMINER} {_PROGRAM_PRENOMINAL_MODIFIER} {_PROGRAM_NOMINAL_END}(?= de\b)"
-    rf"|\b{_PROGRAM_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= {_PROGRAM_MEDIA_RELATIVE}\b)"
+    rf"|\b{_PROGRAM_DETERMINER} {_PROGRAM_PRENOMINAL_MODIFIER} {_PROGRAM_NOMINAL_END}"
+    rf"(?= {_PROGRAM_MEDIA_RELATIVE}\b)"
     rf"|{_PROGRAM_COMPLEMENT_CONTEXT}\b{_PROGRAM_PLAIN_DETERMINER} [a-z]+ {_PROGRAM_NOMINAL_END}(?= (?:de|que)\b)"
 )
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
