@@ -132,18 +132,21 @@ def test_binding_snapshot_excludes_transient_staged_publication(tmp_path, monkey
     probe_passed = threading.Event()
     writer_blocked_or_staged = threading.Event()
     authority_captured = threading.Event()
-    lock = threading.RLock()
+    real_rlock = threading.RLock
     capture = stage_runtime.capture_state_authority
     replace = os.replace
 
     class ObservedGate:
+        def __init__(self):
+            self._lock = real_rlock()
+
         def __enter__(self):
-            if not lock.acquire(blocking=False):
+            if not self._lock.acquire(blocking=False):
                 writer_blocked_or_staged.set()
-                lock.acquire()
+                self._lock.acquire()
 
         def __exit__(self, *_exc):
-            lock.release()
+            self._lock.release()
 
     def capture_after_writer_attempt(state):
         # The real binding snapshot calls this after the writer probe succeeds.
