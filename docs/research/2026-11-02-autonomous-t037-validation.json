@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "profile_id": "home-2026-11-v1",
+  "task": "T037",
+  "unit": "T037-U7",
+  "status": "evidence_prepared",
+  "implementation_base": "c6bfedf169c29c9460873d27706c0285c3e5ba6c",
+  "matrix": {
+    "path": "tests/integration/test_household_query_matrix.py",
+    "minimum_cases_per_family": 10,
+    "family_cases": 54,
+    "additional_scenarios": 6,
+    "count_basis": "Filas de la matriz por inspección estática. Los cinco controles de conteo se excluyen del total de escenarios.",
+    "factory": "src.main.build_application",
+    "boundaries": "Estado y servicios de HA por HTTP loopback, reloj fijo para hora y horizonte, PCM sintético y respuesta sintética del 7B para dos vetos. Se conservan las rutas, el despacho, las políticas y los recibos reales de la aplicación.",
+    "families": {
+      "current_weather": {
+        "count": 11,
+        "entry_point": "VoicePipeline.process_command",
+        "coverage": "Condición actual, temperatura, humedad, entidad exacta, datos parciales, indisponibilidad y denegación de la fuente."
+      },
+      "forecast": {
+        "count": 12,
+        "decision": "Q23",
+        "entry_point": "VoicePipeline.process_command",
+        "coverage": "Pronóstico diario por fecha del hogar, entradas desordenadas con primer registro fuera de hoy, medianoche UTC, día ausente, duplicados en conflicto, fechas inválidas, fallo del proveedor y horizontes ambiguos o no admitidos."
+      },
+      "time_date": {
+        "count": 11,
+        "entry_point": "VoicePipeline.process_command",
+        "coverage": "Hora local y medianoche, fecha con año, ayer, mañana, pasado mañana, cambio de año, día bisiesto, wake propio y reloj inválido."
+      },
+      "device_state": {
+        "count": 10,
+        "decision_reference": "Q22",
+        "entry_point": "GET /api/entities/{entity_id}",
+        "coverage": "Lectura autenticada con proveniencia, estado no disponible, respuesta inválida y denegación sin permiso de diagnóstico.",
+        "scope_limit": "Las diez filas cubren el adaptador HTTP de diagnóstico. Se incluye en C02 un rechazo por voz de temperatura interior. Falta confirmar el alcance textual de Q22 y no hay evidencia de una ruta dedicada de lectura de dispositivos por voz en la base revisada."
+      },
+      "compound_ellipsis": {
+        "count": 10,
+        "decision": "Q21",
+        "entry_point": "VoicePipeline.process_command",
+        "coverage": "Los turnos admisibles de T037-U6 ejecutan cada parte en orden con request_id, estado de tarea y recibo HA cuando corresponde. Una respuesta reporta cada parte. Se cubren elipsis de dos y tres ambientes, negativa por parte y repetición del mismo turno sin reenvío."
+      }
+    },
+    "restart": "Se cierra y reconstruye la fábrica sobre las mismas rutas locales. El clima y el estado leído por HTTP reflejan cambios en HA sin envíos de control."
+  },
+  "negative_coverage": {
+    "criterion": "C02",
+    "case_count": 15,
+    "case_ids": [
+      "C02-weather-source-denied",
+      "C02-ambiguous-forecast",
+      "C02-unsupported-horizon",
+      "C02-device-anonymous",
+      "C02-device-home-role",
+      "C02-security-part-refused",
+      "C02-unresolved-room-does-not-stop-other-part",
+      "C02-resolved-duplicate",
+      "C02-ha-denies-one-part",
+      "C02-uncertain-part-not-resent",
+      "C02-indoor-is-not-outdoor",
+      "C02-inadmissible-compound",
+      "C02-borrowed-wake",
+      "C02-event-time-out-of-domain",
+      "C02-remote-clock-out-of-domain"
+    ],
+    "scope": "Las lecturas y rechazos completos comprueban cero escrituras de control. En compuestos mixtos se comparan todos los envíos en orden y se exige cero repeticiones ciegas de partes inciertas. El conjunto es parcial frente a las 200 entradas negativas o de fallo requeridas por C02."
+  },
+  "verification": {
+    "linux_complete_suite": "pending",
+    "gate": "Ejecutar la matriz y la suite completa en Linux con cero xfails nuevos antes de considerar verified_local.",
+    "SOLO_WINDOW": "La preparación se hizo sin pytest ni acceso al servidor de desarrollo.",
+    "plan_reference": "data/autonomous-roadmap-20261102/p3-p4-plan.json no estaba presente en el worktree asignado. Se usaron el brief T037-U7, las entradas T037 y C01/C02/C05/C13 del roadmap versionado y los contratos de las rutas en la base indicada."
+  },
+  "pending_field_evidence": [
+    {
+      "criterion": "C13",
+      "phase": "P7",
+      "needed": "Prueba física con entradas elegibles de C12, estratos claro y adverso y un mínimo de diez casos por familia. Registrar observación de efectos o tareas reales y fallos por separado."
+    },
+    {
+      "scope": "forecast_source",
+      "needed": "Validar el proveedor de pronóstico real de HA, su convención de fecha/zona, la alineación de días y la hora de emisión si está disponible. La hora de consulta sintética no acredita la hora de emisión."
+    }
+  ],
+  "criteria_credited": []
+}
