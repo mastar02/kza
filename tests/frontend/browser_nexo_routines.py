@@ -286,7 +286,7 @@ async def main() -> None:
                     await install_login_session(page, f'http://127.0.0.1:{port}', operator_b.token)
                     marker = len(requests)
                     await page.command('Page.reload')
-                    await page.wait_for(f"!document.querySelector('#routines-view').hidden && document.querySelector({card(main_id)})")
+                    await page.wait_for(f"document.querySelector('#routines-view')?.hidden === false && document.querySelector({card(main_id)})")
                     await page.wait_for("document.querySelector('.routine-session-notice') && !document.querySelector('.routine-session-notice').hidden")
                     assert await page.evaluate(f"sessionStorage.getItem('kza:routine-attempt:{main_id}')===null")
                     assert await page.evaluate(f"!document.querySelector({card(main_id)}).textContent.includes('Resultado pendiente') && !document.querySelector('[data-key=\"{main_id}:retry\"]')")
@@ -318,7 +318,7 @@ async def main() -> None:
                     assert run_count(database, main_id) == runs_before_takeover, 'nothing resent under the other account'
                     assert await page.evaluate(f"document.querySelector('.routine-session-notice').textContent.includes('Revisá el último resultado') && !document.querySelector('[data-key=\"{main_id}:retry\"]')")
                     await page.command('Page.reload')
-                    await page.wait_for(f"!document.querySelector('#routines-view').hidden && document.querySelector({card(main_id)})")
+                    await page.wait_for(f"document.querySelector('#routines-view')?.hidden === false && document.querySelector({card(main_id)})")
                     checks.append('hidden tab (no reload) while the cookie switches account: on return whoami is asked first, nothing is retried or consulted, the identity is dropped, the reminder shows and the session is re-read')
 
                     # Lost PUT: resolved by comparison, not by a second write.
