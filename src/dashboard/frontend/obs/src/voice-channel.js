@@ -18,6 +18,7 @@
     let closed = false, sequence = 0, capturesSequence = 0, reapplying = false;
     let filters = DEFAULT_FILTERS, count = null, rooms = null, summaryTimer = null, roomNotice = '';
     let queryCursor = null, queryHasSearch = false;
+    let capturePageToken;
     const pages = {}, actions = new Set(), aborts = new Set();
     const filterListeners = new Set();
     const searchAllowed = () => !profilesOnly && canSearch() === true;
@@ -45,50 +46,63 @@
       filters = Object.freeze({...filters,room:null}); roomNotice = ROOM_GONE;
       return true;
     }
+    function canRefreshRoom(token) {
+      // Recheck the selected room once no live rows remain. An older summary
+      // cannot invalidate the page or the request that replaced it.
+      return filters.room?.kind === 'room' && !channels.captures.busy()
+        && (capturePageToken === token || capturePageToken === null)
+        && state.captures.snapshot().length === 0;
+    }
     function checkSummary() {
-      const roomExpired = expired(rooms), countExpired = expired(count);
+      const expiredRooms = expired(rooms) ? rooms : null, countExpired = expired(count);
       if (countExpired) count = null;
-      if (roomExpired) {
-        rooms = null;
-        // Keep the selection for the refresh only. The view drops the expired
-        // label immediately, and a search cannot supply a replacement list.
-        if (filters.text !== null) resetMissingRoom();
-        void reapplyCaptures();
-      }
-      if (countExpired || roomExpired) notifyFilters();
-      if (countExpired || roomExpired) channels.captures.flush();
+      if (expiredRooms) rooms = null;
+      if (countExpired || expiredRooms) channels.captures.flush();
+      const refreshRoom = expiredRooms && canRefreshRoom(expiredRooms.token);
+      if (refreshRoom && filters.text !== null) resetMissingRoom();
       armSummary();
+      if (countExpired || expiredRooms) notifyFilters();
+      if (refreshRoom) void reapplyCaptures();
     }
     function capturePage(cursor,page,started) {
       pages.captures = cursor;
       const observed = page?.count_observed_at ?? page?.observed_at, token = page?.event_id;
+      capturePageToken = token ?? null;
       const value = page?.matching_count;
       count = page?.scan_complete === true && Number.isSafeInteger(value) && value >= 0 && value <= 4096
         ? token ? timed(value,page.count_expires_at,observed,started,page)
           : value === 0 && Number.isFinite(observed) ? {value,mono:Infinity,wall:Infinity} : null
         : null;
       const options = page?.room_options;
-      let resetRoom = false;
+      let roomMissing = false;
       if (token && filters.text === null && Array.isArray(options) && options.length <= 32
           && options.every(room => typeof room === 'string' && room.length && [...room].length <= 128 && !/[\x00-\x1f\x7f]/.test(room))) {
         rooms = options.length ? timed(Object.freeze([...options]),page.room_options_expires_at,observed,started,page) : null;
-        if (!rooms?.value.includes(filters.room?.id)) resetRoom = resetMissingRoom();
-      } else if (!token && !rooms) resetRoom = resetMissingRoom();
+        roomMissing = !rooms?.value.includes(filters.room?.id);
+      } else roomMissing = !token && !rooms;
+      const resetRoom = roomMissing && state.captures.snapshot().length === 0 && resetMissingRoom();
       armSummary(); notifyFilters();
       if (resetRoom) void reapplyCaptures();
     }
     function retireSummary(tokens) {
       const countRetired = tokens.includes(count?.token), roomsRetired = tokens.includes(rooms?.token);
-      if (!countRetired && !roomsRetired) return;
+      const resetRoom = !rooms && tokens.includes(capturePageToken) && resetMissingRoom();
+      if (!countRetired && !roomsRetired && !resetRoom) return;
+      const refreshRoom = roomsRetired && canRefreshRoom(rooms.token) && resetMissingRoom();
       if (countRetired) count = null;
       if (roomsRetired) rooms = null;
-      if (roomsRetired && resetMissingRoom()) void reapplyCaptures();
-      else { armSummary(); notifyFilters(); }
+      armSummary(); notifyFilters(); channels.captures.flush();
+      if (refreshRoom) void reapplyCaptures();
     }
+    // Clear the selector's selected-room fallback before the channel retires
+    // the capture ticket and queues its ACK.
+    const unsubscribeCaptures = state.captures.subscribe(() => {
+      if (state.captures.snapshot().length === 0) notifyFilters();
+    });
     const channels = Object.fromEntries(Object.keys(PATHS).map(kind => [kind,channelsAPI.createConversationChannel({
       store:state[kind], fetch, path:PATHS[kind], channel:`voices:${kind}`, loadOnOpen:false, hasView,
       emitAck:message => actions.size===0 && emitAck(message), onUnauthorized,
-      monotonic, wall,
+      monotonic, wall, trackObservedAt:kind === 'captures',
       onPage:kind === 'captures' ? capturePage : cursor => { pages[kind] = cursor; },
       onRetire:kind === 'captures' ? retireSummary : undefined,
       retains:kind === 'captures' ? token => rooms?.token === token || count?.token === token : undefined,
@@ -106,13 +120,13 @@
       const text = searchAllowed() ? filters.text : null;
       const body = JSON.stringify({...filters,text,cursor});
       const accepted = channels.captures.refresh(PATHS.captures,{method:'POST',body});
-      if (accepted) { queryCursor = cursor; queryHasSearch = text !== null; }
+      if (accepted) { queryCursor = cursor; queryHasSearch = text !== null; capturePageToken = undefined; }
       return accepted;
     }
     async function reapplyCaptures() {
       if (closed || profilesOnly) return false;
       const attempt = ++capturesSequence;
-      reapplying = true; delete pages.captures; count = null;
+      reapplying = true; delete pages.captures; count = null; capturePageToken = undefined;
       try {
         do {
           channels.captures.clearView();
@@ -129,7 +143,7 @@
       const captureAttempt = ++capturesSequence;
       reapplying = false;
       for (const kind of Object.keys(pages)) delete pages[kind];
-      count = null; armSummary(); notifyFilters();
+      count = null; capturePageToken = undefined; armSummary(); notifyFilters();
       for (const kind of Object.keys(channels)) channels[kind].clearView();
       await Promise.all(Object.values(channels).map(channel => channel.settled()));
       if (closed || attempt!==sequence) return;
@@ -165,7 +179,7 @@
       return accepted;
     }
     function clearFilters() {
-      capturesSequence++; reapplying = false; queryCursor = null; queryHasSearch = false;
+      capturesSequence++; reapplying = false; queryCursor = null; queryHasSearch = false; capturePageToken = undefined;
       filters = DEFAULT_FILTERS; roomNotice = ''; clearSummary(true);
     }
     function leave() {
@@ -194,6 +208,10 @@
       },
       resetFilters() {
         if (closed || profilesOnly) return;
+        if (Object.keys(DEFAULT_FILTERS).every(key => filters[key] === DEFAULT_FILTERS[key])) {
+          roomNotice = ''; notifyFilters(true);
+          return;
+        }
         clearFilters();
         void reapplyCaptures();
       },
@@ -236,7 +254,11 @@
           expected_profile_revision:profileRevision,expected_link_revision:linkRevision},'PUT');
       },
       deleteProfile(identity,revision) { return mutate('/api/voices/profiles/'+identity,{expected_revision:revision},'DELETE'); },
-      dispose() { closed = true; root?.removeEventListener?.('pagehide',leave); leave(); for (const channel of Object.values(channels)) channel.dispose(); },
+      dispose() {
+        closed = true; root?.removeEventListener?.('pagehide',leave);
+        leave(); unsubscribeCaptures();
+        for (const channel of Object.values(channels)) channel.dispose();
+      },
     };
   }
   const api = { createVoiceController, CAPTURE_QUERY_KEYS };

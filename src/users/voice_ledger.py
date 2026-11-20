@@ -856,6 +856,11 @@ class VoiceLedger:
                 count_expires = min(live,default=None)
                 if not filters.search:
                     rooms = sorted(room for room,deadline in scan.rooms.items() if deadline>observed)[:ROOM_OPTIONS_MAX]
+                    selected_room = filters.room_id
+                    if (selected_room is not None and selected_room not in rooms
+                            and scan.rooms.get(selected_room,observed)>observed):
+                        # A live room omitted by the cap sorts after the listed rooms.
+                        rooms[-1] = selected_room
                     options = tuple(rooms)
                     options_expires = min((scan.rooms[room] for room in rooms),default=None)
             projection.summary = VoiceQuerySummary(count,count is not None,count_expires,options,options_expires)

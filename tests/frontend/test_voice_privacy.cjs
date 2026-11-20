@@ -217,14 +217,14 @@ function transcript(id=review().id) {
   return {id,variant:'text',transcript:row.transcript,room_id:row.room_id,duration_s:row.duration_s,
     transcript_scope:row.transcript_scope,transcript_metadata:row.transcript_metadata};
 }
-function controllerFixture(makeController=createVoiceController) {
+function controllerFixture(makeController=createVoiceController, {wallSkew=0,onAck=()=>{}}={}) {
   let now=0, id=0, unauthorized=0;
   const calls=[], acks=[], revoked=[], timers=new Map();
-  const clock={monotonic:()=>now,wall:()=>NOW*1000+now,
+  const clock={monotonic:()=>now,wall:()=>NOW*1000+now+wallSkew,
     schedule:(fn,ms)=>{timers.set(++id,{fn,at:now+ms});return id;},cancel:token=>timers.delete(token)};
   const state=createVoiceState({...clock,url:{createObjectURL:()=>`blob:synthetic-${++id}`,revokeObjectURL:token=>revoked.push(token)}});
   const controller=makeController({state,...clock,canSearch:()=>true,
-    onUnauthorized:()=>unauthorized++,emitAck:ack=>{acks.push(ack);return true;},
+    onUnauthorized:()=>unauthorized++,emitAck:ack=>{onAck(ack);acks.push(ack);return true;},
     fetch:(path,options)=>new Promise(resolve=>{
       const channel=path===QUERY ? 'voices:captures' : path.includes('/profiles') ? 'voices:profiles' : 'voices:review';
       calls.push({path,options,respond({rows=null,fields={},status=200,eventId=B,empty=null}={}) {
@@ -332,6 +332,32 @@ test('a filter applied during a full refresh takes precedence over its initial c
   f.latest().respond(); await c.settled(); c.dispose();
 });
 
+test('resetting filter controls preserves a live unfiltered page and reloads a filtered page',async()=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  const initial=c.refresh(); await flush();
+  f.latest().respond(); await initial;
+  const fields={next_cursor:CURSOR,matching_count:1,scan_complete:true,count_expires_at:NOW+8,
+    room_options:['Synthetic room'],room_options_expires_at:NOW+10};
+  f.latest().respond({rows:[groupedCapture()],fields}); await c.settled();
+  const [unfiltered]=state.captures.snapshot(), notifications=[];
+  c.subscribeFilters(reset=>notifications.push(reset));
+  c.resetFilters(); await flush();
+  assert.equal(f.calls.length,2);
+  assert.equal(state.captures.snapshot()[0],unfiltered);
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.equal(c.hasNext('captures'),true);
+  assert.equal(c.captureSummary().count,1);
+  assert.deepEqual(notifications,[true]);
+  await c.setFilters({text:'synthetic phrase'});
+  f.latest().respond({eventId:C,rows:[groupedCapture()]}); await c.settled();
+  c.resetFilters();
+  assert.deepEqual(state.captures.snapshot(),[]);
+  assert.equal(c.captureFilters().text,null);
+  await flush();
+  assert.deepEqual(f.query(),DEFAULTS);
+  f.latest().respond(); await c.settled(); c.dispose();
+});
+
 test('room options survive an empty filtered page and their original ACK waits for retirement',async()=>{
   const f=controllerFixture(), {controller:c}=f;
   await c.setFilters({listenable_only:true});
@@ -356,7 +382,8 @@ test('room options survive an empty filtered page and their original ACK waits f
 
 test('room options expire with their snapshot when its deadline is earlier',async()=>{
   const f=controllerFixture(), {controller:c,state}=f;
-  await c.setFilters({listenable_only:true});
+  const room={kind:'room',id:'Synthetic room'};
+  await c.setFilters({room});
   f.latest().respond({rows:[groupedCapture()],fields:{expires_at:NOW+4,matching_count:1,scan_complete:true,
     count_expires_at:NOW+8,room_options:['Synthetic room'],room_options_expires_at:NOW+10}});
   await c.settled();
@@ -367,8 +394,278 @@ test('room options expire with their snapshot when its deadline is earlier',asyn
   assert.deepEqual(state.captures.snapshot(),[]);
   assert.deepEqual(c.captureSummary(),{count:null,rooms:[],roomNotice:''});
   assert.equal(f.calls.length,2);
-  assert.deepEqual(f.query(),{...DEFAULTS,listenable_only:true});
+  assert.deepEqual(f.query(),{...DEFAULTS,room});
+  f.latest().respond(); await flush();
+  assert.deepEqual(f.query(),DEFAULTS);
   f.latest().respond(); await c.settled(); c.dispose();
+});
+
+test('an earlier room-options deadline preserves the selected room and its live capture lease',async t=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  t.after(()=>c.dispose());
+  const room={kind:'room',id:'Synthetic room'};
+  const acknowledged=()=>f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket);
+  await c.setFilters({room});
+  f.latest().respond({rows:[groupedCapture()],fields:{expires_at:NOW+10,next_cursor:CURSOR,
+    matching_count:1,scan_complete:true,count_expires_at:NOW+10,
+    room_options:[room.id,'Other synthetic room'],room_options_expires_at:NOW+3}});
+  await c.settled();
+  const [capture]=state.captures.snapshot();
+  f.advance(3000); await flush();
+  assert.deepEqual(c.captureSummary(),{count:1,rooms:[],roomNotice:''});
+  assert.deepEqual(c.captureFilters().room,room);
+  assert.equal(state.captures.snapshot()[0],capture);
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.equal(c.hasNext('captures'),true);
+  assert.equal(f.calls.length,1);
+  assert.deepEqual(acknowledged(),[]);
+  f.advance(6999); await flush();
+  assert.equal(state.captures.snapshot()[0],capture);
+  assert.deepEqual(acknowledged(),[]);
+  f.advance(1); await flush();
+  assert.deepEqual(state.captures.snapshot(),[]);
+  assert.equal(c.captureSummary().count,null);
+  assert.deepEqual(acknowledged(),[B]);
+});
+
+for (const reason of ['expired in flight','omitted from the capped options']) test(`live filtered rows survive when the room is ${reason}`,async t=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  t.after(()=>c.dispose());
+  const room={kind:'room',id:'Synthetic room'}, row=groupedCapture();
+  await c.setFilters({room});
+  if (reason==='expired in flight') f.advance(3000);
+  const options=reason==='expired in flight' ? [room.id]
+    : Array.from({length:32},(_,index)=>'Other synthetic room '+index);
+  f.latest().respond({rows:[row],fields:{expires_at:NOW+10,matching_count:1,scan_complete:true,
+    count_expires_at:NOW+10,room_options:options,room_options_expires_at:NOW+3}});
+  await flush();
+  assert.equal(f.calls.length,1);
+  assert.deepEqual(state.captures.snapshot().map(item=>item.id),[row.id]);
+  assert.deepEqual(c.captureFilters().room,room);
+  assert.deepEqual(c.captureSummary(),{count:1,rooms:reason==='expired in flight'?[]:options,roomNotice:''});
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.deepEqual(f.acks,[]);
+});
+
+for (const wallSkew of [0,-48*3600000]) {
+  test(`a six-second response preserves captures past the options deadline, wall skew ${wallSkew} ms`,async t=>{
+    const f=controllerFixture(createVoiceController,{wallSkew}), {controller:c,state}=f;
+    t.after(()=>c.dispose());
+    const room={kind:'room',id:'Synthetic room'}, row=groupedCapture();
+    await c.setFilters({room});
+    f.advance(6000);
+    f.latest().respond({rows:[row],fields:{expires_at:NOW+10,matching_count:1,scan_complete:true,
+      count_expires_at:NOW+10,room_options:[room.id],room_options_expires_at:NOW+3}});
+    await c.settled();
+    assert.equal(state.captures.status(),'real');
+    assert.deepEqual(state.captures.snapshot().map(item=>item.id),[row.id]);
+    assert.equal(state.captures.deliveryToken(),B);
+    assert.deepEqual(c.captureFilters().room,room);
+    assert.deepEqual(c.captureSummary(),{count:1,rooms:[],roomNotice:''});
+    assert.equal(f.calls.length,1);
+    f.advance(3999); await flush();
+    assert.equal(state.captures.snapshot()[0].id,row.id);
+    assert.deepEqual(f.acks,[]);
+    f.advance(1); await flush();
+    assert.deepEqual(state.captures.snapshot(),[]);
+    assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B]);
+  });
+
+  test(`pagination with a newer observation charges only its own request, wall skew ${wallSkew} ms`,async t=>{
+    const f=controllerFixture(createVoiceController,{wallSkew}), {controller:c,state}=f;
+    t.after(()=>c.dispose());
+    const first={...groupedCapture(),group_expires_at:NOW+40}, second={...groupedCapture(),id:review().id};
+    const summary={matching_count:1,scan_complete:true,room_options:['Synthetic room']};
+    await c.setFilters({listenable_only:true});
+    f.advance(4000);
+    f.latest().respond({rows:[first],fields:{...summary,observed_at:NOW+4,expires_at:NOW+40,
+      next_cursor:CURSOR,count_expires_at:NOW+40,room_options_expires_at:NOW+40}});
+    await c.settled();
+    assert.equal(state.captures.snapshot()[0].id,first.id);
+    assert.equal(state.captures.deliveryToken(),B);
+    f.advance(2000);
+    assert.equal(c.next('captures'),true);
+    assert.equal(f.query().cursor,CURSOR);
+    f.latest().respond({eventId:C,rows:[second],fields:{...summary,observed_at:NOW+6,expires_at:NOW+10,
+      count_expires_at:NOW+10,room_options_expires_at:NOW+10}});
+    await c.settled();
+    assert.equal(state.captures.status(),'real');
+    assert.deepEqual(state.captures.snapshot().map(item=>item.id),[second.id]);
+    assert.equal(state.captures.deliveryToken(),C);
+    assert.equal(c.captureSummary().count,1);
+    f.advance(3999); await flush();
+    assert.equal(state.captures.snapshot()[0].id,second.id);
+    assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B]);
+    f.advance(1); await flush();
+    assert.deepEqual(state.captures.snapshot(),[]);
+    assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B,C]);
+  });
+
+  test(`a replacement after a delayed response keeps the original deadline, wall skew ${wallSkew} ms`,async t=>{
+    const f=controllerFixture(createVoiceController,{wallSkew}), {controller:c,state}=f;
+    t.after(()=>c.dispose());
+    const row=groupedCapture(), acknowledged=()=>f.acks.flatMap(ack=>ack.receipts.map(receipt=>receipt.ticket));
+    const fields={observed_at:NOW,expires_at:NOW+10,matching_count:1,scan_complete:true,
+      count_expires_at:NOW+10,room_options:['Synthetic room'],room_options_expires_at:NOW+10};
+    await c.setFilters({listenable_only:true});
+    f.advance(6000);
+    f.latest().respond({rows:[row],fields}); await c.settled();
+    assert.equal(state.captures.deliveryToken(),B);
+    assert.deepEqual(acknowledged(),[]);
+    f.advance(1000);
+    await c.setFilters({association:'unknown'});
+    f.latest().respond({eventId:C,rows:[row],fields}); await c.settled();
+    assert.deepEqual(state.captures.snapshot().map(item=>item.id),[row.id]);
+    assert.equal(state.captures.deliveryToken(),C);
+    assert.deepEqual(acknowledged(),[B]);
+    f.advance(2999); await flush();
+    assert.equal(state.captures.snapshot()[0].id,row.id);
+    assert.equal(c.captureSummary().count,1);
+    assert.deepEqual(acknowledged(),[B]);
+    f.advance(1); await flush();
+    assert.deepEqual(state.captures.snapshot(),[]);
+    assert.equal(state.captures.deliveryToken(),null);
+    assert.deepEqual(c.captureSummary(),{count:null,rooms:[],roomNotice:''});
+    assert.deepEqual(acknowledged(),[B,C]);
+  });
+}
+
+for (const withdrawal of ['expiry','retire']) test(`OBS drops a selected room from the DOM before ACK on ${withdrawal}`,async t=>{
+  const {readFileSync}=require('node:fs'), {runInNewContext}=require('node:vm');
+  const {createDocument,Element}=require('../mocks/dom_shim.cjs');
+  const window={};
+  runInNewContext(readFileSync(require.resolve('../../src/dashboard/frontend/obs/src/voice-filters.js'),'utf8'),{window});
+  const doc=createDocument();
+  Object.defineProperty(doc,'createElement',{value:tag=>{
+    const element=new Element(tag,doc);
+    Object.defineProperty(element,'parentElement',{get:()=>element.parentNode});
+    return element;
+  }});
+  const observed=[];
+  let select;
+  const f=controllerFixture(createVoiceController,{onAck(ack){
+    for (const receipt of ack.receipts) observed.push({ticket:receipt.ticket,value:select.value,text:select.textContent});
+  }});
+  const c=f.controller, room={kind:'room',id:'Synthetic room'};
+  const filters=window.KzaVoiceFilters.mountVoiceFilters({doc,controller:c,button:(text,click)=>{
+    const button=doc.createElement('button'); button.textContent=text;
+    button.addEventListener('click',click); return button;
+  }});
+  select=filters.element.querySelector('select');
+  t.after(()=>{filters.stop();c.dispose();});
+  await c.setFilters({room});
+  f.latest().respond({rows:[groupedCapture()],fields:{expires_at:NOW+10,matching_count:1,scan_complete:true,
+    count_expires_at:NOW+10,room_options:[room.id],room_options_expires_at:NOW+3}});
+  await c.settled();
+  f.advance(3000); await flush();
+  assert.equal(select.value,'room:'+room.id);
+  assert.ok(select.textContent.includes(room.id));
+  assert.deepEqual(observed,[]);
+  if (withdrawal==='expiry') f.advance(7000);
+  else f.retire('voices:captures',B);
+  assert.equal(select.value,'');
+  assert.equal(select.textContent.includes(room.id),false);
+  await flush();
+  assert.deepEqual(observed,[{ticket:B,value:'',text:'TodasSin habitación registrada'}]);
+  if (withdrawal==='retire') assert.equal(c.captureFilters().room,null);
+});
+
+test('room options can expire without unmounting a live unfiltered capture during review',async t=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  t.after(()=>c.dispose());
+  const row=groupedCapture();
+  await c.setFilters({listenable_only:true});
+  f.latest().respond({rows:[row],fields:{matching_count:1,scan_complete:true,
+    count_expires_at:NOW+8,room_options:['Synthetic room'],room_options_expires_at:NOW+3}});
+  await c.settled();
+  const [capture]=state.captures.snapshot();
+  assert(c.review(row.id));
+  const reading=f.latest();
+  f.advance(3000); await flush();
+  assert.deepEqual(c.captureSummary(),{count:1,rooms:[],roomNotice:''});
+  assert.equal(state.captures.snapshot()[0],capture);
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.equal(f.calls.length,2);
+  assert.equal(reading.options.signal.aborted,false);
+  reading.respond({eventId:C,rows:[{...review(),id:row.id}]}); await c.settled();
+  const [opened]=state.review.snapshot();
+  assert.equal(opened.id,row.id);
+  f.advance(7000); await flush();
+  assert.deepEqual(state.captures.snapshot(),[]);
+  assert.equal(state.review.snapshot()[0],opened);
+  assert.equal(f.calls.length,2);
+  assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B]);
+});
+
+for (const withdrawal of ['expiry','retire']) test(`an older room summary's ${withdrawal} preserves the current page and review`,async t=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  t.after(()=>c.dispose());
+  const room={kind:'room',id:'Synthetic room'}, row=groupedCapture();
+  const summary={matching_count:1,scan_complete:true,count_expires_at:NOW+8};
+  await c.setFilters({room});
+  f.latest().respond({rows:[row],fields:{...summary,room_options:[room.id],room_options_expires_at:NOW+3}});
+  await c.settled();
+  await c.setFilters({text:'synthetic phrase'});
+  f.latest().respond({eventId:C,rows:[row],fields:summary}); await c.settled();
+  const [current]=state.captures.snapshot();
+  assert.deepEqual(c.captureSummary().rooms,[room.id]);
+  assert.equal(f.acks.length,0); // The old snapshot still owns the room option.
+  assert(c.review(row.id));
+  const reading=f.latest();
+  if (withdrawal==='expiry') f.advance(3000);
+  else f.retire('voices:captures',B);
+  await flush();
+  assert.deepEqual(c.captureSummary(),{count:1,rooms:[],roomNotice:''});
+  assert.deepEqual(c.captureFilters().room,room);
+  assert.equal(state.captures.snapshot()[0],current);
+  assert.equal(state.captures.deliveryToken(),C);
+  assert.equal(f.calls.length,3);
+  assert.equal(reading.options.signal.aborted,false);
+  assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B]);
+  reading.respond({eventId:A,rows:[{...review(),id:row.id}]}); await c.settled();
+  assert.equal(state.review.snapshot()[0].id,row.id);
+});
+
+test('a room refresh cannot renew an expired capture or hold its replacement ticket',async t=>{
+  const f=controllerFixture(createVoiceController,{wallSkew:-48*3600000}), {controller:c,state}=f;
+  t.after(()=>c.dispose());
+  const short=NOW+3, row={...groupedCapture(),expires_at:short,group_expires_at:short};
+  const fields={expires_at:short,matching_count:1,scan_complete:true,count_expires_at:short,
+    room_options:['Synthetic room'],room_options_expires_at:short};
+  const room={kind:'room',id:'Synthetic room'};
+  const acknowledged=()=>f.acks.flatMap(ack=>ack.receipts.map(receipt=>receipt.ticket));
+  await c.setFilters({room});
+  f.latest().respond({rows:[row],fields}); await c.settled();
+  assert(c.review(row.id));
+  f.latest().respond({eventId:C,rows:[{...review(),id:row.id}],fields:{expires_at:short}});
+  await c.settled();
+  const media=new Media(); state.review.attachMedia(media);
+  f.advance(2999); await flush();
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.equal(c.captureSummary().count,1);
+  assert.deepEqual(acknowledged(),[]);
+  f.advance(1); await flush();
+  assert.equal(state.captures.deliveryToken(),null);
+  assert.equal(state.review.pendingRetirements(),1);
+  assert.deepEqual(acknowledged(),[B]);
+  assert.equal(f.calls.length,3);
+  assert.equal(f.latest().path,QUERY);
+  // The server clock is still frozen. Its replacement snapshot has a new
+  // event ID but the same source, observation time and absolute deadline.
+  f.latest().respond({eventId:A,rows:[row],fields}); await c.settled();
+  assert.deepEqual(state.captures.snapshot(),[]);
+  assert.deepEqual(c.captureSummary(),{count:null,rooms:[],roomNotice:'La habitación elegida ya no tiene muestras vigentes.'});
+  assert.equal(c.captureFilters().room,null);
+  assert.deepEqual(acknowledged(),[B,A]);
+  media.emptied(); await state.review.retired(); await flush();
+  assert.deepEqual(acknowledged(),[B,A,C]);
+  await c.setFilters({listenable_only:true});
+  const fresh=short+3;
+  f.latest().respond({rows:[{...row,id:'vf_'+'c'.repeat(64),created_at:short,expires_at:fresh,group_expires_at:fresh}],
+    fields:{...fields,observed_at:short,expires_at:fresh,count_expires_at:fresh,room_options_expires_at:fresh}});
+  await c.settled();
+  assert.equal(state.captures.snapshot().length,1);
+  assert.equal(c.captureSummary().count,1);
 });
 
 test('retiring an earlier captures snapshot leaves the current summary intact',async()=>{

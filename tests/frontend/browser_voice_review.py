@@ -27,7 +27,10 @@ from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
 from src.users.voice_registry import build_voice_registry
-from tests.frontend.browser_support import Page, browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session, press_enter
+from tests.frontend.browser_support import (
+    Page, browser_binary as select_browser, browser_profile_root, dispatch_key, evidence_directory,
+    install_login_session, press_enter,
+)
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import AUDIO,Encoder
@@ -53,6 +56,23 @@ class VoicePage(Page):
         if url.path.startswith('/api/voices/'):
             self.voice_requests.append((request['method'], url))
 
+    async def prepare_desktop(self) -> None:
+        """Set a desktop viewport independent of the host's headless display."""
+        await self.command('Emulation.setDeviceMetricsOverride', {
+            'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False,
+        })
+
+    async def voice_diagnostic(self) -> dict:
+        """Report visibility, capture state and recent HTTP calls without bodies."""
+        return {
+            'client': await self.evaluate('''({visibility:document.visibilityState,
+                focused:document.hasFocus(), filterStatus:document.querySelector('.voice-filter-status')?.textContent,
+                captureRows:document.querySelectorAll('[data-capture-id]').length,
+                captures:window.__kzaVoiceState?.captures.status(), review:window.__kzaVoiceState?.review.status()})'''),
+            'requests': [(method, url.path) for method, url in self.voice_requests[-8:]],
+            'errors': self.errors,
+        }
+
 
 async def filter_with_keyboard(page, total):
     """Apply a filter with a native key and keep focus while the list updates."""
@@ -60,8 +80,7 @@ async def filter_with_keyboard(page, total):
     marker = len(page.voice_requests)
     await page.evaluate(f'{checkbox}.focus()')
     for kind in ('rawKeyDown','keyUp'):
-        await page.command('Input.dispatchKeyEvent', {'type':kind,'key':' ','code':'Space',
-            'windowsVirtualKeyCode':32,'nativeVirtualKeyCode':32})
+        await dispatch_key(page, kind, ' ', 'Space', 32)
     await page.wait_for(f'{checkbox}?.checked && document.querySelector(".voice-filter-status")?.textContent==="{total} muestras vigentes."')
     assert await page.evaluate(f'document.activeElement==={checkbox}')
     assert [(method,url.path,url.query) for method,url in page.voice_requests[marker:]] == [('POST',CAPTURE_QUERY,'')]
@@ -90,11 +109,70 @@ async def read_transcript(page, identity, panel, text):
     marker = len(page.voice_requests)
     await click_button(page, selector,'Leer transcripción')
     target = f'document.querySelector({json.dumps(panel)})'
-    await page.wait_for(f'{target}?.textContent.includes({json.dumps(text)}) && !{target}.querySelector("audio")')
+    try:
+        await page.wait_for(f'{target}?.textContent.includes({json.dumps(text)}) && !{target}.querySelector("audio")')
+    except AssertionError:
+        print(json.dumps({'diagnostic': 'voice_read_transcript', 'expected': identity,
+            **await page.voice_diagnostic()}))
+        raise
     assert [(method,url.path,url.query) for method,url in page.voice_requests[marker:]] == [
         ('GET', f'/api/voices/captures/{identity}/transcript', '')]
     assert not await page.evaluate('''JSON.stringify([location.href,history.state,{...localStorage},{...sessionStorage}]).includes('''
         + json.dumps(text) + ')')
+
+
+def obs_capture_ready(identity: str) -> str:
+    """Require the specific capture and its enabled listen control."""
+    buttons = json.dumps(f'#view-users [data-capture-id="{identity}"] button:not(:disabled)')
+    return 'window.__kzaVoiceState?.captures.status()==="real" && ' + (
+        f'[...document.querySelectorAll({buttons})].some(button=>button.textContent==="Escuchar")')
+
+
+async def refresh_obs_capture(page, identity, requests):
+    """Activate OBS refresh with the keyboard and require the fresh capture to render."""
+    assert await page.evaluate('''(() => {
+        const button=[...document.querySelectorAll('#view-users .page-head button')]
+            .find(node=>node.textContent==='Actualizar');
+        const filters=window.__kzaVoiceController?.captureFilters();
+        if (!button || button.disabled || !filters || Object.values(filters).some(Boolean)) return false;
+        button.focus();
+        return document.activeElement===button;
+    })()'''), 'OBS refresh must be enabled and use the default filters'
+    marker, server_marker = len(page.voice_requests), len(requests)
+    await press_enter(page)
+    try:
+        await page.wait_for(obs_capture_ready(identity))
+        observed = [(method,url.path,url.query) for method,url in page.voice_requests[marker:]]
+        assert ('GET','/api/voices/profiles','') in observed
+        assert ('POST',CAPTURE_QUERY,'') in observed
+    except AssertionError:
+        print(json.dumps({'diagnostic':'obs_refresh_capture','expected':identity,'requests':requests[server_marker:],
+            'client':await page.evaluate('''({
+                captures:window.__kzaVoiceState?.captures.status(),
+                profiles:window.__kzaVoiceState?.profiles.status(),
+                socket:window.__kzaLiveWs?.readyState,
+                rendered:[...document.querySelectorAll('#view-users [data-capture-id]')].map(row=>row.dataset.captureId)
+            })''')}))
+        raise
+
+
+async def wait_obs_capture_retired(page, receipts, source, identity):
+    """Wait for the capture row and all receipts from both channels to retire."""
+    selector = json.dumps(f'#view-users [data-capture-id="{identity}"]')
+    try:
+        await page.wait_for(f'!document.querySelector({selector})')
+        async with asyncio.timeout(3):
+            while await receipts.pending(source.conversation_id):
+                await asyncio.sleep(.01)
+    except (AssertionError, TimeoutError):
+        print(json.dumps({'diagnostic':'obs_capture_retirement','expected':identity,
+            'client':await page.evaluate('''({
+                captureToken:window.__kzaVoiceState?.captures.deliveryToken(),
+                reviewToken:window.__kzaVoiceState?.review.deliveryToken(),
+                pendingMedia:window.__kzaVoiceState?.review.pendingRetirements(),
+                rendered:[...document.querySelectorAll('#view-users [data-capture-id]')].map(row=>row.dataset.captureId)
+            })''')}))
+        raise
 
 
 async def click_button(page, selector, label):
@@ -182,8 +260,9 @@ async def start_review(page, selector, label, review, pending):
       window.__voiceMeasurement={clicked:performance.now(),review,pending,placeholder,playCalls:window.__voicePlayCalls.length};
       control.click();
       const card=document.querySelector(review),box=card.getBoundingClientRect();
+      const top=placeholder ? document.querySelector('.topbar').getBoundingClientRect().bottom : 0;
       return {busy:card.getAttribute('aria-busy'),loading:card.textContent.includes(pending),blocked:control.disabled,
-        empty:window.__voicePendingPlayerIsEmpty(card,placeholder),visible:box.top>=0&&box.bottom<=innerHeight,
+        empty:window.__voicePendingPlayerIsEmpty(card,placeholder),visible:box.top>=top&&box.bottom<=innerHeight,
         ms:performance.now()-window.__voiceMeasurement.clicked};
     })()''' % tuple(map(json.dumps,(review,pending,review==OBS_REVIEW,selector,label))))
     elapsed = feedback.pop('ms')
@@ -299,13 +378,17 @@ async def main(*,browser_binary=None):
             dashboard = DashboardAPI(authority=authority,event_bus=bus,voice_registry=voices,observability_use_mocks=False)
             original_gpu,original_services = system_monitor.gpu_snapshot,system_monitor.services_snapshot
             requests = []
+            review_releases: dict[str, asyncio.Event] = {}
             system_monitor.gpu_snapshot,system_monitor.services_snapshot = lambda:None,lambda:None
             @dashboard.app.middleware('http')
             async def cookie(request,call_next):
                 path = request.url.path
+                release = review_releases.get(path)
                 if ((path.startswith('/api/voices/captures/') and path.endswith('/review'))
                         or path.startswith('/api/evaluation/samples/')):
                     await asyncio.sleep(.25)  # Expose loading feedback before the real response.
+                if release is not None:
+                    await release.wait()
                 response = await call_next(request)
                 requests.append({'method':request.method,'path':request.url.path,'status':response.status_code})
                 return response
@@ -336,6 +419,7 @@ async def main(*,browser_binary=None):
                         page = VoicePage(connection)
                         await page.command('Runtime.enable')
                         await page.command('Page.enable')
+                        await page.prepare_desktop()
                         await instrument_audio(page)
                         await page.command('Network.enable')
                         await page.command('Network.setBlockedURLs',{'urls':['https://unpkg.com/*','https://fonts.googleapis.com/*','https://fonts.gstatic.com/*']})
@@ -389,21 +473,44 @@ async def main(*,browser_binary=None):
                         loading_timings = []
                         async def listen(identity,text):
                             try:
-                                await page.wait_for('!!document.querySelector('+json.dumps('[data-capture-id="'+identity+'"] button')+')')
+                                await page.wait_for(obs_capture_ready(identity))
                             except AssertionError:
                                 print(json.dumps({'diagnostic':'voice_view_capture_read','requests':requests[-12:],
                                     'expected':identity,'client':await page.evaluate("({status:window.__kzaVoiceState.captures.status(),ids:window.__kzaVoiceState.captures.snapshot().map(row=>row.id),dom:[...document.querySelectorAll('[data-capture-id]')].map(row=>({id:row.dataset.captureId,buttons:row.querySelectorAll('button').length})),profiles:window.__kzaVoiceState.profiles.snapshot().length})")}))
                                 raise
-                            control = f'[data-capture-id="{identity}"] button'
+                            control = f'#view-users [data-capture-id="{identity}"] button'
                             review_requests = sum(item['path'].endswith('/review') for item in requests)
-                            timing = await start_review(page,control,'Escuchar',OBS_REVIEW,'Cargando audio…')
-                            assert await page.evaluate("""(() => {
-                              const buttons=[...document.querySelectorAll('[data-capture-id] button')];
-                              const other=buttons.find(button=>button.textContent==='Escuchar');
-                              other?.click();
-                              const refresh=[...document.querySelectorAll('#view-users button')].find(button=>button.textContent==='Actualizar');
-                              return refresh.disabled && buttons.length>0 && buttons.every(button=>button.disabled);
-                            })()""")
+                            request_path = f'/api/voices/captures/{identity}/review'
+                            release = asyncio.Event()
+                            # The fixed response delay does not bound elapsed time between CDP commands.
+                            review_releases[request_path] = release
+                            try:
+                                timing = await start_review(page,control,'Escuchar',OBS_REVIEW,'Cargando audio…')
+                                locks = await page.evaluate("""(() => {
+                                  const inspect=()=>{
+                                    const buttons=[...document.querySelectorAll('[data-capture-id] button')];
+                                    const refresh=[...document.querySelectorAll('#view-users button')].find(button=>button.textContent==='Actualizar');
+                                    return {refreshDisabled:refresh?.disabled ?? null,
+                                      buttons:buttons.map(button=>({text:button.textContent,disabled:button.disabled}))};
+                                  };
+                                  const before=inspect();
+                                  const buttons=[...document.querySelectorAll('[data-capture-id] button')];
+                                  const other=buttons.find(button=>button.textContent==='Escuchar')
+                                    ?? buttons.find(button=>button.textContent==='Cargando audio…');
+                                  other?.click();
+                                  const card=document.querySelector('#view-users [aria-label="Escuchar muestra"]');
+                                  return {before,after:inspect(),hidden:document.hidden,
+                                    status:window.__kzaVoiceState?.review.status(),busy:card?.getAttribute('aria-busy'),
+                                    playerHasSource:card?.querySelector('audio')?.hasAttribute('src') ?? false,
+                                    elapsedMs:performance.now()-window.__voiceMeasurement.clicked};
+                                })()""")
+                                assert all(snapshot['refreshDisabled'] is True and snapshot['buttons']
+                                    and all(button['disabled'] for button in snapshot['buttons'])
+                                    for snapshot in (locks['before'],locks['after'])), (
+                                        'voice_review_lock',identity,locks)
+                            finally:
+                                review_releases.pop(request_path)
+                                release.set()
                             await page.wait_for('document.querySelector('+json.dumps(OBS_REVIEW)+').textContent.includes('+json.dumps(text)+') && !!document.querySelector("audio")')
                             assert sum(item['path'].endswith('/review') for item in requests)==review_requests+1
                             try:
@@ -420,9 +527,16 @@ async def main(*,browser_binary=None):
                             assert await page.evaluate("document.querySelector('[aria-label=\"Escuchar muestra\"]').textContent.includes('Synthetic listening room')")
                             assert await page.evaluate("(()=>{const element=document.querySelector('audio');window.__kzaVoiceState.review.setStatus('real');return document.querySelector('audio')===element;})()")
                             review_requests = sum(item['path'].endswith('/review') for item in requests)
-                            assert await page.evaluate('''(() => {const audio=document.querySelector('audio');
-                              document.querySelector(%s).click();return document.querySelector('audio')===audio&&!audio.paused;
-                            })()'''%json.dumps('[data-capture-id="'+identity+'"] button'))
+                            reselect = await page.evaluate('''(() => {
+                              const audio=document.querySelector('audio');
+                              const button=[...document.querySelectorAll(%s)].find(node=>node.textContent==='Escuchar');
+                              if (button && !button.disabled) button.click();
+                              return {available:!!button && !button.disabled,
+                                keptPlaying:!!audio && document.querySelector('audio')===audio && !audio.paused,
+                                captures:window.__kzaVoiceState?.captures.status(),
+                                captureToken:window.__kzaVoiceState?.captures.deliveryToken()};
+                            })()'''%json.dumps(control))
+                            assert reselect['available'] and reselect['keptPlaying'], ('voice_review_reselect',identity,reselect)
                             assert sum(item['path'].endswith('/review') for item in requests)==review_requests
                         await listen(extra_id,'Synthetic audio retirement phrase')
                         same_sample = len(page.voice_requests)
@@ -474,20 +588,28 @@ async def main(*,browser_binary=None):
                         except TimeoutError:
                             print(json.dumps({'diagnostic':'voice_idle_ack','client':await page.evaluate("({status:window.__kzaVoiceState.review.status(),pending:window.__kzaVoiceState.review.retirementStatus(),captureToken:window.__kzaVoiceState.captures.deliveryToken(),reviewToken:window.__kzaVoiceState.review.deliveryToken(),socket:window.__kzaLiveWs?.readyState})")}))
                             raise
+                        # Release the frozen server deadline after proving client-only expiry.
+                        # A room-options refresh must not readmit the audio fixture during the text case.
+                        clock.now = expiring.expires_at
+                        await voices.acall(voices.ledger.prune)
                         expiring_text,expiring_text_id = await sample('Synthetic independent text expiry',ttl=3)
-                        await click_button(page,'#view-users button','Actualizar')
-                        await page.wait_for(f'document.querySelector({json.dumps(f"[data-capture-id={expiring_text_id}] button")})')
+                        await refresh_obs_capture(page,expiring_text_id,requests)
                         await read_transcript(page,expiring_text_id,OBS_REVIEW,'Synthetic independent text expiry')
                         await page.wait_for("!document.body.textContent.includes('Synthetic independent text expiry')")
+                        await wait_obs_capture_retired(page,bus._retention.receipts,expiring_text,expiring_text_id)
                         assert voices.privacy.sources_available((expiring_text,))
+                        clock.now = expiring_text.expires_at
+                        await voices.acall(voices.ledger.prune)
                         retired_text,retired_text_id = await sample('Synthetic erased text')
-                        await click_button(page,'#view-users button','Actualizar')
-                        await page.wait_for(f'document.querySelector({json.dumps(f"[data-capture-id={retired_text_id}] button")})')
+                        await refresh_obs_capture(page,retired_text_id,requests)
                         await read_transcript(page,retired_text_id,OBS_REVIEW,'Synthetic erased text')
                         await owner.request(retired_text.conversation_id,MemoryReviewer('synthetic-admin'))
                         await page.wait_for("!document.body.textContent.includes('Synthetic erased text')")
+                        await wait_obs_capture_retired(page,bus._retention.receipts,retired_text,retired_text_id)
+                        # Complete group cleanup before opening a new page with its own revision fence.
+                        await voices.acall(voices.ledger.prune)
                         leaving,leaving_id = await sample('Synthetic leaving voice view')
-                        await page.evaluate("[...document.querySelectorAll('button')].find(button=>button.textContent==='Actualizar').click()")
+                        await refresh_obs_capture(page,leaving_id,requests)
                         await listen(leaving_id,'Synthetic leaving voice view')
                         await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:true});document.dispatchEvent(new Event('visibilitychange'))")
                         assert await page.evaluate("!document.querySelector('audio') && window.__voiceUrls.size===0 && !document.body.textContent.includes('Synthetic leaving voice view')")
@@ -500,6 +622,7 @@ async def main(*,browser_binary=None):
                                 await asyncio.sleep(.01)
                         _,auth_id = await sample('Synthetic voice session loss')
                         await page.evaluate("[...document.querySelectorAll('.nav-item')].find(item=>item.textContent.includes('Voces')).click()")
+                        # Entering Voces starts its own refresh. listen() waits for the resulting enabled row.
                         await listen(auth_id,'Synthetic voice session loss')
                         os.environ['KZA_DASHBOARD_TOKEN']='synthetic-rotated-voice-token'
                         await page.wait_for("!document.querySelector('#view-users') && !document.body.textContent.includes('Synthetic voice session loss') && window.__voiceUrls.size===0")

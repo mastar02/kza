@@ -88,13 +88,17 @@
         if (search) search.value = '';
       }
       const filters = controller.captureFilters(), summary = controller.captureSummary();
-      const roomKey = JSON.stringify(summary.rooms);
+      const selectedRoom = filters.room?.kind === 'room' ? filters.room.id : null;
+      const visibleRooms = selectedRoom !== null && !summary.rooms.includes(selectedRoom)
+        && controller.state.captures.snapshot().length > 0
+        ? [...summary.rooms,selectedRoom] : summary.rooms;
+      const roomKey = JSON.stringify(visibleRooms);
       if (roomKey !== drawnRooms) {
         drawnRooms = roomKey;
-        options(room,[['','Todas'],...summary.rooms.map(id => ['room:'+id,id]),['unrecorded','Sin habitación registrada']]);
+        options(room,[['','Todas'],...visibleRooms.map(id => ['room:'+id,id]),['unrecorded','Sin habitación registrada']]);
       }
       room.value = filters.room?.kind === 'unrecorded' ? 'unrecorded'
-        : summary.rooms.includes(filters.room?.id) ? 'room:'+filters.room.id : '';
+        : visibleRooms.includes(selectedRoom) ? 'room:'+selectedRoom : '';
       group.value = filters.group_state ?? ''; association.value = filters.association ?? '';
       listenable.checked = filters.listenable_only;
       since.parentElement.hidden = until.parentElement.hidden = period.value !== 'custom';

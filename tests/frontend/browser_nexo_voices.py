@@ -90,6 +90,13 @@ async def refresh_voices(page):
     await page.evaluate("[...document.querySelectorAll('#voices-content .identity-heading button')].find(button=>button.textContent==='Actualizar').click()")
 
 
+async def open_samples(page, count):
+    """Open the dialog and wait for its actionable sample rows."""
+    await click_button(page,'#voices-content .identity-heading button','Revisar muestras')
+    await page.wait_for(f'''document.querySelector('#voice-dialog')?.open &&
+        document.querySelectorAll('#voice-dialog [data-capture-id] input:not(:disabled)').length==={count}''')
+
+
 async def audit_filter_history(page):
     """Exercise same-document history and a cross-document browser restore."""
     open_button = '#voices-content .identity-heading button'
@@ -137,8 +144,14 @@ async def main() -> None:
                 await super().wait_for(expression)
             except AssertionError:
                 diagnostic = await self.evaluate("({text:document.body.innerText,html:document.querySelector('#voice-dialog')?.innerHTML,ready:document.readyState})")
-                (evidence/'failure.json').write_text(json.dumps({'condition':expression, 'document':diagnostic, 'errors':self.errors, 'requests':requests}, indent=2)+'\n')
-                await screenshot(self, evidence/'failure.png')
+                state = await self.voice_diagnostic()
+                (evidence/'failure.json').write_text(json.dumps({'condition':expression, 'document':diagnostic,
+                    'voice':state, 'requests':requests}, indent=2)+'\n')
+                if state['client']['visibility'] == 'visible':
+                    try:
+                        await screenshot(self, evidence/'failure.png')
+                    except (AssertionError, RuntimeError, TimeoutError) as error:
+                        print(f'Failure screenshot unavailable: {error}')
                 raise
     binary = browser_binary()
     browser_data = browser_profile_root()
@@ -208,9 +221,9 @@ async def main() -> None:
                     async with connect(target['webSocketDebuggerUrl'], max_size=None) as connection:
                         page = DiagnosticPage(connection)
                         await page.command('Runtime.enable'); await page.command('Page.enable')
+                        await page.prepare_desktop()
                         await page.command('Network.enable')
                         await page.command('Page.addScriptToEvaluateOnNewDocument', {'source':INSTRUMENT})
-                        await page.command('Emulation.setDeviceMetricsOverride', {'width':1425, 'height':1180, 'deviceScaleFactor':1, 'mobile':False})
                         await page.command('Page.navigate', {'url':f'http://127.0.0.1:{port}/#voces'})
                         await page.wait_for("document.querySelector('#login-error')?.textContent.length>0")
                         await login(page, operator.token, 'Administración')
@@ -218,7 +231,7 @@ async def main() -> None:
                         assert await page.evaluate("window.__voiceSockets===1 && window.__voiceSent[0].version===3 && !document.querySelector('#voices-content').textContent.includes('ilustrativos')")
                         assert not any(row['path'] in {'/api/conversations','/api/users'} for row in requests)
                         await screenshot(page, evidence/'voices-desktop.png')
-                        await page.evaluate("[...document.querySelectorAll('#voices-content button')].find(button=>button.textContent==='Revisar muestras').click()")
+                        await open_samples(page,4)
                         for width in (320,390,768,1280,1440):
                             await page.command('Emulation.setDeviceMetricsOverride',{'width':width,'height':844,
                                 'deviceScaleFactor':1,'mobile':width<=390})
@@ -336,7 +349,7 @@ async def main() -> None:
                         assert users.get_user(person_b.user_id).permission_level is PermissionLevel.ADMIN
                         await editable_person(page)
                         await screenshot(page, evidence/'voices-profile.png')
-                        await page.evaluate("[...document.querySelectorAll('#voices-content button')].find(button=>button.textContent==='Revisar muestras').click()")
+                        await open_samples(page,4)
                         await page.evaluate("document.querySelector('[data-capture-id] button').click()")
                         await page.wait_for("document.querySelector('#voice-dialog audio')?.readyState>=2")
                         await screenshot(page, evidence/'voices-review.png')
@@ -345,11 +358,16 @@ async def main() -> None:
                         assert await page.evaluate("window.__voiceSockets===1 && !document.querySelector('#voices-content').children.length && !document.querySelector('#voice-dialog').open && !document.querySelector('#voice-dialog').children.length && window.__urls.size===0 && window.__player.paused && !window.__player.hasAttribute('src')")
                         await page.evaluate("window.__holdEmpty=false;window.__emptyCallbacks.splice(0).forEach(callback=>callback())")
                         await page.wait_for("window.__voiceSockets===2 && document.querySelectorAll('[data-capture-id]').length===4")
-                        await page.evaluate("[...document.querySelectorAll('#voices-content button')].find(button=>button.textContent==='Revisar muestras').click();document.querySelector('[data-capture-id] button').click()")
+                        await open_samples(page,4)
+                        await page.evaluate("document.querySelector('#voice-dialog [data-capture-id] button').click()")
                         await page.wait_for("document.querySelector('#voice-dialog audio')?.readyState>=2")
+                        mark_capture_queries = len(page.voice_requests)
                         await page.evaluate("document.querySelector('#voice-dialog>button').click()")
                         await page.wait_for('window.__urls.size===0')
-                        await page.evaluate("[...document.querySelectorAll('#voices-content button')].find(button=>button.textContent==='Revisar muestras').click();document.querySelector('[data-capture-id] input').click();[...document.querySelectorAll('#voice-dialog button')].find(button=>button.textContent==='Dejar como desconocido').click()")
+                        await open_samples(page,4)
+                        assert not any(method=='POST' and url.path==CAPTURE_QUERY
+                            for method,url in page.voice_requests[mark_capture_queries:])
+                        await page.evaluate("document.querySelector('#voice-dialog [data-capture-id] input').click();[...document.querySelectorAll('#voice-dialog button')].find(button=>button.textContent==='Dejar como desconocido').click()")
                         await page.wait_for("document.querySelectorAll('[data-voice-group]').length===2 && document.querySelectorAll('[data-capture-id]').length===4")
                         corrected = (await voices.acall(voices.ledger.snapshot))['fingerprints']
                         assert sum(row['group_reason']=='manual_unknown' for row in corrected) == 1
@@ -366,7 +384,7 @@ async def main() -> None:
                         assert not (await voices.acall(voices.ledger.snapshot))['profiles']
                         await page.evaluate("[...document.querySelectorAll('#voices-content button')].find(button=>button.textContent==='Actualizar').click()")
                         await page.wait_for("document.querySelectorAll('[data-capture-id]').length===4")
-                        await page.evaluate("[...document.querySelectorAll('#voices-content button')].find(button=>button.textContent==='Revisar muestras').click()")
+                        await open_samples(page,4)
                         for identity in identities[:3]:
                             await page.evaluate('document.querySelector('+json.dumps(f'[data-capture-id="{identity}"] input')+').click()')
                         await page.evaluate("(()=>{const input=document.querySelector('#voice-dialog input[type=text]');input.value='Synthetic NEXO profile';input.dispatchEvent(new Event('input'));document.querySelector('#voice-dialog form').requestSubmit()})()")
