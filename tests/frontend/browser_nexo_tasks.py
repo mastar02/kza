@@ -296,3 +296,7 @@ async def test_nexo_tasks_browser(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
                 'cancel_and_conflict_reconciled': True, 'service_unavailable_and_recovered': True,
                 'list_item_add_and_delete': True, 'account_change_drops_private_content': True,
             }, indent=2) + '\n', encoding='utf-8')
+
+
+if __name__ == '__main__':
+    raise SystemExit(pytest.main([__file__, '-q']))

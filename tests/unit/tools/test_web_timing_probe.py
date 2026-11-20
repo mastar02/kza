@@ -784,7 +784,7 @@ def test_process_check_exempts_own_ancestry_but_not_other_agents():
 def test_no_obs_url_and_no_c11_clock_on_obs():
     cells = probe.batch_plan_views()
     assert all('/obs' not in cell['url_path'] for cell in cells)
-    assert len(cells) == 12
+    assert len(cells) == 13
     assert {cell['view'] for cell in cells if cell['c11']} == {'#acciones', '#voces'}
     assert '/obs' not in json.dumps(probe.CORE_SCRIPT)
 
@@ -1829,11 +1829,11 @@ async def test_smoke_client_never_repeats_a_discarded_batch_and_records_each_cel
     write_smoke_prerequisites(tmp_path / 'smoke' / 'smoke-record.json')
     args = SimpleNamespace()
     await probe.measure_client(args, 'smoke', SHA)
-    assert len(calls) == 12 and all(attempt == 1 for _, _, attempt in calls)
+    assert len(calls) == 13 and all(attempt == 1 for _, _, attempt in calls)
     saved = json.loads((tmp_path / 'smoke' / 'smoke-record.json').read_text())
     batches = [run for run in saved['runs'] if run['item'].startswith('batch:')]
-    assert len(batches) == 12 and batches[0]['status'] == 'discarded'
-    assert len({run['item'] for run in batches}) == 12
+    assert len(batches) == 13 and batches[0]['status'] == 'discarded'
+    assert len({run['item'] for run in batches}) == 13
     assert probe.batch_faults({'reasons': ['quiet_machine'], 'run_outcomes': [{'reason': 'browser_crashed'}],
                                'start': {'machine_faults': ['screen_locked']}}) == {'quiet_machine', 'crash', 'lock'}
 
