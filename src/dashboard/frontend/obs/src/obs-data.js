@@ -7,6 +7,9 @@
 (function (root) {
   'use strict';
 
+  const { SessionRequired: AuthRequired, requestAccess, checkAccess } =
+    typeof module !== 'undefined' && module.exports ? require('./session.js') : root.KzaDashboardSession;
+
   const COLLECTIONS = Object.freeze([
     ['ZONES', '/api/zones', 'Zonas'],
     ['LLM_ENDPOINTS', '/api/llm/endpoints', 'Endpoints LLM'],
@@ -23,7 +26,7 @@
   const ADMIN = 'admin:manage';
 
   const STATUS = Object.freeze({
-    PENDING: 'sin consultar', REAL: 'real', DEMO: 'demostración', DEGRADED: 'degradada',
+    PENDING: 'sin consultar', REAL: 'real', DEMO: 'demostración', DEGRADED: 'degradada', FORBIDDEN: 'sin permiso',
   });
 
   function header(headers, name) {
@@ -100,9 +103,10 @@
         notify();
         return status;
       },
-      fail(key) {
-        entries.set(key, { data: [], status: STATUS.DEGRADED, unobserved: [] });
-        sources[key] = STATUS.DEGRADED;
+      fail(key, status = STATUS.DEGRADED, reason = null) {
+        entries.set(key, { data: [], status, reason, unobserved: [] });
+        sources[key] = status;
+        scheduleExpiry();
         notify();
       },
       setSource(key, value) { sources[key] = value; notify(); },
@@ -116,45 +120,33 @@
         const keys = COLLECTIONS.map(([key]) => key);
         const pick = status => keys.filter(key => sources[key] === status);
         return { total: keys.length, real: pick(STATUS.REAL), demo: pick(STATUS.DEMO),
-          degraded: pick(STATUS.DEGRADED), pending: pick(STATUS.PENDING) };
+          degraded: pick(STATUS.DEGRADED), forbidden: pick(STATUS.FORBIDDEN), pending: pick(STATUS.PENDING) };
       },
       subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
       clear() { reset(); notify(); },
     };
   }
 
-  class AuthRequired extends Error {}
-
   async function readCollection({ fetch, store, key, path, signal }) {
-    let response;
+    let result;
     try {
-      response = await fetch(path, { credentials: 'same-origin', cache: 'no-store', signal });
+      result = await requestAccess(fetch, path, { signal }, async response => ({
+        observation: parseObservation(response.headers),
+        data: await response.json(),
+      }));
     } catch (error) {
-      if (signal?.aborted) throw error;
-      store.fail(key);
-      return STATUS.DEGRADED;
+      if (signal?.aborted || error instanceof AuthRequired) throw error;
+      const status = error.kind === 'forbidden' ? STATUS.FORBIDDEN : STATUS.DEGRADED;
+      store.fail(key, status, error.message);
+      return status;
     }
     if (signal?.aborted) return store.status(key);
-    if (!response.ok) {
-      const body = await response.json().catch(() => ({}));
-      if (response.status === 401 || response.status === 403 || body?.detail === 'dashboard_auth_not_configured') {
-        throw new AuthRequired();
-      }
-      store.fail(key);
-      return STATUS.DEGRADED;
-    }
-    let data = null;
-    try { data = await response.json(); } catch { data = null; }
-    if (signal?.aborted) return store.status(key);
-    return store.accept(key, parseObservation(response.headers), data);
+    return store.accept(key, result.observation, result.data);
   }
 
   async function readPermissions({ fetch, store, signal }) {
-    const response = await fetch('/api/admin/auth/whoami', { credentials: 'same-origin', cache: 'no-store', signal });
-    if (response.status === 401) throw new AuthRequired();
-    if (!response.ok) { store.setPermissions([]); return; }
-    const body = await response.json().catch(() => ({}));
-    store.setPermissions(body?.permissions);
+    const body = await checkAccess(fetch, signal, response => response.json());
+    if (!signal?.aborted) store.setPermissions(body?.permissions);
   }
 
   async function hydrate({ fetch, store, signal }) {
@@ -241,8 +233,9 @@
       }
       refreshed = STATUS.DEGRADED;
     }
-    return { state: 'confirmed', message: refreshed === STATUS.DEGRADED
-      ? `${operation.done} No se pudo actualizar la lista.` : operation.done };
+    const refreshMessage = refreshed === STATUS.FORBIDDEN ? ' Sin permiso para actualizar la lista.'
+      : refreshed === STATUS.DEGRADED ? ' No se pudo actualizar la lista.' : '';
+    return { state: 'confirmed', message: operation.done + refreshMessage };
   }
 
   // Seconds until an ISO-8601 instant with an explicit offset; null otherwise.

@@ -1,23 +1,134 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
-const { createSession, SessionRequired } = require('../../src/dashboard/frontend/obs/src/session.js');
+const { createSession, SessionRequired, loginAccess, liveCloseStatus } =
+  require('../../src/dashboard/frontend/obs/src/session.js');
 
 function fixture(options = {}) {
-  const states = [], calls = { hydrate: 0, connect: 0, dispose: 0, clear: 0 };
+  const states = [], failures = [], calls = { hydrate: 0, connect: 0, dispose: 0, clear: 0 };
   const session = createSession({
     fetch: async () => ({ ok: true, status: 200 }),
     hydrate: async () => { calls.hydrate++; },
     connect: () => { calls.connect++; return () => { calls.dispose++; }; },
     clear: () => { calls.clear++; },
-    onState: state => states.push(state), ...options,
+    onState: (state, failure) => { states.push(state); failures.push(failure); }, ...options,
   });
-  return { session, states, calls };
+  return { session, states, failures, calls };
 }
 
-test('missing session never hydrates data or opens a socket', async () => {
-  const { session, states, calls } = fixture({ fetch: async () => ({ ok: false, status: 401 }) });
+const whoami = '/api/admin/auth/whoami';
+const cases = [
+  ['401', 401, 'login', 'login', 'La credencial es inválida o la sesión venció.'],
+  ['403', 403, 'forbidden', 'forbidden', 'No tenés permiso para este acceso.'],
+  ['503', 503, 'unavailable', 'unavailable', 'La autoridad de acceso no está disponible.'],
+  ['network', new TypeError(), 'network', 'unavailable', 'No se pudo conectar con el servidor.'],
+  ['timeout', new DOMException('', 'TimeoutError'), 'timeout', 'unavailable', 'El servidor no respondió a tiempo.'],
+  ['abort', new DOMException('', 'AbortError'), 'aborted', 'unavailable', 'Se canceló la solicitud.'],
+];
+
+function failedFetch(expectedPath, failure) {
+  return async (path, options) => {
+    assert.equal(path, expectedPath);
+    assert.equal(options.credentials, 'same-origin');
+    assert.equal(options.cache, 'no-store');
+    assert.ok(options.signal instanceof AbortSignal);
+    if (typeof failure !== 'number') throw failure;
+    return { ok: false, status: failure };
+  };
+}
+
+for (const [name, failure, kind, state, message] of cases) {
+  test(`WEB-07 login classifies ${name}`, async () => {
+    const path = '/api/admin/auth/login';
+    const fail = failedFetch(path, failure);
+    await assert.rejects(loginAccess((url, options) => {
+      assert.equal(options.method, 'POST');
+      assert.deepEqual(JSON.parse(options.body), { token: 'synthetic' });
+      return fail(url, options);
+    }, 'synthetic'), { kind, message });
+  });
+
+  test(`WEB-07 whoami classifies ${name} before hydration`, async () => {
+    const { session, states, failures, calls } = fixture({ fetch: failedFetch(whoami, failure) });
+    await session.start();
+    assert.deepEqual(states, ['checking', state]);
+    if (failure === 401) {
+      assert.equal(failures.at(-1), undefined);
+    } else {
+      assert.equal(failures.at(-1).kind, kind);
+      assert.equal(failures.at(-1).message, message);
+    }
+    assert.equal(calls.hydrate, 0);
+    assert.equal(calls.connect, 0);
+  });
+
+  test(`WEB-07 live close rechecks ${name} even after a policy close`, async () => {
+    const result = await liveCloseStatus(failedFetch(whoami, failure), 1008);
+    const active = fixture();
+    await active.session.start();
+    active.session.fail(result.failure);
+    assert.equal(active.states.at(-1), state);
+    assert.equal(active.failures.at(-1).kind, kind);
+    assert.equal(active.failures.at(-1).message, message);
+    assert.equal(active.calls.dispose, 1);
+    assert.equal(active.calls.clear, 2);
+  });
+}
+
+test('a socket close with valid authority distinguishes policy, busy service and transport', async () => {
+  const fetch = async () => ({ ok: true, status: 200, json: async () => ({ permissions: ['conversations:read'] }) });
+  assert.deepEqual(await liveCloseStatus(fetch, 1008),
+    { kind: 'forbidden', message: 'No tenés permiso para este acceso.', retry: false });
+  assert.deepEqual(await liveCloseStatus(fetch, 1013),
+    { kind: 'unavailable', message: 'La autoridad de acceso no está disponible.', retry: true });
+  assert.deepEqual(await liveCloseStatus(fetch, 1006),
+    { kind: 'disconnected', message: 'desconectado', retry: true });
+});
+
+test('1006 with authenticated whoami but no conversations permission is forbidden without retry', async () => {
+  const fetch = async path => {
+    assert.equal(path, whoami);
+    return { ok: true, status: 200, json: async () => ({ permissions: ['diagnostics:read'] }) };
+  };
+  assert.deepEqual(await liveCloseStatus(fetch, 1006),
+    { kind: 'forbidden', message: 'No tenés permiso para este acceso.', retry: false });
+});
+
+test('1006 with a transient whoami failure keeps retrying with a channel message', async () => {
+  assert.deepEqual(await liveCloseStatus(failedFetch(whoami, new TypeError()), 1006),
+    { kind: 'network', message: 'Reconectando. No se pudo conectar con el servidor.', retry: true });
+  assert.deepEqual(await liveCloseStatus(failedFetch(whoami, new DOMException('', 'TimeoutError')), 1006),
+    { kind: 'timeout', message: 'Reconectando. El servidor no respondió a tiempo.', retry: true });
+});
+
+test('a hung login is canceled at the deadline and reported as a timeout', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let signal;
+  const fetch = async (_url, options) => new Promise((_, reject) => {
+    signal = options.signal;
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  });
+  const request = loginAccess(fetch, 'synthetic');
+  t.mock.timers.tick(11999);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(1);
+  await assert.rejects(request, { kind: 'timeout', message: 'El servidor no respondió a tiempo.' });
+  assert.equal(signal.reason.name, 'TimeoutError');
+});
+
+test('canceling the owning login aborts the request without a timeout', async () => {
+  const owner = new AbortController();
+  const request = loginAccess(async (_url, { signal }) => new Promise((_, reject) => {
+    signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+  }), 'synthetic', owner.signal);
+  owner.abort();
+  await assert.rejects(request, { kind: 'aborted', message: 'Se canceló la solicitud.' });
+});
+
+test('first visit with no session opens login with no credential error', async () => {
+  const { session, states, failures, calls } = fixture({ fetch: async () => ({ ok: false, status: 401 }) });
   await session.start();
   assert.deepEqual(states, ['checking', 'login']);
+  assert.equal(failures.at(-1), undefined);
   assert.equal(calls.hydrate, 0);
   assert.equal(calls.connect, 0);
 });
@@ -60,9 +171,10 @@ test('a hydration result arriving after logout cannot restore the session', asyn
 });
 
 test('authentication loss while loading is a login state, not mock data', async () => {
-  const { session, states, calls } = fixture({ hydrate: async () => { throw new SessionRequired(); } });
+  const { session, states, failures, calls } = fixture({ hydrate: async () => { throw new SessionRequired(); } });
   await session.start();
   assert.equal(states.at(-1), 'login');
+  assert.equal(failures.at(-1).message, 'La credencial es inválida o la sesión venció.');
   assert.equal(calls.connect, 0);
   assert.equal(calls.clear, 2);
 });

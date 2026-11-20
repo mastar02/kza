@@ -1,12 +1,19 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const { test } = require('node:test');
 const data = require('../../src/dashboard/frontend/obs/src/obs-data.js');
 const nav = require('../../src/dashboard/frontend/obs/src/obs-nav.js');
+const sessionApi = require('../../src/dashboard/frontend/obs/src/session.js');
 const Babel = require('../../src/dashboard/frontend/obs/vendor/babel-standalone-7.29.0.min.js');
 
 const OBS = path.resolve(__dirname, '../../src/dashboard/frontend/obs');
+
+function jsx(relative) {
+  const filename = path.join(OBS, relative);
+  return Babel.transform(fs.readFileSync(filename, 'utf8'), { presets: ['react'], filename }).code;
+}
 
 function headers(values = {}) {
   const lower = Object.fromEntries(Object.entries(values).map(([key, value]) => [key.toLowerCase(), value]));
@@ -89,14 +96,261 @@ test('hydrate reads permissions, marks failures unavailable and never invents da
   }
 });
 
-test('hydrate turns an expired or denied session into a login request', async () => {
-  for (const status of [401, 403]) {
-    const store = data.createObservationStore();
-    const fetch = async (url) => url === '/api/admin/auth/whoami' ? reply(200, { permissions: [] }) : reply(status, {});
-    await assert.rejects(data.hydrate({ fetch, store }), data.AuthRequired);
-  }
+test('hydrate requests login when whoami or a collection reports an expired session', async () => {
   const store = data.createObservationStore();
+  const fetch = async url => url === '/api/admin/auth/whoami' ? reply(200, { permissions: [] }) : reply(401, {});
+  await assert.rejects(data.hydrate({ fetch, store }), data.AuthRequired);
   await assert.rejects(data.hydrate({ fetch: async () => reply(401, {}), store }), data.AuthRequired);
+});
+
+const accessCases = [
+  [401, 'LoginGate', 'La credencial es inválida o la sesión venció.'],
+  [403, 'AccessNotice', 'No tenés permiso para este acceso.'],
+  [503, 'AccessNotice', 'La autoridad de acceso no está disponible.'],
+  [new TypeError(), 'AccessNotice', 'No se pudo conectar con el servidor.'],
+  [new DOMException('', 'TimeoutError'), 'AccessNotice', 'El servidor no respondió a tiempo.'],
+  [new DOMException('', 'AbortError'), 'AccessNotice', 'Se canceló la solicitud.'],
+];
+
+function accessFailure(failure) {
+  if (typeof failure !== 'number') throw failure;
+  return reply(failure, { detail: failure === 503 ? 'dashboard_auth_not_configured' : undefined });
+}
+
+for (const [failure, , message] of accessCases) {
+  const name = failure.name || failure;
+  test(`WEB-07 collection handles ${name} without retaining stale data`, async () => {
+    const store = adminStore();
+    store.accept('ZONES', { source: 'real' }, [{ id: 'stale' }]);
+    const request = data.readCollection({
+      fetch: async () => accessFailure(failure), store, key: 'ZONES', path: '/api/zones',
+    });
+    if (failure === 401) {
+      await assert.rejects(request, data.AuthRequired);
+    } else {
+      const status = failure === 403 ? 'sin permiso' : 'degradada';
+      assert.equal(await request, status);
+      assert.equal(store.status('ZONES'), status);
+      assert.equal(store.entry('ZONES').reason, message);
+      assert.deepEqual(store.get('ZONES'), []);
+      assert.equal(store.available('ZONES'), false);
+      assert.equal(store.can('admin:manage'), true);
+      assert.deepEqual(store.summary().forbidden, failure === 403 ? ['ZONES'] : []);
+    }
+  });
+}
+
+test('a canceled read cannot write into the next session', async () => {
+  const store = data.createObservationStore();
+  const owner = new AbortController();
+  const request = data.readCollection({
+    fetch: async () => reply(200, [{ id: 'stale' }], realHeaders()),
+    store, key: 'ZONES', path: '/api/zones', signal: owner.signal,
+  });
+  owner.abort();
+  store.accept('ZONES', { source: 'real' }, [{ id: 'current' }]);
+  await assert.rejects(request, { kind: 'aborted' });
+  assert.deepEqual(store.get('ZONES'), [{ id: 'current' }]);
+});
+
+test('hydrate keeps the session and other rows when a collection is forbidden', async () => {
+  const store = data.createObservationStore();
+  await data.hydrate({ store, fetch: async url => {
+    if (url === '/api/admin/auth/whoami') return reply(200, { permissions: ['diagnostics:read'] });
+    return url === '/api/zones' ? reply(403, {}) : reply(200, [{ id: 'observed' }], realHeaders());
+  }});
+  assert.equal(store.can('diagnostics:read'), true);
+  assert.deepEqual(store.summary().forbidden, ['ZONES']);
+  assert.deepEqual(store.get('ALERTS'), [{ id: 'observed' }]);
+});
+
+const appCode = jsx('src/app.jsx');
+
+async function mountObsApp({ recheck, permissions = ['diagnostics:read'] }) {
+  let rendered, ready;
+  const sockets = [], retries = new Map();
+  const mounted = new Promise(resolve => { ready = resolve; });
+  let whoami = 0;
+  const window = {
+    location: { protocol: 'http:', host: 'localhost' },
+    addEventListener() {}, removeEventListener() {}, dispatchEvent() {},
+    fetch: async url => {
+      if (url === '/api/admin/auth/whoami') {
+        return ++whoami <= 2 ? reply(200, { permissions }) : recheck();
+      }
+      return reply(200, [{ id: 'private' }], realHeaders());
+    },
+    KzaDashboardSession: sessionApi,
+    KzaObsData: data,
+    KzaCaptureRecorder: { stopAll() {} },
+    KzaLivePrivacy: require('../../src/dashboard/frontend/obs/src/live-privacy.js'),
+    KzaConversationPrivacy: require('../../src/dashboard/frontend/obs/src/conversation-privacy.js'),
+    KzaConversationChannel: require('../../src/dashboard/frontend/obs/src/conversation-channel.js'),
+    KzaVoicePrivacy: require('../../src/dashboard/frontend/obs/src/voice-privacy.js'),
+    KzaVoiceChannel: require('../../src/dashboard/frontend/obs/src/voice-channel.js'),
+  };
+  vm.runInNewContext(appCode, {
+    window, document: { getElementById() {}, querySelector() {}, addEventListener() {}, removeEventListener() {} },
+    React: { createElement: (type, props) => ({ type: type.name || type, props }) },
+    ReactDOM: { createRoot: () => ({ render(node) { rendered = node; if (node.type === 'App') ready(); } }) },
+    WebSocket: class { constructor() { sockets.push(this); } close() { this.closed = true; } },
+    LoginGate() {}, AccessNotice() {}, queueMicrotask, AbortController, CustomEvent,
+    setTimeout(callback, delay) { retries.set(callback, delay); return callback; },
+    clearTimeout: callback => retries.delete(callback),
+  });
+  await mounted;
+  return {
+    sockets, retries, store: window.__kzaObs,
+    get rendered() { return rendered; },
+    get whoami() { return whoami; },
+  };
+}
+
+test('ws.onclose renders the classified access state and clears private data', async t => {
+  for (const [failure, component, message] of accessCases) {
+    await t.test(String(failure.name || failure), async () => {
+      const app = await mountObsApp({ recheck: () => accessFailure(failure) });
+      const [socket] = app.sockets;
+      assert.deepEqual(app.store.get('ZONES'), [{ id: 'private' }]);
+      await socket.onclose({ code: 1008 });
+      assert.equal(app.whoami, 3);
+      assert.equal(app.rendered.type, component);
+      assert.equal(app.rendered.props.failure.message, message);
+      assert.deepEqual(app.store.get('ZONES'), []);
+      assert.equal(app.store.can('diagnostics:read'), false);
+      assert.equal(socket.closed, true);
+      assert.equal(app.retries.size, 0);
+    });
+  }
+});
+
+test('ws.onclose keeps the panel open without retrying a denied 1006 handshake', async () => {
+  const app = await mountObsApp({ recheck: () => reply(200, { permissions: ['diagnostics:read'] }) });
+  await app.sockets[0].onclose({ code: 1006 });
+  assert.equal(app.whoami, 3);
+  assert.equal(app.rendered.type, 'App');
+  assert.equal(app.store.channel('ws'), 'No tenés permiso para este acceso.');
+  assert.equal(app.store.can('diagnostics:read'), true);
+  assert.equal(app.retries.size, 0);
+});
+
+test('ws.onclose keeps the panel mounted and reconnects after a transient network error', async () => {
+  const app = await mountObsApp({
+    permissions: ['diagnostics:read', 'conversations:read'],
+    recheck: () => { throw new TypeError('network'); },
+  });
+  const rendered = app.rendered;
+  await app.sockets[0].onclose({ code: 1006 });
+  assert.equal(app.whoami, 3);
+  assert.equal(app.rendered, rendered);
+  assert.deepEqual(app.store.get('ZONES'), [{ id: 'private' }]);
+  assert.equal(app.store.channel('ws'), 'Reconectando. No se pudo conectar con el servidor.');
+  assert.deepEqual([...app.retries.values()], [3000]);
+  const [retry] = app.retries.keys();
+  retry();
+  assert.equal(app.sockets.length, 2);
+  assert.equal(app.store.channel('ws'), 'conectando');
+});
+
+function mountLogin(fetch) {
+  const hooks = [];
+  const document = { body: {} };
+  document.activeElement = document.body;
+  const focusable = () => ({ isConnected: true, focus() { document.activeElement = this; } });
+  const opener = { current: focusable() };
+  const field = focusable(), submit = focusable(), close = focusable();
+  let cursor, tree, effect, cleanup, logins = 0;
+  const dialog = {
+    showModal() { this.open = true; },
+    close() { this.open = false; },
+    querySelectorAll() { return find('button').props.disabled ? [field, close] : [field, submit, close]; },
+  };
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    useState(initial) {
+      const index = cursor++;
+      const slot = hooks[index] ?? (hooks[index] = { value: initial });
+      return [slot.value, value => { slot.value = value; }];
+    },
+    useRef(initial) {
+      const index = cursor++;
+      return hooks[index] ?? (hooks[index] = { current: initial });
+    },
+    useLayoutEffect(fn) { effect = fn; },
+    useId: () => 'login-test',
+  };
+  const context = vm.createContext({ React, window: { KzaDashboardSession: sessionApi },
+    fetch, document, AbortController });
+  vm.runInContext(jsx('src/views/admin.jsx'), context);
+  function* walk(node) {
+    if (!node || typeof node !== 'object') return;
+    yield node;
+    for (const child of node.children) yield* walk(child);
+  }
+  function find(type) { return [...walk(tree)].find(node => node.type === type); }
+  function render() {
+    cursor = 0;
+    tree = context.LoginModal({ opener, onClose: () => cleanup(), onLogin: () => { logins++; } });
+    tree.props.ref.current = dialog;
+    find('input').props.ref.current = field;
+  }
+  render();
+  cleanup = effect();
+  return { render, find, walk: () => [...walk(tree)], document, dialog, opener, field, close,
+    logins: () => logins, unmount: cleanup };
+}
+
+test('LoginModal opens a named modal, associates the label and returns focus after Escape', () => {
+  const login = mountLogin(() => assert.fail('unexpected request'));
+  const { document, dialog, opener, field, close } = login;
+  const modal = login.find('dialog');
+  assert.equal(dialog.open, true);
+  assert.equal(modal.props['aria-modal'], 'true');
+  assert.equal(modal.props['aria-labelledby'], login.find('h3').props.id);
+  assert.equal(login.find('h3').children[0], 'Acceso admin');
+  const help = login.find('p');
+  assert.equal(modal.props['aria-describedby'], help.props.id);
+  assert.equal(help.children[0], 'Token configurado en ');
+  assert.equal(help.children[1].children[0], 'KZA_DASHBOARD_TOKEN');
+  assert.equal(login.find('label').props.htmlFor, login.find('input').props.id);
+  assert.equal(login.find('label').children[0], 'Token de administración');
+  assert.equal(document.activeElement, field);
+  let prevented = 0;
+  const event = { key: 'Tab', shiftKey: true, preventDefault() { prevented++; } };
+  modal.props.onKeyDown(event);
+  assert.equal(document.activeElement, close);
+  modal.props.onKeyDown({ ...event, shiftKey: false });
+  assert.equal(document.activeElement, field);
+  modal.props.onCancel(event);
+  assert.equal(prevented, 3);
+  assert.equal(dialog.open, false);
+  assert.equal(document.activeElement, opener.current);
+});
+
+test('LoginModal locks submission, announces sending and exposes a failed POST as an alert', async () => {
+  let finish, requests = 0;
+  const login = mountLogin(async () => {
+    requests++;
+    return new Promise(resolve => { finish = resolve; });
+  });
+  login.find('input').props.onChange({ target: { value: 'synthetic' } });
+  login.render();
+  const event = { preventDefault() {} };
+  const submit = login.find('form').props.onSubmit;
+  const first = submit(event);
+  await submit(event);
+  login.render();
+  assert.equal(requests, 1);
+  assert.equal(login.find('button').props.disabled, true);
+  assert.equal(login.walk().find(node => node.props.role === 'status').children[0], 'Enviando…');
+  finish(reply(503, {}));
+  await first;
+  login.render();
+  assert.equal(login.find('button').props.disabled, false);
+  assert.equal(login.walk().find(node => node.props.role === 'alert').children[0],
+    'La autoridad de acceso no está disponible.');
+  assert.equal(login.logins(), 0);
+  login.unmount();
 });
 
 test('clear drops data, permissions and channel state but keeps the shared sources object', () => {
@@ -374,6 +628,8 @@ test('the panel loads the observation module before the views and no example scr
   const html = fs.readFileSync(path.join(OBS, 'index.html'), 'utf8');
   const scripts = [...html.matchAll(/<script[^>]*src="([^"]+)"/g)].map(match => match[1]);
   assert.ok(scripts.includes('src/obs-data.js'));
+  assert.ok(scripts.includes('src/session.js'));
+  assert.ok(scripts.indexOf('src/session.js') < scripts.indexOf('src/obs-data.js'));
   assert.ok(scripts.indexOf('src/obs-data.js') < scripts.indexOf('src/primitives.jsx'));
   assert.ok(scripts.includes('src/obs-nav.js'));
   assert.ok(scripts.indexOf('src/obs-nav.js') < scripts.indexOf('src/app.jsx'));
