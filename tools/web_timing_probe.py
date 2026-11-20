@@ -24,6 +24,8 @@ Only the CDP helpers named in ``instrumentation.cdp_client`` are reused from
 ``tests/frontend/browser_support.py`` (``browser_binary``,
 ``browser_profile_root``, ``evidence_directory``, ``install_login_session``);
 the probe has its own concurrent CDP reader with absolute per-command deadlines.
+The revised setup method requires top-level ``"setup_timeout_retry": true``
+in the verified preregistration and keeps its results under that SHA-256.
 """
 
 import argparse
@@ -1385,12 +1387,18 @@ def file_sha256(path: Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def verify_preregistration(path: Path, expected: str) -> str:
-    """The probe verifies the hash at start and refuses any other version."""
-    actual = file_sha256(path)
+def _verified_preregistration_bytes(path: Path, expected: str) -> bytes:
+    content = Path(path).read_bytes()
+    actual = hashlib.sha256(content).hexdigest()
     if not re.fullmatch(r'[0-9a-f]{64}', expected or '') or actual != expected:
         raise SystemExit(f'preregistration_hash_mismatch: expected {expected}, found {actual}')
-    return actual
+    return content
+
+
+def verify_preregistration(path: Path, expected: str) -> str:
+    """The probe verifies the hash at start and refuses any other version."""
+    _verified_preregistration_bytes(path, expected)
+    return expected
 
 
 def output_root(mode: str) -> Path:
@@ -1399,6 +1407,14 @@ def output_root(mode: str) -> Path:
     if mode == 'harness':
         return HARNESS_ROOT
     return OUTPUT_ROOT / 'u1' / 'baseline'
+
+
+def _measurement_preregistration(mode: str, sha: str) -> tuple[dict, Path, bool]:
+    """Resolve the method and evidence location from the exact reviewed or frozen bytes."""
+    preregistration = json.loads(_verified_preregistration_bytes(PREREGISTRATION, sha))
+    retry = preregistration.get('setup_timeout_retry') is True
+    root = output_root(mode)
+    return preregistration, root / f'prereg-{sha}' if retry else root, retry
 
 
 def checked_output(mode: str, path: Path) -> Path:
@@ -2621,6 +2637,7 @@ class Run:
         self.steps = []
         self.activation_polls = None
         self.leave_ok = False
+        self.retryable_setup_timeout = False
         self.browser_version = None
         self.flush_sent = None
         self.play_click_wall = None
@@ -2751,6 +2768,12 @@ class Run:
         except CdpTimeout as error:
             self._timeout(error, 'setup', error.klass, error.method)
             await self._post_failure_probe()
+            self.retryable_setup_timeout = (
+                error.phase == error.klass == 'setup'
+                and error.method in ('Tracing.start', 'Network.clearBrowserCache')
+                and not (self.facts.navigate_sent or self.facts.crashed or self.facts.disconnected)
+                and bool(self.timings['timeout_probes'][-1]['version'])
+            )
             return
         except ActivationFailed as error:
             self.activation_polls = error.polls
@@ -3431,15 +3454,16 @@ def slot_spec(slot: dict, plan: dict, ready: dict, positions: dict, overhead_con
 
 
 class BrowserSession:
-    """Cold slots launch a fresh browser; warm slots reuse its target, or a new target after a failed leave."""
+    """Keep the cold and warm slots of a pair in one browser when possible."""
 
     def __init__(self, mode: str, binary: str, out_dir: Path, profile_root: Path | None = None,
-                 netlog: bool = False):
+                 netlog: bool = False, *, setup_timeout_retry: bool = False):
         self.mode = mode
         self.binary = binary
         self.out_dir = out_dir
         self.profile_root = profile_root
         self.netlog = netlog
+        self.setup_timeout_retry = setup_timeout_retry
         self.browser = self.page = self.target_id = self.previous_script = None
         self.needs_new_target = False
 
@@ -3450,38 +3474,90 @@ class BrowserSession:
             await self.browser.close()
         self.browser = self.page = self.target_id = self.previous_script = None
 
-    async def prepare_target(self, spec: RunSpec) -> None:
-        """Cold: a fresh browser. Warm: the same target, or a new about:blank target when the leave step failed."""
+    async def prepare_target(self, spec: RunSpec, *, retry: bool = False) -> None:
+        """Launch a cold browser or prepare a warm about:blank target."""
         if spec.role == 'cold':
             await self.close_browser()
             profile = Path(tempfile.mkdtemp(prefix='kza-t046-profile-', dir=self.profile_root))
+            stem = f'{spec.ordinal:05d}' + ('-retry' if retry else '')
             self.browser = Browser('harness' if self.mode == 'harness' else 'mac', self.binary, profile,
-                                   self.out_dir / f'chrome-{spec.ordinal:05d}.log')
-            netlog = self.out_dir / f'netlog-{spec.ordinal:05d}.json' if self.netlog else None
+                                   self.out_dir / f'chrome-{stem}.log')
+            netlog = self.out_dir / f'netlog-{stem}.json' if self.netlog else None
             await self.browser.launch(netlog=netlog)
             if netlog is not None:
                 await wait_netlog_quiet(netlog)
             self.target_id = await self.browser.page_target()
             self.page = await self.browser.connect_page(self.target_id)
             self.previous_script, self.needs_new_target = None, False
+        elif self.browser is None:
+            raise SetupFault('warm_without_browser')
         elif self.needs_new_target:
-            try:
-                await self.browser.client.send('Target.closeTarget', {'targetId': self.target_id}, klass='setup')
-            except (CdpTimeout, CdpError):
-                pass
+            if self.page is not None:
+                try:
+                    await self.browser.client.send('Target.closeTarget', {'targetId': self.target_id}, klass='setup')
+                except (CdpTimeout, CdpError):
+                    pass
             created = await self.browser.client.send('Target.createTarget', {'url': 'about:blank'}, klass='setup')
-            await self.page.close()
+            if self.page is not None:
+                await self.page.close()
             self.target_id = created['targetId']
             self.page = await self.browser.connect_page(self.target_id)
             self.previous_script, self.needs_new_target = None, False
 
-    async def execute(self, spec: RunSpec, fixture: FixtureProcess | None) -> dict:
+    async def _discard_setup_target(self, spec: RunSpec) -> None:
+        client = self.browser.client
         try:
-            await self.prepare_target(spec)
-        except (RuntimeError, OSError, CdpTimeout, CdpError, CdpDisconnected, SetupFault) as error:
-            return {'ordinal': spec.ordinal, 'role': spec.role, 'outcome': Outcome.INVALID,
-                    'reason': 'launch_or_target:' + type(error).__name__ + ':' + str(error)[:120],
-                    'navigate_sent': False, 'metrics': {}}
+            reply = await client.send('Target.closeTarget', {'targetId': self.target_id}, klass='setup')
+            if reply.get('success') is False:
+                raise SetupFault('setup_retry_target_close_failed')
+        except (CdpTimeout, CdpError, CdpDisconnected, SetupFault):
+            if spec.role == 'warm':
+                raise
+            # Cold recovery closes the whole browser before launching a fresh profile.
+        finally:
+            await self.page.close()
+            self.page = self.target_id = self.previous_script = None
+        if spec.role == 'warm':
+            await self._drain_setup_trace(client)
+
+    async def _drain_setup_trace(self, client: CdpClient) -> None:
+        """Wait for global tracing to finish before opening the replacement warm target."""
+        method = 'Tracing.tracingComplete'
+        complete = asyncio.Event()
+
+        def finished(_params: dict) -> None:
+            complete.set()
+
+        client.on(method, finished)
+        started = time.monotonic()
+        deadline = started + DEADLINE_MS['collect'] / 1000
+        try:
+            await client.send('Tracing.end', klass='collect', phase='setup')
+            await asyncio.wait_for(complete.wait(), max(0.0, deadline - time.monotonic()))
+        except asyncio.TimeoutError:
+            client.log.append({'method': method, 'class': 'collect', 'phase': 'setup', 'timeout': True,
+                               'sent': started, 'deadline': deadline, 'connection': 'browser'})
+            raise CdpTimeout(method, 'collect', 'setup') from None
+        finally:
+            client.handlers[method].remove(finished)
+        client.log.append({'method': method, 'class': 'collect', 'phase': 'setup',
+                           'received': time.monotonic(), 'connection': 'browser'})
+
+    async def _execute_attempt(self, spec: RunSpec, fixture: FixtureProcess | None, *,
+                               retry: bool = False) -> tuple[Run | None, dict]:
+        try:
+            if retry:
+                await self._discard_setup_target(spec)
+            await self.prepare_target(spec, retry=retry)
+        except Exception as error:  # noqa: BLE001 - a failed recovery invalidates the slot.
+            if retry:
+                await self.close_browser()
+            elif not isinstance(error, (RuntimeError, OSError, CdpTimeout, CdpError, CdpDisconnected, SetupFault)):
+                raise
+            stage = 'setup_retry_recovery' if retry else 'launch_or_target'
+            return None, {'ordinal': spec.ordinal, 'role': spec.role, 'outcome': Outcome.INVALID,
+                          'reason': f'{stage}:{type(error).__name__}:{str(error)[:120]}',
+                          'navigate_sent': False, 'metrics': {}}
         run = Run(spec, self.browser, self.page, self.target_id, self.out_dir, fixture, self.previous_script)
         result = await run.execute()
         self.needs_new_target = not run.leave_ok
@@ -3490,7 +3566,27 @@ class BrowserSession:
         result['needs_new_target'] = self.needs_new_target
         result['browser_argv'] = self.browser.argv
         if run.trace_events:
-            write_gzip_json_atomic(self.out_dir / f'trace-{spec.ordinal:05d}.json.gz', run.trace_events)
+            stem = f'{spec.ordinal:05d}'
+            if not retry and self.setup_timeout_retry and run.retryable_setup_timeout:
+                stem += '-first'
+            write_gzip_json_atomic(self.out_dir / f'trace-{stem}.json.gz', run.trace_events)
+        return run, result
+
+    async def execute(self, spec: RunSpec, fixture: FixtureProcess | None) -> dict:
+        """Return one row for a slot, keeping an eligible failed first attempt as evidence."""
+        run, first = await self._execute_attempt(spec, fixture)
+        if not (self.setup_timeout_retry and run is not None and run.retryable_setup_timeout):
+            return first
+
+        client = self.browser.client
+        start = len(client.log)
+        retry_run, result = await self._execute_attempt(spec, fixture, retry=True)
+        end = None
+        if retry_run is not None and retry_run.browser.client is client:
+            end = retry_run.browser_log_start
+        result['setup_retry'] = {'first_attempt': first, 'recovery_commands': client.log[start:end]}
+        if retry_run is not None and not result['navigate_sent']:
+            await self.close_browser()
         return result
 
 
@@ -3546,19 +3642,20 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
     from tests.frontend.browser_support import browser_binary
     if sys.platform != 'darwin':
         raise SystemExit('measurement_runs_only_on_the_mac')
-    preregistration = json.loads(PREREGISTRATION.read_text())
+    preregistration, root, retry = _measurement_preregistration(mode, sha)
     fill_ins = apply_fill_ins(load_fill_ins(preregistration))
     smoke = mode == 'smoke'
     # R6-1, R6-2, R6-9: every per-mode input comes from cell_settings (smoke record or fill-ins), never the CLI.
-    settings = cell_settings(mode, fill_ins, SmokeRecord(SMOKE_ROOT / 'smoke-record.json') if smoke else None)
+    settings = cell_settings(mode, fill_ins, SmokeRecord(root / 'smoke-record.json') if smoke else None)
     idle, post_batch = settings['idle'], settings['post_batch']
     plan = plan_batch(sha, 'mac-chrome', args.viewport, args.view, args.attempt, smoke=smoke,
                       **settings['composition'],
                       untraced_inp=settings['untraced_inp'] and args.view in INTERACTION_VIEWS)
     stamp = time.strftime('%Y%m%dT%H%M%S')
-    out_dir = checked_output(mode, output_root(mode) / f'{stamp}-{args.viewport}-{args.view.strip("#")}-a{args.attempt}')
+    out_dir = checked_output(mode, root / f'{stamp}-{args.viewport}-{args.view.strip("#")}-a{args.attempt}')
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    session = BrowserSession(mode, browser_binary(), out_dir, netlog=settings['background_branch'] == 'netlog')
+    session = BrowserSession(mode, browser_binary(), out_dir, netlog=settings['background_branch'] == 'netlog',
+                             setup_timeout_retry=retry)
     fixture = FixtureProcess(out_dir, harness_pages=False)
     state = {}
     environment_facts = mac_environment()
@@ -3869,7 +3966,7 @@ def smoke_cell_action(record: SmokeRecord, item: str, cause: str | None) -> tupl
     return 'run', cause
 
 
-async def measure_client(args, mode: str, sha: str) -> int:
+async def measure_client(args, mode: str, sha: str, *, smoke_root: Path | None = None) -> int:
     """All cells of the Mac client in the seeded cell order; two consecutive discards stop with a blocker.
 
     V9: in smoke mode every cell is its own smoke record entry and a discarded batch is never repeated
@@ -3879,7 +3976,7 @@ async def measure_client(args, mode: str, sha: str) -> int:
     ledger = BatchLedger()
     attempts = Counter()
     smoke = mode == 'smoke'
-    record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json')) if smoke else None
+    record = SmokeRecord(checked_output('smoke', (smoke_root or SMOKE_ROOT) / 'smoke-record.json')) if smoke else None
     if smoke:
         # R6-1: refuse before any entry is written (order, play rule, background branch, idle).
         cell_settings('smoke', {}, record)
@@ -4316,16 +4413,17 @@ def summarize_directory(directory: Path, mode: str) -> dict:
             'scope': 'NEXO only; no /obs/ row (Q29, QF); local numbers never accept C10/C11'}
 
 
-async def smoke_overhead(sha: str, play_rule: dict) -> dict:
+async def smoke_overhead(sha: str, play_rule: dict, *, root: Path | None = None,
+                         setup_timeout_retry: bool = False) -> dict:
     """smoke_gate.instrumentation_overhead: #acciones and #voces desktop, warm runs only, 10 per arm, interleaved.
 
     V10: arm values follow the per-metric failure scope (invalid runs excluded, failures +inf, '<16 ms' kept),
     the consequences come from overhead_consequences() and the preview positions use the smoke preview start."""
     from tests.frontend.browser_support import browser_binary
-    out_dir = checked_output('smoke', SMOKE_ROOT / f'overhead-{time.strftime("%Y%m%dT%H%M%S")}')
+    out_dir = checked_output('smoke', (root or SMOKE_ROOT) / f'overhead-{time.strftime("%Y%m%dT%H%M%S")}')
     out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     fixture = FixtureProcess(out_dir)
-    session = BrowserSession('smoke', browser_binary(), out_dir)
+    session = BrowserSession('smoke', browser_binary(), out_dir, setup_timeout_retry=setup_timeout_retry)
     values = {}
     try:
         ready = await fixture.start()
@@ -4348,7 +4446,7 @@ async def smoke_overhead(sha: str, play_rule: dict) -> dict:
                                play_rule=play_rule, **base)
                 for spec in (primer, warm):
                     result = await session.execute(spec, fixture)
-                    result.update(mode='smoke', arm=arm, machine_state=MACHINE_STATE)
+                    result.update(mode='smoke', arm=arm, machine_state=MACHINE_STATE, preregistration_sha256=sha)
                     write_json_atomic(out_dir / f'{view.strip("#")}-run-{spec.ordinal:05d}.json', json_safe(result))
                 if result['outcome'] == Outcome.INVALID:
                     continue
@@ -4371,6 +4469,9 @@ def smoke_frame_event(root: Path = SMOKE_ROOT) -> dict:
     (batches and overhead arm (a) and (b) runs alike); analysis only, no browser."""
     results = []
     for path in sorted(root.rglob('*run-*.json')):
+        # A legacy smoke scan must not pull in a revised campaign below its root.
+        if path.relative_to(root).parts[0].startswith('prereg-'):
+            continue
         try:
             document = restore_infinity(json.loads(path.read_text()))
         except (OSError, ValueError):
@@ -4438,10 +4539,11 @@ def main(argv=None) -> int:
     if args.command == 'smoke-item':
         if sys.platform != 'darwin':
             raise SystemExit('smoke_runs_only_on_the_mac')
-        sha = verify_preregistration(PREREGISTRATION, args.reviewed_sha256)
-        out_dir = checked_output('smoke', SMOKE_ROOT / 'items')
+        sha = args.reviewed_sha256
+        _, root, retry = _measurement_preregistration('smoke', sha)
+        out_dir = checked_output('smoke', root / 'items')
         out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json'))
+        record = SmokeRecord(checked_output('smoke', root / 'smoke-record.json'))
         if args.item == 'quiet-baseline':
             result = asyncio.run(smoke_quiet_baseline(record, sha, args.cause))
         elif args.item == 'lock-read':
@@ -4449,19 +4551,19 @@ def main(argv=None) -> int:
         elif args.item == 'frame-event':
             check_smoke_order(record, 'frame_event')
             entry = record.start('frame_event', sha, args.cause)
-            result = smoke_frame_event()
+            result = smoke_frame_event(root)
             record.finish(entry, 'complete', json_safe(result))
         else:
             async def fixture_pages():
                 from tests.frontend.browser_support import browser_binary
-                pages_dir = checked_output('smoke', SMOKE_ROOT / f'fixture-pages-{time.strftime("%Y%m%dT%H%M%S")}')
+                pages_dir = checked_output('smoke', root / f'fixture-pages-{time.strftime("%Y%m%dT%H%M%S")}')
                 pages_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
                 summary = await fixture_page_checks('smoke', pages_dir, binary=browser_binary(), profile_root=None)
                 return {'ok': summary['ok'], 'directory': str(pages_dir), 'checks': summary['checks'],
                         'observations': summary['observations']}
             async def overhead():
                 # R7-1: the overhead result names the deciding entries its inputs came from.
-                result = await smoke_overhead(sha, smoke_play_rule(record))
+                result = await smoke_overhead(sha, smoke_play_rule(record), root=root, setup_timeout_retry=retry)
                 result['smoke_inputs'] = smoke_inputs(record)
                 return result
             bodies = {'cold-focus': ('cold_focus', lambda: smoke_cold_focus(out_dir)),
@@ -4477,9 +4579,11 @@ def main(argv=None) -> int:
         return 0
     mode, sha = check_measure_mode(args)
     if args.command == 'measure-client':
-        return asyncio.run(measure_client(args, mode, sha))
+        root = _measurement_preregistration(mode, sha)[1] if mode == 'smoke' else None
+        return asyncio.run(measure_client(args, mode, sha, smoke_root=root))
     if mode == 'smoke':
-        record = SmokeRecord(checked_output('smoke', SMOKE_ROOT / 'smoke-record.json'))
+        _, root, _ = _measurement_preregistration(mode, sha)
+        record = SmokeRecord(checked_output('smoke', root / 'smoke-record.json'))
         cell_settings('smoke', {}, record)
         entry = record.start(f'batch:{args.viewport}:{args.view}', sha, args.cause)
         try:

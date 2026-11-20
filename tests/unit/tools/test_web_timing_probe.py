@@ -1214,6 +1214,257 @@ async def test_warm_target_after_failed_leave_is_new_about_blank_target():
     assert len(session.browser.client.log) == 2 and session.previous_script == '4'
 
 
+def retry_browser_factory(monkeypatch, failures, *, drain_started=None):
+    """Stub Chrome and its CDP replies while exercising the real Run and BrowserSession."""
+    browsers = []
+
+    def reply(method, result):
+        queue = failures.get(method)
+        error = queue.pop(0) if queue else None
+        if error is not None:
+            raise error
+        return result
+
+    class Browser:
+        def __init__(self, mode, binary, profile, run_log):
+            self.profile, self.run_log = profile, run_log
+            self.argv = [binary, str(profile)]
+            self.closed = False
+            self.targets = []
+            self.closed_targets = []
+            self.client = FakeClient({
+                'Browser.getVersion': lambda _: reply('Browser.getVersion', {'product': 'Chrome/157'}),
+                'Browser.getWindowForTarget': {'bounds': {'windowState': 'normal'}},
+                'Target.closeTarget': self.close_target,
+                'Target.createTarget': self.create_target,
+                'Tracing.start': lambda _: reply('Tracing.start', {}),
+                'Tracing.end': self.end_tracing,
+            })
+            browsers.append(self)
+
+        async def launch(self, *, netlog=None):
+            pass
+
+        def alive(self):
+            return not self.closed
+
+        async def close(self):
+            self.closed = True
+
+        async def page_target(self):
+            return f'{len(browsers)}-initial'
+
+        def close_target(self, params):
+            self.closed_targets.append(params['targetId'])
+            return {'success': True}
+
+        def create_target(self, params):
+            assert params == {'url': 'about:blank'}
+            return {'targetId': f'{len(browsers)}-replacement'}
+
+        def finish_tracing(self, *, discarded=False):
+            if discarded:
+                for handler in self.client.handlers['Tracing.dataCollected']:
+                    handler({'value': [{'name': 'discarded attempt'}]})
+            for handler in self.client.handlers['Tracing.tracingComplete']:
+                handler({})
+
+        def end_tracing(self, _params):
+            reply('Tracing.end', {})
+            if self.client.phase == 'setup' and drain_started is not None:
+                drain_started.set()
+            else:
+                self.finish_tracing()
+            return {}
+
+        async def connect_page(self, target_id):
+            page = FakeClient()
+            self.targets.append((target_id, page))
+
+            async def close():
+                page.disconnected = True
+
+            def register(params):
+                page.config = json.loads(params['source'].split('const CONFIG = ', 1)[1].split(';\n', 1)[0])
+                return {'identifier': 'probe'}
+
+            def navigate(params):
+                url = params['url']
+                if url == 'about:blank':
+                    for handler in list(page.handlers['Page.frameNavigated']):
+                        handler({'frame': {'url': url, 'loaderId': 'blank'}})
+                    return {'loaderId': 'blank'}
+
+                reply('Page.navigate', {})
+                page.events.append({'method': 'Page.frameNavigated',
+                                    'params': {'frame': {'loaderId': 'load', 'url': url}}})
+                base = {'token': page.config['token'], 'timeOrigin': 5.0, 'url': url}
+                documents = [dict(base, type='document_start', t=1, screen={'width': 1440, 'height': 900}, dpr=2,
+                                  focus={'visibility': 'visible', 'hasFocus': True}),
+                             dict(base, type='settled', t=900, T=900.0)]
+
+                def send_records():
+                    for item in documents:
+                        for handler in page.handlers['Runtime.bindingCalled']:
+                            handler({'name': 'kzaProbeRecord', 'payload': json.dumps(item)})
+
+                asyncio.get_running_loop().call_soon(send_records)
+                return {'loaderId': 'load'}
+
+            page.close = close
+            page.answers.update({'Network.enable': lambda _: reply('Network.enable', {}),
+                                 'Network.clearBrowserCache': lambda _: reply('Network.clearBrowserCache', {}),
+                                 'Page.addScriptToEvaluateOnNewDocument': register,
+                                 'Runtime.evaluate': {'result': {'value': True}}, 'Page.navigate': navigate})
+            return page
+
+    monkeypatch.setattr(probe, 'Browser', Browser)
+    return browsers
+
+
+def recovery_spec(role='cold', *, ordinal=7, trace_load=False, harness_steps=()):
+    origin = 'http://127.0.0.1:1'
+    return probe.RunSpec(ordinal, role, 'desktop', '#voces', origin + '/#voces', origin, None,
+                         trace_load=trace_load, capture_id='vf_' + 'c' * 64, harness_steps=harness_steps)
+
+
+@pytest.mark.parametrize('method', ['Network.clearBrowserCache', 'Tracing.start'])
+async def test_setup_timeout_retry_cold_uses_a_fresh_profile_and_one_slot(monkeypatch, tmp_path, method):
+    browsers = retry_browser_factory(monkeypatch, {method: [probe.CdpTimeout(method, 'setup', 'setup')]})
+    injection_config = probe.injection_config
+    configurations = []
+
+    def observe_config(**kwargs):
+        configurations.append(kwargs)
+        return injection_config(**kwargs)
+
+    monkeypatch.setattr(probe, 'injection_config', observe_config)
+    session = probe.BrowserSession('smoke', 'chrome', tmp_path, tmp_path, setup_timeout_retry=True)
+    spec = recovery_spec(trace_load=method == 'Tracing.start')
+    result = await session.execute(spec, None)
+
+    old, new = browsers
+    first = result['setup_retry']['first_attempt']
+    assert first['outcome'] == Outcome.INVALID and first['reason'] == f'setup_timeout:{method}'
+    assert not first['navigate_sent'] and first['metrics'] == {}
+    assert old.closed and old.closed_targets == [first['target_id']] and old.targets[0][1].disconnected
+    assert old.profile != new.profile and old.run_log != new.run_log and result['target_id'] != first['target_id']
+    first_config, second_config = configurations
+    assert first_config['capture_id'] == second_config['capture_id'] == spec.capture_id
+    assert first_config['token'] != second_config['token'] == new.targets[0][1].config['token']
+    assert result['ordinal'] == first['ordinal'] == spec.ordinal and result['role'] == first['role'] == 'cold'
+    assert result['outcome'] == Outcome.VALID and result['navigate_sent']
+    assert result['facts']['timeouts'] == []
+    assert [item['params'] for item in result['commands'] if item['method'] == 'Network.setCacheDisabled'] == [
+        {'cacheDisabled': True}]
+
+
+async def test_setup_timeout_retry_warm_drains_before_creating_target(monkeypatch, tmp_path):
+    drain_started = asyncio.Event()
+    browsers = retry_browser_factory(monkeypatch, {'Tracing.start': [probe.CdpTimeout('Tracing.start', 'setup', 'setup')]},
+                                     drain_started=drain_started)
+    session = probe.BrowserSession('smoke', 'chrome', tmp_path, tmp_path, setup_timeout_retry=True)
+    cold = await session.execute(recovery_spec(ordinal=6), None)
+    (browser,) = browsers
+    old_target, old_page = browser.targets[0]
+    spec = recovery_spec('warm', trace_load=True)
+
+    task = asyncio.create_task(session.execute(spec, None))
+    try:
+        await asyncio.wait_for(drain_started.wait(), 1)
+        first_token = old_page.config['token']
+        assert old_page.disconnected and browser.closed_targets == [old_target]
+        assert not any(row['method'] == 'Target.createTarget' for row in browser.client.log)
+        browser.finish_tracing(discarded=True)
+        result = await asyncio.wait_for(task, 1)
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert browsers == [browser] and not browser.closed and session.browser.profile == browser.profile
+    first = result['setup_retry']['first_attempt']
+    assert first['target_id'] == cold['target_id'] == old_target
+    assert first['reason'] == 'setup_timeout:Tracing.start' and not first['navigate_sent']
+    assert [entry['method'] for entry in result['setup_retry']['recovery_commands']] == [
+        'Target.closeTarget', 'Tracing.end', 'Tracing.tracingComplete', 'Target.createTarget']
+    assert result['outcome'] == Outcome.VALID and result['trace_events'] == 0
+    assert result['ordinal'] == spec.ordinal and result['role'] == 'warm' and result['target_id'] != old_target
+    assert browser.targets[-1][1].config['token'] != first_token
+    assert not any(entry['method'] in ('Network.clearBrowserCache', 'Page.removeScriptToEvaluateOnNewDocument')
+                   for entry in result['commands'])
+    assert [entry['params'] for entry in result['commands'] if entry['method'] == 'Network.setCacheDisabled'] == [
+        {'cacheDisabled': False}]
+
+
+@pytest.mark.parametrize('end_error', [True, False])
+async def test_setup_timeout_retry_warm_invalid_when_draining_fails(monkeypatch, tmp_path, end_error):
+    failures = {'Tracing.start': [probe.CdpTimeout('Tracing.start', 'setup', 'setup')]}
+    if end_error:
+        failures['Tracing.end'] = [probe.CdpError('tracing still stopping')]
+    monkeypatch.setitem(probe.DEADLINE_MS, 'collect', 5)
+    browsers = retry_browser_factory(monkeypatch, failures, drain_started=asyncio.Event())
+    session = probe.BrowserSession('smoke', 'chrome', tmp_path, tmp_path, setup_timeout_retry=True)
+    await session.execute(recovery_spec(ordinal=6), None)
+    result = await session.execute(recovery_spec('warm', trace_load=True), None)
+
+    (browser,) = browsers
+    assert result['outcome'] == Outcome.INVALID and not result['navigate_sent']
+    assert result['reason'].startswith('setup_retry_recovery:' + ('CdpError' if end_error else 'CdpTimeout'))
+    assert result['setup_retry']['first_attempt']['reason'] == 'setup_timeout:Tracing.start'
+    assert browser.closed and len(browser.targets) == 1
+    assert not any(entry['method'] == 'Target.createTarget' for entry in browser.client.log)
+
+
+async def test_setup_timeout_retry_exhaustion_adds_only_existing_batch_replacement(monkeypatch, tmp_path):
+    method = 'Tracing.start'
+    timeout = probe.CdpTimeout(method, 'setup', 'setup')
+    browsers = retry_browser_factory(monkeypatch, {method: [None, timeout, timeout]})
+    session = probe.BrowserSession('smoke', 'chrome', tmp_path, tmp_path, setup_timeout_retry=True)
+    plan = probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#voces', 1, pairs=0, contrast_pairs=1, warm_ups=0)
+    environment = BatchFakes().environment()
+
+    async def run_slot(slot):
+        return await session.execute(recovery_spec(slot['role'], ordinal=slot['ordinal'], trace_load=True), None)
+
+    environment.run_slot, environment.close_browser = run_slot, session.close_browser
+    batch = await probe.run_batch(plan, environment, idle=0.5, post_batch=0.5, warm_rule=False)
+    cold, failed, primer, replacement = batch['runs']
+    assert len(browsers) == 2 and all(browser.closed for browser in browsers)
+    assert len(browsers[0].targets) == 2
+    assert batch['seed'] == plan['seed'] and [run['ordinal'] for run in batch['runs']] == [0, 1, 2, 3]
+    assert cold['outcome'] == Outcome.VALID and failed['outcome'] == Outcome.INVALID
+    assert failed['reason'] == f'setup_timeout:{method}'
+    assert failed['setup_retry']['first_attempt']['reason'] == failed['reason']
+    assert cold['pair'] == failed['pair'] == primer['pair'] == replacement['pair']
+    assert primer['primer'] and primer['replaces'] == replacement['replaces'] == failed['ordinal']
+    assert replacement['outcome'] == Outcome.VALID and 'setup_retry' not in replacement
+
+
+async def test_setup_retry_never_retries_timed_tracing_start(monkeypatch, tmp_path):
+    timeout = probe.CdpTimeout('Tracing.start', 'interaction_trace', 'timed')
+    browsers = retry_browser_factory(monkeypatch, {'Tracing.start': [timeout]})
+    session = probe.BrowserSession('smoke', 'chrome', tmp_path, tmp_path, setup_timeout_retry=True)
+    result = await session.execute(recovery_spec(harness_steps=VOICES_STEPS), None)
+    assert result['outcome'] == Outcome.FAILURE and result['reason'] == 'cdp_timeout:Tracing.start'
+    assert result['navigate_sent'] and 'setup_retry' not in result and len(browsers) == 1
+    assert result['facts']['timeouts'][0]['phase'] == 'timed'
+
+
+@pytest.mark.parametrize('mode', ['legacy', 'cdp_unresponsive', 'different_setup_method', 'different_class'])
+async def test_setup_retry_requires_opt_in_and_live_cdp_timeout_of_setup_class(monkeypatch, tmp_path, mode):
+    method = 'Network.enable' if mode == 'different_setup_method' else 'Tracing.start'
+    klass = 'interaction_trace' if mode == 'different_class' else 'setup'
+    failures = {method: [probe.CdpTimeout(method, klass, 'setup')]}
+    if mode == 'cdp_unresponsive':
+        failures['Browser.getVersion'] = [probe.CdpTimeout('Browser.getVersion', 'version', 'setup')]
+    browsers = retry_browser_factory(monkeypatch, failures)
+    session = probe.BrowserSession('smoke', 'chrome', tmp_path, tmp_path, setup_timeout_retry=mode != 'legacy')
+    result = await session.execute(recovery_spec(trace_load=True), None)
+    assert result['outcome'] == Outcome.INVALID and not result['navigate_sent']
+    assert 'setup_retry' not in result and len(browsers) == 1
+
+
 async def test_leave_step_timeout_is_post_window_hang():
     run = make_run(view='#rutinas')
     started = time.monotonic()
@@ -1841,8 +2092,9 @@ class FakeFixture:
 class FakeSession:
     specs = []
 
-    def __init__(self, mode, binary, out_dir, profile_root=None, netlog=False):
+    def __init__(self, mode, binary, out_dir, profile_root=None, netlog=False, *, setup_timeout_retry=False):
         self.netlog = netlog
+        FakeSession.setup_timeout_retry = setup_timeout_retry
 
     async def execute(self, spec, fixture):
         FakeSession.specs.append(spec)
@@ -1892,15 +2144,16 @@ async def test_smoke_batches_use_the_play_rule_chosen_by_fixture_pages(monkeypat
     start without it, sends it to the injected script and writes it into the batch header; the overhead runs use
     the same rule; items follow the preregistered smoke order."""
     args, seen = drive_measure_cell(monkeypatch, tmp_path, 'smoke')
+    sha = probe.file_sha256(probe.PREREGISTRATION)
     record_path = tmp_path / 'smoke' / 'smoke-record.json'
     write_smoke_prerequisites(record_path, items=('quiet_baseline', 'cold_focus', 'background_activity'))
     with pytest.raises(SystemExit, match='smoke_order_refused:batches: first complete fixture_pages'):
-        await probe.measure_cell(args, 'smoke', SHA)
+        await probe.measure_cell(args, 'smoke', sha)
     write_smoke_prerequisites(record_path, rule=None)
     with pytest.raises(SystemExit, match='smoke_play_control_rule_missing'):
-        await probe.measure_cell(args, 'smoke', SHA)
+        await probe.measure_cell(args, 'smoke', sha)
     write_smoke_prerequisites(record_path)
-    report = await probe.measure_cell(args, 'smoke', SHA)
+    report = await probe.measure_cell(args, 'smoke', sha)
     (spec,) = FakeSession.specs
     assert spec.play_rule == CHOSEN_RULE != probe.PLAY_CONTROL_RULE and spec.frame_event is None
     config = probe.injection_config(token='t', origin='o', view='#voces', capture_id='c', play_rule=spec.play_rule)
@@ -1914,12 +2167,47 @@ async def test_smoke_batches_use_the_play_rule_chosen_by_fixture_pages(monkeypat
     # V14c, R6-8: every run result names its method_identity, the audio output included.
     run_file = json.loads(next(Path(report['directory']).glob('run-*.json')).read_text())
     assert run_file['method_identity']['audio_output']['builtin'] is True
-    assert run_file['method_identity']['preregistration_sha256'] == SHA
+    assert run_file['method_identity']['preregistration_sha256'] == sha
     record = probe.SmokeRecord(record_path)
     assert probe.smoke_order_missing(record, 'instrumentation_overhead')[:1] == ['batch:desktop:#hogar']
     assert 'instrumentation_overhead' in probe.smoke_order_missing(record, 'frame_event')
     assert probe.smoke_order_missing(record, 'fixture_pages') == []
     assert probe.smoke_order_missing(probe.SmokeRecord(tmp_path / 'none.json'), 'cold_focus') == ['quiet_baseline']
+
+
+async def test_setup_retry_isolated_by_verified_preregistration_sha(monkeypatch, tmp_path):
+    args, seen = drive_measure_cell(monkeypatch, tmp_path, 'smoke')
+    smoke_root = tmp_path / 'smoke'
+    old_sha = probe.file_sha256(probe.PREREGISTRATION)
+    write_smoke_prerequisites(smoke_root / 'smoke-record.json')
+    old_report = await probe.measure_cell(args, 'smoke', old_sha)
+    assert not FakeSession.setup_timeout_retry
+
+    probe.PREREGISTRATION.write_text(json.dumps({'setup_timeout_retry': True}))
+    new_sha = probe.file_sha256(probe.PREREGISTRATION)
+    with pytest.raises(SystemExit, match='preregistration_hash_mismatch'):
+        await probe.measure_cell(args, 'smoke', old_sha)
+    with pytest.raises(SystemExit, match='smoke_order_refused:batches'):
+        await probe.measure_cell(args, 'smoke', new_sha)
+    revised_root = smoke_root / f'prereg-{new_sha}'
+    write_smoke_prerequisites(revised_root / 'smoke-record.json')
+    new_report = await probe.measure_cell(args, 'smoke', new_sha)
+
+    assert FakeSession.setup_timeout_retry
+    old_dir, new_dir = Path(old_report['directory']), Path(new_report['directory'])
+    assert old_dir.parent == smoke_root and new_dir.parent == revised_root
+    assert old_report['seed'] != new_report['seed'] == seen['plan']['seed']
+    document = json.loads(next(new_dir.glob('run-*.json')).read_text())
+    assert document['method_identity']['preregistration_sha256'] == new_sha
+    assert probe.before_after({'closure': [], 'identity': {'preregistration_sha256': old_sha}},
+                              {'preregistration_sha256': new_sha}, [])['reasons'] == [
+        'identity:preregistration_sha256']
+    traced = {'mode': 'smoke', 'outcome': 'valid', 'machine_state': probe.MACHINE_STATE,
+              'interaction_traced': True, 'steps': [{'status': 'dispatched'}]}
+    for directory in (old_dir, new_dir):
+        (directory / 'run-99999.json').write_text(json.dumps(traced))
+    assert probe.smoke_frame_event(smoke_root)['phases'] == 1
+    assert probe.smoke_frame_event(revised_root)['phases'] == 1
 
 
 def test_smoke_inputs_come_from_the_deciding_entry_and_no_item_repeats_after_a_later_stage(tmp_path):
@@ -2047,17 +2335,18 @@ async def test_baseline_needs_every_batch_fill_in_and_uses_the_frozen_compositio
                 'frame_event': {'candidate': 'PipelineReporter'}}
     args, seen = drive_measure_cell(monkeypatch, tmp_path, 'baseline', fill_ins=fill_ins)
     with pytest.raises(SystemExit, match='fill_ins_missing:play_control_rule'):
-        await probe.measure_cell(args, 'baseline', SHA)
+        await probe.measure_cell(args, 'baseline', probe.file_sha256(probe.PREREGISTRATION))
     fill_ins['play_control_rule'] = CHOSEN_RULE
-    (tmp_path / 'prereg.json').write_text(json.dumps({'fill_ins': fill_ins}))
-    await probe.measure_cell(args, 'baseline', SHA)
+    probe.PREREGISTRATION.write_text(json.dumps({'fill_ins': fill_ins}))
+    sha = probe.file_sha256(probe.PREREGISTRATION)
+    await probe.measure_cell(args, 'baseline', sha)
     plan = seen['plan']
     assert plan['planned'] == 100 and sum(1 for slot in plan['slots'] if slot.get('warm_up')) == 3
     assert sum(1 for slot in plan['slots'] if slot.get('trace_contrast')) == 20
     assert FakeSession.specs[-1].play_rule == CHOSEN_RULE and FakeSession.specs[-1].frame_event == 'PipelineReporter'
     assert seen['kwargs']['warm_rule'] is True
     write_smoke_prerequisites(tmp_path / 'smoke' / 'smoke-record.json')
-    await probe.measure_cell(args, 'smoke', SHA)
+    await probe.measure_cell(args, 'smoke', sha)
     plan = seen['plan']
     assert plan['planned'] == 14 and sum(1 for slot in plan['slots'] if slot.get('warm_up')) == 1
     assert sum(1 for slot in plan['slots'] if slot.get('trace_contrast')) == 4
