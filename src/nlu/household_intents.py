@@ -236,6 +236,8 @@ class HouseholdIntentClassifier:
 # A one-digit decimal ("1,5 horas") stays one token, as in src.timers.voice_request.
 _WORD_RE = re.compile(r"\d+(?:[:.]\d{2}|[.,]\d(?!\d))?|[^\W\d_]+")
 _QUOTE_CLOSERS = {"«": "»", '"': '"', "'": "'"}
+_QUOTED_PUNCTUATION = re.compile(r"[,.;:?!…¡¿—-]+")
+_MAX_QUOTE_DEPTH = 6
 _LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras", "bueno",
                          "bue", "dale"})
 # Fillers dropped at the end of a turn ("..., por favor", "... porfa"); "por favor" is matched as a pair
@@ -299,10 +301,15 @@ def _tokens(text: str) -> _Utterance:
 def _quote_spans(text: str) -> list[tuple[int, int]]:
     """Find balanced quotes across lines, keeping each outer span intact."""
     def opening_boundary(before: str) -> bool:
-        return not before or before.isspace() or before in "«([{\"':,;¡¿"
+        return not before or before.isspace() or before in "«»([{\"':,;.¡¿…—-"
 
     def starts_content(offset: int) -> bool:
         start = offset + 1
+        punctuation = _QUOTED_PUNCTUATION.match(text, start)
+        if punctuation and text.startswith(_QUOTE_CLOSERS[text[offset]], punctuation.end()):
+            after_close = text[punctuation.end() + 1:punctuation.end() + 2]
+            if not after_close or after_close.isspace() or after_close in ",.;:?!…)]}»\"'—-":
+                return True
         nested_openers = False
         while start < len(text) and (text[start].isspace() or text[start] in _QUOTE_CLOSERS):
             nested_openers |= text[start] in _QUOTE_CLOSERS
@@ -338,11 +345,32 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         return []
 
     empty_pairs: set[int] = set()
-    for index in range(len(markers) - 1):
+    unambiguous_empty_pairs: set[int] = set()
+    for index in range(len(markers) - 2, -1, -1):
         start, opener, _, _ = markers[index]
-        end, closer, _, _ = markers[index + 1]
-        if _QUOTE_CLOSERS.get(opener) == closer and not text[start + 1:end].strip():
-            empty_pairs.add(index)
+        end, closer, second_can_open, _ = markers[index + 1]
+        if _QUOTE_CLOSERS.get(opener) != closer or text[start + 1:end].strip():
+            continue
+        if not opening_boundary(text[max(0, start - 1):start]):
+            continue
+        empty_pairs.add(index)
+        after_second = text[end + 1:end + 2]
+        if not second_can_open or not after_second or after_second in ",.;:?!…—-)]}":
+            unambiguous_empty_pairs.add(index)
+            continue
+        # Whitespace may separate consecutive openings. A following
+        # definite empty pair cannot be part of that opening sequence.
+        next_index = index + 2
+        if next_index < len(markers):
+            next_offset, _, next_can_open, _ = markers[next_index]
+            if not text[end + 1:next_offset].strip():
+                if next_index in unambiguous_empty_pairs:
+                    unambiguous_empty_pairs.add(index)
+                    continue
+                if next_can_open:
+                    continue
+        if after_second.isspace():
+            unambiguous_empty_pairs.add(index)
 
     sibling_connector = re.compile(
         r"(?:\.{3}|…)\s*(?:[,;]\s*)?(?:(?:y|e|o|u|pero|(?:y\s+)?(?:luego|despu[eé]s))\s*)?",
@@ -351,14 +379,16 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
 
     def continuations(index: int, stack: str) -> tuple[tuple[int, str], ...]:
         offset, char, can_open, can_close = markers[index]
-        # Consume an empty pair together, even after punctuation. If later
-        # delimiters would be left unmatched, the nested opening can still win.
+        # A definite empty pair cannot lend a delimiter to a later quote.
         empty = ((index + 2, stack),) if index in empty_pairs else ()
+        can_push = can_open and index not in unambiguous_empty_pairs and len(stack) < _MAX_QUOTE_DEPTH
         if not stack or stack[-1] != char:
-            following = stack + _QUOTE_CLOSERS[char] if can_open else stack
+            if index in unambiguous_empty_pairs:
+                return empty
+            following = stack + _QUOTE_CLOSERS[char] if can_push else stack
             return (*empty, (index + 1, following))
         closed = (index + 1, stack[:-1])
-        if not can_open:
+        if not can_push:
             return (closed, *empty)
         opened = (index + 1, stack + _QUOTE_CLOSERS[char])
         if not can_close:

@@ -2,6 +2,8 @@
 
 import asyncio
 from itertools import permutations
+from statistics import median
+from time import perf_counter
 from unittest.mock import MagicMock
 
 import pytest
@@ -330,13 +332,18 @@ async def test_nested_same_delimiter_at_start_preserves_broadcast_literal(quote,
 
 @pytest.mark.parametrize("empty", [
     '""', "''", "«»", '"   "', "' \n\t '", "« \n »", '"   "... —""', "' \n '… —''",
-    '""...""', '"   "… "   "',
+    '""...""', '"   "… "   "', '"   "\n"   "', '"   " "   ""   "', '«   »"   "',
 ])
 @pytest.mark.parametrize("separator", [" ", "... —", "… —", "—"])
 @pytest.mark.parametrize(("destination", "expected_zone"), [("la cocina", "zone_cocina"), ("el fogón", None)])
-@pytest.mark.parametrize("message", ["El mensaje es privado.", '"El mensaje es privado."'])
+@pytest.mark.parametrize(("verb", "message", "expected_spans"), [
+    ("Avisá", "El mensaje es privado.", []),
+    ("Avisá", '"El mensaje es privado."', ['"El mensaje es privado."']),
+    ("Anunciá", '"?" es la clave del ejercicio.', ['"?"']),
+    ("Anunciá", 'palabra" otra"', []),
+])
 async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destination(
-    empty, separator, destination, expected_zone, message,
+    empty, separator, destination, expected_zone, verb, message, expected_spans,
 ):
     attempts = []
 
@@ -349,7 +356,7 @@ async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destinat
     intercom.register_zone("sala", "Sala")
     await intercom.start()
     try:
-        text = f"Avisá: {empty}{separator}en {destination}: {message}"
+        text = f"{verb}: {empty}{separator}en {destination}: {message}"
         assert CommandAcceptanceGate().evaluate(text).accept
         intent = classify_household_intent(text)
         assert intent.family is HouseholdFamily.INTERCOM
@@ -363,10 +370,47 @@ async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destinat
             assert outcome.task_completed
             assert announcement.receipt()["zones"] == {expected_zone: "confirmed"}
             assert attempts == [(message, expected_zone)]
-        expected_spans = [message] if message.startswith('"') else []
         assert [text[start:end] for start, end in _quote_spans(text)] == expected_spans
     finally:
         await intercom.stop()
+
+
+@pytest.mark.parametrize(("message", "expected_spans"), [
+    ('"hola" "chau"', ['"hola"', '"chau"']),
+    ('"hola "" chau"', ['"hola "', '" chau"']),
+    ('"hola" ""', ['"hola"']),
+    ('"?"', ['"?"']),
+    ("'¡¿…?!' es la clave.", ["'¡¿…?!'"]),
+    ('"—-", dijo Ana.', ['"—-"']),
+    ('"?!"]', ['"?!"']),
+    ('"?"palabra', []),
+])
+def test_quote_boundaries_distinguish_empty_siblings_from_literal_punctuation(message, expected_spans):
+    text = f"Anunciá: {message}"
+    assert [text[start:end] for start, end in _quote_spans(text)] == expected_spans
+
+
+@pytest.mark.parametrize(("opening", "closing"), [('"', '"'), ("'", "'"), ("«", "»")])
+def test_quote_parser_preserves_six_levels(opening, closing):
+    layers = [f"{opening}En la cocina: esperen, por favor.{closing}"]
+    for _ in range(5):
+        layers.append(f"{opening}Dijo: {layers[-1]}, por favor.{closing}")
+    message = layers[-1]
+    assert [message[start:end] for start, end in _quote_spans(message)] == list(reversed(layers))
+
+
+@pytest.mark.parametrize("fragment", ['"" \'\' ', '"a \'b '])
+def test_unmatched_quote_patterns_keep_classification_under_25_ms(fragment):
+    text = f"Anunciá: {fragment * 12}» Cena lista."
+    samples = []
+    # Use uncached calls and discount a single scheduler pause.
+    for _ in range(3):
+        started = perf_counter()
+        intent = classify_household_intent(text)
+        samples.append(perf_counter() - started)
+        assert intent.family is HouseholdFamily.INTERCOM
+    elapsed = median(samples)
+    assert elapsed < 0.025, f"Quote classification took {elapsed * 1000:.2f} ms"
 
 
 @pytest.mark.parametrize("text", [
