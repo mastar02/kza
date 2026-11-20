@@ -132,6 +132,25 @@ async def refresh_obs_capture(page, identity, requests):
         raise
 
 
+async def wait_obs_capture_retired(page, receipts, source, identity):
+    """Wait for the capture row and all receipts from both channels to retire."""
+    selector = json.dumps(f'#view-users [data-capture-id="{identity}"]')
+    try:
+        await page.wait_for(f'!document.querySelector({selector})')
+        async with asyncio.timeout(3):
+            while await receipts.pending(source.conversation_id):
+                await asyncio.sleep(.01)
+    except (AssertionError, TimeoutError):
+        print(json.dumps({'diagnostic':'obs_capture_retirement','expected':identity,
+            'client':await page.evaluate('''({
+                captureToken:window.__kzaVoiceState?.captures.deliveryToken(),
+                reviewToken:window.__kzaVoiceState?.review.deliveryToken(),
+                pendingMedia:window.__kzaVoiceState?.review.pendingRetirements(),
+                rendered:[...document.querySelectorAll('#view-users [data-capture-id]')].map(row=>row.dataset.captureId)
+            })''')}))
+        raise
+
+
 async def click_button(page, selector, label):
     """Click a visible DOM button through Chromium's input pipeline."""
     point = await page.evaluate('''(() => {
@@ -482,9 +501,16 @@ async def main(*,browser_binary=None):
                             assert await page.evaluate("document.querySelector('[aria-label=\"Escuchar muestra\"]').textContent.includes('Synthetic listening room')")
                             assert await page.evaluate("(()=>{const element=document.querySelector('audio');window.__kzaVoiceState.review.setStatus('real');return document.querySelector('audio')===element;})()")
                             review_requests = sum(item['path'].endswith('/review') for item in requests)
-                            assert await page.evaluate('''(() => {const audio=document.querySelector('audio');
-                              document.querySelector(%s).click();return document.querySelector('audio')===audio&&!audio.paused;
-                            })()'''%json.dumps('[data-capture-id="'+identity+'"] button'))
+                            reselect = await page.evaluate('''(() => {
+                              const audio=document.querySelector('audio');
+                              const button=[...document.querySelectorAll(%s)].find(node=>node.textContent==='Escuchar');
+                              if (button && !button.disabled) button.click();
+                              return {available:!!button && !button.disabled,
+                                keptPlaying:!!audio && document.querySelector('audio')===audio && !audio.paused,
+                                captures:window.__kzaVoiceState?.captures.status(),
+                                captureToken:window.__kzaVoiceState?.captures.deliveryToken()};
+                            })()'''%json.dumps(control))
+                            assert reselect['available'] and reselect['keptPlaying'], ('voice_review_reselect',identity,reselect)
                             assert sum(item['path'].endswith('/review') for item in requests)==review_requests
                         await listen(extra_id,'Synthetic audio retirement phrase')
                         same_sample = len(page.voice_requests)
@@ -544,6 +570,7 @@ async def main(*,browser_binary=None):
                         await refresh_obs_capture(page,expiring_text_id,requests)
                         await read_transcript(page,expiring_text_id,OBS_REVIEW,'Synthetic independent text expiry')
                         await page.wait_for("!document.body.textContent.includes('Synthetic independent text expiry')")
+                        await wait_obs_capture_retired(page,bus._retention.receipts,expiring_text,expiring_text_id)
                         assert voices.privacy.sources_available((expiring_text,))
                         clock.now = expiring_text.expires_at
                         await voices.acall(voices.ledger.prune)
@@ -552,6 +579,7 @@ async def main(*,browser_binary=None):
                         await read_transcript(page,retired_text_id,OBS_REVIEW,'Synthetic erased text')
                         await owner.request(retired_text.conversation_id,MemoryReviewer('synthetic-admin'))
                         await page.wait_for("!document.body.textContent.includes('Synthetic erased text')")
+                        await wait_obs_capture_retired(page,bus._retention.receipts,retired_text,retired_text_id)
                         leaving,leaving_id = await sample('Synthetic leaving voice view')
                         await refresh_obs_capture(page,leaving_id,requests)
                         await listen(leaving_id,'Synthetic leaving voice view')

@@ -18,6 +18,7 @@
     let closed = false, sequence = 0, capturesSequence = 0, reapplying = false;
     let filters = DEFAULT_FILTERS, count = null, rooms = null, summaryTimer = null, roomNotice = '';
     let queryCursor = null, queryHasSearch = false;
+    let capturePageToken;
     const pages = {}, actions = new Set(), aborts = new Set();
     const filterListeners = new Set();
     const searchAllowed = () => !profilesOnly && canSearch() === true;
@@ -45,23 +46,29 @@
       filters = Object.freeze({...filters,room:null}); roomNotice = ROOM_GONE;
       return true;
     }
+    function canRefreshRoom(token) {
+      // A completed empty page can recheck its selected room. Options from
+      // an older page cannot invalidate the rows or request that replaced it.
+      return filters.room?.kind === 'room' && !channels.captures.busy()
+        && (capturePageToken === token || capturePageToken === null);
+    }
     function checkSummary() {
       const roomExpired = expired(rooms), countExpired = expired(count);
+      const refreshRoom = roomExpired && canRefreshRoom(rooms.token);
       if (countExpired) count = null;
-      if (roomExpired) {
-        rooms = null;
-        // Keep the selection for the refresh only. The view drops the expired
-        // label immediately, and a search cannot supply a replacement list.
-        if (filters.text !== null) resetMissingRoom();
-        void reapplyCaptures();
-      }
-      if (countExpired || roomExpired) notifyFilters();
-      if (countExpired || roomExpired) channels.captures.flush();
+      if (roomExpired) rooms = null;
+      if (refreshRoom && filters.text !== null) resetMissingRoom();
       armSummary();
+      if (countExpired || roomExpired) {
+        notifyFilters();
+        channels.captures.flush();
+      }
+      if (refreshRoom) void reapplyCaptures();
     }
     function capturePage(cursor,page,started) {
       pages.captures = cursor;
       const observed = page?.count_observed_at ?? page?.observed_at, token = page?.event_id;
+      capturePageToken = token ?? null;
       const value = page?.matching_count;
       count = page?.scan_complete === true && Number.isSafeInteger(value) && value >= 0 && value <= 4096
         ? token ? timed(value,page.count_expires_at,observed,started,page)
@@ -80,10 +87,11 @@
     function retireSummary(tokens) {
       const countRetired = tokens.includes(count?.token), roomsRetired = tokens.includes(rooms?.token);
       if (!countRetired && !roomsRetired) return;
+      const refreshRoom = roomsRetired && canRefreshRoom(rooms.token) && resetMissingRoom();
       if (countRetired) count = null;
       if (roomsRetired) rooms = null;
-      if (roomsRetired && resetMissingRoom()) void reapplyCaptures();
-      else { armSummary(); notifyFilters(); }
+      armSummary(); notifyFilters(); channels.captures.flush();
+      if (refreshRoom) void reapplyCaptures();
     }
     const channels = Object.fromEntries(Object.keys(PATHS).map(kind => [kind,channelsAPI.createConversationChannel({
       store:state[kind], fetch, path:PATHS[kind], channel:`voices:${kind}`, loadOnOpen:false, hasView,
@@ -106,13 +114,13 @@
       const text = searchAllowed() ? filters.text : null;
       const body = JSON.stringify({...filters,text,cursor});
       const accepted = channels.captures.refresh(PATHS.captures,{method:'POST',body});
-      if (accepted) { queryCursor = cursor; queryHasSearch = text !== null; }
+      if (accepted) { queryCursor = cursor; queryHasSearch = text !== null; capturePageToken = undefined; }
       return accepted;
     }
     async function reapplyCaptures() {
       if (closed || profilesOnly) return false;
       const attempt = ++capturesSequence;
-      reapplying = true; delete pages.captures; count = null;
+      reapplying = true; delete pages.captures; count = null; capturePageToken = undefined;
       try {
         do {
           channels.captures.clearView();
@@ -129,7 +137,7 @@
       const captureAttempt = ++capturesSequence;
       reapplying = false;
       for (const kind of Object.keys(pages)) delete pages[kind];
-      count = null; armSummary(); notifyFilters();
+      count = null; capturePageToken = undefined; armSummary(); notifyFilters();
       for (const kind of Object.keys(channels)) channels[kind].clearView();
       await Promise.all(Object.values(channels).map(channel => channel.settled()));
       if (closed || attempt!==sequence) return;
@@ -165,7 +173,7 @@
       return accepted;
     }
     function clearFilters() {
-      capturesSequence++; reapplying = false; queryCursor = null; queryHasSearch = false;
+      capturesSequence++; reapplying = false; queryCursor = null; queryHasSearch = false; capturePageToken = undefined;
       filters = DEFAULT_FILTERS; roomNotice = ''; clearSummary(true);
     }
     function leave() {

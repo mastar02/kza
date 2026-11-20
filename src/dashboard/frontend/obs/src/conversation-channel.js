@@ -138,10 +138,10 @@
       const tokens = frame?.payload?.event_ids;
       if (!Array.isArray(tokens) || tokens.length > 32 || !tokens.every(token => ID.test(token))
           || retired.size + tokens.filter(token => !retired.has(token)).length > 64) return false;
+      if (!metadata.receive({ ...frame, type:'retire' })) return false;
       for (const token of tokens) retired.add(token);
-      const accepted = metadata.receive({ ...frame, type:'retire' });
-      if (accepted) onRetire(tokens);
-      return accepted;
+      onRetire(tokens);
+      return true;
     }
     function clearView() {
       generation++; for (const controller of controllers) controller.abort();
