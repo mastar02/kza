@@ -332,7 +332,8 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         return []
 
     sibling_connector = re.compile(
-        r"(?:\.{3}|…)\s*(?:[,;]\s*)?(?:y|e|o|u|pero|(?:y\s+)?(?:luego|despu[eé]s))\s*", re.IGNORECASE,
+        r"(?:\.{3}|…)\s*(?:[,;]\s*)?(?:(?:y|e|o|u|pero|(?:y\s+)?(?:luego|despu[eé]s))\s*)?",
+        re.IGNORECASE,
     )
 
     def continuations(index: int, stack: str) -> tuple[str, ...]:
@@ -340,13 +341,13 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         if not stack or stack[-1] != char:
             return (stack + _QUOTE_CLOSERS[char],) if can_open else (stack,)
         closed = stack[:-1]
-        # Leading whitespace can start an outer quote. For the same delimiter,
-        # it marks a closing edge, rather than an ambiguous inner opening.
-        if not can_open or text[offset + 1].isspace():
+        if not can_open:
             return (closed,)
         opened = stack + _QUOTE_CLOSERS[char]
         if not can_close:
             return (opened,)
+        if text[offset + 1].isspace():
+            return closed, opened
         if index + 1 < len(markers):
             next_offset, _, next_can_open, _ = markers[index + 1]
             if next_can_open and sibling_connector.fullmatch(text, offset + 1, next_offset):
@@ -355,7 +356,7 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
 
     # A state only needs the expected closers, not their source offsets.
     # Prefer a fully balanced continuation. For malformed speech, retain
-    # the spans that did close along the path with the fewest unclosed marks.
+    # the spans along the path with the fewest skipped or unclosed marks.
     choices: dict[tuple[int, str], tuple[int, str]] = {}
     pending = [(0, "")]
     while pending:
@@ -370,10 +371,11 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
                 if successor not in choices:
                     pending.append(successor)
                     break
-                unclosed, _ = choices[successor]
-                if unclosed < best[0]:
-                    best = (unclosed, next_stack)
-                if unclosed == 0:
+                cost, _ = choices[successor]
+                cost += next_stack == stack  # Ignoring a delimiter leaves it unmatched.
+                if cost < best[0]:
+                    best = (cost, next_stack)
+                if cost == 0:
                     choices[state] = best
                     break
             else:

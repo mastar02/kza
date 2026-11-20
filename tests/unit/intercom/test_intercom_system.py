@@ -148,12 +148,15 @@ def test_nested_quote_starting_with_ellipsis_preserves_its_outer_message(quote, 
     assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
 
 
-@pytest.mark.parametrize("depth", [1, 2, 3])
+@pytest.mark.parametrize(("depth", "inner_padding"), [
+    (1, ("", "")), (2, ("", "")), (3, ("", "")),
+    (2, ("\n", " ")), (3, ("\n", " ")),
+])
 @pytest.mark.parametrize(("opening", "closing"), [('"', '"'), ("'", "'"), ("«", "»")])
 @pytest.mark.parametrize("separator", [" ", "\n"])
 @pytest.mark.parametrize("ellipsis", ["", "... "])
 @pytest.mark.parametrize("trailing_filler", ["", ", por favor"])
-def test_balanced_quote_depth_preserves_all_literal_layers(depth, opening, closing, separator, ellipsis,
+def test_balanced_quote_depth_preserves_all_literal_layers(depth, inner_padding, opening, closing, separator, ellipsis,
                                                           trailing_filler):
     intercom = IntercomSystem(room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
     layers = []
@@ -163,7 +166,8 @@ def test_balanced_quote_depth_preserves_all_literal_layers(depth, opening, closi
         if depth == 3:
             layers.append(f"{opening}ya{closing}")
             instruction += f" a que diga {layers[0]}"
-        layers.insert(0, f"{opening}{instruction}, por favor{closing}")
+        leading, trailing = inner_padding
+        layers.insert(0, f"{opening}{leading}{instruction}, por favor{trailing}{closing}")
         body = f"En la cocina:{separator}Deciles {layers[0]}, por favor."
     message = f"{opening}{body}{closing}"
     assert [message[start:end] for start, end in _quote_spans(message)] == [message, *layers]
@@ -189,6 +193,8 @@ def test_ambiguous_quote_closure_requires_two_future_delimiters(message, quoted_
     ("Anunciá ", ", ", ("hola ", "chau")),
     ("Anunciá: ", "... y ", ("hola ", "... chau")),
     ("Anunciá: ", "… y ", ("hola ", "chau")),
+    ("Anunciá: ", "... ", ("En la cocina: esperen ", "por favor")),
+    ("Anunciá: ", "… ", ("En la cocina: esperen ", "por favor")),
 ])
 def test_sibling_quotes_stay_separate_and_preserve_broadcast(quote, prefix, separator, fragments):
     siblings = [f"{quote}{fragment}{quote}" for fragment in fragments]
