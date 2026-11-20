@@ -63,14 +63,23 @@ _RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
 _RECURRENCE_QUESTION = re.compile(r"\bcuando se\b")
 # Subjunctive forms can follow "que se" in a request ("hacé que se programe").
 _CONFIGURATION_VERB = re.compile(
-    rf"{_INDICATIVE_CONTEXT}\b(?:configura|programa)\b"
+    rf"{_INDICATIVE_CONTEXT}(?<!\bque )\b(?:configura|programa)\b"
     r"|\b(?:configur|program)(?:ame|ar|e)\b"
 )
 _VOSEO_PROGRAM_VERB = re.compile(r"\bprogramá\b", re.I)
+_PROGRAM_DETERMINER = r"(?:el|del|al|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
+_PROGRAM_OBJECT = r"(?:el|la|los|las|un|una|unos|unas|mi|tu|su|este|esta|ese|esa)"
+_PROGRAM_WITH_MODIFIER = rf"{_PROGRAM_DETERMINER} [a-z]+ programa\b"
+_PROGRAM_DIRECTIVE_TAIL = (
+    rf"(?:{_PROGRAM_OBJECT}|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|[0-9]+"
+    r"|cuando|cada|todos|todas|todo|toda|que (?:cuando|se|el|la|arranque|empiece|funcione|corra|encienda|apague|prenda))"
+)
+# After "para", an intervening word may be the object of the preposition
+# ("para el riego programa ..."). A following "de" still marks a nominal phrase.
 _NOMINAL_PROGRAM = re.compile(
-    r"\b(?:el|del|al|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
-    r"(?: [a-z]+)? programa\b"
-    r"(?! (?:el|la|los|las|un|una|unos|unas|mi|tu|su|este|esta|ese|esa)\b)"
+    rf"\b{_PROGRAM_DETERMINER} programa\b(?! {_PROGRAM_OBJECT}\b)"
+    rf"|(?<!\bpara )\b{_PROGRAM_WITH_MODIFIER}(?! {_PROGRAM_DIRECTIVE_TAIL}\b)"
+    rf"|\b{_PROGRAM_WITH_MODIFIER}(?= de\b)"
 )
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
 _INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"
@@ -277,6 +286,7 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     original = unicodedata.normalize("NFC", text)
     # The accented imperative "programá" cannot be the noun "programa".
     voseo_program = _VOSEO_PROGRAM_VERB.search(original)
+    wake_words = tuple(wake_words)
     words = strip_fillers(original, wake_words, extra_leads=_LEADS)
     phrase = " ".join(words)
     if _UNCLAIMED_CREATION.search(phrase):
@@ -284,7 +294,12 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     # A question that leads with an interrogative can mention a configuration verb.
     if _QUESTION_OPENING.match(phrase):
         return False
-    command_text = _NOMINAL_PROGRAM.sub(" ", phrase)
+    # Preserve the comma in "para el riego, programa" until nominal filtering.
+    folded = " ".join(_fold(original).split())
+    without_nominal_programs = _NOMINAL_PROGRAM.sub(" ", folded)
+    command_text = phrase
+    if without_nominal_programs != folded:
+        command_text = " ".join(strip_fillers(without_nominal_programs, wake_words, extra_leads=_LEADS))
     names_routine = not _ROUTINE_VOCABULARY.isdisjoint(words)
     # A directive can have an embedded question or a trailing "¿podés?".
     if _ROUTINE_DIRECTIVE.search(command_text) or (

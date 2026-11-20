@@ -60,6 +60,10 @@ async def voice_router(orchestrated, utterance, *, scheduler=None):
     ("hacé que se programe el horario de la automatización de riego a las ocho", "no creo rutinas por voz"),
     ("necesito que se configure el horario de la automatización de riego", "no creo rutinas por voz"),
     ("quiero que programe el horario de la automatización de riego", "no creo rutinas por voz"),
+    ("para el riego, programa dos rutinas para las ocho", "no creo rutinas por voz"),
+    ("para el riego programa dos rutinas para las ocho", "no creo rutinas por voz"),
+    ("para el riego, programa que arranque a las ocho", "no creo rutinas por voz"),
+    ("para el riego programa que arranque a las ocho", "no creo rutinas por voz"),
     ("programa que arranque el riego al anochecer", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego, ¿podés?", "no creo rutinas por voz"),
@@ -110,6 +114,7 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "quiero escuchar un excelente programa de rutinas de ejercicio",
     "¿se configura el horario de la automatización de riego desde la web?",
     "podés decirme quién configura el horario de la automatización de riego",
+    "¿Te parece que programa bien el horario la automatización de riego?",
 ])
 async def test_utterance_without_automation_intent_stays_conversational(orchestrated, utterance):
     async with voice_router(orchestrated, utterance) as (router, dispatcher):
@@ -137,6 +142,8 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
     "me podés decir si el horario de la automatización de riego se configura desde la web?",
     "¿sabés si ya se programa sola la automatización de riego?",
     "¿quién programa el horario de la automatización de riego?",
+    "para el programa de rutinas de ejercicio",
+    "para el excelente programa de rutinas de ejercicio",
 ])
 def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance):
     assert not is_unclaimed_routine_creation(f"Nexa, {utterance}")
@@ -144,3 +151,14 @@ def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance
 
 def test_accented_program_verb_survives_nominal_filtering():
     assert is_unclaimed_routine_creation("Nexa, después del último, programá el horario de la automatización de riego")
+
+
+@pytest.mark.parametrize("utterance", [
+    "después del riego, programa ahora la rutina de jardín",
+    "para el riego programa ahora el horario de la automatización",
+    "después del riego programa dos rutinas para las ocho",
+    "después del riego programa 2 rutinas para las ocho",
+    "después del riego programa que arranque a las ocho",
+])
+def test_program_directive_survives_nominal_filtering(utterance):
+    assert is_unclaimed_routine_creation(f"Nexa, {utterance}")
