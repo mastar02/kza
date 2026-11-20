@@ -75,6 +75,7 @@ async def test_real_factory_shares_household_output_privacy_and_managers(leaves,
             assert orchestrator.dispatcher.response_handler is graph.voice_services.responses
             # T030-U1: the orchestrated timer handler drives the one manager the FeatureManager starts.
             assert orchestrator.dispatcher.timer_manager is graph.voice_services.features.timer_manager
+            assert orchestrator.dispatcher.intercom is graph.voice_services.features.intercom
             # P3-F1: one household clock, built once from routines.timezone, and one room namespace.
             # Imported here: compiled-restore children import this module's fixtures against
             # older compiled slots that predate src.core.household_clock.
@@ -323,6 +324,94 @@ async def test_phrase_reaches_actual_main_feature_and_shared_pcm_output(leaves, 
 
 def _timer_turn(room_id: str = "", **wake) -> CommandEvent:
     return CommandEvent(np.full(16000, 0.1, dtype=np.float32), room_id=room_id, **wake)
+
+
+async def test_orchestrated_intercom_delivers_to_the_catalog_and_vetoes_ambient_turns(leaves, monkeypatch, tmp_path):
+    import src.tts.piper_tts as output_module
+
+    backend = AudioBackend()
+    monkeypatch.setattr(output_module, "sd", backend)
+    amplifier = MagicMock(audio_output_device=7)
+    factories = replace(leaves, wake_detector=OfflineWake, amplifier=lambda **_: amplifier)
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url, rooms=True)
+        config["rooms"].update({
+            "cocina": {"name": "Cocina", "aliases": ["fogón"], "mic_device_index": 0, "ma1260_zone": 3},
+            "hall": {"name": "Hall", "mic_device_index": 1, "ma1260_zone": 2},
+        })
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=factories)
+            features = graph.voice_services.features
+            await features.start()
+            stt, tts = graph.models.stt, graph.models.tts
+
+            stt.text = "Avisá en el fogón: Llegó Ana"
+            one = await graph.pipeline.process_command(_timer_turn("hall", capture_trigger="wake"))
+            assert (one["intent"], one["path"], one["task_completed"]) == ("intercom", "fast_household", True)
+            assert one["intercom_receipt"]["zones"] == {"zone_cocina": "confirmed"}
+            assert tts.texts == ["Llegó Ana", "Anuncio reproducido."]
+            assert [call.args for call in amplifier.select_zone.call_args_list] == [(3,), (2,)]
+
+            amplifier.select_zone.reset_mock()
+            tts.texts.clear()
+            stt.text = "Anunciá en toda la casa: Merienda"
+            all_rooms = await graph.pipeline.process_command(_timer_turn("hall", capture_trigger="wake"))
+            assert all_rooms["task_completed"] and all_rooms["intercom_receipt"]["zones"] == {
+                "zone_cocina": "confirmed", "zone_hall": "confirmed",
+            }
+            assert tts.texts == ["Merienda", "Merienda", "Anuncio reproducido."]
+            assert [call.args for call in amplifier.select_zone.call_args_list] == [(3,), (2,), (2,)]
+            assert len(backend.heard()) > 0
+
+            history = features.get_announcement_history()
+            assert len(history) == 2
+            assert [item.announcement_id for item in history] == [
+                result["intercom_receipt"]["announcement_id"] for result in (one, all_rooms)
+            ]
+            output = tts.texts.copy()
+            for wake in ({"ambient_strict": True}, {"textual_wake": True}, {"capture_trigger": "follow_up"}):
+                rejected = await graph.pipeline.process_command(_timer_turn("hall", **wake))
+                assert rejected["intent"] == "llm_rejected:household" and not rejected["success"]
+                assert "intercom_receipt" not in rejected
+            assert tts.texts == output and features.get_announcement_history() == history
+
+            graph.voice_services.responses.zone_manager.remove_zone("cocina")
+            partial = await graph.pipeline.process_command(_timer_turn("hall", capture_trigger="wake"))
+            assert not partial["success"] and not partial["task_completed"]
+            assert (partial["outcome"]["dispatch"], partial["outcome"]["effect"]) == ("partial", "partial")
+            assert partial["intercom_receipt"]["zones"] == {"zone_cocina": "failed", "zone_hall": "confirmed"}
+            assert "1 de 2 salas" in partial["response"]
+            assert observations["service_calls"] == 0
+
+
+async def test_unknown_voice_dnd_leaves_personal_settings_untouched(leaves, monkeypatch, tmp_path):
+    import src.tts.piper_tts as output_module
+    from src.notifications.smart_notifications import NotificationRule
+
+    monkeypatch.setattr(output_module, "sd", AudioBackend())
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            notifications = graph.voice_services.features.notifications
+            notifications.set_dnd("synthetic", True)
+            notifications.set_user_preference("synthetic", "channel", "voice")
+            rule = NotificationRule("synthetic", "Synthetic rule")
+            notifications.add_rule("synthetic", rule)
+
+            graph.models.stt.text = "Activá el modo no molestar"
+            result = await graph.pipeline.process_command(_timer_turn(capture_trigger="wake"))
+            assert result["intent"] == "notification_config"
+            assert result["outcome"]["status"] == "unsupported"
+            assert "iniciá sesión en la web" in result["response"]
+
+            # Even a supplied identity is only a voice label, with no web account authority.
+            claimed = await graph.pipeline._orchestrator.process(user_id="synthetic", text="Desactivá el no molestar")
+            assert claimed.outcome.status.value == "unsupported" and not claimed.success
+            assert notifications._user_dnd == {"synthetic": True}
+            assert notifications._user_preferences == {"synthetic": {"channel": "voice"}}
+            assert notifications._user_rules == {"synthetic": [rule]}
+            assert observations["service_calls"] == 0
 
 
 async def test_orchestrated_twin_reaches_the_main_timer_and_shared_pcm_output(leaves, monkeypatch, tmp_path):

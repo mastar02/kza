@@ -488,7 +488,7 @@ _forms(_ROUTINE_EXEC, "ejecuta", "ejecute", "ejecutar", "corre", "corra", "corre
 _forms(_ROUTINE_PROPOSE, "crea", "crear", "arma", "arme", "armar", "hace", "haga", "hacer", "programa", "programe",
        "programar", "activa", "active", "activar", "configura", "configure", "configurar", "agenda", "agendar")
 _forms(_AUTOMATE, "automatiza", "automatice", "automatizar")
-_forms(_INTERCOM, "anuncia", "anuncie", "anunciar", "avisa", "avise", "deci", "di", "diga")
+_forms(_INTERCOM, "anuncia", "anuncie", "anunciar", "avisa", "avise", "comunica", "comunique", "deci", "di", "diga")
 _forms(_DOMOTICS, "prende", "prenda", "prendan", "prender", "encende", "enciende", "encienda", "encender", "apaga",
        "apague", "apaguen", "apagar", "sube", "subi", "suba", "subir", "baja", "baje", "bajen", "bajar", "abri",
        "abre", "abra", "abrir", "cierra", "cerra", "cierre", "cerrar", "pone", "pon", "ponga", "poner", "activa",
@@ -565,10 +565,11 @@ _CLOCK = re.compile(r"\b(?:a|para|cuando sean?) (?:las? )?(?:\d{1,2}(?:[:.]\d{2}
 # T031-U2-RV5: the form the minutes question suggests).
 _ARTICLE_CLOCK_UNIT = re.compile(rf"\b(?:a|para|de) (?:la|las) {_ALARM_HOUR} "
                                  rf"(?:h|hs|hrs|horas?|y {_NUMBER} (?:minutos?|mins?))\b")
-_INTERCOM_TARGET = re.compile(
-    r"\b(?:en|a|por) (?:el |la |los |las |toda la |todas las )?(?:casa|todos|parlantes|"
-    + "|".join(re.escape(alias) for alias in sorted(ROOM_ALIASES)) + r")\b")
-_NOTIFICATION = re.compile(r"\bno molestar\b|\bsolo (?:las )?urgen(?:tes|cias)\b")
+_INTERCOM_DESTINATION_HEADS = frozenset({"en", "a", "al", "por", "para"})
+_NOTIFICATION = re.compile(
+    r"(?:(?:(?P<disable>desactiva|desactive|quita|quite|saca|saque)|activa|active|pone|pon) )?"
+    r"(?:el )?(?:modo )?no molestar"
+)
 _MUSIC_WORDS = frozenset({"musica", "cancion", "canciones", "tema", "temas", "playlist", "spotify", "reproduccion",
                           "album", "disco"})
 _QUERY_HEADS = frozenset({"que", "cuales", "cuantos", "cuantas"})
@@ -1024,6 +1025,25 @@ def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
     return None
 
 
+def _intercom_intent(utt: _Utterance, verb: _Verb | None) -> HouseholdIntent | None:
+    """Claim the command head and leave destination resolution to intercom."""
+    if verb is None or _INTERCOM not in verb.classes or verb.infinitive:
+        return None
+    head = utt.at(0)
+    next_word = utt.at(verb.end)
+    explicit_destination = next_word in _INTERCOM_DESTINATION_HEADS
+    announce = head == verb.form and (head.startswith(("anunci", "comunic")) or (
+        head in {"avisa", "avise"} and next_word == "que"
+    ))
+    if not announce and (not explicit_destination or head.endswith(("me", "nos"))):
+        return None
+    # Preserve the colon, punctuation inside the message, and the casing as
+    # transcribed. The token bounds exclude trailing command fillers.
+    complement = (utt.source[utt.word_ends[verb.end - 1]:utt.word_ends[-1]].strip()
+                  if utt.word_ends else _rest(utt, verb.end))
+    return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6", complement, verb.form)
+
+
 def _r6(utt: _Utterance) -> HouseholdIntent | None:
     created = _routine_creation(utt)
     if created is not None:
@@ -1046,16 +1066,12 @@ def _r6(utt: _Utterance) -> HouseholdIntent | None:
                 complement = (_routine_name_after(utt, noun) if operation is HouseholdOperation.EXECUTE
                               else _rest(utt, noun + 1))
                 return HouseholdIntent(HouseholdFamily.ROUTINE, operation, "R6", complement, verb.form)
-    if _NOTIFICATION.search(utt.text):
-        disable = verb is not None and bool(verb.classes & {_DISABLE, _CANCEL, _STOP_RINGING})
+    notification = _NOTIFICATION.fullmatch(utt.text)
+    if notification is not None:
         return HouseholdIntent(HouseholdFamily.NOTIFICATION,
-                               HouseholdOperation.DISABLE if disable else HouseholdOperation.EXECUTE, "R6",
+                               HouseholdOperation.DISABLE if notification["disable"] else HouseholdOperation.EXECUTE, "R6",
                                utt.heard, verb.form if verb is not None else "")
-    if verb is not None and _INTERCOM in verb.classes and not verb.infinitive:
-        if verb.form.startswith("anunci") or _INTERCOM_TARGET.search(" ".join(utt.folded[verb.end:])):
-            return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6",
-                                   _rest(utt, verb.end), verb.form)
-    return None
+    return _intercom_intent(utt, verb)
 
 
 _SINGLE_RULES = (_r3, _r1, _r2, _r3a, _r4, _r6)
@@ -1079,6 +1095,9 @@ def _split_clauses(utt: _Utterance) -> list[_Utterance]:
     for k in range(1, len(utt)):
         if utt.at(k) not in _CONJUNCTIONS or k <= start:
             continue
+        segment = utt.slice(start)
+        if _intercom_intent(segment, _verb_at(segment, 0)) is not None:
+            break
         if _CONTENT_MARKERS & set(utt.folded[start:k]):
             return []
         j = k + 1
@@ -1276,6 +1295,9 @@ def classify_household_intent(text: str, *, wake_words: Iterable[str] = (),
     if not len(utt):
         return None
     found = _r3(utt)
+    if found is not None:
+        return found
+    found = _intercom_intent(utt, _verb_at(utt, 0))
     if found is not None:
         return found
     found = _r5(utt, max_compound_parts)

@@ -96,6 +96,10 @@ class ResponseResult:
 class VoiceDeliveryError(RuntimeError):
     """The configured voice output did not confirm completed delivery."""
 
+    def __init__(self, message: str = "", *, result: ResponseResult | None = None) -> None:
+        super().__init__(message)
+        self.result = result
+
 
 async def invoke_voice_callback(callback: Callable[..., Any] | None, *args, **kwargs) -> Any:
     """Await async callbacks and keep legacy synchronous callbacks off-loop.
@@ -113,7 +117,7 @@ async def invoke_voice_callback(callback: Callable[..., Any] | None, *args, **kw
         if inspect.isawaitable(result):
             result = await result
     if isinstance(result, ResponseResult) and not result.success:
-        raise VoiceDeliveryError(result.error or "voice_delivery_" + result.delivery.value)
+        raise VoiceDeliveryError(result.error or "voice_delivery_" + result.delivery.value, result=result)
     if result is False:
         raise VoiceDeliveryError("voice_delivery_failed")
     return result

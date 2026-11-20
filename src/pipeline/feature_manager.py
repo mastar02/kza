@@ -9,10 +9,11 @@ Extracted from VoicePipeline to reduce its responsibility.
 import asyncio
 import logging
 
-from src.timers import NamedTimerManager, NamedTimer
-from src.intercom import IntercomSystem, AnnouncementPriority
-from src.notifications import SmartNotificationManager, NotificationPriority
 from src.alerts import AlertManager, AlertScheduler
+from src.core.household_clock import RoomNamespace, ZONE_PREFIX
+from src.intercom import AnnouncementPriority, IntercomSystem
+from src.notifications import NotificationPriority, SmartNotificationManager
+from src.timers import NamedTimer, NamedTimerManager
 
 logger = logging.getLogger(__name__)
 
@@ -403,7 +404,7 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
         response_handler: Application-owned synthesis/output boundary.
         zone_manager: Configured local zone routes, if any.
         user_manager: Notification profile lookup.
-        ha_client: Existing feature data source, never a TTS fallback here.
+        ha_client: Existing feature data source.
 
     Returns:
         Feature manager whose voice-producing callbacks await shared delivery.
@@ -412,6 +413,22 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
 
     streaming = config.get("tts", {}).get("streaming", {})
     voice = LocalVoiceDelivery(response_handler, streaming.get("default_output_zone"), zone_manager is not None)
+    rooms = config.get("rooms", {})
+    namespace = RoomNamespace.from_rooms_config(rooms)
+    intercom_rooms: dict[str, tuple[str, ...]] = {}
+    for room_id in sorted(namespace.rooms):
+        room = rooms[room_id]
+        aliases = room.get("aliases")
+        labels: tuple[object, ...] = (room.get("name", room_id), room.get("display_name"))
+        if isinstance(aliases, (list, tuple)):
+            labels += tuple(aliases)
+        intercom_rooms[ZONE_PREFIX + room_id] = tuple(label for label in labels if isinstance(label, str))
+
+    def voice_zone_key(zone_id: str) -> str | None:
+        target = voice.default_zone if zone_id == "default" else zone_id
+        zone = zone_manager.get_zone(target) if zone_manager is not None and target else None
+        return zone.id if zone is not None else target
+
     alerts = config.get("alerts", {})
     manager = scheduler = None
     if alerts.get("enabled", True):
@@ -432,8 +449,9 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
             )
     features = FeatureManager(
         timer_manager=NamedTimerManager(tts_callback=voice.aspeak),
-        intercom=IntercomSystem(tts_callback=voice.aspeak, zone_manager=zone_manager, ha_client=ha_client),
-        notifications=SmartNotificationManager(tts_callback=voice.aspeak, user_manager=user_manager, ha_client=ha_client),
+        intercom=IntercomSystem(tts_callback=voice.aspeak, zone_manager=zone_manager, room_catalog=intercom_rooms),
+        notifications=SmartNotificationManager(tts_callback=voice.aspeak, user_manager=user_manager, ha_client=ha_client,
+                                               voice_zone_key=voice_zone_key),
         alert_manager=manager, alert_scheduler=scheduler,
     )
     features.voice_delivery = voice

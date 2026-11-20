@@ -140,10 +140,9 @@ C02_ROUTER = (
     _r("C02-CMP-0201", "cancelá el timer y el recordatorio", "compound", "failed", "fast_household",
        "failed", "not_written", "readback", state="queued_request", counts=SPOKEN_ONE, unit="T037-U6",
        note="T037-U6: each part reaches its family path (nothing to cancel in either); one reply"),
-    _r("C02-NTF-0201", "activá el no molestar", "notification", "no_turn", None, None, None, "none",
-       llm="stub:turn_on@0.95", state="light_match",
-       note="characterized: the gate drops it as non_immediate:negation ('no molestar') before the household "
-            "layer, as today; zero effects (no turn_on from the 7B or the grammar)"),
+    _r("C02-NTF-0201", "activá el no molestar", "notification", "unsupported", "fast_household", "unsupported",
+       "not_written", "refusal", llm="stub:turn_on@0.95", state="light_match", counts=SPOKEN_ONE, unit="T030-U4",
+       note="the household refusal directs the user to the authenticated web; zero mutations"),
     _r("C02-INT-0201", "avisá en la cocina que la comida está lista", "intercom", "no_turn", None, None, None,
        "none", llm="stub:noise", state="shared_list_compras", counts=effects(llm_8101_calls=1),
        effect_class="stale_audio", note="8 words: the veto runs and rejects"),
@@ -423,14 +422,14 @@ async def test_routine_creation_request_never_reaches_a_domotics_producer(leaves
     house.audio.detect_source_zone.assert_not_called()
 
 
-def test_gate_passes_a_claimed_routine_creation_but_keeps_the_silent_drops():
-    """Q4 speaks the routine refusal; Q1/Q5 keep the silent drop of deferred actions and 'no molestar'."""
+def test_gate_passes_a_claimed_proposal_or_dnd_request_and_keeps_deferred_actions_silent():
+    """Q4 and T030-U4 allow household refusals; Q1 keeps deferred actions silent."""
     gate = CommandAcceptanceGate()
     for text in ("che armame una rutina que apague las luces a las once",
-                 "creá una rutina que cuando salga el sol prenda la luz"):
+                 "creá una rutina que cuando salga el sol prenda la luz", "activá el no molestar"):
         assert gate.evaluate(text).accept is True, text
     # Only a routine creation is exempt: running a routine with a deferred action stays gated.
-    for text in ("apagá la luz en 10 minutos", "activá el no molestar",
+    for text in ("apagá la luz en 10 minutos", "no activar el modo no molestar",
                  "ejecutá la rutina que apaga la luz en 10 minutos"):
         decision = gate.evaluate(text)
         assert decision.accept is False and decision.reason.startswith("non_immediate:"), text

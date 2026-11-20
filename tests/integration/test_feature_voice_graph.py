@@ -28,7 +28,7 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
     ha = MagicMock()
     config = {'tts': {'streaming': {'default_output_zone': 'zone_origin'}},
               'alerts': {'scheduler': {'enabled': False}},
-              'rooms': {'enabled': True}, 'reminders': {'output_zone': 'zone_origin'}}
+              'rooms': {'enabled': True, 'origin': {'name': 'Origin'}}, 'reminders': {'output_zone': 'zone_origin'}}
     async with AsyncExitStack() as stack:
         stack.push_async_callback(store.close)
         services = build_voice_services(config, tts=engine, zone_manager=original.zone_manager,
@@ -36,7 +36,7 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
         features = services.features
         await features.intercom._load_zones()
         await features.timer_manager._announce_warning(SimpleNamespace(name='pasta', zone_id='zone_origin'), 30)
-        announcement = Announcement('announcement', 'Anuncio de prueba.', ['zone_origin'], chime_before=False)
+        announcement = Announcement('announcement', 'Anuncio de prueba.', ['zone_origin'])
         await features.intercom._deliver_announcement(announcement)
         assert announcement.delivered and announcement.failed_zones == []
         notice = Notification('notice', 'Aviso', 'Mensaje de prueba.', user_id='synthetic', zone_id='zone_origin')
@@ -64,15 +64,19 @@ async def test_feature_delivery_failure_is_not_announced_as_completed_or_retried
     backend.fail_start = True
     ha = MagicMock()
     async with AsyncExitStack() as stack:
-        services = build_voice_services({'alerts': {'enabled': False}}, tts=engine,
+        services = build_voice_services({'alerts': {'enabled': False}, 'rooms': {'origin': {'name': 'Origin'}}}, tts=engine,
             shutdown=stack, zone_manager=original.zone_manager, ha_client=ha)
         intercom = services.features.intercom
+        origin = original.zone_manager.get_zone('zone_origin')
+        origin.media_player_entity = 'media_player.synthetic_origin'
+        origin.tts_target = 'tts.synthetic_origin'
         await intercom._load_zones()
-        announcement = Announcement('announcement', 'Aviso.', ['zone_origin'], chime_before=False)
+        announcement = Announcement('announcement', 'Aviso.', ['zone_origin'])
         await intercom._deliver_announcement(announcement)
         assert not announcement.delivered and announcement.failed_zones == ['zone_origin']
         assert len(backend.outputs) == 1 and len(engine.calls) == 1
         ha.call_service.assert_not_called()
+        ha.get_entities.assert_not_called()
 
 
 async def test_alert_output_failure_is_recorded_on_the_alert_not_swallowed(monkeypatch):

@@ -150,10 +150,10 @@ class CommandAcceptanceGate:
                 regurgita sobre audio ininteligible) se rechazan con reason
                 'prompt_echo'. None = regla inactiva.
             household_intents: Household intent classifier shared with the
-                router (P3-F2). A reminder request it claims is not an
-                immediate action, so the non-immediate action rule does not
-                drop it (the other hard rules still apply). None builds one
-                with the default settings.
+                router (P3-F2). Claimed reminders, routine creation and exact
+                DND requests can reach their household handler through the
+                non-immediate rule. The other hard rules still apply. None
+                builds one with the default settings.
             voice_routines: Read-only voice routines (T033-U1-RV1), the
                 instance the router and the dispatcher answer from. A routine
                 question it detects ("¿está activa la rutina riego?") is a
@@ -190,23 +190,23 @@ class CommandAcceptanceGate:
             logger.error(f"CommandAcceptanceGate error (fail-open accept): {e}")
             return AcceptanceDecision(True, "gate_error", {"error": str(e)})
 
-    def _claimed_reminder(self, text: str) -> bool:
-        """A reminder or routine creation request is not an action.
+    def _claimed_non_immediate(self, text: str) -> bool:
+        """Allow claimed requests whose action words are content or a mode name.
 
         In "recordame apagar la luz a las 11" and "armame una rutina que
         apague las luces a las 11" the action words are the reminder's or the
         routine's content: the household layer (router S5) claims the turn and
         no domotics producer sees it, so the non-immediate rule must not drop
         it before an honest reply (P3-F2, user answer P3F2-R1-Q4). Other claimed
-        families keep the rule: a deferred home action ("apagá la luz en 10
-        minutos") and "no molestar" stay rejected here (P3F2-R1-Q1/Q5).
+        families keep the rule. An exact "no molestar" voice request (T030-U4)
+        reaches the household refusal so the user can be directed to the web.
         """
         from src.nlu.household_intents import HouseholdFamily
 
         claimed = self._household_intents.classify(text)
         if claimed is None:
             return False
-        return claimed.family is HouseholdFamily.REMINDER or (
+        return claimed.family in {HouseholdFamily.REMINDER, HouseholdFamily.NOTIFICATION} or (
             claimed.family is HouseholdFamily.ROUTINE and claimed.reason == "new_routine")
 
     def _routine_read(self, text: str) -> bool:
@@ -237,7 +237,7 @@ class CommandAcceptanceGate:
         from src.nlu.command_grammar import non_immediate_action_reason
 
         action_block = non_immediate_action_reason(text)
-        if action_block and not self._claimed_reminder(text) and not self._routine_read(text):
+        if action_block and not self._claimed_non_immediate(text) and not self._routine_read(text):
             return action_block
         norm = _normalize(text)
         if not norm:

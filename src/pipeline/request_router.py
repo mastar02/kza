@@ -993,6 +993,8 @@ class RequestRouter:
         household = self.household_intents.classify(text)
         if household is not None and household.controls_routine:
             return AcceptanceDecision(False, "legacy_routine_control", gate_decision.signals)
+        if household is not None and household.family in {HouseholdFamily.INTERCOM, HouseholdFamily.NOTIFICATION}:
+            return AcceptanceDecision(False, "legacy_household_voice", gate_decision.signals)
         if (gate_decision.signals or {}).get("ring_stop") is True:
             # T030-U2b: the legacy timer commands do not stop a ring, so a bare "listo" stays noise here.
             return AcceptanceDecision(False, "noise_phrase:'listo'", gate_decision.signals)
@@ -1864,6 +1866,9 @@ class RequestRouter:
                 turn.response_requirement = dispatch_result.response_requirement
         if isinstance(dispatch_result.receipt, HomeActionResult):
             result["receipt"] = asdict(dispatch_result.receipt)
+        intercom_receipt = getattr(dispatch_result, "intercom_receipt", None)
+        if intercom_receipt is not None:
+            result["intercom_receipt"] = intercom_receipt
         for key in ("timeout_stage", "voice_delivery"):
             value = getattr(dispatch_result, key, None)
             if isinstance(value, str):
@@ -2162,37 +2167,6 @@ class RequestRouter:
                 result["intent"] = "timer"
                 result["_task_outcome"] = timer_result.get("outcome")
                 result["response"] = timer_result["response"]
-                result["success"] = True
-                await self._speak_response(result["response"])
-                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-                return result
-
-        # 6c. Check intercom/announcement command (via FeatureManager)
-        if self.features and self.features.intercom:
-            intercom_result = self.features.intercom.handle_voice_command(
-                text,
-                user_id=user.user_id if user else None,
-                source_zone=self.audio_manager.detect_source_zone(audio)
-            )
-            if intercom_result["handled"]:
-                result["intent"] = "intercom"
-                result["_task_outcome"] = intercom_result.get("outcome")
-                result["response"] = intercom_result["response"]
-                result["success"] = True
-                await self._speak_response(result["response"])
-                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-                return result
-
-        # 6d. Check notification commands (via FeatureManager)
-        if self.features and self.features.notifications:
-            notif_result = self.features.notifications.handle_voice_command(
-                text,
-                user_id=user.user_id if user else None
-            )
-            if notif_result["handled"]:
-                result["intent"] = "notification_config"
-                result["_task_outcome"] = notif_result.get("outcome")
-                result["response"] = notif_result["response"]
                 result["success"] = True
                 await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
