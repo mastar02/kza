@@ -27,7 +27,10 @@ from src.memory.erasure_coordinator import ErasureCoordinator
 from src.memory.fact_ledger import MemoryReviewer
 from src.memory.privacy_services import PrivacyServices
 from src.users.voice_registry import build_voice_registry
-from tests.frontend.browser_support import Page, browser_binary as select_browser, browser_profile_root, evidence_directory, install_login_session, press_enter
+from tests.frontend.browser_support import (
+    Page, browser_binary as select_browser, browser_profile_root, dispatch_key, evidence_directory,
+    install_login_session, press_enter,
+)
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_sources import memory_source
 from tests.mocks.voice_registry import AUDIO,Encoder
@@ -53,6 +56,23 @@ class VoicePage(Page):
         if url.path.startswith('/api/voices/'):
             self.voice_requests.append((request['method'], url))
 
+    async def prepare_desktop(self) -> None:
+        """Set a desktop viewport independent of the host's headless display."""
+        await self.command('Emulation.setDeviceMetricsOverride', {
+            'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False,
+        })
+
+    async def voice_diagnostic(self) -> dict:
+        """Report visibility, capture state and recent HTTP calls without bodies."""
+        return {
+            'client': await self.evaluate('''({visibility:document.visibilityState,
+                focused:document.hasFocus(), filterStatus:document.querySelector('.voice-filter-status')?.textContent,
+                captureRows:document.querySelectorAll('[data-capture-id]').length,
+                captures:window.__kzaVoiceState?.captures.status(), review:window.__kzaVoiceState?.review.status()})'''),
+            'requests': [(method, url.path) for method, url in self.voice_requests[-8:]],
+            'errors': self.errors,
+        }
+
 
 async def filter_with_keyboard(page, total):
     """Apply a filter with a native key and keep focus while the list updates."""
@@ -60,8 +80,7 @@ async def filter_with_keyboard(page, total):
     marker = len(page.voice_requests)
     await page.evaluate(f'{checkbox}.focus()')
     for kind in ('rawKeyDown','keyUp'):
-        await page.command('Input.dispatchKeyEvent', {'type':kind,'key':' ','code':'Space',
-            'windowsVirtualKeyCode':32,'nativeVirtualKeyCode':32})
+        await dispatch_key(page, kind, ' ', 'Space', 32)
     await page.wait_for(f'{checkbox}?.checked && document.querySelector(".voice-filter-status")?.textContent==="{total} muestras vigentes."')
     assert await page.evaluate(f'document.activeElement==={checkbox}')
     assert [(method,url.path,url.query) for method,url in page.voice_requests[marker:]] == [('POST',CAPTURE_QUERY,'')]
@@ -90,7 +109,12 @@ async def read_transcript(page, identity, panel, text):
     marker = len(page.voice_requests)
     await click_button(page, selector,'Leer transcripción')
     target = f'document.querySelector({json.dumps(panel)})'
-    await page.wait_for(f'{target}?.textContent.includes({json.dumps(text)}) && !{target}.querySelector("audio")')
+    try:
+        await page.wait_for(f'{target}?.textContent.includes({json.dumps(text)}) && !{target}.querySelector("audio")')
+    except AssertionError:
+        print(json.dumps({'diagnostic': 'voice_read_transcript', 'expected': identity,
+            **await page.voice_diagnostic()}))
+        raise
     assert [(method,url.path,url.query) for method,url in page.voice_requests[marker:]] == [
         ('GET', f'/api/voices/captures/{identity}/transcript', '')]
     assert not await page.evaluate('''JSON.stringify([location.href,history.state,{...localStorage},{...sessionStorage}]).includes('''
@@ -236,8 +260,9 @@ async def start_review(page, selector, label, review, pending):
       window.__voiceMeasurement={clicked:performance.now(),review,pending,placeholder,playCalls:window.__voicePlayCalls.length};
       control.click();
       const card=document.querySelector(review),box=card.getBoundingClientRect();
+      const top=placeholder ? document.querySelector('.topbar').getBoundingClientRect().bottom : 0;
       return {busy:card.getAttribute('aria-busy'),loading:card.textContent.includes(pending),blocked:control.disabled,
-        empty:window.__voicePendingPlayerIsEmpty(card,placeholder),visible:box.top>=0&&box.bottom<=innerHeight,
+        empty:window.__voicePendingPlayerIsEmpty(card,placeholder),visible:box.top>=top&&box.bottom<=innerHeight,
         ms:performance.now()-window.__voiceMeasurement.clicked};
     })()''' % tuple(map(json.dumps,(review,pending,review==OBS_REVIEW,selector,label))))
     elapsed = feedback.pop('ms')
@@ -394,6 +419,7 @@ async def main(*,browser_binary=None):
                         page = VoicePage(connection)
                         await page.command('Runtime.enable')
                         await page.command('Page.enable')
+                        await page.prepare_desktop()
                         await instrument_audio(page)
                         await page.command('Network.enable')
                         await page.command('Network.setBlockedURLs',{'urls':['https://unpkg.com/*','https://fonts.googleapis.com/*','https://fonts.gstatic.com/*']})
@@ -580,6 +606,8 @@ async def main(*,browser_binary=None):
                         await owner.request(retired_text.conversation_id,MemoryReviewer('synthetic-admin'))
                         await page.wait_for("!document.body.textContent.includes('Synthetic erased text')")
                         await wait_obs_capture_retired(page,bus._retention.receipts,retired_text,retired_text_id)
+                        # Complete group cleanup before opening a new page with its own revision fence.
+                        await voices.acall(voices.ledger.prune)
                         leaving,leaving_id = await sample('Synthetic leaving voice view')
                         await refresh_obs_capture(page,leaving_id,requests)
                         await listen(leaving_id,'Synthetic leaving voice view')

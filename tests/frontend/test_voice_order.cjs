@@ -91,7 +91,7 @@ test('listening exposes an empty player immediately and preserves edits while lo
   assert.equal(review.attributes['aria-busy'],'true');
   assert.equal(buttons[0].textContent,'Cargando audio…');
   assert.ok(buttons.every(button=>button.disabled));
-  assert.equal(review.scrollOptions.block,'nearest');
+  assert.equal(review.scrollOptions.block,'center');
   const placeholder=descendants(review).find(node=>node.tagName==='audio');
   assert.ok(placeholder.controls);
   assert.equal(placeholder.src,undefined);

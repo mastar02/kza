@@ -50,7 +50,7 @@
         try { if (!(variant==='text' ? controller.transcript(id) : controller.review(id))) requestedReview = null; }
         finally { startingReview = false; updateActions(); }
       }
-      review.scrollIntoView({block:'nearest',behavior:'auto'});
+      review.scrollIntoView({block:'center',behavior:'auto'});
     }
     async function runAction(status, operation, failure, pending = 'Aplicando cambios…') {
       if (!active || actionPending || reviewPending()) return;

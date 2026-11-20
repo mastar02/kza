@@ -141,8 +141,14 @@ async def main() -> None:
                 await super().wait_for(expression)
             except AssertionError:
                 diagnostic = await self.evaluate("({text:document.body.innerText,html:document.querySelector('#voice-dialog')?.innerHTML,ready:document.readyState})")
-                (evidence/'failure.json').write_text(json.dumps({'condition':expression, 'document':diagnostic, 'errors':self.errors, 'requests':requests}, indent=2)+'\n')
-                await screenshot(self, evidence/'failure.png')
+                state = await self.voice_diagnostic()
+                (evidence/'failure.json').write_text(json.dumps({'condition':expression, 'document':diagnostic,
+                    'voice':state, 'requests':requests}, indent=2)+'\n')
+                if state['client']['visibility'] == 'visible':
+                    try:
+                        await screenshot(self, evidence/'failure.png')
+                    except (AssertionError, RuntimeError, TimeoutError) as error:
+                        print(f'Failure screenshot unavailable: {error}')
                 raise
     binary = browser_binary()
     browser_data = browser_profile_root()
@@ -212,9 +218,9 @@ async def main() -> None:
                     async with connect(target['webSocketDebuggerUrl'], max_size=None) as connection:
                         page = DiagnosticPage(connection)
                         await page.command('Runtime.enable'); await page.command('Page.enable')
+                        await page.prepare_desktop()
                         await page.command('Network.enable')
                         await page.command('Page.addScriptToEvaluateOnNewDocument', {'source':INSTRUMENT})
-                        await page.command('Emulation.setDeviceMetricsOverride', {'width':1425, 'height':1180, 'deviceScaleFactor':1, 'mobile':False})
                         await page.command('Page.navigate', {'url':f'http://127.0.0.1:{port}/#voces'})
                         await page.wait_for("document.querySelector('#login-error')?.textContent.length>0")
                         await login(page, operator.token, 'Administración')

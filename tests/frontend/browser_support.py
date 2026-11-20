@@ -320,16 +320,20 @@ AUDIT_SCRIPT = r"""(() => {
 
 async def _press_tab(page) -> None:
     for kind in ('rawKeyDown', 'keyUp'):
-        await page.command('Input.dispatchKeyEvent', {'type': kind, 'key': 'Tab', 'code': 'Tab',
-                                                      'windowsVirtualKeyCode': 9, 'nativeVirtualKeyCode': 9})
+        await dispatch_key(page, kind, 'Tab', 'Tab', 9)
+
+
+async def dispatch_key(page: Page, kind: str, key: str, code: str, key_code: int, **params: str) -> None:
+    """Send a trusted key event to the page without routing it to Chrome's window."""
+    # A native virtual key code can route unhandled events to the browser and hide its Mac headless target.
+    await page.command('Input.dispatchKeyEvent', {'type': kind, 'key': key, 'code': code,
+                                                  'windowsVirtualKeyCode': key_code, **params})
 
 
 async def press_enter(page) -> None:
     """Activate the focused control with a real Enter key event, as a keyboard user does."""
-    await page.command('Input.dispatchKeyEvent', {'type': 'keyDown', 'key': 'Enter', 'code': 'Enter', 'text': '\r',
-                                                  'windowsVirtualKeyCode': 13, 'nativeVirtualKeyCode': 13})
-    await page.command('Input.dispatchKeyEvent', {'type': 'keyUp', 'key': 'Enter', 'code': 'Enter',
-                                                  'windowsVirtualKeyCode': 13, 'nativeVirtualKeyCode': 13})
+    await dispatch_key(page, 'keyDown', 'Enter', 'Enter', 13, text='\r')
+    await dispatch_key(page, 'keyUp', 'Enter', 'Enter', 13)
 
 
 async def _nameless_controls(page) -> list[str]:
