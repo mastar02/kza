@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import StrEnum
 import re
+import unicodedata
 
 from src.home_assistant.operations import HomeOperation as Operation, PARAMETER_FIELDS, action_parameters, validate_parameters
 
@@ -26,6 +27,24 @@ class RoutineConflict(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+class RoutineNameConflict(RoutineConflict):
+    """More than one saved name has the same voice comparison key."""
+
+    def __init__(self, names: tuple[str, ...]) -> None:
+        super().__init__("ambiguous_routine_name")
+        self.names = names
+
+
+def routine_name_key(name: str) -> str:
+    """Compare complete names case and accent insensitively, preserving ñ."""
+    text = unicodedata.normalize("NFC", name.lower())
+    return "".join(
+        char for letter in text
+        for char in (letter if letter == "ñ" else unicodedata.normalize("NFD", letter))
+        if not unicodedata.combining(char)
+    )
 
 
 class RunStatus(StrEnum):
@@ -139,6 +158,31 @@ class ClaimResult:
 
     run: RoutineRun
     created: bool
+
+
+class RoutineBrake(StrEnum):
+    """The two supported voice brake operations."""
+
+    STOP = "stop"
+    DISABLE = "disable"
+
+
+class BrakeStatus(StrEnum):
+    """What the committed local brake established."""
+
+    STOP_REQUESTED = "stop_requested"
+    NOTHING_TO_STOP = "nothing_to_stop"
+    DISABLED = "disabled"
+    ALREADY_DISABLED = "already_disabled"
+
+
+@dataclass(frozen=True)
+class RoutineBrakeReceipt:
+    """A local voice operation recorded separately from execution receipts."""
+
+    receipt_id: str
+    operation: RoutineBrake
+    status: BrakeStatus
 
 
 def _object(value: object, required: set[str], optional: set[str] | None = None) -> dict:

@@ -45,6 +45,7 @@ from typing import Callable
 from src.core.household_clock import HouseholdClock, RoomNamespace
 from src.core.logging import get_logger
 from src.core.observation import Observation, ObservationReason, ObservationSource, ObservationState
+from src.core.sqlite_work import AuthorityGuard
 from src.core.voice_delivery import DeliveryState, GenerationState
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement, TaskOutcome, TaskStatus, TurnOutcome,
@@ -1087,6 +1088,7 @@ class RequestDispatcher:
         memory_sources: tuple[MemorySource, ...] | None = None,
         context_room_id: str | None = None,
         compound_part: CompoundPartContext | None = None,
+        routine_guard: AuthorityGuard | None = None,
     ) -> DispatchResult:
         """
         Procesar una peticion, enrutando al path correcto.
@@ -1118,6 +1120,7 @@ class RequestDispatcher:
                 segmento de la parte. Va al handler de su familia o, sin
                 familia, solo a domótica o música, nunca a comandos especiales,
                 al 7B ni al LLM.
+            routine_guard: Live capture authority provided by the voice router.
         """
         start_time = time.perf_counter()
         self._stats["total_requests"] += 1
@@ -1169,7 +1172,8 @@ class RequestDispatcher:
             else:
                 logger.info("[Household] dispatch %s", household.summary())
                 result = await self._dispatch_household(household, text, user_id=user_id, zone_id=zone_id,
-                                                        origin_room=origin, choice_key=choice_key)
+                                                        origin_room=origin, choice_key=choice_key,
+                                                        routine_guard=routine_guard)
             self._stats["fast_path"] += 1
             self._stats["by_path"][result.path] += 1
             result.timings["total"] = (time.perf_counter() - start_time) * 1000
@@ -1592,7 +1596,8 @@ class RequestDispatcher:
 
     async def _dispatch_household(self, household: HouseholdIntent, text: str, *, user_id: str,
                                   zone_id: str | None, origin_room: str | None = None,
-                                  choice_key: tuple[str, str | None] | None = None) -> DispatchResult:
+                                  choice_key: tuple[str, str | None] | None = None,
+                                  routine_guard: AuthorityGuard | None = None) -> DispatchResult:
         """Send a claimed household turn to its family path (P3-F2 D1).
 
         Families without a handler yet answer honestly (UNSUPPORTED or
@@ -1607,10 +1612,12 @@ class RequestDispatcher:
                 or None. A timer rings there; without it, at the default output.
             choice_key: Speaker id and room a numbered reminder choice
                 waits on (T032-U1); None opens no choice.
+            routine_guard: Live authority for an admitted routine capture.
         """
         family, operation = household.family, household.operation
         if family is HouseholdFamily.COMPOUND:
-            if operation is HouseholdOperation.EXECUTE and self.household_intents.settings.compound_execute:
+            if (operation is HouseholdOperation.EXECUTE and self.household_intents.settings.compound_execute
+                    and not household.controls_routine):
                 return await self._run_compound(household, user_id=user_id, zone_id=zone_id,
                                                 origin_room=origin_room, choice_key=choice_key)
             # Not admissible (CLARIFY: zero effects for the whole turn), or
@@ -1653,7 +1660,17 @@ class RequestDispatcher:
                 # without a recognizable name lists every routine.
                 return await self._routine_read(self.voice_routines.detect(text)
                                                 or RoutineReadQuery(RoutineReadKind.LIST))
-            # T033-U2/U3 have not landed: no routine runs, stops or changes by voice yet.
+            if household.controls_routine and self.voice_routines is not None:
+                started = time.perf_counter()
+                control = await self.voice_routines.control(operation, household.complement, guard=routine_guard)
+                return DispatchResult(
+                    path=PathType.FAST_ROUTINE, priority=Priority.HIGH, success=control.outcome.task_completed,
+                    response=control.response, intent="routine",
+                    timings={"routine": (time.perf_counter() - started) * 1000},
+                    outcome=control.outcome,
+                    action={"routine_receipt_id": control.receipt_id} if control.receipt_id else None,
+                    response_requirement=(ResponseRequirement.REQUIRED if control.response else ResponseRequirement.SILENT),
+                )
             if operation in (HouseholdOperation.STOP, HouseholdOperation.DISABLE, HouseholdOperation.CANCEL):
                 response = "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."
             elif household.reason == "new_routine":
@@ -3344,6 +3361,7 @@ class MultiUserOrchestrator:
         memory_sources: tuple[MemorySource, ...] | None = None,
         context_room_id: str | None = None,
         compound_part: CompoundPartContext | None = None,
+        routine_guard: AuthorityGuard | None = None,
     ) -> DispatchResult:
         """Dispatch household voice without deriving account authority from acoustics.
 
@@ -3356,6 +3374,7 @@ class MultiUserOrchestrator:
             query_slots=query_slots, target_entity_id=target_entity_id, memory_sources=memory_sources,
             context_room_id=context_room_id,
             **({"compound_part": compound_part} if compound_part is not None else {}),
+            **({"routine_guard": routine_guard} if routine_guard is not None else {}),
         )
 
     def awaits_reminder_choice(self, text: str, context_room_id: str | None) -> bool:

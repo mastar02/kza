@@ -127,6 +127,13 @@ class HouseholdIntent:
     reason: str | None = None
     parts: tuple[HouseholdPart, ...] = ()
 
+    @property
+    def controls_routine(self) -> bool:
+        """Whether the utterance asks for a saved-routine effect."""
+        return self.reason == "routine_control_part" or (self.family is HouseholdFamily.ROUTINE and self.operation in {
+            HouseholdOperation.EXECUTE, HouseholdOperation.STOP, HouseholdOperation.DISABLE,
+        })
+
     def summary(self) -> dict:
         """Content-free description for logs and turn results (no user text)."""
         return {"family": self.family.value, "operation": self.operation.value, "rule": self.rule,
@@ -254,6 +261,8 @@ class _Utterance:
 
     original: tuple[str, ...]
     folded: tuple[str, ...]
+    source: str = ""
+    word_ends: tuple[int, ...] = ()
 
     @property
     def text(self) -> str:
@@ -270,15 +279,18 @@ class _Utterance:
         return self.folded[i] if 0 <= i < len(self.folded) else ""
 
     def slice(self, start: int, end: int | None = None) -> "_Utterance":
-        return _Utterance(self.original[start:end], self.folded[start:end])
+        return _Utterance(self.original[start:end], self.folded[start:end], self.source,
+                          self.word_ends[start:end])
 
     def join(self, other: "_Utterance") -> "_Utterance":
         return _Utterance(self.original + other.original, self.folded + other.folded)
 
 
 def _tokens(text: str) -> _Utterance:
-    original = tuple(_WORD_RE.findall((text or "").lower()))
-    return _Utterance(original, tuple(_fold(t) for t in original))
+    source = text or ""
+    words = list(_WORD_RE.finditer(source))
+    original = tuple(word.group().lower() for word in words)
+    return _Utterance(original, tuple(_fold(t) for t in original), source, tuple(word.end() for word in words))
 
 
 def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str], extra_leads: frozenset[str],
@@ -662,7 +674,10 @@ def _r1_intent(utt: _Utterance, k: int, family: HouseholdFamily, operation: Hous
         if operation in _CLOCK_ALARM_CANCELS:
             return HouseholdIntent(HouseholdFamily.REMINDER, HouseholdOperation.CANCEL, "R1", _rest(utt, k + 1),
                                    verb, reason="clock_alarm")
-    return HouseholdIntent(family, operation, "R1", _rest(utt, k + 1), verb)
+    complement = _rest(utt, k + 1)
+    if family is HouseholdFamily.ROUTINE and operation in {HouseholdOperation.STOP, HouseholdOperation.DISABLE}:
+        complement = _routine_name_after(utt, k)
+    return HouseholdIntent(family, operation, "R1", complement, verb)
 
 
 def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False,
@@ -689,6 +704,11 @@ def _rest(utt: _Utterance, start: int, *, skip: Iterable[str] = ()) -> str:
     while start < len(utt) and utt.at(start) in skip:
         start += 1
     return " ".join(utt.original[start:])
+
+
+def _routine_name_after(utt: _Utterance, noun: int) -> str:
+    """Preserve the exact name tail, including punctuation and internal spacing."""
+    return utt.source[utt.word_ends[noun]:].strip() if utt.word_ends else _rest(utt, noun + 1)
 
 
 def _clause_head(utt: _Utterance, j: int) -> bool:
@@ -1022,8 +1042,10 @@ def _r6(utt: _Utterance) -> HouseholdIntent | None:
             else:
                 operation = None
             if operation is not None:
-                return HouseholdIntent(HouseholdFamily.ROUTINE, operation, "R6", _rest(utt, governed[1] + 1),
-                                       verb.form)
+                noun = governed[1]
+                complement = (_routine_name_after(utt, noun) if operation is HouseholdOperation.EXECUTE
+                              else _rest(utt, noun + 1))
+                return HouseholdIntent(HouseholdFamily.ROUTINE, operation, "R6", complement, verb.form)
     if _NOTIFICATION.search(utt.text):
         disable = verb is not None and bool(verb.classes & {_DISABLE, _CANCEL, _STOP_RINGING})
         return HouseholdIntent(HouseholdFamily.NOTIFICATION,
@@ -1197,9 +1219,11 @@ def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
         return HouseholdIntent(HouseholdFamily.COMPOUND, HouseholdOperation.CLARIFY, "R5", utt.heard, verb.form,
                                reason=reason)
 
+    intents = [_classify_single(segment) for segment in segments]
+    if any(intent is not None and intent.controls_routine for intent in intents):
+        return clarify("routine_control_part")
     if len(segments) > max_parts:
         return clarify("too_many_parts")
-    intents = [_classify_single(segment) for segment in segments]
     parses = []  # grammar parse of each unclaimed part, computed once (review F7)
     for segment, intent in zip(segments, intents):
         if _deferred(intent, segment):

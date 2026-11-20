@@ -52,6 +52,7 @@ from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.llm.generation_stream import GuardedGeneration
 from src.core.household_clock import HouseholdClock
 from src.core.owned_work import OwnedBlockingWork
+from src.core.sqlite_work import AuthorityGuard
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement,
     TaskOutcome, TaskStatus, TurnOutcome, project_turn_outcome,
@@ -119,8 +120,8 @@ def _capture_without_own_wake(capture_trigger: str | None) -> bool:
     its wake score belongs to this turn (T037-U5-R2). A follow-up or barge-in
     capture (or an ``unknown`` one, fail closed) carries the score of the
     last real wake, so that score says nothing about this turn. None means
-    the producer does not say (raw audio, the textual wake channel, the
-    single-room loop's own wake): those keep their own signals as before.
+    the producer does not say (raw audio or the textual wake channel):
+    those keep their own signals as before.
 
     Args:
         capture_trigger: ``CommandEvent.capture_trigger``, or None.
@@ -368,9 +369,9 @@ class RequestRouter:
             household_intents: Household intent classifier (P3-F2), the same
                 instance the dispatcher uses; None builds one with the default
                 settings and this router's wake words.
-            voice_routines: Read-only voice routines (T033-U1), the same
-                instance the orchestrator's dispatcher uses; main binds its
-                scheduler after construction. None keeps the legacy handlers.
+            voice_routines: Saved routine reads and controls shared with the
+                orchestrator's dispatcher. Main binds the scheduler after
+                construction. None keeps the legacy handlers.
         """
         # Core pipeline components
         self.command_processor = command_processor
@@ -403,6 +404,7 @@ class RequestRouter:
         self.voice_routine_handler = voice_routine_handler
         self.routines = routine_manager
         self.voice_routines = voice_routines
+        self._routine_capture_allowed: AuthorityGuard | None = None
 
         # Configuration
         self.vector_search_threshold = vector_search_threshold
@@ -753,6 +755,10 @@ class RequestRouter:
             return "¿Qué escena querés activar? Necesito su nombre exacto entre las escenas seleccionadas."
         return "¿En qué habitación? Necesito un dispositivo seleccionado para esa habitación."
 
+    def bind_routine_capture_gate(self, capture_allowed: AuthorityGuard) -> None:
+        """Attach the total-mute gate built after the audio loop."""
+        self._routine_capture_allowed = capture_allowed
+
     async def process_command(self, audio_or_event, *, request_id: str | None = None) -> dict:
         """Compose operation and actual speech receipts for one captured turn."""
         from uuid import uuid4
@@ -792,6 +798,7 @@ class RequestRouter:
         pretranscribed_text: str | None = None
         audio_provenance = transcript_provenance = transcript_span = transcript_truncated = None
         used_wake_text = False
+        ambient_transcript = False
         early_dispatch = False
         ambient_strict = False
         if isinstance(audio_or_event, CommandEvent):
@@ -815,6 +822,7 @@ class RequestRouter:
                 transcript_span = transcript.transcript_span
                 transcript_truncated = transcript.transcript_truncated
                 used_wake_text = transcript.source is TranscriptSource.WAKE
+                ambient_transcript = transcript.source is TranscriptSource.AMBIENT
             elif transcript is not None or audio_or_event.wake_text or audio_or_event.partial_command:
                 logger.debug("[Capture] Transcript does not cover final audio; running final STT")
         else:
@@ -834,10 +842,12 @@ class RequestRouter:
             turn.capture_meta = self._last_request_meta
 
         wake_score = getattr(audio_or_event, "wake_score", 1.0)
-        textual_wake = bool(getattr(audio_or_event, "textual_wake", False))
+        textual_wake = ambient_transcript or bool(getattr(audio_or_event, "textual_wake", False))
+        # The single-device loop carries its wake score for routine admission,
+        # but its command frames do not include the wake word for verification.
         _WAKE_CONTEXT.set(
             (wake_score, getattr(audio_or_event, "wake_vad", None))
-            if not textual_wake and getattr(audio_or_event, "capture_trigger", None) == "wake" else None
+            if room_id and not textual_wake and getattr(audio_or_event, "capture_trigger", None) == "wake" else None
         )
         _ENDPOINT_CODE.set(getattr(audio_or_event, "endpoint_code", None))
         _STT_SOURCE.set(None)
@@ -980,6 +990,9 @@ class RequestRouter:
         """
         if not gate_decision.accept:
             return gate_decision
+        household = self.household_intents.classify(text)
+        if household is not None and household.controls_routine:
+            return AcceptanceDecision(False, "legacy_routine_control", gate_decision.signals)
         if (gate_decision.signals or {}).get("ring_stop") is True:
             # T030-U2b: the legacy timer commands do not stop a ring, so a bare "listo" stays noise here.
             return AcceptanceDecision(False, "noise_phrase:'listo'", gate_decision.signals)
@@ -1124,6 +1137,31 @@ class RequestRouter:
             )
             return result
 
+        household = self.household_intents.classify(text)
+        routine_control = household is not None and household.controls_routine
+        routine_guard = None
+        if routine_control:
+            capture_allowed = self._routine_capture_allowed
+            sources = self._active_sources()
+            privacy = self._privacy
+            source = self._memory_source.get()
+
+            def routine_guard() -> bool:
+                return (not self._closed and capture_allowed is not None and capture_allowed()
+                        and privacy is not None and source is not None
+                        and privacy.scopes.buffer_boundary(room_id, origin=source.origin).allows(source.captured_at)
+                        and privacy.sources_available(sources))
+
+            # The command gate can accept as a fallback after an internal error.
+            # Routine effects require a successful evaluation.
+            if (gate_decision.reason != "ok" or textual_wake or ambient_strict or not self.wake_acoustically_confirmed
+                    or capture_trigger not in _OWN_WAKE_TRIGGERS
+                    or not finite_number(wake_score) or not _GRAMMAR_BONUS_MIN_WAKE_SCORE <= wake_score <= 1
+                    or (gate_decision.signals or {}).get("would_reject") or not routine_guard()):
+                result["intent"] = "gate_rejected:routine_capture"
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
+
         await alog_asr_outcome(
             self._asr_event_logger, room_id, "accepted", "ok", text,
             self._asr_signals(gate_decision.signals), wake_score, wake_rms,
@@ -1134,7 +1172,7 @@ class RequestRouter:
         self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
-        if await self._try_memory_proposal(text, result):
+        if not routine_control and await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
             return result
 
@@ -1152,7 +1190,6 @@ class RequestRouter:
         borrowed_wake = _capture_without_own_wake(capture_trigger)
         tv_signal = (textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
                      or borrowed_wake)
-        household = self.household_intents.classify(text)
         if household is None and (gate_decision.signals or {}).get("ring_stop") is True:
             # T030-U2b: the gate let a bare "listo" through because a ring is open; it stops that ring
             # on the household path (same wake guards and 7B veto as "pará el timer").
@@ -1160,7 +1197,7 @@ class RequestRouter:
         if household is not None or self._answers_reminder_choice(text, room_id):
             return await self._process_household_turn(
                 text, household, result, cmd=cmd, audio=audio, room_id=room_id, pipeline_start=pipeline_start,
-                tv_signal=tv_signal, capture_trigger=capture_trigger,
+                tv_signal=tv_signal, capture_trigger=capture_trigger, routine_guard=routine_guard,
             )
 
         if await self._try_home_command(
@@ -1622,7 +1659,8 @@ class RequestRouter:
 
     async def _process_household_turn(self, text: str, household: HouseholdIntent | None, result: dict, *, cmd,
                                       audio, room_id: str | None, pipeline_start: float, tv_signal: bool,
-                                      capture_trigger: str | None = None) -> dict:
+                                      capture_trigger: str | None = None,
+                                      routine_guard: AuthorityGuard | None = None) -> dict:
         """Dispatch a claimed household turn (P3-F2 S6).
 
         A weak wake (TV signal, a capture without its own wake such as a
@@ -1668,6 +1706,7 @@ class RequestRouter:
             self._response_zone.set(zone_id)
         if (household is not None and household.family is HouseholdFamily.COMPOUND
                 and household.operation is HouseholdOperation.EXECUTE
+                and not household.controls_routine
                 and self.household_intents.settings.compound_execute):
             return await self._process_compound_turn(
                 household, result, text=text, cmd=cmd, room_id=room_id, room_context=room_context,
@@ -1682,6 +1721,7 @@ class RequestRouter:
             service_filter=None,
             query_slots=None,
             memory_sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
+            **({"routine_guard": routine_guard} if routine_guard is not None else {}),
         )
         return await self._finish_orchestrated_turn(
             dispatch_result, result, text=text, zone_id=zone_id, room_context=room_context, emotion=cmd.emotion,

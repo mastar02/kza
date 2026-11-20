@@ -37,10 +37,8 @@ class CaptureState:
     listening: bool = False
     started_at: float = 0.
     audio: list = field(default_factory=list)
-    # T037-U5: "follow_up" for a capture opened in the follow-up window with no
-    # wake of its own; None for a wake capture (this loop has no wake score
-    # or wake VAD, so it does not claim a verified "wake").
     trigger: str | None = None
+    wake_score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -236,7 +234,8 @@ class AudioLoop:
                 self._state.started_at = (time_info + frames / self.sample_rate
                     if type(time_info) in (int, float) else self._clock())
                 self._state.audio = []
-                self._state.trigger = None if detection else CaptureTrigger.FOLLOW_UP.value
+                self._state.trigger = CaptureTrigger.WAKE.value if detection else CaptureTrigger.FOLLOW_UP.value
+                self._state.wake_score = detection[1] if detection else 0.0
                 self._state.listening = True
         finally:
             indata = audio = None
@@ -252,7 +251,8 @@ class AudioLoop:
         self._room.require_live()
         if complete and audio is not None:
             return CommandEvent(audio=audio, room_id='', capture_complete=early,
-                                captured_at=self._state.started_at, capture_trigger=self._state.trigger)
+                                captured_at=self._state.started_at, capture_trigger=self._state.trigger,
+                                wake_score=self._state.wake_score)
         return None
 
     def _clear_capture(self):

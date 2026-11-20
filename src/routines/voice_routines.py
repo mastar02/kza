@@ -1,16 +1,13 @@
-"""Read-only voice access to the persistent routines (T033-U1).
+"""Voice access to persistent routines (T033-U1/U2).
 
 ``VoiceRoutineService`` answers "¿qué rutinas hay?" and "¿cómo salió la
 rutina de la mañana?" from the RoutineScheduler's store (``routines.db``), the
-same definitions and receipts the web catalog shows, never from the legacy
-Chroma routine index. It never creates, changes, enables, disables or runs a
-routine: execution by voice is T033-U2 and proposals are T033-U3.
+same definitions and receipts the web catalog shows. Admitted voice commands
+can start saved routines, request a stop, or disable them for review.
 
-Detection is strictly lexical and pure: ``detect`` reads only the words of the
-turn, so a turn that is not a routine question never reaches the store, the
-7B or the cloud. A routine noun ("rutina", "automatización") is required at a
-word boundary ("rutinario" is not one) and a bare "cuando" never makes a turn a
-routine (CORE-04).
+Read detection is lexical and pure. A routine noun ("rutina", "automatización")
+is required at a word boundary ("rutinario" is not one) and a bare "cuando"
+never makes a turn a routine (CORE-04).
 
 The scheduler is bound late: ``main`` builds the scheduler after the
 orchestrator and the RequestRouter, so both receive this service at
@@ -26,9 +23,18 @@ import logging
 import re
 import unicodedata
 
-from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
+from src.core.sqlite_work import AuthorityGuard
+from src.core.task_outcome import (
+    CURRENT_REQUEST_ID, DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus,
+)
 from src.nlu.command_grammar import WAKE_TERMS
-from src.routines.models import RunStatus, ScheduledRoutine, TimeSchedule
+from src.nlu.household_intents import HouseholdOperation
+from src.routines.models import (
+    ActionStatus, BrakeStatus, RoutineBrake, RoutineConflict, RoutineNameConflict, RoutineNotFound, RoutineRun,
+    RunStatus, ScheduledRoutine, TimeSchedule,
+)
+from src.routines.routine_scheduler import RoutineScheduler
+from src.routines.routine_store import HOUSEHOLD_VOICE
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +208,15 @@ class RoutineReadResult:
     declined: bool = False
 
 
+@dataclass(frozen=True)
+class RoutineControlResult:
+    """Spoken acknowledgment and the evidence available before replying."""
+
+    response: str
+    outcome: TaskOutcome
+    receipt_id: str | None = None
+
+
 def legacy_routine_outcome(success: bool) -> TaskOutcome:
     """Outcome of a turn the legacy routine handlers answered (until T033-U4 retires them).
 
@@ -306,15 +321,17 @@ def _join(names: list[str]) -> str:
 
 
 class VoiceRoutineService:
-    """Read-only voice adapter over the RoutineScheduler (T033-U1).
+    """Voice adapter over the application's saved routines and scheduler.
 
     Args:
         scheduler: The application's RoutineScheduler, or None until
             ``bind_scheduler`` attaches it (late binding in main).
+        voice_brake: Whether STOP and DISABLE are available by voice.
     """
 
-    def __init__(self, scheduler=None) -> None:
+    def __init__(self, scheduler: RoutineScheduler | None = None, *, voice_brake: bool = False) -> None:
         self._scheduler = scheduler
+        self._voice_brake = voice_brake
 
     @property
     def scheduler(self):
@@ -335,6 +352,90 @@ class VoiceRoutineService:
         if self._scheduler is not None and scheduler is not self._scheduler:
             raise ValueError("routine_scheduler_already_bound")
         self._scheduler = scheduler
+
+    async def control(self, operation: HouseholdOperation, name: str, *,
+                      guard: AuthorityGuard | None) -> RoutineControlResult:
+        """Claim or brake one exact saved routine using this capture's authority."""
+        request_id = CURRENT_REQUEST_ID.get()
+        if guard is None or not isinstance(request_id, str) or not request_id.strip():
+            return self._no_control("", TaskStatus.CANCELLED)
+        if operation is not HouseholdOperation.EXECUTE and not self._voice_brake:
+            return self._no_control("El freno por voz está desactivado. Podés cambiar la rutina desde la web.",
+                                    TaskStatus.UNSUPPORTED)
+        scheduler = self._scheduler
+        if scheduler is None:
+            return self._no_control(_UNAVAILABLE, TaskStatus.FAILED)
+        if not name:
+            return self._no_control("Decime el nombre completo de la rutina.", TaskStatus.NEEDS_INPUT)
+        try:
+            if operation is HouseholdOperation.EXECUTE:
+                routine = await scheduler.resolve_name(name, guard=guard)
+                run = await scheduler.execute_by_id(
+                    routine.routine_id, actor="household", request_id=request_id, source=HOUSEHOLD_VOICE,
+                    expected_name=name, guard=guard,
+                )
+                return self._run_reply(run)
+            brake = await scheduler.brake_by_name(name, RoutineBrake(operation.value), request_id=request_id, guard=guard)
+        except RoutineNameConflict as error:
+            return self._no_control(f"Hay {len(error.names)} rutinas con ese nombre: {_join(list(error.names))}.",
+                                    TaskStatus.NEEDS_INPUT)
+        except RoutineNotFound:
+            return self._no_control(_NOT_FOUND, TaskStatus.NEEDS_INPUT)
+        except PermissionError:
+            return self._no_control("", TaskStatus.CANCELLED)
+        except RoutineConflict as error:
+            response = {
+                "routine_disabled": "La rutina está desactivada. Podés revisarla en la web.",
+                "routine_busy": "La rutina ya se está ejecutando.",
+                "revision_conflict": "La rutina cambió. Podés revisarla en la web.",
+                "voice_request_conflict": "Ese turno ya se registró para otra operación.",
+            }.get(error.code, _UNAVAILABLE)
+            return self._no_control(response, TaskStatus.FAILED)
+        except Exception as error:
+            logger.warning("Voice routine receipt unavailable: %s", type(error).__name__)
+            return RoutineControlResult(
+                "No pude confirmar el estado de la rutina. Podés consultarlo en la web.",
+                TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN,
+                            dispatch=DispatchState.UNCERTAIN, effect=EffectState.UNCERTAIN),
+            )
+        response = {
+            BrakeStatus.STOP_REQUESTED: "Frené las acciones pendientes. Si había una acción en curso, puede terminar.",
+            BrakeStatus.NOTHING_TO_STOP: "No quedaban acciones por frenar.",
+            BrakeStatus.DISABLED: "Desactivé la rutina para revisión. Si había una acción en curso, puede terminar.",
+            BrakeStatus.ALREADY_DISABLED: "La rutina ya estaba desactivada.",
+        }[brake.status]
+        return RoutineControlResult(
+            response, TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
+                                  effect=EffectState.OBSERVED, observation_scope="software_state"), brake.receipt_id,
+        )
+
+    @staticmethod
+    def _no_control(response: str, status: TaskStatus) -> RoutineControlResult:
+        return RoutineControlResult(response, TaskOutcome(
+            status, persistence=PersistenceState.NOT_WRITTEN, dispatch=DispatchState.NOT_SENT,
+            effect=EffectState.NOT_OBSERVED,
+        ))
+
+    @staticmethod
+    def _run_reply(run: RoutineRun) -> RoutineControlResult:
+        status, response, effect = {
+            RunStatus.RUNNING: (TaskStatus.RUNNING, f"Inicié la rutina {run.snapshot.spec.name}.", EffectState.UNKNOWN),
+            RunStatus.SUCCEEDED: (TaskStatus.COMPLETED, "Esa ejecución terminó bien.", EffectState.OBSERVED),
+            RunStatus.FAILED: (TaskStatus.FAILED, "Esa ejecución falló.", EffectState.UNKNOWN),
+            RunStatus.UNCERTAIN: (TaskStatus.UNCERTAIN, "No pude confirmar todas las acciones de esa ejecución.",
+                                  EffectState.UNCERTAIN),
+            RunStatus.SKIPPED: (TaskStatus.FAILED, "La rutina no se ejecutó porque no se cumplían sus condiciones.",
+                                EffectState.NOT_OBSERVED),
+            RunStatus.INTERRUPTED: (TaskStatus.CANCELLED, "Esa ejecución se interrumpió.", EffectState.UNKNOWN),
+        }[run.status]
+        if run.status is RunStatus.INTERRUPTED and any(action.status is ActionStatus.UNCERTAIN for action in run.actions):
+            status, effect = TaskStatus.UNCERTAIN, EffectState.UNCERTAIN
+            response = "Esa ejecución se interrumpió y no pude confirmar la acción en curso."
+        return RoutineControlResult(
+            response, TaskOutcome(status, persistence=PersistenceState.COMMITTED,
+                                  effect=effect, observation_scope="ha_state" if effect is EffectState.OBSERVED else None),
+            run.run_id,
+        )
 
     @staticmethod
     def detect(text: str) -> RoutineReadQuery | None:

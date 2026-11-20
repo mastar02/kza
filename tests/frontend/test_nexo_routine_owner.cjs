@@ -428,6 +428,26 @@ test('polls are quiet and announce the end of an active run once', async () => {
   assert.equal(instance.getState().announcement.text, 'La ejecución terminó.');
 });
 
+test('a voice brake refreshes the saved state and keeps the execution receipt', async () => {
+  const server = fakeServer(), routine = server.add(spec());
+  routine.latest_run = { ...server.run(routine.routine_id, 'running'), source: 'household_voice' };
+  let poll;
+  const instance = routines.createRoutineOwner({ api: server.api, session: session(), storage: memoryStorage(),
+    schedule: callback => { poll = callback; return 1; }, cancel: () => {} });
+  await instance.open(); await instance.refresh();
+  assert.equal(instance.getState().routines[0].latest_voice_brake, null);
+  routine.enabled = false; routine.revision++;
+  routine.latest_run.status = 'interrupted';
+  routine.latest_voice_brake = { receipt_id: 'brake1', source: 'household_voice', operation: 'disable', status: 'disabled' };
+  await poll();
+  const view = instance.getState().routines[0];
+  assert.equal(view.enabled, false);
+  assert.equal(view.latest_run.run_id, routine.latest_run.run_id);
+  assert.equal(view.latest_run.status, 'interrupted');
+  assert.deepEqual(view.latest_voice_brake, { receipt_id: 'brake1', operation: 'disable', status: 'disabled' });
+  instance.leave();
+});
+
 // R1: the reviewer's probe. A list read in flight before a lost write must not decide its outcome.
 async function heldListOwner() {
   const server = fakeServer();

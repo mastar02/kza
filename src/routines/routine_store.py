@@ -4,6 +4,7 @@ from src.memory import output_registration_v2 as output_registration
 import asyncio
 from collections.abc import Callable
 from contextvars import Context
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 import sqlite3
@@ -15,10 +16,14 @@ from src.core.owned_work import ClosePhase, WorkCloseTimeout
 from src.core.sqlite_work import AuthorityGuard, SQLiteWork
 
 from src.routines.models import (
-    ActionStatus, ClaimResult, RoutineActionResult, RoutineConflict, RoutineNotFound,
-    RoutineRun, RoutineSpec, RoutineValidationError, RunStatus, ScheduledRoutine,
-    parse_routine_spec, routine_to_dict, spec_to_dict,
+    ActionStatus, BrakeStatus, ClaimResult, RoutineActionResult, RoutineBrake, RoutineBrakeReceipt,
+    RoutineConflict, RoutineNameConflict, RoutineNotFound, RoutineRun, RoutineSpec,
+    RoutineValidationError, RunStatus, ScheduledRoutine, parse_routine_spec, routine_name_key,
+    routine_to_dict, spec_to_dict,
 )
+
+HOUSEHOLD_VOICE = "household_voice"
+_VOICE_BRAKE = "voice_brake"
 
 
 _SCHEMA = """
@@ -189,6 +194,22 @@ class RoutineStore:
             return [_routine_from_row(row) for row in db.execute("SELECT * FROM routines ORDER BY rowid").fetchall()]
         return await self._owner().read(operation, guard=guard)
 
+    @staticmethod
+    def _resolve_name(db: sqlite3.Connection, name: str) -> ScheduledRoutine:
+        key = routine_name_key(name)
+        rows = db.execute("SELECT * FROM routines ORDER BY rowid").fetchall()
+        matches = [row for row in rows
+                   if routine_name_key(json.loads(row["definition_json"])["name"]) == key]
+        if len(matches) > 1:
+            raise RoutineNameConflict(tuple(json.loads(row["definition_json"])["name"] for row in matches))
+        if not matches:
+            raise RoutineNotFound("routine_name")
+        return _routine_from_row(matches[0])
+
+    async def resolve_name(self, name: str, *, guard: AuthorityGuard | None = None) -> ScheduledRoutine:
+        """Find a unique complete saved name, including disabled definitions."""
+        return await self._owner().read(lambda db: self._resolve_name(db, name), guard=guard)
+
     def _require_idle_unlocked(self, db: sqlite3.Connection, routine_id: str) -> None:
         if db.execute("SELECT 1 FROM routine_runs WHERE routine_id = ? AND status = 'running'",
                       (routine_id,)).fetchone() is not None:
@@ -235,7 +256,7 @@ class RoutineStore:
 
     async def claim_run(self, routine_id: str, occurrence_key: str, *, actor: str, source: str,
                         scheduled_for: datetime | None = None, expected_revision: int | None = None,
-                        guard: AuthorityGuard | None = None,
+                        expected_name: str | None = None, guard: AuthorityGuard | None = None,
                         publish: Callable[[ClaimResult], None] | None = None) -> ClaimResult:
         """Own one native claim and its publication before admitting external effects."""
         if scheduled_for is not None:
@@ -243,22 +264,28 @@ class RoutineStore:
                 raise RoutineValidationError("scheduled_for must have a timezone")
             scheduled_for = scheduled_for.astimezone(timezone.utc)
         def operation(db):
-            existing = db.execute("SELECT run_id FROM routine_runs WHERE routine_id = ? AND occurrence_key = ?",
-                                  (routine_id, occurrence_key)).fetchone()
+            if source == HOUSEHOLD_VOICE:
+                existing = self._voice_occurrence(db, occurrence_key, routine_id)
+            else:
+                existing = db.execute("SELECT run_id FROM routine_runs WHERE routine_id = ? AND occurrence_key = ?",
+                                      (routine_id, occurrence_key)).fetchone()
             created = existing is None
             if existing is not None:
                 run_id = existing["run_id"]
             else:
-                routine = self._load_routine_unlocked(db, routine_id)
+                routine = (self._resolve_name(db, expected_name) if expected_name is not None
+                           else self._load_routine_unlocked(db, routine_id))
                 if routine is None:
                     raise RoutineNotFound(routine_id)
+                if routine.routine_id != routine_id:
+                    raise RoutineConflict("revision_conflict")
                 if not routine.spec.enabled:
                     raise RoutineConflict("routine_disabled")
                 if expected_revision is not None and routine.revision != expected_revision:
                     raise RoutineConflict("revision_conflict")
                 busy = db.execute("SELECT 1 FROM routine_runs WHERE routine_id = ? AND status = 'running'",
                                   (routine_id,)).fetchone() is not None
-                if busy and source == "manual":
+                if busy and source != "scheduled":
                     raise RoutineConflict("routine_busy")
                 run_id = uuid.uuid4().hex
                 db.execute(
@@ -282,16 +309,89 @@ class RoutineStore:
                 raise RoutineConflict("routine_busy") from error
             raise
 
-    async def mark_action_sending(self, run_id: str, index: int) -> None:
-        """Commit one pending action's send admission for an approved durable run."""
+    @staticmethod
+    def _voice_occurrence(db: sqlite3.Connection, key: str, routine_id: str) -> sqlite3.Row | None:
+        row = db.execute(
+            "SELECT run_id, routine_id, reason FROM routine_runs WHERE source = ? AND occurrence_key = ?",
+            (HOUSEHOLD_VOICE, key),
+        ).fetchone()
+        if row is not None and row["routine_id"] != routine_id:
+            raise RoutineConflict("voice_request_conflict")
+        return row
+
+    @staticmethod
+    def _brake_namespace(routine_id: str) -> str:
+        # A reserved id in the existing runs table keeps brake receipts out of
+        # the execution history even for binaries without voice brake support.
+        return "voice-brake:" + routine_id
+
+    @staticmethod
+    def _brake_receipt(row: sqlite3.Row) -> RoutineBrakeReceipt:
+        operation, status = row["reason"].split(":", 1)
+        return RoutineBrakeReceipt(row["run_id"], RoutineBrake(operation), BrakeStatus(status))
+
+    async def brake(self, name: str, occurrence_key: str, operation: RoutineBrake, *,
+                    guard: AuthorityGuard) -> RoutineBrakeReceipt:
+        """Fence pending sends, disable if requested, and record one local receipt."""
+        def commit(db):
+            routine = self._resolve_name(db, name)
+            routine_id = routine.routine_id
+            namespace = self._brake_namespace(routine_id)
+            existing = self._voice_occurrence(db, occurrence_key, namespace)
+            if existing is not None:
+                receipt = self._brake_receipt(existing)
+                if receipt.operation is not operation:
+                    raise RoutineConflict("voice_request_conflict")
+                return receipt
+            snapshot = routine
+            stopped = db.execute(
+                "UPDATE routine_runs SET reason = ? WHERE routine_id = ? AND status = 'running' "
+                "AND EXISTS (SELECT 1 FROM routine_run_actions "
+                "WHERE run_id = routine_runs.run_id AND status = 'pending')",
+                (_VOICE_BRAKE, routine_id),
+            ).rowcount
+            status = BrakeStatus.STOP_REQUESTED if stopped else BrakeStatus.NOTHING_TO_STOP
+            if operation is RoutineBrake.DISABLE:
+                status = BrakeStatus.ALREADY_DISABLED
+                if routine.spec.enabled:
+                    status = BrakeStatus.DISABLED
+                    snapshot = replace(routine, revision=routine.revision + 1, spec=replace(routine.spec, enabled=False))
+                    db.execute("UPDATE routines SET revision = ?, definition_json = ? WHERE routine_id = ?",
+                               (snapshot.revision, json.dumps(spec_to_dict(snapshot.spec), ensure_ascii=False), routine_id))
+            receipt_id = uuid.uuid4().hex
+            db.execute(
+                "INSERT INTO routine_runs (run_id, routine_id, occurrence_key, actor, source, status, reason, snapshot_json) "
+                "VALUES (?, ?, ?, 'household', ?, 'succeeded', ?, ?)",
+                (receipt_id, namespace, occurrence_key, HOUSEHOLD_VOICE, f"{operation}:{status}",
+                 json.dumps(routine_to_dict(snapshot), ensure_ascii=False)),
+            )
+            return RoutineBrakeReceipt(receipt_id, operation, status)
+        return await self._owner().write(commit, guard=guard)
+
+    async def get_latest_brake(self, routine_id: str) -> RoutineBrakeReceipt | None:
+        """Read the last committed voice brake independently of the last run."""
+        def operation(db):
+            row = db.execute(
+                "SELECT run_id, reason FROM routine_runs WHERE routine_id = ? AND source = ? ORDER BY rowid DESC LIMIT 1",
+                (self._brake_namespace(routine_id), HOUSEHOLD_VOICE),
+            ).fetchone()
+            return self._brake_receipt(row) if row is not None else None
+        return await self._owner().read(operation)
+
+    async def mark_action_sending(self, run_id: str, index: int) -> bool:
+        """Admit one send atomically against a voice brake; false means braked."""
         def operation(db):
             changed = db.execute(
                 "UPDATE routine_run_actions SET status = 'sending' WHERE run_id = ? AND action_index = ? AND status = 'pending' "
-                "AND EXISTS (SELECT 1 FROM routine_runs WHERE run_id = ? AND status = 'running')",
-                (run_id, index, run_id)).rowcount
-            if changed != 1:
-                raise RoutineConflict("occurrence_conflict")
-        await self._owner().write(operation)
+                "AND EXISTS (SELECT 1 FROM routine_runs WHERE run_id = ? AND status = 'running' AND reason IS NOT ?)",
+                (run_id, index, run_id, _VOICE_BRAKE)).rowcount
+            if changed == 1:
+                return True
+            if db.execute("SELECT 1 FROM routine_runs WHERE run_id = ? AND status = 'running' AND reason = ?",
+                          (run_id, _VOICE_BRAKE)).fetchone() is not None:
+                return False
+            raise RoutineConflict("occurrence_conflict")
+        return await self._owner().write(operation)
 
     async def record_action(self, run_id: str, result: RoutineActionResult) -> None:
         """Commit an approved run's actual action evidence without its creator lease."""
@@ -318,18 +418,20 @@ class RoutineStore:
             run = self._load_run_unlocked(db, run_id)
             if run is None:
                 raise RoutineNotFound(run_id)
+            final = (RunStatus.INTERRUPTED if run.reason == _VOICE_BRAKE
+                     and status in {RunStatus.SUCCEEDED, RunStatus.SKIPPED} else status)
             if run.status != RunStatus.RUNNING:
-                if run.status != status:
+                if run.status != final:
                     raise RoutineConflict("occurrence_conflict")
             else:
-                if status == RunStatus.SUCCEEDED and any(item.status != ActionStatus.CONFIRMED for item in run.actions):
+                if final == RunStatus.SUCCEEDED and any(item.status != ActionStatus.CONFIRMED for item in run.actions):
                     raise RoutineConflict("occurrence_conflict")
-                if status == RunStatus.SKIPPED and any(item.status not in {ActionStatus.PENDING, ActionStatus.NOT_EXECUTED}
+                if final == RunStatus.SKIPPED and any(item.status not in {ActionStatus.PENDING, ActionStatus.NOT_EXECUTED}
                                                       for item in run.actions):
                     raise RoutineConflict("occurrence_conflict")
                 db.execute("UPDATE routine_run_actions SET status = 'not_executed' WHERE run_id = ? AND status = 'pending'", (run_id,))
                 db.execute("UPDATE routine_run_actions SET status = 'uncertain' WHERE run_id = ? AND status = 'sending'", (run_id,))
-                db.execute("UPDATE routine_runs SET status = ? WHERE run_id = ?", (status.value, run_id))
+                db.execute("UPDATE routine_runs SET status = ? WHERE run_id = ?", (final.value, run_id))
             return self._load_run_unlocked(db, run_id)
         return await self._owner().write(operation)
 
@@ -340,7 +442,7 @@ class RoutineStore:
                 "WHERE status = 'sending' AND run_id IN (SELECT run_id FROM routine_runs WHERE status = 'running')")
             db.execute("UPDATE routine_run_actions SET status = 'not_executed', reason = 'interrupted' "
                 "WHERE status = 'pending' AND run_id IN (SELECT run_id FROM routine_runs WHERE status = 'running')")
-            return db.execute("UPDATE routine_runs SET status = 'interrupted', reason = 'interrupted' "
+            return db.execute("UPDATE routine_runs SET status = 'interrupted', reason = COALESCE(reason, 'interrupted') "
                               "WHERE status = 'running'").rowcount
         return await self._owner().write(operation)
 

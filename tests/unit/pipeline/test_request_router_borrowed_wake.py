@@ -472,11 +472,11 @@ async def test_own_wake_fast_path_waits_on_no_model_call(leaves, text, state, pa
 
 # --- Single-room loop ---------------------------------------------------------
 
-@pytest.mark.parametrize(("wake_heard", "trigger"), [(True, None), (False, "follow_up")])
-async def test_single_room_loop_tags_a_follow_up_capture(wake_heard, trigger):
-    """The fallback AudioLoop says when a capture was opened in the follow-up window, not by its wake."""
+@pytest.mark.parametrize(("wake_heard", "trigger", "score"), [(True, "wake", 0.9), (False, "follow_up", 0.0)])
+async def test_single_room_loop_tags_own_wake_and_follow_up(wake_heard, trigger, score):
+    """The fallback loop distinguishes a new acoustic wake from a follow-up."""
     manager = MagicMock()
-    manager.detect_wake_word = MagicMock(return_value=wake_heard)
+    manager.detect_wake_word = MagicMock(return_value=("nexa", score) if wake_heard else None)
     manager.capture_command_with_vad = MagicMock(return_value=(True, None, np.zeros(16000, np.float32), False))
     follow_up = FollowUpMode(follow_up_window=600)
     follow_up.start_conversation()
@@ -485,7 +485,8 @@ async def test_single_room_loop_tags_a_follow_up_capture(wake_heard, trigger):
         loop._process_audio(np.full((1280, 1), 0.05, dtype=np.float32), 1280, 0.0, None)
         event = loop._poll()
         assert event.capture_trigger == trigger
-        assert _capture_without_own_wake(event.capture_trigger) is (trigger is not None)
+        assert event.wake_score == score
+        assert _capture_without_own_wake(event.capture_trigger) is (not wake_heard)
         loop._clear_capture()
         assert loop._state.trigger is None
     finally:
