@@ -2,7 +2,9 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const home = require('../../src/dashboard/frontend/home/home.js');
 const routines = require('../../src/dashboard/frontend/home/nexo/routine-owner.js');
-const { createScopedApi, createSession } = require('../../src/dashboard/frontend/home/nexo/state.js');
+const { mountRoutines } = require('../../src/dashboard/frontend/home/nexo/routines.js');
+const { createScopedApi, createSession, ROUTINE_PROPOSALS } = require('../../src/dashboard/frontend/home/nexo/state.js');
+const { createDocument, icon, visibleText } = require('../mocks/dom_shim.cjs');
 
 const TZ = 'America/Montevideo';
 const lamp = { entity_id: 'light.test_lamp', name: 'Luz principal', domain: 'light', capabilities: ['turn_on', 'turn_off', 'color_temp_kelvin', 'brightness'],
@@ -27,7 +29,7 @@ function session(permissions = MANAGER, subject = 'synthetic-operator', actor = 
 
 /** Minimal server with the store semantics the owner relies on (CAS, actor-scoped idempotent claims). */
 function fakeServer() {
-  const server = { routines: new Map(), runs: new Map(), calls: [], hooks: [], serial: 0, subject: 'synthetic-operator', permissions: MANAGER };
+  const server = { routines: new Map(), runs: new Map(), proposals: new Map(), calls: [], hooks: [], serial: 0, subject: 'synthetic-operator', permissions: MANAGER };
   const actor = () => server.routineActor ?? actorFor(server.subject);
   const attemptKey = (routineId, requestId) => JSON.stringify([routineId, actor(), requestId]);
   const canReadRun = run => run && (server.permissions.includes('routines:manage') || run.source === 'manual' && run.actor === actor());
@@ -40,11 +42,29 @@ function fakeServer() {
     snapshot: {}, scheduled_for: null, reason: null, actions: actions || [{ index: 0, entity_id: lamp.entity_id, status: status === 'running' ? 'pending' : 'confirmed', reason: null }] });
   server.handle = (path, options = {}) => {
     const method = options.method || 'GET', url = new URL(path, 'http://x'), parts = url.pathname.split('/').filter(Boolean);
-    if (url.pathname === '/api/admin/auth/whoami') { if (!server.subject) throw failure(401, 'not_authenticated'); return { ok: true, role: server.permissions.includes('routines:manage') ? 'operator' : 'home', permissions: server.permissions, subject: server.subject, routine_actor: actor() }; }
+    if (url.pathname === '/api/admin/auth/whoami') { if (!server.subject) throw failure(401, 'not_authenticated'); return { ok: true, role: server.role || (server.permissions.includes('routines:manage') ? 'operator' : 'home'), permissions: server.permissions, subject: server.subject, routine_actor: actor() }; }
     if (url.pathname === '/api/home/catalog') return { rooms: [], entities: [lamp, ac], unassigned_entities: [] };
     if (url.pathname === '/api/routines' && method === 'GET') return [...server.routines.values()].map(item => JSON.parse(JSON.stringify({ ...item, latest_run: canReadRun(item.latest_run) ? item.latest_run : null })));
     if (url.pathname === '/api/routines' && method === 'POST') { const created = server.add(options.body); return JSON.parse(JSON.stringify(created)); }
     if (url.pathname === '/api/routines/preview') return JSON.parse(JSON.stringify(options.body));
+    if (url.pathname === ROUTINE_PROPOSALS || url.pathname.startsWith(ROUTINE_PROPOSALS + '/')) {
+      if (!server.permissions.includes('routines:manage') || server.role === 'evaluator') throw failure(403, 'dashboard_permission_denied');
+      if (url.pathname === ROUTINE_PROPOSALS) return {
+        proposals: [...server.proposals.values()].filter(item => !item.receipt).map(item => item.summary), cleared_on_restart: true
+      };
+      const proposal = server.proposals.get(parts[3]);
+      if (!proposal || method === 'GET' && proposal.receipt) throw failure(404, 'routine_proposal_not_found');
+      if (method === 'GET') return { ...proposal.summary, stale: proposal.stale, diff: proposal.diff };
+      const status = parts[4] === 'confirm' ? 'confirmed' : 'rejected';
+      if (proposal.receipt) {
+        if (proposal.receipt.status !== status) throw failure(409, 'proposal_' + proposal.receipt.status);
+        return proposal.receipt;
+      }
+      if (status === 'confirmed' && proposal.stale) throw failure(409, 'revision_conflict');
+      const routine = status === 'confirmed' ? server.add(proposal.diff.after) : null;
+      proposal.receipt = { proposal_id: parts[3], status, routine_id: routine?.routine_id ?? null, revision: routine?.revision ?? null };
+      return proposal.receipt;
+    }
     const routine = server.routines.get(parts[2]);
     if (!routine) throw failure(404, 'routine_not_found');
     const tail = parts.slice(3).join('/');
@@ -742,4 +762,308 @@ test('R6b: a kept draft is not replaced by Crear rutina or Editar unless confirm
   assert.equal(instance.getState().draft.value.name, 'Conservada');
   assert.equal(instance.edit('r1', { replace: true }), true);
   assert.equal(instance.getState().draft.value.name, 'Existente');
+});
+
+const proposalId = 'a'.repeat(32);
+const proposalPath = ROUTINE_PROPOSALS + '/' + proposalId;
+const proposalCalls = server => server.calls.filter(call => call.path.startsWith(ROUTINE_PROPOSALS));
+const turn = () => new Promise(resolve => setImmediate(resolve));
+function proposalFixture({ role = 'operator', permissions = MANAGER, storage = memoryStorage(), server = fakeServer() } = {}) {
+  server.permissions = permissions; server.role = role;
+  const identity = createSession({ wall: () => 0, monotonic: () => 0 });
+  assert.equal(identity.accept({ ...server.handle('/api/admin/auth/whoami'), expires_at: 60 }), true);
+  const api = createScopedApi({ session: identity, transport: server.api });
+  let changes = 0;
+  const instance = routines.createRoutineOwner({ api, session: identity, storage, schedule: () => 1, cancel: () => {}, onAccountChanged: () => { changes++; } });
+  function add(before = null, after = spec('Rutina propuesta')) {
+    const proposal = { summary: { proposal_id: proposalId, operation: before ? 'update' : 'create', source: 'household_voice', expires_at: '2026-11-22T00:00:00Z' },
+      diff: { before, after }, stale: false };
+    server.proposals.set(proposalId, proposal);
+    return proposal;
+  }
+  function mount() {
+    const doc = createDocument(), container = doc.createElement('div');
+    const dispose = mountRoutines({ container, dialog: doc.createElement('dialog'), confirmDialog: doc.createElement('dialog'), owner: instance, icon: icon(doc) });
+    const control = suffix => container.querySelector('[data-key="' + proposalId + ':' + suffix + '"]');
+    return { doc, container, control, dispose };
+  }
+  return { instance, api, server, storage, add, mount, changes: () => changes };
+}
+
+test('T033-U3b: the proposal UI and all four routes require routines:manage and exclude Evaluación', async () => {
+  for (const [role, permissions, allowed] of [
+    ['operator', MANAGER, true], ['home', MANAGER, true], ['home', HOUSEHOLD, false],
+    ['operator', ['home:read'], false], ['evaluator', MANAGER, false]
+  ]) {
+    const f = proposalFixture({ role, permissions });
+    f.add();
+    const view = f.mount();
+    await f.instance.open(); await turn();
+    assert.equal(Boolean(view.container.querySelector('#routine-proposals')), allowed);
+    if (allowed) {
+      assert.deepEqual(proposalCalls(f.server).map(call => call.path), [ROUTINE_PROPOSALS]);
+      assert.equal(f.instance.getState().proposals.items.length, 1);
+      for (const [path, method] of [[ROUTINE_PROPOSALS, 'POST'], [proposalPath, 'DELETE'], [proposalPath + '/unknown', 'POST'], [ROUTINE_PROPOSALS + '/invalid', 'GET']]) {
+        await assert.rejects(f.api(path, { method }), { status: 403, sent: false });
+      }
+    } else {
+      await f.instance.refreshProposals(); await f.instance.reviewProposal(proposalId); await f.instance.decideProposal(proposalId, 'confirm');
+      for (const [path, method] of [[ROUTINE_PROPOSALS, 'GET'], [proposalPath, 'GET'], [proposalPath + '/confirm', 'POST'], [proposalPath + '/reject', 'POST']]) {
+        await assert.rejects(f.api(path, { method }), { status: 403, sent: false });
+      }
+      assert.equal(f.instance.getState().proposals, null);
+      assert.deepEqual(proposalCalls(f.server), []);
+    }
+    view.dispose();
+  }
+});
+
+test('T033-U3b: preview renders both definitions without writing and retains focus through conflict, 503 and expiry', async () => {
+  const f = proposalFixture();
+  const proposal = f.add(spec('Rutina anterior'), { ...spec('Rutina nueva'), enabled: false,
+    actions: [{ entity_id: lamp.entity_id, operation: 'color_temp_kelvin', color_temp_kelvin: 2700, brightness_pct: 25 }] });
+  const view = f.mount();
+  await f.instance.open(); await turn();
+  view.control('review').focus(); view.control('review').click(); await turn();
+  assert.equal(view.doc.activeElement, view.control('review'));
+  const panel = view.container.querySelector('#routine-proposals');
+  assert.equal(panel.getAttribute('aria-labelledby'), 'routine-proposals-title');
+  assert.match(visibleText(panel.querySelector('[data-proposal-diff="before"]')), /Antes.*Rutina anterior/);
+  assert.match(visibleText(panel.querySelector('[data-proposal-diff="after"]')), /Después.*Rutina nueva.*Desactivada.*2700.*25/);
+  assert.ok(proposalCalls(f.server).every(call => call.method === 'GET'));
+  assert.equal(f.server.routines.size, 0);
+
+  proposal.stale = true;
+  view.control('confirm').focus(); view.control('confirm').click(); await turn();
+  assert.match(visibleText(panel), /La rutina cambió/);
+  assert.equal(view.control('confirm'), null);
+  assert.equal(view.doc.activeElement, view.control('review'));
+  await f.instance.reviewProposal(proposalId);
+  assert.match(visibleText(panel), /Conflicto/);
+  assert.ok(view.control('reject'));
+
+  f.server.hooks.push({ method: 'GET', path: proposalPath, mode: 'reject', error: failure(503, 'routine_proposals_unavailable') });
+  await f.instance.reviewProposal(proposalId);
+  assert.match(visibleText(panel), /no están disponibles/);
+  assert.equal(view.control('reject'), null);
+  f.server.proposals.delete(proposalId);
+  await f.instance.reviewProposal(proposalId);
+  assert.match(visibleText(panel), /expiró o ya no está disponible/);
+  assert.equal(view.doc.activeElement.dataset.key, 'proposals-refresh');
+  view.dispose();
+});
+
+test('T033-U3b: confirm and reject replay the same decision after a lost response, including reload', async () => {
+  for (const [action, expected] of [['confirm', 'confirmada'], ['reject', 'rechazada']]) {
+    const f = proposalFixture(), proposal = f.add();
+    const view = f.mount();
+    await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+    const path = proposalPath + '/' + action;
+    f.server.hooks.push({ method: 'POST', path, mode: 'drop' });
+    view.control(action).focus(); view.control(action).click();
+    assert.equal(view.control(action).getAttribute('aria-disabled'), 'true');
+    await turn();
+    assert.equal(view.doc.activeElement, view.control(action));
+    assert.match(visibleText(view.container.querySelector('#routine-proposals')), /Resultado incierto/);
+    assert.match(view.control(action).textContent, /Reintentar/);
+    assert.equal(view.control(action === 'confirm' ? 'reject' : 'confirm'), null);
+    await f.instance.decideProposal(proposalId, action === 'confirm' ? 'reject' : 'confirm');
+    assert.equal(proposalCalls(f.server).filter(call => call.method === 'POST').length, 1);
+    const [stored] = [...f.storage.map.values()].map(JSON.parse);
+    assert.deepEqual(stored, { action, actor: actorFor(f.server.subject) });
+    view.dispose(); await f.instance.clear({ wipe: false });
+
+    const after = proposalFixture({ server: f.server, storage: f.storage });
+    const second = after.mount();
+    await after.instance.open(); await turn(); await after.instance.reviewProposal(proposalId);
+    assert.equal(proposalCalls(f.server).filter(call => call.method === 'POST').length, 1, 'reload does not replay automatically');
+    second.control(action).focus(); second.control(action).click(); await turn();
+    assert.deepEqual(proposalCalls(f.server).filter(call => call.method === 'POST').map(call => [call.path, call.body, call.signal]),
+      [[path, undefined, undefined], [path, undefined, undefined]]);
+    assert.equal(f.server.routines.size, action === 'confirm' ? 1 : 0);
+    assert.ok(proposal.receipt);
+    assert.match(visibleText(second.container.querySelector('#routine-proposals')), new RegExp('Propuesta ' + expected));
+    assert.equal(second.doc.activeElement.dataset.key, 'proposals-refresh');
+    assert.equal(f.storage.length, 0);
+    second.dispose();
+  }
+});
+
+test('T033-U3b: an expired replay remains uncertain and a 503 permits only the original decision', async () => {
+  const f = proposalFixture(); f.add();
+  await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+  const path = proposalPath + '/confirm';
+  f.server.hooks.push({ method: 'POST', path, mode: 'drop' });
+  await f.instance.decideProposal(proposalId, 'confirm');
+  f.server.hooks.push({ method: 'POST', path, mode: 'reject', error: failure(503, 'routine_proposals_unavailable') });
+  await f.instance.decideProposal(proposalId, 'confirm');
+  assert.match(f.instance.getState().proposals.decisions[proposalId].message, /incierto.*no están disponibles/i);
+  f.server.proposals.delete(proposalId);
+  await f.instance.decideProposal(proposalId, 'confirm');
+  const state = f.instance.getState().proposals;
+  assert.equal(state.selected.status, 'uncertain');
+  assert.match(state.selected.message, /incierto.*expiró/i);
+  assert.deepEqual(state.decisions, {});
+  assert.equal(f.storage.length, 0);
+});
+
+test('T033-U3b: a refreshed list that omits the selected proposal removes its diff and decisions', async () => {
+  for (const empty of [true, false]) {
+    const f = proposalFixture(), proposal = f.add();
+    const view = f.mount();
+    await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+    assert.ok(view.container.querySelector('[data-proposal-diff="after"]'));
+    view.control('confirm').focus();
+    f.server.proposals.delete(proposalId);
+    if (!empty) {
+      const id = 'b'.repeat(32);
+      f.server.proposals.set(id, { ...proposal, summary: { ...proposal.summary, proposal_id: id } });
+    }
+    await f.instance.refreshProposals();
+
+    const state = f.instance.getState().proposals;
+    assert.equal(state.loaded, true);
+    assert.equal(state.items.length, empty ? 0 : 1);
+    assert.equal(state.selected, null);
+    assert.equal(view.container.querySelector('[data-proposal-id="' + proposalId + '"]'), null);
+    assert.equal(view.container.querySelector('[data-proposal-diff="after"]'), null);
+    assert.equal(view.control('confirm'), null);
+    assert.equal(view.control('reject'), null);
+    assert.equal(view.doc.activeElement.dataset.key, 'proposals-refresh');
+    await f.instance.decideProposal(proposalId, 'confirm');
+    await f.instance.decideProposal(proposalId, 'reject');
+    assert.ok(proposalCalls(f.server).every(call => call.method === 'GET'));
+    view.dispose();
+  }
+});
+
+test('T033-U3b: an omitted proposal keeps only its original uncertain decision for replay', async () => {
+  const f = proposalFixture(); f.add();
+  const view = f.mount();
+  await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+  const path = proposalPath + '/confirm';
+  f.server.hooks.push({ method: 'POST', path, mode: 'drop' });
+  await f.instance.decideProposal(proposalId, 'confirm');
+  assert.ok(view.container.querySelector('[data-proposal-diff="after"]'));
+  await f.instance.refreshProposals();
+
+  const state = f.instance.getState().proposals;
+  assert.deepEqual(state.items, []);
+  assert.equal(state.selected, null);
+  assert.equal(state.decisions[proposalId].action, 'confirm');
+  assert.deepEqual([...f.storage.map.values()].map(value => JSON.parse(value)),
+    [{ action: 'confirm', actor: actorFor(f.server.subject) }]);
+  assert.equal(view.container.querySelector('[data-proposal-diff="after"]'), null);
+  assert.equal(view.control('confirm'), null);
+  assert.equal(view.control('reject'), null);
+  await f.instance.reviewProposal(proposalId);
+  assert.equal(view.control('confirm').textContent, 'Reintentar confirmación');
+  assert.equal(view.control('reject'), null);
+  await f.instance.decideProposal(proposalId, 'reject');
+  await f.instance.decideProposal(proposalId, 'confirm');
+  assert.deepEqual(proposalCalls(f.server).filter(call => call.method === 'POST').map(call => call.path), [path, path]);
+  assert.equal(f.server.routines.size, 1);
+  view.dispose();
+});
+
+test('T033-U3b: a successful detail response cannot republish a proposal omitted by a newer list', async () => {
+  const server = fakeServer(), transport = server.api;
+  let release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  server.api = async (path, options) => {
+    const result = await transport(path, options);
+    if (path === proposalPath) await delayed;
+    return result;
+  };
+  const f = proposalFixture({ server }); f.add();
+  const view = f.mount();
+  await f.instance.open(); await turn();
+  const preview = f.instance.reviewProposal(proposalId);
+  await turn();
+  assert.equal(f.instance.getState().proposals.selected.loading, true);
+  assert.equal(proposalCalls(server).at(-1).path, proposalPath);
+  server.proposals.delete(proposalId);
+  await f.instance.refreshProposals();
+  release(); await preview;
+  assert.equal(f.instance.getState().proposals.selected, null);
+  assert.equal(view.container.querySelector('[data-proposal-diff="after"]'), null);
+  assert.equal(view.control('confirm'), null);
+  assert.equal(view.control('reject'), null);
+  view.dispose();
+});
+
+test('T033-U3b: account change after the POST asks the user to check current state', async () => {
+  const f = proposalFixture(), proposal = f.add();
+  const view = f.mount();
+  await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+  const handle = f.server.handle, path = proposalPath + '/confirm';
+  f.server.handle = (requestPath, options) => {
+    const response = handle(requestPath, options);
+    if (requestPath === path) f.server.routineActor = 'fixture-other-credential';
+    return response;
+  };
+  const before = f.server.calls.length;
+  await f.instance.decideProposal(proposalId, 'confirm');
+  assert.deepEqual(f.server.calls.slice(before).map(call => [call.method, call.path]),
+    [['GET', '/api/admin/auth/whoami'], ['POST', path], ['GET', '/api/admin/auth/whoami']]);
+  assert.equal(proposal.receipt.status, 'confirmed');
+  assert.equal(f.server.routines.size, 1);
+  assert.equal(f.changes(), 1);
+  assert.equal(f.instance.getState().proposals.selected, null);
+  assert.deepEqual(f.instance.getState().proposals.decisions, {});
+  assert.deepEqual([...f.storage.map.entries()], [[routines.ENDED_KEY, '1']]);
+  const text = visibleText(view.container);
+  assert.match(text, /cambió.*Revisá.*estado actual/);
+  assert.doesNotMatch(text, /no se envió nada|propuesta confirmada|rutina propuesta/i);
+  view.dispose();
+});
+
+test('T033-U3b: a new account cannot replay a decision or receive a late proposal preview', async () => {
+  for (const inFlight of ['preview', 'retry']) {
+    const f = proposalFixture(); f.server.routineActor = actorFor(f.server.subject); f.add();
+    const view = f.mount();
+    await f.instance.open(); await turn();
+    let release;
+    const held = new Promise(resolve => { release = resolve; });
+    let delayed;
+    if (inFlight === 'preview') {
+      f.server.hooks.push({ method: 'GET', path: proposalPath, mode: 'hold', until: held });
+      delayed = f.instance.reviewProposal(proposalId);
+      await turn();
+    } else {
+      await f.instance.reviewProposal(proposalId);
+      f.server.hooks.push({ method: 'POST', path: proposalPath + '/reject', mode: 'drop' });
+      await f.instance.decideProposal(proposalId, 'reject');
+    }
+    f.server.routineActor = 'fixture-other-credential';
+    const before = proposalCalls(f.server).length;
+    if (delayed) { release(); await delayed; }
+    else await f.instance.decideProposal(proposalId, 'reject');
+    assert.equal(f.changes(), 1);
+    assert.equal(proposalCalls(f.server).length, before);
+    assert.equal(f.instance.getState().proposals.selected, null);
+    assert.deepEqual(f.instance.getState().proposals.decisions, {});
+    assert.ok(![...f.storage.map.keys()].some(key => key.includes(proposalId)));
+    assert.doesNotMatch(visibleText(view.container), /Rutina propuesta|Resultado incierto/);
+    view.dispose();
+  }
+});
+
+test('T033-U3b: leaving hides the pending decision until the account is verified again', async () => {
+  const f = proposalFixture(); f.add();
+  await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+  f.server.hooks.push({ method: 'POST', path: proposalPath + '/reject', mode: 'drop' });
+  await f.instance.decideProposal(proposalId, 'reject');
+  assert.ok(f.instance.getState().proposals.decisions[proposalId]);
+  await f.instance.leave();
+  const view = f.mount();
+  assert.equal(view.control('review'), null);
+  const before = proposalCalls(f.server).length;
+  f.server.routineActor = 'fixture-second-account';
+  await f.instance.open(); await turn();
+  assert.equal(f.changes(), 1);
+  assert.equal(proposalCalls(f.server).length, before);
+  assert.equal(view.control('review'), null);
+  assert.ok(![...f.storage.map.keys()].some(key => key.includes(proposalId)));
+  view.dispose();
 });

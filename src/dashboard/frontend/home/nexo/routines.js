@@ -10,6 +10,7 @@
     disabled: 'Último freno por voz: se desactivó la rutina para revisión.',
     already_disabled: 'Último freno por voz: la rutina ya estaba desactivada.' };
   const DAYS = [['Lu', 'Lunes'], ['Ma', 'Martes'], ['Mi', 'Miércoles'], ['Ju', 'Jueves'], ['Vi', 'Viernes'], ['Sá', 'Sábado'], ['Do', 'Domingo']];
+  const PROPOSAL_LABELS = { create: 'Crear rutina', update: 'Editar rutina', delete: 'Borrar rutina', enable: 'Activar rutina', disable: 'Desactivar rutina' };
 
   function mountRoutines({ container, dialog, confirmDialog, owner, icon }) {
     const doc = container.ownerDocument, home = root.HomeUI, routines = root.NexoRoutineOwner;
@@ -68,6 +69,110 @@
     const grid = node('div', 'routine-grid'); grid.id = 'routines-list';
     const empty = node('p', 'identity-empty routines-empty');
     container.replaceChildren(heading, permission, sessionNotice, freshness, createNotice, recovery, live, grid, empty);
+
+    const proposalSection = node('section'); proposalSection.id = 'routine-proposals';
+    const proposalTitle = node('h3', '', 'Propuestas por voz'); proposalTitle.id = 'routine-proposals-title';
+    proposalSection.setAttribute('aria-labelledby', proposalTitle.id);
+    const proposalStatus = node('p', 'routine-notice'); proposalStatus.setAttribute('role', 'status');
+    const proposalRefresh = button('Actualizar propuestas', 'proposals-refresh', () => owner.refreshProposals());
+    const proposalGrid = node('div', 'routine-grid');
+    proposalSection.append(proposalTitle, proposalRefresh, proposalStatus, proposalGrid);
+    let proposalSignature;
+
+    function proposalDefinition(state, label, value) {
+      const panel = node('div', 'routine-run'); panel.dataset.proposalDiff = label === 'Antes' ? 'before' : 'after';
+      panel.append(node('h4', '', label));
+      if (value === null) { panel.append(node('p', 'routine-detail', 'Sin definición de rutina.')); return panel; }
+      const fields = node('dl', 'routine-detail');
+      for (const [term, detail] of [
+        ['Nombre', value.name], ['Descripción', value.description || 'Sin descripción'],
+        ['Estado', value.enabled ? 'Activa' : 'Desactivada'], ['Horario', scheduleText(value)]
+      ]) fields.append(node('dt', '', term), node('dd', '', detail));
+      panel.append(fields);
+      if (value.conditions.length) {
+        const conditions = node('ul', 'routine-run-actions');
+        for (const item of value.conditions) conditions.append(node('li', '', `${entityName(state, item.entity_id)} · ${item.state}`));
+        panel.append(node('p', 'routine-run-caption', 'Condiciones'), conditions);
+      }
+      const actions = node('ol', 'routine-run-actions');
+      for (const item of value.actions) {
+        // A device may have left the catalog since the voice request. Keep every parameter visible.
+        const entity = entityByIdFrom(state, item.entity_id);
+        const fields = home.controlFields(entity, item.operation, item);
+        const values = (home.OPERATION_PARAMETERS[item.operation] || []).filter(key => Object.hasOwn(item, key))
+          .map(key => {
+            const field = fields.find(entry => entry.name === key);
+            const label = field?.label || (key === 'brightness_pct' ? 'Brillo (%)' : key);
+            return `${label} ${field?.options?.find(([id]) => id === item[key])?.[1] ?? item[key]}`;
+          });
+        actions.append(node('li', '', [entityName(state, item.entity_id), OPERATIONS[item.operation], ...values].filter(Boolean).join(' · ')));
+      }
+      panel.append(node('p', 'routine-run-caption', 'Acciones en orden'), actions);
+      return panel;
+    }
+
+    function proposalCard(state, id, item, selected, decision) {
+      const card = node('article', 'routine-card panel'); card.dataset.proposalId = id;
+      card.append(node('h4', '', item ? PROPOSAL_LABELS[item.operation] : 'Decisión sobre una propuesta por voz'));
+      if (item && (!selected || ['pending', 'conflict', 'error'].includes(selected.status))) {
+        card.append(node('p', 'routine-detail', 'Pendiente · vence ' +
+          new Date(item.expiresAt).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Montevideo' })));
+      }
+      if (item && selected?.preview) {
+        const diff = node('section'); diff.setAttribute('aria-label', 'Vista previa de la propuesta');
+        diff.append(node('h5', '', 'Vista previa'),
+          proposalDefinition(state, 'Antes', selected.preview.before), proposalDefinition(state, 'Después', selected.preview.after));
+        card.append(diff);
+      }
+      if (decision?.message || selected?.message) card.append(node('p', 'routine-state', decision?.message || selected.message));
+      const controls = node('div', 'routine-controls');
+      if (item || decision) {
+        const review = button(selected?.loading ? 'Consultando vista previa…' : selected ? 'Volver a consultar' : 'Revisar propuesta',
+          id + ':review', () => owner.reviewProposal(id));
+        review.setAttribute('aria-disabled', String(Boolean(selected?.loading || selected && decision)));
+        controls.append(review);
+      }
+      if (selected && decision) {
+        const confirm = decision.action === 'confirm';
+        const retry = button(decision.sending ? (confirm ? 'Confirmando…' : 'Rechazando…') :
+          (confirm ? 'Reintentar confirmación' : 'Reintentar rechazo'),
+          id + ':' + decision.action, () => owner.decideProposal(id, decision.action));
+        retry.setAttribute('aria-disabled', String(decision.sending)); controls.append(retry);
+      } else if (item && selected?.preview) {
+        if (selected.status === 'pending' && !selected.preview.stale) {
+          controls.append(button('Confirmar propuesta', id + ':confirm', () => owner.decideProposal(id, 'confirm'), 'identity-primary'));
+        }
+        controls.append(button('Rechazar propuesta', id + ':reject', () => owner.decideProposal(id, 'reject')));
+      }
+      card.append(controls);
+      return card;
+    }
+
+    function renderProposals(state) {
+      const tray = state.proposals;
+      if (!tray) { proposalSection.remove(); proposalGrid.replaceChildren(); proposalSignature = undefined; return; }
+      if (!container.contains(proposalSection)) container.append(proposalSection);
+      proposalRefresh.setAttribute('aria-disabled', String(tray.loading));
+      const { items, decisions, selected } = tray;
+      const signature = JSON.stringify([items, decisions, selected, selected?.preview ? state.catalog?.entities : null]);
+      if (signature !== proposalSignature) {
+        const focused = proposalGrid.contains(doc.activeElement), key = focused ? focusKey() : null;
+        const rows = new Map(items.map(item => [item.id, item]));
+        for (const id of Object.keys(decisions)) if (!rows.has(id)) rows.set(id, null);
+        if (selected && !rows.has(selected.id)) rows.set(selected.id, null);
+        proposalGrid.replaceChildren(...[...rows].map(([id, item]) =>
+          proposalCard(state, id, item, selected?.id === id ? selected : null, decisions[id])));
+        proposalSignature = signature;
+        if (focused) {
+          restoreFocus(proposalGrid, key);
+          if (selected && !proposalGrid.contains(doc.activeElement)) restoreFocus(proposalGrid, selected.id + ':review');
+          if (!proposalGrid.contains(doc.activeElement)) proposalRefresh.focus({ preventScroll: true });
+        }
+      }
+      const text = tray.error || (tray.loading ? 'Consultando propuestas…' :
+        tray.loaded && !items.length ? 'No hay propuestas pendientes.' : '');
+      if (proposalStatus.textContent !== text) proposalStatus.textContent = text;
+    }
 
     function runBlock(state, run, caption) {
       const block = node('div', 'routine-run'); block.dataset.runId = run.run_id;
@@ -377,7 +482,9 @@
       renderCards(state);
       empty.hidden = !(state.list.loaded && !state.routines.length);
       empty.textContent = caps.manage ? 'Todavía no hay rutinas. Creá la primera con dispositivos de tu casa.' : 'Todavía no hay rutinas.';
-      if (state.announcement && state.announcement.serial !== lastAnnouncement) { lastAnnouncement = state.announcement.serial; live.textContent = state.announcement.text; }
+      const announcement = state.announcement?.serial || 0;
+      if (announcement !== lastAnnouncement) { lastAnnouncement = announcement; live.textContent = state.announcement?.text || ''; }
+      renderProposals(state);
       renderDialog(state);
     }
     const stop = owner.subscribe(render);

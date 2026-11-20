@@ -11,8 +11,10 @@ import sqlite3
 import subprocess
 import tempfile
 import time
+from dataclasses import replace
 from pathlib import Path
 import socket
+from uuid import uuid4
 
 import aiohttp
 import uvicorn
@@ -21,9 +23,11 @@ from websockets.asyncio.client import connect
 
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority, DashboardRole, EvaluationModality, EvaluationSample
+from src.memory.fact_ledger import FactLedger
 from src.rooms.room_context import RoomConfig
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import RunStatus, parse_routine_spec
+from src.routines.proposals import ProposalOperation, RoutineProposalTray
 from tests.frontend.browser_nexo_home import login, screenshot
 from tests.frontend.browser_support import Page, _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
 from tests.integration.test_typed_home_operations import typed_graph
@@ -32,11 +36,14 @@ from tests.integration.test_typed_home_operations import typed_graph
 EVIDENCE = evidence_directory('KZA_NEXO_ROUTINES_EVIDENCE', 'data/autonomous-roadmap-20261102/t040-t041/u2-routines-browser-runs')
 WIDTHS = (320, 390, 768, 1024, 1280, 1440)
 TZ = 'America/Montevideo'
+PROPOSALS = '/api/routines/proposals'
 INSTRUMENT = r"""(() => {
   const fetcher = window.fetch.bind(window);
   window.__qaRules = [];
+  window.__qaProposalRequests = [];
   window.fetch = async (input, options = {}) => {
     const path = String(input), method = (options.method || 'GET').toUpperCase();
+    if (path.startsWith('/api/routines/proposals')) window.__qaProposalRequests.push({ path, method });
     const index = window.__qaRules.findIndex(rule => rule.method === method && path.startsWith(rule.path));
     const rule = index >= 0 ? window.__qaRules.splice(index, 1)[0] : null;
     const response = await fetcher(input, options);
@@ -107,7 +114,11 @@ async def main() -> None:
         evaluator = await authority.issue_credential(root, subject='synthetic-evaluator', role=DashboardRole.EVALUATOR, expires_at=expires, samples=(selection,))
         rooms = {'living': RoomConfig('living', 'Sala de estar', 'la sala', default_light='light.test_lamp', default_cover='cover.test_blind'),
                  'kitchen': RoomConfig('kitchen', 'Cocina', 'la cocina', default_climate='climate.test_ac')}
-        dashboard = DashboardAPI(authority=authority, ha_client=ha, home_actions=actions, home_rooms=rooms, routine_scheduler=scheduler)
+        ledger = FactLedger(str(directory / 'facts.db'))
+        ledger.initialize()
+        tray = RoutineProposalTray(ledger)
+        dashboard = DashboardAPI(authority=authority, ha_client=ha, home_actions=actions, home_rooms=rooms,
+                                 routine_scheduler=scheduler, routine_proposals=tray)
 
         async def unavailable_live_channel(websocket):
             await websocket.close(code=1013)
@@ -457,6 +468,63 @@ async def main() -> None:
                     dashboard.scheduler = saved_scheduler
                     checks.append('503 shows unavailability and keeps the last observation')
 
+                    # Real voice-tray entries. Review is read-only; Enter, Tab and Enter decide.
+                    previous = await scheduler.get_routine(main_id)
+                    assert previous is not None
+                    runs_before_proposals, effects_before_proposals = run_count(database), len(ha.sends)
+                    update = tray.submit(ProposalOperation.UPDATE, conversation_id=str(uuid4()),
+                                         routine_id=main_id, expected_revision=previous.revision,
+                                         spec=replace(previous.spec, name='Rutina revisada por voz'))
+                    discard = tray.submit(ProposalOperation.CREATE, conversation_id=str(uuid4()),
+                                          spec=parse_routine_spec(definition('Rutina para rechazar')))
+                    await click('[data-key="proposals-refresh"]')
+                    await page.wait_for(f"document.querySelector({key(update + ':review')}) && document.querySelector({key(discard + ':review')})")
+                    tree = await page.command('Accessibility.getFullAXTree')
+                    assert any(node.get('role', {}).get('value') == 'region' and
+                               node.get('name', {}).get('value') == 'Propuestas por voz' for node in tree['nodes'])
+                    await page.evaluate(f"document.querySelector({key(update + ':review')}).focus()")
+                    await press_enter(page)
+                    before_diff = json.dumps(f'[data-proposal-id="{update}"] [data-proposal-diff="before"]')
+                    after_diff = json.dumps(f'[data-proposal-id="{update}"] [data-proposal-diff="after"]')
+                    await page.wait_for(f"document.querySelector({before_diff})?.textContent.includes({json.dumps(previous.spec.name)}) && "
+                                        f"document.querySelector({after_diff})?.textContent.includes('Rutina revisada por voz')")
+                    assert await scheduler.get_routine(main_id) == previous
+                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{update}:review'")
+                    tree = await page.command('Accessibility.getFullAXTree')
+                    names = {node.get('name', {}).get('value') for node in tree['nodes'] if node.get('role', {}).get('value') == 'button'}
+                    assert {'Confirmar propuesta', 'Rechazar propuesta'} <= names
+                    await _press_tab(page)
+                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{update}:confirm'")
+                    await rule('POST', f'{PROPOSALS}/{update}/confirm', 'drop')
+                    await press_enter(page)
+                    await page.wait_for(f"document.querySelector({key(update + ':confirm')})?.textContent==='Reintentar confirmación'")
+                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{update}:confirm'")
+                    assert await page.evaluate("document.querySelector('#routine-proposals').textContent.includes('Resultado incierto')")
+                    await press_enter(page)
+                    await page.wait_for("document.querySelector('#routine-proposals').textContent.includes('Propuesta confirmada')")
+                    updated = await scheduler.get_routine(main_id)
+                    assert updated is not None and updated.revision == previous.revision + 1 and updated.spec.name == 'Rutina revisada por voz'
+                    assert await page.evaluate("document.activeElement?.dataset.key==='proposals-refresh'")
+                    assert [item['status'] for item in requests if item['method'] == 'POST' and
+                            item['path'] == f'{PROPOSALS}/{update}/confirm'] == [200, 200]
+
+                    await page.evaluate(f"document.querySelector({key(discard + ':review')}).focus()")
+                    await press_enter(page)
+                    await page.wait_for(f"document.querySelector({key(discard + ':reject')})")
+                    await _press_tab(page)
+                    await _press_tab(page)
+                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{discard}:reject'")
+                    await press_enter(page)
+                    await page.wait_for("document.querySelector('#routine-proposals').textContent.includes('Propuesta rechazada')")
+                    assert await page.evaluate("document.activeElement?.dataset.key==='proposals-refresh'")
+                    assert [item['status'] for item in requests if item['method'] == 'POST' and
+                            item['path'] == f'{PROPOSALS}/{discard}/reject'] == [200]
+                    assert len(await scheduler.get_all_routines()) == 2
+                    assert run_count(database) == runs_before_proposals and len(ha.sends) == effects_before_proposals
+                    checks.append('voice proposals: named region and controls, read-only before/after, keyboard confirm and replay after lost reply, keyboard reject, no run or HA effects')
+                    tray.submit(ProposalOperation.CREATE, conversation_id=str(uuid4()),
+                                spec=parse_routine_spec(definition('Propuesta reservada para revisión')))
+
                     # Logout wipes pending identities. Household can run and consult its own results.
                     assert await page.evaluate("Object.keys(sessionStorage).some(k=>k.startsWith('kza:routine-attempt:'))")
                     await click('#logout')
@@ -467,6 +535,8 @@ async def main() -> None:
                     runs_before = run_count(database)
                     operator_run = await scheduler.get_latest_run(main_id)
                     assert operator_run is not None
+                    proposal_marker = await page.evaluate('window.__qaProposalRequests.length')
+                    request_marker = len(requests)
                     await login(page, household.token, 'Acceso de hogar')
                     assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,actions,routines'")
                     await click('#app-nav [data-view=routines]')
@@ -494,10 +564,16 @@ async def main() -> None:
                     audits['rutinas-hogar'] = await audit_view(page, evidence, 'rutinas-hogar', (
                         ('#app-nav [data-view=routines]', None), ('#routines-refresh', None),
                         (f'[data-key="{main_id}:execute"]', None), (f'[data-key="{main_id}:consult"]', None)), screenshot, widths=WIDTHS)
+                    assert await page.evaluate("!document.querySelector('#routine-proposals')")
+                    assert await page.evaluate('window.__qaProposalRequests.length') == proposal_marker
+                    assert not any(item['path'].startswith(PROPOSALS) for item in requests[request_marker:])
                     checks.append('household: execute and consult own run, create/disable return 403, operator run returns 404, one new run without definition changes')
+                    checks.append('household without routines:manage neither sees nor requests voice proposals')
                     await click('#logout')
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
 
+                    proposal_marker = await page.evaluate('window.__qaProposalRequests.length')
+                    request_marker = len(requests)
                     await login(page, evaluator.token, 'Evaluación temporal')
                     await page.wait_for("!document.querySelector('#evaluation-view').hidden")
                     assert await page.evaluate("!document.querySelector('[data-view=routines]')")
@@ -505,7 +581,11 @@ async def main() -> None:
                     await asyncio.sleep(0.3)
                     assert await page.evaluate("document.querySelector('#routines-view').hidden && !document.querySelector('#routines-view').children.length")
                     assert await page.evaluate("fetch('/api/routines').then(r=>r.status)") == 403
+                    assert await page.evaluate("!document.querySelector('#routine-proposals')")
+                    assert await page.evaluate('window.__qaProposalRequests.length') == proposal_marker
+                    assert not any(item['path'].startswith(PROPOSALS) for item in requests[request_marker:])
                     checks.append('evaluator: no Rutinas entry, #rutinas falls back, server 403')
+                    checks.append('evaluator neither sees nor requests voice proposals')
                     await click('#logout')
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
                     assert page.errors == [], page.errors
@@ -524,6 +604,8 @@ async def main() -> None:
                 await asyncio.to_thread(browser.wait, 10)
             await dashboard.stop()
             await serving
+            await tray.aclose()
+            ledger.close()
             await authority.aclose()
             await scheduler.store.close()
 
