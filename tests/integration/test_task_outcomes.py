@@ -19,6 +19,7 @@ from src.home_assistant.home_actions import HomeActionRequest
 from src.main import build_application
 from src.pipeline.command_event import CommandEvent
 from src.reminders.reminder_store import ReminderScope
+from src.users.user_manager import PermissionLevel
 from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, offline_config, offline_home
 from tests.mocks.audio_output import AudioBackend
 from tests.mocks.task_transport import TaskTransport
@@ -338,23 +339,26 @@ async def test_stale_lookup_cannot_prove_a_committed_deletion(leaves, tmp_path, 
     async with offline_home() as (url, _):
         async with AsyncExitStack() as stack:
             graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=factories)
+            person, _ = await asyncio.to_thread(
+                graph.dashboard.user_manager.add_user, "Synthetic person", PermissionLevel.ADULT)
+            owner = person.user_id
             if kind == "reminder":
-                await graph.reminder_manager.create("unknown", "tomar agua", time.time() + 3600)
+                await graph.reminder_manager.create(owner, "tomar agua", time.time() + 3600)
                 graph.reminder_manager._store.cancel = AsyncMock(return_value=False)
-                assert not await graph.reminder_manager.cancel_by_text("unknown", "tomar agua")
+                assert not await graph.reminder_manager.cancel_by_text(owner, "tomar agua")
             else:
-                await graph.list_manager.add_item("unknown", "leche", "compras")
+                await graph.list_manager.add_item(owner, "leche", "compras")
                 if kind == "list_item":
                     graph.list_manager._store.remove_item = AsyncMock(return_value=False)
-                    result = await graph.list_manager.remove_item_with_outcome("unknown", "leche", "compras")
+                    result = await graph.list_manager.remove_item_with_outcome(owner, "leche", "compras")
                     assert result.item is None and not result.outcome.task_completed
                     assert result.outcome.persistence.value == "not_written"
                 elif kind == "clear_list":
                     graph.list_manager._store.clear_list = AsyncMock(return_value=False)
-                    assert not await graph.list_manager.clear_list("unknown", "compras")
+                    assert not await graph.list_manager.clear_list(owner, "compras")
                 else:
                     graph.list_manager._store.delete_list = AsyncMock(return_value=False)
-                    assert not await graph.list_manager.delete_list("unknown", "compras")
+                    assert not await graph.list_manager.delete_list(owner, "compras")
 
 
 @pytest.mark.parametrize(("text", "path", "intent", "status"), [

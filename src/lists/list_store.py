@@ -1,5 +1,6 @@
 """SQLite persistence for user lists and list items."""
 import asyncio
+from collections.abc import Callable
 from contextvars import Context
 import logging
 import time
@@ -49,10 +50,10 @@ class UserList:
     items: list[ListItem] = field(default_factory=list)
 
 
-# A list in scope: shared, or (outside shared_only) owned by ``owner`` when one is
-# given. Parameters: (shared_only, owner, owner). ``owner=None`` without
-# shared_only keeps the unscoped internal view.
-_LIST_SCOPE = "(owner_type = 'shared' OR (? = 0 AND (? IS NULL OR owner_id = ?)))"
+# None keeps the internal view of eligible rows. Dashboard callers supply
+# either the session person or shared_only.
+_PERSONAL_LIST = "owner_type = 'user' AND task_person_current(owner_id)"
+_LIST_SCOPE = f"(owner_type = 'shared' OR (? = 0 AND {_PERSONAL_LIST} AND (? IS NULL OR owner_id = ?)))"
 
 
 def _generate_id() -> str:
@@ -70,6 +71,17 @@ class ListStore:
         self._work: SQLiteWork | None = None
         self._closing: asyncio.Task | None = None
         self._lifecycle = asyncio.Lock()
+        self._person_verifier: Callable[[str], bool | None] | None = None
+
+    def bind_person_verifier(self, verifier: Callable[[str], bool | None]) -> None:
+        """Bind the dashboard's current canonical-account check for native operations."""
+        self._person_verifier = verifier
+
+    def _person_current(self, owner_id: str | None) -> bool:
+        if type(owner_id) is not str or not owner_id.strip():
+            return False
+        verify = self._person_verifier
+        return verify is None or verify(owner_id) is True
 
     async def initialize(self) -> None:
         """Prepare schema before admitting consumers to the shared native owner."""
@@ -90,6 +102,7 @@ class ListStore:
             await self._work.read(lambda db: db.execute("PRAGMA foreign_keys = ON").fetchall())
 
             def schema(db):
+                db.create_function("task_person_current", 1, self._person_current)
                 db.execute("""
                     CREATE TABLE IF NOT EXISTS lists (
                         id TEXT PRIMARY KEY, name TEXT NOT NULL, owner_type TEXT NOT NULL,
@@ -153,6 +166,8 @@ class ListStore:
             owner_id = None
         now, list_id = time.time(), _generate_id()
         def operation(db):
+            if owner_type is OwnerType.USER and not self._person_current(owner_id):
+                raise PermissionError("list_person_unverified")
             db.execute(
                 "INSERT INTO lists (id, name, owner_type, owner_id, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)", (list_id, name, owner_type.value, owner_id, now, now))
@@ -166,7 +181,8 @@ class ListStore:
         """Project only eligible lists inside one native queue operation."""
         def operation(db):
             rows = db.execute("SELECT * FROM lists WHERE owner_type = 'shared' "
-                              "OR (? = 0 AND owner_id = ?)", (shared_only, user_id)).fetchall()
+                              f"OR (? = 0 AND owner_id = ? AND {_PERSONAL_LIST})",
+                              (shared_only, user_id)).fetchall()
             return [self._row_to_list(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
@@ -177,7 +193,7 @@ class ListStore:
         """Apply ownership before selecting a matching list or projecting its name."""
         def operation(db):
             row = db.execute("SELECT * FROM lists WHERE LOWER(name) = LOWER(?) "
-                "AND (owner_type = 'shared' OR (? = 0 AND owner_id = ?)) LIMIT 1",
+                f"AND (owner_type = 'shared' OR (? = 0 AND owner_id = ? AND {_PERSONAL_LIST})) LIMIT 1",
                 (name, shared_only, user_id)).fetchone()
             return self._row_to_list(row) if row is not None else None
         return await self._work.read(operation, guard=guard)
@@ -209,8 +225,8 @@ class ListStore:
         """Filter the parent scope before projecting any requested item."""
         def operation(db):
             rows = db.execute("SELECT * FROM list_items WHERE list_id = ? "
-                "AND (? = 0 OR EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
-                "AND owner_type = 'shared')) ORDER BY created_at", (list_id, shared_only)).fetchall()
+                "AND EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
+                f"AND {_LIST_SCOPE}) ORDER BY created_at", (list_id, shared_only, None, None)).fetchall()
             return [self._row_to_item(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
@@ -232,9 +248,9 @@ class ListStore:
         """Delete only from the selected list while its parent scope is eligible."""
         def operation(db):
             return db.execute("DELETE FROM list_items WHERE id = ? AND (? IS NULL OR list_id = ?) "
-                "AND ((? = 0 AND ? IS NULL) OR EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
-                f"AND {_LIST_SCOPE}))",
-                (item_id, list_id, list_id, shared_only, owner, shared_only, owner, owner)).rowcount > 0
+                "AND EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
+                f"AND {_LIST_SCOPE})",
+                (item_id, list_id, list_id, shared_only, owner, owner)).rowcount > 0
         return await self._work.write(operation, guard=guard)
 
     async def complete_item(self, item_id: str, *, list_id: str | None = None,
@@ -245,8 +261,8 @@ class ListStore:
         def operation(db):
             changed = db.execute("UPDATE list_items SET completed = 1, completed_at = ? "
                 "WHERE id = ? AND (? IS NULL OR list_id = ?) "
-                "AND (? = 0 OR EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
-                "AND owner_type = 'shared'))", (now, item_id, list_id, list_id, shared_only)).rowcount
+                "AND EXISTS (SELECT 1 FROM lists WHERE lists.id = list_items.list_id "
+                f"AND {_LIST_SCOPE})", (now, item_id, list_id, list_id, shared_only, None, None)).rowcount
             if not changed:
                 return None
             return self._row_to_item(db.execute("SELECT * FROM list_items WHERE id = ?", (item_id,)).fetchone())
@@ -256,8 +272,8 @@ class ListStore:
                          shared_only: bool = False) -> bool:
         """Verify the parent scope before deleting any item in this transaction."""
         def operation(db):
-            if db.execute("SELECT 1 FROM lists WHERE id = ? AND (? = 0 OR owner_type = 'shared')",
-                          (list_id, shared_only)).fetchone() is None:
+            if db.execute(f"SELECT 1 FROM lists WHERE id = ? AND {_LIST_SCOPE}",
+                          (list_id, shared_only, None, None)).fetchone() is None:
                 return False
             db.execute("DELETE FROM list_items WHERE list_id = ?", (list_id,))
             return not db.execute("SELECT 1 FROM list_items WHERE list_id = ? LIMIT 1", (list_id,)).fetchone()
@@ -267,12 +283,31 @@ class ListStore:
                           shared_only: bool = False) -> bool:
         """Delete an eligible parent and its children atomically under authority."""
         def operation(db):
-            if db.execute("SELECT 1 FROM lists WHERE id = ? AND (? = 0 OR owner_type = 'shared')",
-                          (list_id, shared_only)).fetchone() is None:
+            if db.execute(f"SELECT 1 FROM lists WHERE id = ? AND {_LIST_SCOPE}",
+                          (list_id, shared_only, None, None)).fetchone() is None:
                 return False
             db.execute("DELETE FROM list_items WHERE list_id = ?", (list_id,))
             return db.execute("DELETE FROM lists WHERE id = ?", (list_id,)).rowcount > 0
         return await self._work.write(operation, guard=guard)
+
+    async def purge_retired_people(self, retired: Callable[[frozenset[str]], bool], *,
+                                   person: str | None = None) -> None:
+        """Erase personal lists and their items after durable account retirement."""
+        def operation(db):
+            if person is not None:
+                if not retired(frozenset({person})):
+                    raise PermissionError("account_retirement_required")
+                owners = [person]
+            else:
+                owners = [owner for (owner,) in db.execute(
+                    "SELECT DISTINCT owner_id FROM lists WHERE owner_type = 'user' AND owner_id IS NOT NULL")
+                    if retired(frozenset({owner}))]
+            db.executemany("DELETE FROM list_items WHERE list_id IN "
+                           "(SELECT id FROM lists WHERE owner_type = 'user' AND owner_id = ?)",
+                           ((owner,) for owner in owners))
+            db.executemany("DELETE FROM lists WHERE owner_type = 'user' AND owner_id = ?",
+                           ((owner,) for owner in owners))
+        await self._work.write(operation)
 
     @staticmethod
     def _row_to_list(row: aiosqlite.Row) -> UserList:

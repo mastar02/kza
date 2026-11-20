@@ -10,6 +10,7 @@ from httpx import ASGITransport, AsyncClient
 import pytest
 from starlette.requests import Request
 
+from src.core.account_metadata import ActiveAccounts
 from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.dashboard.api import DashboardAPI
 from src.dashboard.auth import _route_permissions
@@ -32,7 +33,8 @@ def cut(spoken: int = 0, started: bool = True) -> ResponseResult:
 @pytest.fixture
 async def notices_graph(tmp_path, dashboard_auth):
     async with AsyncExitStack() as stack:
-        authority = DashboardAuthority(tmp_path / 'auth.db', session_ttl_s=600)
+        authority = DashboardAuthority(tmp_path / 'auth.db', session_ttl_s=600,
+                                       account_provider=lambda: ActiveAccounts(True, frozenset({'u1'})))
         stack.push_async_callback(authority.aclose)
         await authority.initialize()
         store = ReminderStore(str(tmp_path / 'reminders.db'))

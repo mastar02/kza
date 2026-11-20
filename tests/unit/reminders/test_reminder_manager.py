@@ -31,6 +31,17 @@ async def test_create_one_shot(manager):
     assert r.text == "dentista"
     assert r.recurrence is None
 
+
+@pytest.mark.asyncio
+async def test_personal_reminder_creation_info_omits_text_and_user_id(manager, caplog):
+    person, text = "synthetic-owner-id", "texto privado del recordatorio"
+    with caplog.at_level(logging.INFO, logger="src.reminders.reminder_manager"):
+        await manager.create(person, text, time.time())
+    messages = [record.getMessage() for record in caplog.records
+                if record.name == "src.reminders.reminder_manager"]
+    assert messages == ["Created personal reminder"]
+    assert person not in caplog.text and text not in caplog.text
+
 @pytest.mark.asyncio
 async def test_create_recurring(manager):
     r = await manager.create(user_id="u1", text="pastilla", trigger_at=time.time() + 3600, recurrence="daily")

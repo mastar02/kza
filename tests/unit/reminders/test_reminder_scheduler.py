@@ -1280,8 +1280,8 @@ async def test_retention_keeps_every_attempt_of_an_occurrence_until_its_newest_c
 
 
 @pytest.mark.asyncio
-async def test_history_shows_the_text_only_while_the_reminder_is_shared(scheduler, store, mock_deps, clock):
-    """Review round 1 R8 (X05): the history entry reads the text in shared scope only."""
+async def test_history_projects_only_shared_reminders(scheduler, store, clock):
+    """A legacy notice for a private row is excluded from shared history."""
     r = await store.create("u1", "regar", clock() - 1, scope=ReminderScope.SHARED)
     assert await scheduler._fire_reminder(r) is True
     [entry] = await scheduler.notice_entries()
@@ -1289,8 +1289,31 @@ async def test_history_shows_the_text_only_while_the_reminder_is_shared(schedule
     # Scope is fixed at creation today; force a private row to pin the projection.
     await store._work.write(lambda db: db.execute("UPDATE reminders SET scope = 'private' WHERE id = ?",
                                                   (r.id,)).rowcount)
-    [entry] = await scheduler.notice_entries()
-    assert (entry.reminder_id, entry.status, entry.text) == (r.id, "confirmed", None)
+    assert await scheduler.notice_entries() == []
+    assert await scheduler.dismiss_notice(r.id, r.trigger_at) is NoticeDismissal.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_overdue_personal_reminder_stays_pending_and_silent(scheduler, store, mock_deps, clock, caplog):
+    person, text = "synthetic-person-id", "contenido reservado"
+    store.bind_person_verifier(lambda identity: identity == person)
+    reminder = await store.create(person, text, clock() - DAY, recurrence="daily", ha_actions=[ACTION])
+
+    with caplog.at_level("INFO", logger="src.reminders.reminder_scheduler"):
+        scheduler._loop = asyncio.get_running_loop()
+        try:
+            scheduler._on_user_arrived(person, None)
+            await scheduler._deliver_due(clock())
+            assert await scheduler._fire_reminder(reminder) is False
+        finally:
+            scheduler._loop = None
+    assert await store.get_by_id(reminder.id, owner=person) == reminder
+    assert await scheduler.notice_entries() == []
+    assert await receipts(store) == await notices(store) == []
+    mock_deps["tts"].aspeak.assert_not_called()
+    mock_deps["ha_client"].call_service_once.assert_not_called()
+    assert "Presence arrival" in caplog.text
+    assert person not in caplog.text and text not in caplog.text
 
 
 @pytest.mark.asyncio

@@ -65,10 +65,11 @@ NOTICE_ID_RANGE_END = "notice;"
 MAX_LEDGER_PROBE = 10000
 
 
-# A reminder in scope: shared, or (outside shared_only) owned by ``owner`` when
-# one is given. Parameters: (shared_only, owner, owner). ``owner=None`` without
-# shared_only keeps the unscoped internal view (T035-U1).
-_REMINDER_SCOPE = "(scope = 'shared' OR (? = 0 AND (? IS NULL OR user_id = ?)))"
+# None keeps the internal view of eligible rows. Dashboard callers supply
+# either the session person or shared_only.
+_PERSONAL_REMINDER = "scope = 'private' AND task_person_current(user_id)"
+_REMINDER_VISIBLE = f"(scope = 'shared' OR {_PERSONAL_REMINDER})"
+_REMINDER_SCOPE = f"(scope = 'shared' OR (? = 0 AND {_PERSONAL_REMINDER} AND (? IS NULL OR user_id = ?)))"
 
 
 def _ledger_row(row) -> ReminderLedgerRow:
@@ -141,6 +142,17 @@ class ReminderStore:
         self._closing: asyncio.Task | None = None
         self._lifecycle = asyncio.Lock()
         self._initialized = False
+        self._person_verifier: Callable[[str], bool | None] | None = None
+
+    def bind_person_verifier(self, verifier: Callable[[str], bool | None]) -> None:
+        """Bind the dashboard's current canonical-account check for native operations."""
+        self._person_verifier = verifier
+
+    def _person_current(self, user_id: str | None) -> bool:
+        if type(user_id) is not str or not user_id.strip():
+            return False
+        verify = self._person_verifier
+        return verify is None or verify(user_id) is True
 
     async def initialize(self) -> None:
         """Prepare schema and interrupted-send recovery before admitting consumers."""
@@ -162,6 +174,7 @@ class ReminderStore:
             self._work = SQLiteWork(self._db)
 
             def schema(db):
+                db.create_function("task_person_current", 1, self._person_current)
                 reminder_schema(db)
                 if not self._verify_only:
                     db.execute("UPDATE reminder_home_actions SET status = 'uncertain', "
@@ -339,6 +352,8 @@ class ReminderStore:
             recurrence_end=recurrence_end, ha_actions=ha_actions, scope=ReminderScope(scope))
         ha_json = json.dumps(ha_actions) if ha_actions else None
         def operation(db):
+            if reminder.scope is ReminderScope.PRIVATE and not self._person_current(user_id):
+                raise PermissionError("reminder_person_unverified")
             db.execute("""
                 INSERT INTO reminders
                     (id, user_id, text, trigger_at, created_at, recurrence,
@@ -396,7 +411,8 @@ class ReminderStore:
         def operation(db):
             rows = db.execute("SELECT * FROM reminders WHERE state = 'active' "
                 "AND ((scope = 'shared' AND (? = 1 OR ? = 1)) OR (? = 0 AND user_id = ?)) "
-                "ORDER BY trigger_at ASC", (shared_only, include_shared, shared_only, user_id)).fetchall()
+                f"AND {_REMINDER_VISIBLE} ORDER BY trigger_at ASC",
+                (shared_only, include_shared, shared_only, user_id)).fetchall()
             return [self._row_to_reminder(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
@@ -405,7 +421,7 @@ class ReminderStore:
         """Count eligible active jobs within the same native read owner."""
         def operation(db):
             return db.execute("SELECT COUNT(*) FROM reminders WHERE state = 'active' "
-                "AND (? = 0 OR scope = 'shared')", (shared_only,)).fetchone()[0]
+                f"AND (scope = 'shared' OR (? = 0 AND {_PERSONAL_REMINDER}))", (shared_only,)).fetchone()[0]
         return await self._work.read(operation, guard=guard)
 
     async def get_next_pending(self, *, guard: AuthorityGuard | None = None,
@@ -413,7 +429,7 @@ class ReminderStore:
         """Project the next eligible durable job without a live cursor."""
         def operation(db):
             row = db.execute("SELECT * FROM reminders WHERE state = 'active' "
-                "AND (? = 0 OR scope = 'shared') ORDER BY trigger_at ASC LIMIT 1",
+                f"AND (scope = 'shared' OR (? = 0 AND {_PERSONAL_REMINDER})) ORDER BY trigger_at ASC LIMIT 1",
                 (shared_only,)).fetchone()
             return self._row_to_reminder(row) if row is not None else None
         return await self._work.read(operation, guard=guard)
@@ -423,7 +439,8 @@ class ReminderStore:
         """Project only eligible due jobs as one detached batch."""
         def operation(db):
             rows = db.execute("SELECT * FROM reminders WHERE state = 'active' AND trigger_at <= ? "
-                "AND (? = 0 OR scope = 'shared') ORDER BY trigger_at ASC", (now, shared_only)).fetchall()
+                f"AND (scope = 'shared' OR (? = 0 AND {_PERSONAL_REMINDER})) ORDER BY trigger_at ASC",
+                (now, shared_only)).fetchall()
             return [self._row_to_reminder(row) for row in rows]
         return await self._work.read(operation, guard=guard)
 
@@ -433,7 +450,7 @@ class ReminderStore:
         now = time.time()
         def operation(db):
             return db.execute("UPDATE reminders SET state = ?, last_fired_at = ?, fire_count = fire_count + 1 "
-                "WHERE id = ? AND (? = 0 OR scope = 'shared') "
+                f"WHERE id = ? AND (scope = 'shared' OR (? = 0 AND {_PERSONAL_REMINDER})) "
                 "AND (? IS NULL OR (trigger_at = ? AND state = 'active'))",
                 (ReminderState.FIRED.value, now, reminder_id, shared_only,
                  expected_trigger_at, expected_trigger_at)).rowcount > 0
@@ -458,7 +475,7 @@ class ReminderStore:
         """Advance only the same active occurrence without overwriting a newer one."""
         def operation(db):
             return db.execute("UPDATE reminders SET trigger_at = ?, state = ? WHERE id = ? "
-                "AND (? = 0 OR scope = 'shared') "
+                f"AND (scope = 'shared' OR (? = 0 AND {_PERSONAL_REMINDER})) "
                 "AND (? IS NULL OR (trigger_at = ? AND state = 'active'))",
                 (new_trigger, ReminderState.ACTIVE.value, reminder_id, shared_only,
                  expected_trigger_at, expected_trigger_at)).rowcount > 0
@@ -471,9 +488,28 @@ class ReminderStore:
         def operation(db):
             rows = db.execute("SELECT * FROM reminders WHERE state = 'active' AND trigger_at <= ? "
                 "AND ((? = 1 AND scope = 'shared') OR (? = 0 AND user_id = ?)) "
-                "ORDER BY trigger_at ASC", (now, shared_only, shared_only, user_id)).fetchall()
+                f"AND {_REMINDER_VISIBLE} ORDER BY trigger_at ASC",
+                (now, shared_only, shared_only, user_id)).fetchall()
             return [self._row_to_reminder(row) for row in rows]
         return await self._work.read(operation, guard=guard)
+
+    async def purge_retired_people(self, retired: Callable[[frozenset[str]], bool], *,
+                                   person: str | None = None) -> None:
+        """Erase all private reminders for a durably retired person, regardless of state."""
+        if self._verify_only:
+            raise RuntimeError("reminder_store_verify_only")
+        def operation(db):
+            if person is not None:
+                if not retired(frozenset({person})):
+                    raise PermissionError("account_retirement_required")
+                owners = [person]
+            else:
+                owners = [owner for (owner,) in db.execute(
+                    "SELECT DISTINCT user_id FROM reminders WHERE scope = 'private'")
+                    if retired(frozenset({owner}))]
+            db.executemany("DELETE FROM reminders WHERE scope = 'private' AND user_id = ?",
+                           ((owner,) for owner in owners))
+        await self._work.write(operation)
 
     async def cleanup_old(self, days: int = 30, *, guard: AuthorityGuard | None = None) -> int:
         """Commit deletion of old terminal reminders without recurrence."""

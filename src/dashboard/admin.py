@@ -12,6 +12,7 @@ import shutil
 import sqlite3
 import subprocess
 import threading
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from functools import partial
 
@@ -73,7 +74,8 @@ def _no_store(content: dict) -> JSONResponse:
     return JSONResponse(content=content, headers={"Cache-Control": "no-store"})
 
 
-async def _delete_account(work, current, authority, actor, user_manager, user_id, voice_registry):
+async def _delete_account(work, current, authority, actor, user_manager, user_id, voice_registry, *,
+                          retire_personal_tasks: Callable[[str], Awaitable[None]] | None = None):
     """Retain retirement and catalog commit together through observer cancellation."""
     retired: bool | None = False
     validator = partial(require_current, current)
@@ -104,6 +106,10 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
                                       frozenset({user_id}),authority.users_retired)
         step = output_registration.account_delete_step(work, user_manager, user_id, validator)
         try:
+            # Stay inside the retained before_account_remove sequence, after the
+            # durable mark and before handing off to the native catalog writer.
+            if retire_personal_tasks is not None:
+                await retire_personal_tasks(user_id)
             deleted, message = await work.native_step(user_manager.remove_user, user_id, before_save=validator)
         finally:
             if step is not None:
@@ -119,6 +125,7 @@ async def _delete_account(work, current, authority, actor, user_manager, user_id
                                   "credentials_retired": retired}) from error
     finally:
         work = current = authority = actor = user_manager = voice_registry = validator = step = None
+        retire_personal_tasks = None
         user_id = None
 
 
@@ -171,6 +178,7 @@ def register_admin_routes(
     configuration_changes=None,
     consent_gate: CloudConsentGate | None = None,
     observability_demo: bool = False,
+    retire_personal_tasks: Callable[[str], Awaitable[None]] | None = None,
 ) -> None:
     """Registrar /api/admin/*. Llamar antes del mount de StaticFiles.
 
@@ -267,7 +275,8 @@ def register_admin_routes(
         current = session_guard(request, frozenset({'admin:manage', 'auth:manage'}))
         try:
             return await run_admin_sequence(work, current, _delete_account,
-                                            work, current, authority, actor, user_manager, user_id, voice_registry)
+                                            work, current, authority, actor, user_manager, user_id, voice_registry,
+                                            retire_personal_tasks=retire_personal_tasks)
         except NativeAuthorityRetired as error:
             raise HTTPException(403, {"code": "dashboard_authority_retired", "credentials_retired": False}) from error
         except RuntimeError as error:

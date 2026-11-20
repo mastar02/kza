@@ -407,6 +407,11 @@ class DashboardAPI:
         self.ha = ha_client
         self.list_manager = list_manager
         self.reminder_manager = reminder_manager
+        self._task_stores = tuple(manager._store for manager in (list_manager, reminder_manager)
+                                  if manager is not None)
+        if isinstance(authority, DashboardAuthority):
+            for store in self._task_stores:
+                store.bind_person_verifier(authority.memory_owner_active)
         self.health_aggregator = health_aggregator
         self.reminder_scheduler = reminder_scheduler
         self.host = host
@@ -448,6 +453,10 @@ class DashboardAPI:
         )
         self.app.state.dashboard_authority = authority
         self.app.state.routine_proposals = routine_proposals
+        if isinstance(authority, DashboardAuthority) and self._task_stores:
+            # Verify-only never starts ASGI. Operational startup purges restored
+            # residue before it admits web requests.
+            self.app.add_event_handler("startup", self._purge_retired_personal_tasks)
         self.admin_work = ensure_admin_work(self.app)
         if self.capture_control is not None:
             self.capture_control.bind_enrollment_work(self.admin_work)
@@ -1317,6 +1326,7 @@ class DashboardAPI:
             configuration_changes=self.configuration_changes,
             consent_gate=self.consent_gate,
             observability_demo=self.observability_use_mocks,
+            retire_personal_tasks=self._purge_retired_personal_tasks if self._task_stores else None,
         )
         register_memory_routes(self.app, manager=self.memory_manager)
         register_memory_voice_routes(self.app, manager=self.memory_manager, room_available=lambda room_id: self._voice_room_available(room_id))
@@ -1515,6 +1525,18 @@ class DashboardAPI:
             except Exception:
                 if client in self._ws_clients:
                     self._ws_clients.remove(client)
+
+    async def _purge_retired_personal_tasks(self, person: str | None = None) -> None:
+        """Purge tasks after a durable account retirement, atomically per store.
+
+        The account retirement mark precedes both independent transactions.
+        It blocks projection after a partial failure. A retry or operational
+        startup reapplies the same idempotent purge before serving those rows.
+        """
+        if person is None and not self.authority.available:
+            return
+        for store in self._task_stores:
+            await store.purge_retired_people(self.authority.users_retired, person=person)
 
     async def start(self):
         """Iniciar servidor API"""

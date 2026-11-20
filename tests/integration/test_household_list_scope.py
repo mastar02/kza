@@ -1,5 +1,6 @@
 """Household list selection cannot acquire ownership from an acoustic identity."""
 
+import asyncio
 from contextlib import AsyncExitStack
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +13,7 @@ from src.lists.list_manager import ListManager
 from src.lists.list_store import ListStore, OwnerType
 from src.main import build_application
 from src.pipeline.command_event import CommandEvent
+from src.users.user_manager import PermissionLevel
 from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, OfflineWake, offline_config
 from tests.mocks.audio_output import AudioBackend
 from tests.mocks.task_transport import TaskTransport
@@ -139,8 +141,11 @@ async def test_actual_factory_voice_uses_shared_lists_without_private_homonym_fa
         async with AsyncExitStack() as stack:
             graph = await build_application(config, shutdown=stack, factories=factories)
             store = graph.list_manager._store
-            private = await store.create_list('compras', OwnerType.USER, 'unknown')
-            private_other = await store.create_list('pendientes', OwnerType.USER, 'known-profile')
+            users = graph.dashboard.user_manager
+            person, _ = await asyncio.to_thread(users.add_user, 'Synthetic person', PermissionLevel.ADULT)
+            other, _ = await asyncio.to_thread(users.add_user, 'Synthetic other', PermissionLevel.ADULT)
+            private = await store.create_list('compras', OwnerType.USER, person.user_id)
+            private_other = await store.create_list('pendientes', OwnerType.USER, other.user_id)
             await store.add_item(private.id, 'PRIVATE_UNKNOWN_ITEM_742')
             await store.add_item(private_other.id, 'PRIVATE_KNOWN_ITEM_921')
             shared = await store.create_list('compras', OwnerType.SHARED, None)
