@@ -36,23 +36,23 @@
     function renderSample() {
       if (!active) return;
       const row = store.snapshot()[0] || null, token = store.deliveryToken();
+      content.setAttribute('aria-busy', String(store.status() === 'loading'));
       if (row === rendered && token === renderedToken && (row || renderedStatus === store.status())) return;
       clearContent();
       if (!row) {
         const text = { loading: 'Consultando la modalidad elegida…', expired: 'La muestra venció. Actualizá las concesiones.',
           unavailable: 'La muestra ya no está disponible o no se pudo consultar.', closed: 'La consulta se cerró.' }[store.status()]
           || 'Elegí una muestra y tocá Consultar muestra.';
-        renderedStatus = store.status(); content.append(node('p', text, 'identity-empty')); return;
+        const message = node('p', text, 'identity-empty'); message.setAttribute('role', 'status');
+        renderedStatus = store.status(); content.append(message); return;
       }
       rendered = row; renderedToken = token;
       content.append(node('p', LABELS[row.modality], 'eyebrow'), node('p', 'Muestra autorizada para esta sesión.', 'identity-muted'),
         node('p', `Consulta vigente hasta ${new Date(row.expires_at * 1000).toLocaleString()}`, 'identity-muted'));
       if (row.modality === 'audio_preview') {
         const details = root.KzaVoicePrivacy.metadataDetails('audio', row.audio_metadata);
-        const audio = doc.createElement('audio'); audio.controls = true; audio.preload = 'none';
-        audio.style.width = '100%'; audio.style.maxWidth = '100%'; audio.style.minWidth = '0';
-        audio.setAttribute('aria-label', 'Escuchar audio breve de evaluación'); audio.src = row.audio_url;
-        store.attachMedia(audio); content.append(audio, node('p', `Audio breve · ${row.clip_duration_s.toFixed(1)} s`, 'identity-muted'));
+        const player = root.KzaVoicePrivacy.createSamplePlayer({ doc, store, row, preload: 'none', buttonClass: 'identity-primary' });
+        content.append(player, node('p', `Audio breve · ${row.clip_duration_s.toFixed(1)} s`, 'identity-muted'));
         content.append(...details.map(text => node('p', text, 'identity-muted')));
       } else {
         const details = root.KzaVoicePrivacy.metadataDetails('transcript', row.transcript_metadata);
@@ -81,6 +81,7 @@
       modes.value = state.selected?.modality || '';
       const locked = !state.ready || state.busy || choosing;
       choices.disabled = modes.disabled = locked || !grant; load.disabled = locked || !state.selected;
+      load.textContent = store.status() === 'loading' ? 'Consultando muestra…' : 'Consultar muestra';
       refresh.disabled = !state.ready || state.busy || choosing;
       status.textContent = state.status === 'real' ? (state.grants.length ? `${state.grants.length} ${state.grants.length === 1 ? 'concesión vigente' : 'concesiones vigentes'} en esta sesión.` : 'No hay concesiones vigentes para esta sesión.')
         : { waiting: 'Esperando el canal privado…', loading: 'Consultando concesiones…', expired: 'Las concesiones cambiaron. Actualizando…',
@@ -100,20 +101,23 @@
       finally { choosing = false; if (active) render(); }
     }
     choices.addEventListener('change', choose); modes.addEventListener('change', choose);
+    const onVisibility = () => { if (doc.hidden) controller.clearSample(); else store.check(); };
     form.addEventListener('submit', event => {
       event.preventDefault(); const state = controller.snapshot();
-      if (active && state.ready && !state.busy && !choosing && state.selected) controller.load();
+      if (active && !doc.hidden && state.ready && !state.busy && !choosing && state.selected) controller.load();
     });
     try {
       container.replaceChildren(heading, status, form, content, note);
       unsubscribe = controller.subscribe(render); unsubscribeStore = store.subscribe(render);
       render();
+      doc.addEventListener('visibilitychange', onVisibility);
     } catch (error) {
       active = false; unsubscribe(); unsubscribeStore(); clearContent(); container.replaceChildren(); throw error;
     }
     return () => {
       if (!active) return;
-      active = false; unsubscribe(); unsubscribeStore(); clearContent(); container.replaceChildren();
+      active = false; doc.removeEventListener('visibilitychange', onVisibility);
+      unsubscribe(); unsubscribeStore(); clearContent(); container.replaceChildren();
     };
   }
   const api = { mountEvaluation };

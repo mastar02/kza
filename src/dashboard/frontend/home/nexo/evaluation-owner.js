@@ -338,7 +338,7 @@
             return track(context, async () => { await context.store.retired(); return ready(context) && context.selected?.fingerprint_id === fingerprint && context.selected.modality === modality; });
           },
           load() {
-            if (!catalogueCurrent(context) || !context.selected || context.checks.size) return false;
+            if (!catalogueCurrent(context) || !context.selected || context.checks.size || context.store.status() === 'loading') return false;
             return context.channel.refresh(`${SAMPLE}${context.selected.fingerprint_id}?modality=${context.selected.modality}`);
           },
           clearSample() { context.channel.clearView(); context.store.setStatus('waiting'); },
