@@ -46,7 +46,8 @@ from src.pipeline.earcon_gate import should_play_earcon
 from src.pipeline.post_wake_endpoint import CaptureTrigger
 from src.pipeline.wake_verification import WakeVerifier
 from src.routines.voice_routines import (
-    ROUTINE_CREATE_REFUSAL, VoiceRoutineService, is_unclaimed_routine_creation,
+    ROUTINE_CREATE_REFUSAL, VoiceRoutineService, is_factual_question, is_unclaimed_routine_creation,
+    is_polite_scheduled_device_request,
 )
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
@@ -66,7 +67,9 @@ from src.nlu.llm_router import LLMCommandRouter
 from src.world.household_time import WEEKDAYS, parse_clock_query
 
 if TYPE_CHECKING:
+    from src.rooms.room_context import RoomContext
     from src.stt.whisper_fast import STTResult
+    from src.users.emotion_detector import EmotionResult
 
 logger = logging.getLogger(__name__)
 
@@ -1075,11 +1078,14 @@ class RequestRouter:
     ) -> tuple[AcceptanceDecision, bool]:
         """Admit a deferred routine's local refusal without admitting an action."""
         decision = self.command_gate.evaluate(text, stt_confidence=stt_confidence)
-        refusal_only = (
-            not decision.accept and decision.reason == "non_immediate:deferred"
-            and self.household_intents.classify(text) is None
-            and is_unclaimed_routine_creation(text, wake_words=self.household_intents.settings.wake_words)
-        )
+        refusal_only = False
+        if not decision.accept and decision.reason == "non_immediate:deferred":
+            household = self.household_intents.classify(text)
+            wake_words = self.household_intents.settings.wake_words
+            if household is None:
+                refusal_only = is_unclaimed_routine_creation(text, wake_words=wake_words)
+            elif household.family is HouseholdFamily.DEFERRED_ACTION:
+                refusal_only = is_polite_scheduled_device_request(text, wake_words=wake_words)
         if refusal_only:
             reply = self.command_gate.evaluate(text, stt_confidence=stt_confidence, reply_to_deferred_routine=True)
             if reply.reason != "gate_error":
@@ -1235,7 +1241,10 @@ class RequestRouter:
                 tv_signal=tv_signal, capture_trigger=capture_trigger, routine_guard=routine_guard,
             )
 
-        if await self._try_home_command(
+        wake_words = self.household_intents.settings.wake_words
+        refuse_routine = is_unclaimed_routine_creation(text, wake_words=wake_words)
+        factual_question = not refuse_routine and is_factual_question(text, wake_words=wake_words)
+        if not (refuse_routine or factual_question) and await self._try_home_command(
             text, result, room_id=room_id, pipeline_start=pipeline_start, extra_gate=tv_signal,
         ):
             return result
@@ -1263,7 +1272,9 @@ class RequestRouter:
         # Wake textual: el utterance YA contiene "nexa" (así matcheó). Grammar
         # lo marca full y ejecutaba luces fantasma; el 7B es el gate. El canal
         # textual no está en el presupuesto <300ms.
-        if textual_wake or borrowed_wake:
+        if factual_question:
+            grammar_cls = None
+        elif textual_wake or borrowed_wake:
             # T037-U5: a capture without its own wake (follow-up, barge-in,
             # unknown) never bypasses the 7B either, whatever wake score it carries.
             grammar_cls = None
@@ -1400,12 +1411,10 @@ class RequestRouter:
             # el texto → rechazo honesto (el usuario repite) en vez de acción
             # equivocada. grammar_backed implica verbo presente por construcción.
             from src.nlu.command_grammar import llm_intent_evidenced
-            if not grammar_backed and not llm_intent_evidenced(
+            if not factual_question and not grammar_backed and not llm_intent_evidenced(
                 classification.intent, text
             ):
-                if household is None and is_unclaimed_routine_creation(
-                    text, wake_words=self.household_intents.settings.wake_words,
-                ):
+                if refuse_routine:
                     return await self._refuse_routine(result, pipeline_start)
                 logger.info(
                     f"[LLMRouter] intent {classification.intent} sin verbo que "
@@ -1426,7 +1435,8 @@ class RequestRouter:
                 return result
             # Resultado válido — guardar para que el caller registre en history
             # tras dispatch exitoso (line ~480, post-orchestrator).
-            result["llm_classification"] = classification
+            if not factual_question:
+                result["llm_classification"] = classification
         elif borrowed_wake:
             # T037-U5-R1: with no LLMCommandRouter configured nothing can veto
             # a capture without its own wake, so it fails closed (as a weakly
@@ -1440,7 +1450,8 @@ class RequestRouter:
 
         # 1b. Confidence gate — low-confidence sensitive commands pide
         #     confirmación antes de dispatchar al orchestrator.
-        self._check_confidence_gate(text, result, speak=False)
+        if not factual_question:
+            self._check_confidence_gate(text, result, speak=False)
         if result.get("pending_confirmation"):
             await self._speak_response(result["response"])
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
@@ -1504,12 +1515,12 @@ class RequestRouter:
         target_entity_id = None
         # Target selection is deterministic after either the acoustic grammar
         # or the textual channel's LLM gate has accepted the command.
-        default_target = parse_default_light_target(text)
+        default_target = None if factual_question else parse_default_light_target(text)
         # T037-U5-R1: a light location the rooms cannot resolve asks, whatever
         # accepted the turn (grammar, 7B, or no model at all); a vector search
         # never guesses the light.
         if (
-            _dispatch_targets_light(text, result.get("llm_classification"))
+            not factual_question and _dispatch_targets_light(text, result.get("llm_classification"))
             and has_unresolved_light_location(text)
         ):
             result["intent"] = "unresolved_target"
@@ -2073,6 +2084,9 @@ class RequestRouter:
             household is not None and household.family is HouseholdFamily.ROUTINE
             and (household.operation is not HouseholdOperation.QUERY or self.voice_routines is None)
         )
+        factual_question = household is None and not refuse_routine and is_factual_question(
+            text, wake_words=self.household_intents.settings.wake_words,
+        )
         # Hold possible routine refusals here until the reader has had a chance
         # to answer, without passing the request to a home action producer.
         if not refuse_routine:
@@ -2080,7 +2094,7 @@ class RequestRouter:
                 result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
                 return result
 
-            if await self._try_home_command(
+            if not factual_question and await self._try_home_command(
                 text, result, room_id=room_id, pipeline_start=pipeline_start,
                 extra_gate=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
             ):
@@ -2146,6 +2160,8 @@ class RequestRouter:
             response = (ROUTINE_CREATE_REFUSAL if household is None or household.reason == "new_routine"
                         else "Todavía no manejo rutinas por voz. Podés verlas desde la web.")
             return await self._refuse_routine(result, pipeline_start, response)
+        if factual_question:
+            return await self._respond_legacy_conversation(text, result, room_id, room_context, emotion, pipeline_start)
 
         # 1b. Confidence gate — si confidence baja y combo sensible, pide
         #     confirmación en vez de ejecutar. Comandos sin intent/entity o
@@ -2410,7 +2426,13 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        # 9. Conversation with LLM/Router
+        return await self._respond_legacy_conversation(text, result, room_id, room_context, emotion, pipeline_start)
+
+    async def _respond_legacy_conversation(
+        self, text: str, result: dict, room_id: str | None, room_context: "RoomContext | None",
+        emotion: "EmotionResult | None", pipeline_start: float,
+    ) -> dict:
+        """Answer in the legacy conversation path without resolving an action."""
         result["intent"] = "conversation"
 
         use_deep = True

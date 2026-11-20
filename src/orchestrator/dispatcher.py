@@ -87,6 +87,7 @@ from src.routines.voice_routines import (
     RoutineReadKind,
     RoutineReadQuery,
     VoiceRoutineService,
+    is_factual_question,
     is_unclaimed_routine_creation,
 )
 from src.timers.named_timers import NamedTimerManager
@@ -1317,6 +1318,9 @@ class RequestDispatcher:
         # by the reasoner or treated as an immediate HA action.
         if is_unclaimed_routine_creation(text_lower, wake_words=self.household_intents.settings.wake_words):
             return PathType.FAST_ROUTINE, Priority.MEDIUM
+
+        if is_factual_question(text_lower, wake_words=self.household_intents.settings.wake_words):
+            return PathType.SLOW_LLM, Priority.LOW
 
         if service_filter in ("turn_on", "turn_off"):
             return PathType.FAST_DOMOTICS, Priority.HIGH

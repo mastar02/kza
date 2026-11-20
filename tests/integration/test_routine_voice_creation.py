@@ -164,23 +164,17 @@ async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(orches
     ("quiero que se riegue cada vez que anochezca", "verb_evidence"),
     ("quiero que pongas riego a las ocho", "verb_evidence"),
     ("necesito que me digas qué partido empieza a las ocho y que prendas las luces al salir el sol", "gate"),
+    ("quiero que me cuentes el resultado y pongas la luz al 50 por ciento al amanecer", "verb_evidence"),
+    ("quiero que me cuentes el resultado y dejes la luz al 50 por ciento al amanecer", "verb_evidence"),
+    ("después del último programa que vimos, ¿podés prender la luz a las ocho?", "gate"),
+    ("después del último programa que vimos, podes prender la luz a las ocho?", "gate"),
+    ("¿podés prender la luz a las ocho?", "gate"),
+    ("podes prender la luz a las ocho", "gate"),
 ])
 async def test_scheduled_programming_cannot_turn_on_an_authorized_light(
     orchestrated, utterance, orchestrated_stage, tmp_path,
 ):
-    selection = tmp_path / "selection.json"
-    write_selection(selection)
-    ha = ObservedHA()
-    actions = HomeActionService(ha, policy=HomeControlPolicy(selection_path=str(selection)))
-    async with voice_router(orchestrated, utterance, home_actions=actions) as (router, dispatcher):
-        command = {
-            "domain": "light", "service": "turn_on", "entity_id": "light.test_lamp",
-            "description": "luz de prueba", "similarity": 0.95,
-        }
-        router.chroma.search_command.return_value = command
-        router.chroma.asearch_command = AsyncMock(return_value=command)
-        classify = AsyncMock(return_value=CommandClassification(is_command=True, confidence=0.99, intent="turn_on"))
-        router.llm_command_router = SimpleNamespace(classify=classify)
+    async with authorized_light_router(orchestrated, utterance, tmp_path) as (router, dispatcher, ha, classify):
         event = CommandEvent(
             np.zeros(16000, dtype=np.float32), room_id="", capture_trigger="wake", wake_score=0.9,
             textual_wake=True,
@@ -204,6 +198,57 @@ async def test_scheduled_programming_cannot_turn_on_an_authorized_light(
         )
         assert not router.chroma.mock_calls and not router.llm.mock_calls
         dispatcher._slow_path.assert_not_called()
+
+
+@asynccontextmanager
+async def authorized_light_router(orchestrated, utterance, tmp_path):
+    selection = tmp_path / "selection.json"
+    write_selection(selection)
+    ha = ObservedHA()
+    actions = HomeActionService(ha, policy=HomeControlPolicy(selection_path=str(selection)))
+    async with voice_router(orchestrated, utterance, home_actions=actions) as (router, dispatcher):
+        command = {
+            "domain": "light", "service": "turn_on", "entity_id": "light.test_lamp",
+            "description": "luz de prueba", "similarity": 0.95,
+        }
+        router.chroma.search_command.return_value = command
+        router.chroma.asearch_command = AsyncMock(return_value=command)
+        classify = AsyncMock(return_value=CommandClassification(is_command=True, confidence=0.99, intent="turn_on"))
+        router.llm_command_router = SimpleNamespace(classify=classify)
+        yield router, dispatcher, ha, classify
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("orchestrated", [True, False])
+@pytest.mark.parametrize("utterance", [
+    "necesito que me digas a qué hora prenden las luces del estadio",
+    "necesito que me digas a qué hora prenden las luces del estadio y apagan el marcador",
+    "necesito que me digas a qué hora prenden las luces del estadio y ponen la música",
+    "necesito que me digas qué partido empieza a las ocho",
+    "quiero que me cuentes qué pasa cada vez que hay un empate",
+    "después del último programa que vimos, ¿a las ocho entregaron el premio?",
+    "después del último programa que vimos, a las ocho entregaron el premio?",
+])
+async def test_factual_questions_cannot_turn_on_an_authorized_light(orchestrated, utterance, tmp_path):
+    async with authorized_light_router(orchestrated, utterance, tmp_path) as (router, dispatcher, ha, classify):
+        dispatcher._slow_path = AsyncMock(return_value=DispatchResult(
+            PathType.SLOW_LLM, Priority.LOW, True, "Respuesta sintética.", intent="conversation",
+        ))
+        event = CommandEvent(
+            np.zeros(16000, dtype=np.float32), room_id="", capture_trigger="wake", wake_score=0.9,
+            textual_wake=True,
+        )
+
+        result = await router.process_command(event)
+
+        assert ha.sends == ha.reads == []
+        assert (result["intent"], result["outcome"]["status"]) == ("conversation", "completed")
+        assert not router.chroma.mock_calls
+        if orchestrated:
+            classify.assert_awaited_once()
+            dispatcher._slow_path.assert_awaited_once()
+        else:
+            classify.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -276,8 +321,6 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
         if orchestrated:
             assert result["path"] == "slow_llm"
             dispatcher._slow_path.assert_awaited_once()
-        else:
-            router.chroma.search_command.assert_called()
 
 
 @pytest.mark.parametrize("utterance", [

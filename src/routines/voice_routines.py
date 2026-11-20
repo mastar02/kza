@@ -31,6 +31,7 @@ from src.core.task_outcome import (
 from src.memory.fact_ledger import MemoryOrigin, MemorySource
 from src.nlu.command_grammar import WAKE_TERMS, extract_entity, match_intent_rules
 from src.nlu.household_intents import HouseholdFamily, HouseholdIntent, HouseholdOperation, strip_fillers
+from src.nlu.slot_extractor import classify_intent
 from src.routines.models import (
     ActionStatus, BrakeStatus, RoutineBrake, RoutineConflict, RoutineNameConflict, RoutineNotFound, RoutineRun,
     RunStatus, ScheduledRoutine, TimeSchedule,
@@ -44,7 +45,8 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "ROUTINE_CREATE_REFUSAL", "RoutineCatalogEntry", "RoutineProposalResult", "RoutineReadKind", "RoutineReadQuery",
-    "RoutineReadResult", "VoiceRoutineService", "is_unclaimed_routine_creation",
+    "RoutineReadResult", "VoiceRoutineService", "is_factual_question", "is_polite_scheduled_device_request",
+    "is_unclaimed_routine_creation",
 ]
 
 ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
@@ -108,7 +110,8 @@ _PROGRAM_PAST_RELATIVE = (
     r"(?:vi|viste|vio|vimos|vieron|(?:grab|escuch|mir)(?:é|aste|o|amos|aron)"
     r"|gan(?:o|aron)(?: (?:el|un) premio)?"
     r"|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron)|estren(?:o|aron)))"
-    r"\b(?P<past_program_tail>[^¿?!.;]*)"
+    r"\b(?P<past_program_tail>[^¿?!.;]*)(?:¿ *(?P<past_program_question>[^¿?!.;]*))?"
+    r"(?P<past_program_question_mark>\?)?"
 )
 # A prospective relative can still be the complement of "programa que".
 # Require a conversational clause or a clearly separated question.
@@ -158,6 +161,19 @@ _INFORMATION_COMPLEMENT = re.compile(
     rf"(?:si|(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE}))\b"
 )
 _IRRIGATION_ACTION = re.compile(r"\b(?:rieg(?:a[sn]?|ue[sn]?)|regar|(?:pon\w*|activ\w*) (?:el )?riego)\b")
+_CONTROL_CLAUSE_SEPARATOR = re.compile(r"\b(?:y|e|pero|ademas|luego|despues)\b|[,;¿]")
+_COURTESY_MODAL = r"(?:podes|puedes|podrias|podria)"
+_COURTESY_HEAD = re.compile(rf"(?:(?:me|te|nos) +)?{_COURTESY_MODAL}\b")
+_CONTROL_HEAD = re.compile(
+    rf"(?:(?:que|me|te|nos|le|les|se|{_COURTESY_MODAL}|por favor) +)*"
+    r"(?:(?P<object>lo|la|los|las) +)?(?P<verb>[a-z]+)\b"
+)
+_CONTROL_VERB = re.compile(
+    r"(?:prend|encend|sub|abr)(?:e|er|i|ir|a[sn]?)|enciend(?:e|a[sn]?)|cierr(?:a|e[sn]?)"
+    r"|(?:apag|baj|cerr|activ|desactiv|dej|ajust|regul|bloque|desbloque|cambi|ilumin|cort)(?:a|ar|e[sn]?)"
+    r"|apague[sn]?|pon(?:er|e|g[ae][sn]?)?"
+)
+_CONTROL_ENTITY = re.compile(r"\b(?:riego|puertas?|porton|cerraduras?|aspersores?|enchufes?)\b")
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
 _PLURAL_NOUNS = frozenset({"rutinas", "automatizaciones"})
@@ -351,8 +367,32 @@ def _words(text: str) -> list[str]:
     return re.sub(r"[^a-z0-9]+", " ", _fold(text)).split()
 
 
+def _fold_program_text(original: str) -> str:
+    # Keep clause punctuation and the accented preterite until nominal filtering.
+    return " ".join("".join(
+        part.lower() if index % 2 else _fold(part)
+        for index, part in enumerate(_ACCENTED_MEDIA_PRETERITE.split(original))
+    ).split())
+
+
 def _has_device_action(text: str) -> bool:
-    return bool(match_intent_rules(text, extract_entity(text)) or _IRRIGATION_ACTION.search(text))
+    # Check the verb at the beginning of each request or coordinated clause.
+    # A verb inside a factual question ("a qué hora prenden las luces") is its topic.
+    for clause in _CONTROL_CLAUSE_SEPARATOR.split(text):
+        clause = clause.strip()
+        head = _CONTROL_HEAD.match(clause)
+        if head is None:
+            continue
+        verb = head["verb"]
+        target = text if head["object"] else clause
+        # The broad slot classifier also accepts indicative forms such as "ponen".
+        # Require the explicit verb pattern for conjugated forms ending in o/s/n.
+        action_verb = _CONTROL_VERB.fullmatch(verb) or (not verb.endswith(("o", "s", "n")) and classify_intent(verb))
+        if _IRRIGATION_ACTION.match(clause, head.start("verb")) or (
+            action_verb and (extract_entity(target) or _CONTROL_ENTITY.search(target))
+        ):
+            return True
+    return False
 
 
 def _is_informational_complement(text: str) -> bool:
@@ -365,20 +405,53 @@ def _is_informational_complement(text: str) -> bool:
 
 def _mask_nominal_program(match: re.Match[str]) -> str:
     tail = match["past_program_tail"]
+    question = match["past_program_question"]
+    if question and (_PROGRAM_EXPLICIT_DIRECTIVE.search(question) or _has_device_action(question)):
+        return match[0]
     if tail:
         continuation = tail.lstrip(" ,")
         request = _SUBORDINATE_REQUEST.fullmatch(continuation)
         if request and _is_informational_complement(request["complement"]):
             return " "
-        if _PROGRAM_EXPLICIT_DIRECTIVE.search(tail) or _ROUTINE_SCHEDULE.search(tail):
+        if _PROGRAM_EXPLICIT_DIRECTIVE.search(tail) or _has_device_action(tail):
+            return match[0]
+        if not match["past_program_question_mark"] and (_ROUTINE_SCHEDULE.search(tail) or re.search(r"\briego\b", tail)):
             return match[0]
     # Neither a past media verb nor a comma makes an embedded device action nominal.
-    continuation = tail or match["unmarked_program_question"]
+    continuation = match["unmarked_program_question"]
     if continuation and (
         match_intent_rules(continuation, extract_entity(continuation)) or re.search(r"\briego\b", continuation)
     ):
         return match[0]
     return " "
+
+
+def is_factual_question(text: str, *, wake_words: Iterable[str] = ()) -> bool:
+    """Recognize factual questions in information requests or after a past-program relative."""
+    original = unicodedata.normalize("NFC", text)
+    phrase = " ".join(strip_fillers(original, wake_words, extra_leads=_LEADS))
+    requests = tuple(_SUBORDINATE_REQUEST.finditer(phrase))
+    if requests and requests[0].start() == 0 and all(
+        _is_informational_complement(request["complement"]) for request in requests
+    ):
+        return True
+    if not original.rstrip().endswith("?"):
+        return False
+    folded = _fold_program_text(original)
+    return any(
+        match.end("past_program_question_mark") == len(folded) and _mask_nominal_program(match) == " "
+        for match in _NOMINAL_PROGRAM.finditer(folded)
+    )
+
+
+def is_polite_scheduled_device_request(text: str, *, wake_words: Iterable[str] = ()) -> bool:
+    """Recognize an independent, polite request to control a device later."""
+    # The household filler rule strips "podés" along with the wake word.
+    words = _words(text)
+    leads = _LEADS | set(_words(" ".join(wake_words)))
+    start = next((index for index, word in enumerate(words) if word not in leads), len(words))
+    phrase = " ".join(words[start:])
+    return bool(_COURTESY_HEAD.match(phrase) and _ROUTINE_SCHEDULE.search(phrase) and _has_device_action(phrase))
 
 
 def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) -> bool:
@@ -394,11 +467,7 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     # A question that leads with an interrogative can mention a configuration verb.
     if _QUESTION_OPENING.match(phrase):
         return False
-    # Preserve clause punctuation on either side of "programa" until nominal filtering.
-    parts = _ACCENTED_MEDIA_PRETERITE.split(original)
-    folded = " ".join("".join(
-        part.lower() if index % 2 else _fold(part) for index, part in enumerate(parts)
-    ).split())
+    folded = _fold_program_text(original)
     without_nominal_programs = _NOMINAL_PROGRAM.sub(_mask_nominal_program, folded)
     command_text = phrase
     if without_nominal_programs != folded:
@@ -408,6 +477,8 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
     if _ROUTINE_DIRECTIVE.search(command_text) or (
         names_routine and (voseo_program or _CONFIGURATION_VERB.search(command_text))
     ):
+        return True
+    if _ROUTINE_SCHEDULE.search(command_text) and _has_device_action(command_text):
         return True
     informational = False
     for request in _SUBORDINATE_REQUEST.finditer(command_text):
