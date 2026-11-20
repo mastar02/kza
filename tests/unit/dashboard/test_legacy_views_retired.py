@@ -106,7 +106,7 @@ def test_retirement_changes_no_permission():
         ("GET", "/api/home/microphones"): {"diagnostics:read"},
         ("GET", "/api/routines"): {"home:read"},
         ("POST", "/api/routines"): {"routines:manage"},
-        ("POST", "/api/routines/r1/execute"): {"routines:manage"},
+        ("POST", "/api/routines/r1/execute"): {"home:control", "routines:manage"},
         ("GET", "/api/routines/r1/runs/x"): {"routines:manage"},
         ("GET", "/api/memory"): {"memory:read"},
         ("POST", "/api/memory/proposals/p1/confirm"): {"memory:review"},

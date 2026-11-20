@@ -172,11 +172,15 @@ test('routine routes mirror the effective server requirement and refuse unmapped
     ['GET', '/api/routines/r1/attempts?request_id=x'],
   ];
   const attempt = async () => { const allowed = []; for (const [method, path] of routes) { try { await api(path, { method }); allowed.push(`${method} ${path}`); } catch (error) { assert.equal(error.sent, false); } } return allowed; };
+  const householdReads = ['GET /api/routines', 'GET /api/routines/r1'];
+  const receipts = ['GET /api/routines/r1/runs/run1', 'GET /api/routines/r1/attempts?request_id=x'];
   session.accept(identity(['home:read', 'home:control', 'routines:execute'], 'home'));
-  assert.deepEqual(await attempt(), ['GET /api/routines', 'GET /api/routines/r1']);
-  // A role label never substitutes a permission: an 'operator' without routines:manage gets the same refusals.
+  assert.deepEqual(await attempt(), [...householdReads, 'POST /api/routines/r1/execute', ...receipts]);
+  session.accept(identity(['home:read', 'routines:execute'], 'home'));
+  assert.deepEqual(await attempt(), [...householdReads, ...receipts]);
+  // The role label grants no additional operations.
   session.accept(identity(['home:read', 'home:control'], 'operator'));
-  assert.deepEqual(await attempt(), ['GET /api/routines', 'GET /api/routines/r1']);
+  assert.deepEqual(await attempt(), householdReads);
   session.accept(identity(['home:read', 'routines:manage'], 'operator'));
   assert.ok(!(await attempt()).includes('POST /api/routines/r1/execute'), 'execute also needs home:control');
   session.accept(identity(['home:read', 'routines:manage', 'home:control'], 'operator'));

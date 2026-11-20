@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const home = require('../../src/dashboard/frontend/home/home.js');
 const routines = require('../../src/dashboard/frontend/home/nexo/routine-owner.js');
+const { createScopedApi, createSession } = require('../../src/dashboard/frontend/home/nexo/state.js');
 
 const TZ = 'America/Montevideo';
 const lamp = { entity_id: 'light.test_lamp', name: 'Luz principal', domain: 'light', capabilities: ['turn_on', 'turn_off', 'color_temp_kelvin', 'brightness'],
@@ -11,6 +12,7 @@ const ac = { entity_id: 'climate.test_ac', domain: 'climate', available: true, s
 const spec = (name = 'Noche') => ({ name, description: '', enabled: true, timezone: TZ, schedule: null, conditions: [], actions: [{ entity_id: lamp.entity_id, operation: 'turn_on' }] });
 const failure = (status, detail, extra = {}) => Object.assign(new Error('synthetic'), { status, detail, ...extra });
 const MANAGER = ['home:read', 'home:control', 'routines:manage'];
+const HOUSEHOLD = ['home:read', 'home:control', 'routines:execute'];
 
 function memoryStorage() {
   const map = new Map();
@@ -22,19 +24,21 @@ function session(permissions = MANAGER, subject = 'synthetic-operator') { const 
 /** Minimal server with the store semantics the owner relies on (CAS, actor-scoped idempotent claims). */
 function fakeServer() {
   // `subject` is the account the shared cookie names now (what whoami answers).
-  const server = { routines: new Map(), runs: new Map(), calls: [], hooks: [], serial: 0, subject: 'synthetic-operator' };
+  const server = { routines: new Map(), runs: new Map(), calls: [], hooks: [], serial: 0, subject: 'synthetic-operator', permissions: MANAGER };
+  const attemptKey = (routineId, requestId) => JSON.stringify([routineId, server.subject, requestId]);
+  const canReadRun = run => run && (server.permissions.includes('routines:manage') || run.source === 'manual' && run.actor === server.subject);
   server.add = (definition, extra = {}) => {
     const id = 'r' + (++server.serial);
     server.routines.set(id, { routine_id: id, revision: 1, created_by: 'synthetic-operator', created_at: '2026-11-10T00:00:00Z', ...JSON.parse(JSON.stringify(definition)), latest_run: null, ...extra });
     return server.routines.get(id);
   };
-  server.run = (routineId, status, actions) => ({ run_id: 'run' + (++server.serial), routine_id: routineId, occurrence_key: '[]', actor: 'synthetic-operator', source: 'manual', status,
+  server.run = (routineId, status, actions) => ({ run_id: 'run' + (++server.serial), routine_id: routineId, occurrence_key: '[]', actor: server.subject, source: 'manual', status,
     snapshot: {}, scheduled_for: null, reason: null, actions: actions || [{ index: 0, entity_id: lamp.entity_id, status: status === 'running' ? 'pending' : 'confirmed', reason: null }] });
   server.handle = (path, options = {}) => {
     const method = options.method || 'GET', url = new URL(path, 'http://x'), parts = url.pathname.split('/').filter(Boolean);
-    if (url.pathname === '/api/admin/auth/whoami') { if (!server.subject) throw failure(401, 'not_authenticated'); return { ok: true, role: 'operator', permissions: MANAGER, subject: server.subject }; }
+    if (url.pathname === '/api/admin/auth/whoami') { if (!server.subject) throw failure(401, 'not_authenticated'); return { ok: true, role: server.permissions.includes('routines:manage') ? 'operator' : 'home', permissions: server.permissions, subject: server.subject }; }
     if (url.pathname === '/api/home/catalog') return { rooms: [], entities: [lamp, ac], unassigned_entities: [] };
-    if (url.pathname === '/api/routines' && method === 'GET') return [...server.routines.values()].map(item => JSON.parse(JSON.stringify(item)));
+    if (url.pathname === '/api/routines' && method === 'GET') return [...server.routines.values()].map(item => JSON.parse(JSON.stringify({ ...item, latest_run: canReadRun(item.latest_run) ? item.latest_run : null })));
     if (url.pathname === '/api/routines' && method === 'POST') { const created = server.add(options.body); return JSON.parse(JSON.stringify(created)); }
     if (url.pathname === '/api/routines/preview') return JSON.parse(JSON.stringify(options.body));
     const routine = server.routines.get(parts[2]);
@@ -53,7 +57,7 @@ function fakeServer() {
       routine.enabled = tail === 'enable'; routine.revision++; return JSON.parse(JSON.stringify(routine));
     }
     if (tail === 'execute') {
-      const key = routine.routine_id + ':' + options.body.request_id;
+      const key = attemptKey(routine.routine_id, options.body.request_id);
       if (!server.runs.has(key)) {
         if (!routine.enabled) throw failure(409, 'routine_disabled');
         const run = server.run(routine.routine_id, 'succeeded'); server.runs.set(key, run); routine.latest_run = run;
@@ -61,10 +65,10 @@ function fakeServer() {
       return JSON.parse(JSON.stringify(server.runs.get(key)));
     }
     if (tail === 'attempts') {
-      const run = server.runs.get(routine.routine_id + ':' + url.searchParams.get('request_id'));
+      const run = server.runs.get(attemptKey(routine.routine_id, url.searchParams.get('request_id')));
       if (!run) throw failure(404, 'routine_not_found'); return JSON.parse(JSON.stringify(run));
     }
-    if (parts[3] === 'runs') { const run = [...server.runs.values(), routine.latest_run].find(item => item?.run_id === parts[4]); if (!run) throw failure(404, 'routine_not_found'); return JSON.parse(JSON.stringify(run)); }
+    if (parts[3] === 'runs') { const run = [...server.runs.values(), routine.latest_run].find(item => item?.run_id === parts[4] && item.routine_id === routine.routine_id); if (!canReadRun(run)) throw failure(404, 'routine_not_found'); return JSON.parse(JSON.stringify(run)); }
     throw failure(404, 'not_found');
   };
   server.api = async (path, options = {}) => {
@@ -355,22 +359,57 @@ test('LD4/LD12: list and catalog keep separate status; the catalog is refreshed 
   assert.equal(server.calls.filter(call => call.path === '/api/home/catalog').length, catalogReads + 1);
 });
 
-test('LD1/LD6/F14: household and role-labelled sessions are gated by permission; household polling reads only the list', async () => {
-  const server = fakeServer(); const routine = server.add(spec()); routine.latest_run = server.run(routine.routine_id, 'running');
+test('T033-U6: household capabilities allow execution and polling of own receipts while management stays closed', async () => {
+  const server = fakeServer(); const routine = server.add(spec());
+  routine.latest_run = { ...server.run(routine.routine_id, 'running'), actor: 'other-account' };
+  server.permissions = HOUSEHOLD; server.subject = 'household-a';
+  const identity = createSession({ wall: () => 0, monotonic: () => 0 });
+  identity.accept({ ok: true, role: 'home', permissions: HOUSEHOLD, subject: server.subject, expires_at: 60 });
+  const api = createScopedApi({ session: identity, transport: server.api });
+  const handle = server.handle;
+  server.handle = (path, options) => {
+    const value = handle(path, options);
+    if (path.endsWith('/execute')) { routine.latest_run.status = 'running'; return { ...value, status: 'running' }; }
+    return value;
+  };
   let scheduled = null;
-  const household = routines.createRoutineOwner({ api: server.api, session: session(['home:read', 'home:control', 'routines:execute']), storage: memoryStorage(),
-    schedule: callback => { scheduled = callback; return 1; }, cancel: () => {} });
+  const household = routines.createRoutineOwner({ api, session: identity, storage: memoryStorage(),
+    makeId: () => 'home-attempt', schedule: callback => { scheduled = callback; return 1; }, cancel: () => {} });
   await household.open(); await household.refresh();
-  assert.deepEqual(household.getState().capabilities, { read: true, manage: false, execute: false });
-  assert.deepEqual(await household.execute('r1'), { sent: false });
+  assert.deepEqual(household.getState().capabilities, { read: true, manage: false, consult: true, execute: true });
+  assert.equal(household.getState().routines[0].latest_run, null);
+  assert.equal(scheduled, null, 'a foreign running receipt is not polled');
   assert.equal(household.newDraft(), false); assert.equal(household.edit('r1'), false);
   assert.deepEqual(await household.setEnabled('r1', false), { ok: false }); assert.deepEqual(await household.remove('r1'), { ok: false });
+  const { sent, run } = await household.execute('r1');
+  assert.equal(sent, true); assert.equal(run.status, 'running');
   assert.ok(scheduled, 'a running receipt is polled');
+  routine.latest_run.status = 'succeeded';
   const before = server.calls.length; await scheduled();
-  assert.ok(server.calls.slice(before).every(call => call.method === 'GET' && ['/api/routines', '/api/home/catalog'].includes(call.path)), 'no runs/attempts reads without routines:manage');
+  assert.ok(server.calls.slice(before).some(call => call.path === '/api/routines/r1/runs/' + run.run_id));
+  assert.equal(household.getState().attempts.r1.state, 'terminal');
   const labelled = routines.createRoutineOwner({ api: server.api, session: session(['home:read', 'home:control']), storage: memoryStorage(), schedule: () => 1, cancel: () => {} });
-  assert.deepEqual(labelled.capabilities(), { read: true, manage: false, execute: false });
-  assert.equal(server.calls.filter(call => call.method !== 'GET').length, 0);
+  assert.deepEqual(labelled.capabilities(), { read: true, manage: false, consult: false, execute: false });
+  assert.deepEqual(server.calls.filter(call => call.method !== 'GET').map(call => call.path), ['/api/routines/r1/execute']);
+});
+
+test('T033-U6: household consults a lost response by attempt and retries with the same account and ID', async () => {
+  for (const recover of [instance => instance.consult('r1'), instance => instance.retryAttempt('r1')]) {
+    const server = fakeServer(); server.add(spec()); server.permissions = HOUSEHOLD; server.subject = 'household-a';
+    const { instance, storage } = await opened({ server, permissions: HOUSEHOLD, subject: server.subject });
+    server.hooks.push({ method: 'POST', path: '/api/routines/r1/execute', mode: 'drop' });
+    assert.equal((await instance.execute('r1')).uncertain, true);
+    const pending = JSON.parse(storage.getItem(routines.PREFIX + 'r1'));
+    assert.equal(pending.subject, 'household-a');
+    const before = server.calls.length;
+    await recover(instance);
+    const [whoami, request] = server.calls.slice(before);
+    assert.equal(whoami.path, '/api/admin/auth/whoami');
+    if (request.method === 'POST') assert.equal(request.body.request_id, pending.request_id);
+    else assert.equal(request.path, '/api/routines/r1/attempts?request_id=' + pending.request_id);
+    assert.equal(server.runs.size, 1);
+    assert.equal(instance.getState().attempts.r1.state, 'terminal');
+  }
 });
 
 test('responses that arrive after a session boundary are ignored and never re-persist identities', async () => {
@@ -571,13 +610,11 @@ test('R6: closing the editor during an uncertain save keeps the draft for recove
 });
 
 /** Probe 2B: the cookie switches to another account while this tab keeps its cached session. */
-async function takenOver() {
+async function takenOver(permissions = MANAGER) {
   const server = fakeServer(); server.add(spec()); server.subject = 'operator-a';
-  // Server claims are actor-scoped: the same request_id under another cookie is a new run.
-  const handle = server.handle;
-  server.handle = (path, options = {}) => (path.endsWith('/execute') ? handle(path, { ...options, body: { request_id: server.subject + ':' + options.body.request_id } }) : handle(path, options));
+  server.permissions = permissions;
   const storage = memoryStorage(); let changed = 0;
-  const instance = routines.createRoutineOwner({ api: server.api, session: session(MANAGER, 'operator-a'), storage, makeId: () => 'id-a', schedule: () => 1, cancel: () => {},
+  const instance = routines.createRoutineOwner({ api: server.api, session: session(permissions, 'operator-a'), storage, makeId: () => 'id-a', schedule: () => 1, cancel: () => {},
     onAccountChanged: () => { changed++; } });
   await instance.open(); await instance.refresh();
   server.hooks.push({ method: 'POST', path: '/api/routines/r1/execute', mode: 'drop' });
@@ -603,16 +640,17 @@ test('R2b: returning to a hidden tab after another tab switched accounts sends n
 });
 
 test('R2b: a retry or a consult confirms the account first even without leaving the view', async () => {
-  for (const act of [instance => instance.retryAttempt('r1'), instance => instance.consult('r1')]) {
-    const { instance, server, changed } = await takenOver();
-    const before = server.calls.length;
-    await act(instance);
-    const after = server.calls.slice(before);
-    assert.equal(after[0]?.path, '/api/admin/auth/whoami');
-    assert.ok(!after.some(call => call.path.includes('/execute') || call.path.includes('/attempts')), 'nothing about the attempt is sent under the other account');
-    assert.equal(server.runs.size, 1);
-    assert.equal(changed(), 1);
-    assert.deepEqual(instance.getState().attempts, {});
+  for (const permissions of [MANAGER, HOUSEHOLD]) {
+    for (const act of [instance => instance.retryAttempt('r1'), instance => instance.consult('r1')]) {
+      const { instance, server, changed } = await takenOver(permissions);
+      const before = server.calls.length;
+      await act(instance);
+      const after = server.calls.slice(before);
+      assert.deepEqual(after.map(call => call.path), ['/api/admin/auth/whoami']);
+      assert.equal(server.runs.size, 1);
+      assert.equal(changed(), 1);
+      assert.deepEqual(instance.getState().attempts, {});
+    }
   }
 });
 

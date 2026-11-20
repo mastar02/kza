@@ -5,6 +5,7 @@
   const isNode = typeof module !== 'undefined' && module.exports;
   const home = isNode ? require('../home.js') : root.HomeUI;
   const { newRequestId } = isNode ? require('../request-id.js') : root.HomeRequestIdentity;
+  const { canReadRoutineRuns, canExecuteRoutine } = isNode ? require('./state.js') : root.NexoState;
   // The retired legacy page used this prefix without a subject; such records (still possible
   // in a tab of the installed release) are treated as foreign below, never restored.
   const PREFIX = 'kza:routine-attempt:';
@@ -137,8 +138,8 @@
         catalogStatus: { loading: false, observedAt: null, error: null }, attempts: {}, writes: {}, notices: {}, draft: null, announcement: null };
     }
     function capabilities() {
-      const manage = session.can('routines:manage');
-      return { read: session.can('home:read'), manage, execute: manage && session.can('home:control') };
+      return { read: session.can('home:read'), manage: session.can('routines:manage'),
+        consult: canReadRoutineRuns(session.can), execute: canExecuteRoutine(session.can) };
     }
     function emit() { for (const listener of [...listeners]) listener(); }
     function announce(text) { state.announcement = { serial: ++serial, text }; }
@@ -311,7 +312,7 @@
       timer = schedule(async () => {
         timer = undefined;
         if (!opened || ticket !== epoch) return;
-        if (capabilities().manage) {
+        if (capabilities().consult) {
           for (const item of [...state.routines]) {
             if (state.attempts[item.routine_id]?.state === 'active' || item.latest_run?.status === 'running') await consult(item.routine_id, true);
           }
@@ -407,7 +408,7 @@
     /** Polls are quiet (no disabled controls); a user consult marks the routine busy. */
     async function consult(id, polling = false) {
       if (!opened || consulting.has(id) || busy.has(id) || !find(id)) return;
-      if (!capabilities().manage) return refresh();
+      if (!capabilities().consult) return refresh();
       const attempt = state.attempts[id], latest = find(id).latest_run;
       // A poll follows an active own attempt, otherwise the running latest receipt.
       const followAttempt = Boolean(attempt) && (!polling || attempt.state === 'active');
@@ -419,6 +420,7 @@
       try {
         if (followAttempt) {
           // An own attempt is only consulted under the account that made it.
+          if (attempt.subject !== subject()) { accountChanged(); return; }
           const account = await confirmAccount();
           if (ticket !== epoch) return;
           if (account === 'changed') { accountChanged(); return; }
