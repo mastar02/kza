@@ -38,7 +38,7 @@ from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.orchestrator.compound import CompoundPartContext, CompoundRunner
 from src.orchestrator.dispatcher import (
-    DispatchResult, compound_dispatch_result, compound_part_target, has_domotics_action_verb,
+    DispatchResult, compound_dispatch_result, compound_part_target, has_domotics_action_verb, notification_dnd_refusal,
 )
 from src.orchestrator.priority_queue import Priority
 from src.pipeline.earcon_gate import should_play_earcon
@@ -1014,6 +1014,11 @@ class RequestRouter:
             return AcceptanceDecision(False, "legacy_routine_control", gate_decision.signals)
         if self.voice_routines is not None and self.voice_routines.claims_proposal(household):
             return gate_decision
+        if household is not None:
+            if household.family is HouseholdFamily.INTERCOM:
+                return AcceptanceDecision(False, "legacy_household_voice", gate_decision.signals)
+            if household.family is HouseholdFamily.NOTIFICATION:
+                return gate_decision
         if (gate_decision.signals or {}).get("ring_stop") is True:
             # T030-U2b: the legacy timer commands do not stop a ring, so a bare "listo" stays noise here.
             return AcceptanceDecision(False, "noise_phrase:'listo'", gate_decision.signals)
@@ -1177,10 +1182,7 @@ class RequestRouter:
             self._asr_signals(gate_decision.signals), wake_score, wake_rms,
             sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
         )
-        # T037-U6: an accepted turn (a barge-in included) stops the remaining
-        # parts of a compound still running in this room.
-        self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
-        await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
+        await self._begin_accepted_turn(room_id, household)
 
         if not (routine_control or routine_proposal) and await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
@@ -1667,6 +1669,17 @@ class RequestRouter:
         if callable(drop) and drop(room_id) is True:
             logger.info("[Household] reminder choice dropped by another turn room=%s", room_id)
 
+    async def _begin_accepted_turn(self, room_id: str | None, household: HouseholdIntent | None) -> None:
+        """Interrupt the room for a new turn; a known intercom replay only reads its receipt."""
+        request_id = CURRENT_REQUEST_ID.get()
+        if request_id is not None and household is not None:
+            check_replay = getattr(self._orchestrator, "is_intercom_replay", None)
+            if callable(check_replay) and check_replay(request_id, household) is True:
+                return
+        # T037-U6: a new accepted turn stops the remaining compound parts in this room.
+        self._room_turns[room_id] = self._room_turns.get(room_id, 0) + 1
+        await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
+
     async def _process_household_turn(self, text: str, household: HouseholdIntent | None, result: dict, *, cmd,
                                       audio, room_id: str | None, pipeline_start: float, tv_signal: bool,
                                       capture_trigger: str | None = None,
@@ -1764,7 +1777,6 @@ class RequestRouter:
         run = await self._compound.run(household.parts, run_part,
                                        interrupted=lambda: self._room_turns.get(room_id, 0) != started,
                                        part_target=compound_part_target)
-        result["compound_parts"] = [report.summary() for report in run.reports]
         return await self._finish_orchestrated_turn(
             compound_dispatch_result(run), result, text=text, zone_id=zone_id, room_context=room_context,
             emotion=cmd.emotion, pipeline_start=pipeline_start)
@@ -1877,6 +1889,12 @@ class RequestRouter:
                 turn.response_requirement = dispatch_result.response_requirement
         if isinstance(dispatch_result.receipt, HomeActionResult):
             result["receipt"] = asdict(dispatch_result.receipt)
+        intercom_receipt = getattr(dispatch_result, "intercom_receipt", None)
+        if intercom_receipt is not None:
+            result["intercom_receipt"] = intercom_receipt
+        compound_parts = getattr(dispatch_result, "compound_parts", None)
+        if isinstance(compound_parts, tuple):
+            result["compound_parts"] = list(compound_parts)
         for key in ("timeout_stage", "voice_delivery"):
             value = getattr(dispatch_result, key, None)
             if isinstance(value, str):
@@ -2036,6 +2054,11 @@ class RequestRouter:
                 turn.response_requirement = ResponseRequirement.SILENT
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
+        if household is not None and household.family is HouseholdFamily.NOTIFICATION:
+            return await self._finish_orchestrated_turn(
+                notification_dnd_refusal(), result, text=text, zone_id=self._response_zone.get(),
+                room_context=None, emotion=cmd.emotion, pipeline_start=pipeline_start,
+            )
 
         if await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
@@ -2195,37 +2218,6 @@ class RequestRouter:
                 result["intent"] = "timer"
                 result["_task_outcome"] = timer_result.get("outcome")
                 result["response"] = timer_result["response"]
-                result["success"] = True
-                await self._speak_response(result["response"])
-                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-                return result
-
-        # 6c. Check intercom/announcement command (via FeatureManager)
-        if self.features and self.features.intercom:
-            intercom_result = self.features.intercom.handle_voice_command(
-                text,
-                user_id=user.user_id if user else None,
-                source_zone=self.audio_manager.detect_source_zone(audio)
-            )
-            if intercom_result["handled"]:
-                result["intent"] = "intercom"
-                result["_task_outcome"] = intercom_result.get("outcome")
-                result["response"] = intercom_result["response"]
-                result["success"] = True
-                await self._speak_response(result["response"])
-                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-                return result
-
-        # 6d. Check notification commands (via FeatureManager)
-        if self.features and self.features.notifications:
-            notif_result = self.features.notifications.handle_voice_command(
-                text,
-                user_id=user.user_id if user else None
-            )
-            if notif_result["handled"]:
-                result["intent"] = "notification_config"
-                result["_task_outcome"] = notif_result.get("outcome")
-                result["response"] = notif_result["response"]
                 result["success"] = True
                 await self._speak_response(result["response"])
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000

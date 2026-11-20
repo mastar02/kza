@@ -1,25 +1,19 @@
-"""
-Smart Notifications - Notificaciones Inteligentes
-Notificaciones contextualizadas basadas en presencia, hora y preferencias.
-
-"Solo avisarme cuando estoy despierto"
-"Notificar solo si no estoy en casa"
-"No molestar si estoy en reunión"
-"""
+"""Notifications based on presence, time and configured preferences."""
 
 import asyncio
 import logging
-import re
+import uuid
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from datetime import datetime, time, timedelta
-from typing import Callable, Any
 from enum import Enum, StrEnum
-import uuid
+from typing import Any
 
 from src.core.voice_delivery import invoke_voice_callback
-from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 
 logger = logging.getLogger(__name__)
+
+VOICE_DND_WEB_REQUIRED = "Para cambiar el modo no molestar, iniciá sesión en la web."
 
 
 class NotificationChannel(StrEnum):
@@ -111,7 +105,9 @@ class SmartNotificationManager:
         presence_detector = None,
         user_manager = None,
         ha_client = None,
-        quiet_hours: tuple[time, time] = None
+        quiet_hours: tuple[time, time] = None,
+        *,
+        voice_zone_key: Callable[[str], Hashable] | None = None,
     ):
         self.tts = tts_callback
         self.push = push_callback
@@ -120,6 +116,7 @@ class SmartNotificationManager:
         self.presence = presence_detector
         self.users = user_manager
         self.ha = ha_client
+        self._voice_zone_key = voice_zone_key
 
         self.quiet_hours = quiet_hours or self.DEFAULT_QUIET_HOURS
 
@@ -276,6 +273,7 @@ class SmartNotificationManager:
             # Broadcast: obtener todos los usuarios
             users = self._get_all_user_ids()
 
+        attempted_voice_zones: set[Hashable] = set()
         for user_id in users:
             # Evaluar contexto
             context = self._get_user_context(user_id)
@@ -294,8 +292,15 @@ class SmartNotificationManager:
             # Entregar por cada canal
             for channel in channels:
                 try:
-                    await self._deliver_to_channel(notification, user_id, channel, context)
-                    notification.channels_used.append(channel)
+                    if notification.user_id is None and channel is NotificationChannel.VOICE:
+                        zone = self._voice_zone(notification, context)
+                        key = self._voice_zone_key(zone) if self._voice_zone_key else zone
+                        if key in attempted_voice_zones:
+                            continue
+                        # A failed attempt may already have emitted audio.
+                        attempted_voice_zones.add(key)
+                    if await self._deliver_to_channel(notification, user_id, channel, context):
+                        notification.channels_used.append(channel)
                 except Exception as e:
                     logger.error(f"Error entregando a {channel.value}: {e}")
 
@@ -338,7 +343,7 @@ class SmartNotificationManager:
         """Inferir si el usuario está despierto"""
         # En horas de sueño y en casa = probablemente dormido
         if context["is_quiet_hours"] and context["is_home"]:
-            zone = context.get("current_zone", "")
+            zone = context.get("current_zone") or ""
             if "bedroom" in zone or "dormitorio" in zone:
                 return False
         return True
@@ -464,22 +469,24 @@ class SmartNotificationManager:
 
         return True
 
+    @staticmethod
+    def _voice_zone(notification: Notification, context: dict) -> str:
+        return notification.zone_id or context.get("current_zone") or "default"
+
     async def _deliver_to_channel(
         self,
         notification: Notification,
         user_id: str,
         channel: NotificationChannel,
         context: dict
-    ):
+    ) -> bool:
         """Entregar notificación a un canal específico"""
-        logger.info(f"🔔 Notificación [{channel.value}] para {user_id}: {notification.message[:50]}...")
-
         if channel == NotificationChannel.VOICE:
-            zone = notification.zone_id or context.get("current_zone") or "default"
             text = notification.message
             if notification.title:
                 text = f"{notification.title}. {text}"
-            await invoke_voice_callback(self.tts, text, zone)
+            await invoke_voice_callback(self.tts, text, self._voice_zone(notification, context))
+            return True
 
         elif channel == NotificationChannel.PUSH:
             if self.push:
@@ -492,6 +499,7 @@ class SmartNotificationManager:
                         "priority": notification.priority.name
                     }
                 )
+                return True
 
         elif channel == NotificationChannel.DISPLAY:
             if self.display:
@@ -504,11 +512,15 @@ class SmartNotificationManager:
                         "data": notification.data
                     }
                 )
+                return True
 
         elif channel == NotificationChannel.LED:
             if self.led:
                 color = self._priority_to_color(notification.priority)
                 await self.led(notification.zone_id or "all", color)
+                return True
+
+        return False
 
     def _priority_to_color(self, priority: NotificationPriority) -> str:
         """Convertir prioridad a color LED"""
@@ -567,56 +579,6 @@ class SmartNotificationManager:
         if user_id not in self._user_preferences:
             self._user_preferences[user_id] = {}
         self._user_preferences[user_id][key] = value
-
-    # ==================== Comandos de Voz ====================
-
-    def handle_voice_command(self, text: str, user_id: str = None) -> dict:
-        """
-        Manejar comandos de voz relacionados con notificaciones.
-
-        Ejemplos:
-        - "No molestar"
-        - "Desactiva no molestar"
-        - "Solo notifícame cosas urgentes"
-        """
-        text_lower = text.lower().strip()
-
-        # Evaluate deactivation before its positive substring.
-        if re.search(r"desactiva(?:r)?\s+(?:el\s+)?no\s+molest", text_lower):
-            self.set_dnd(user_id, False)
-            return {
-                "handled": True,
-                "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
-                                       effect=EffectState.OBSERVED, observation_scope="software_state"),
-                "response": "Modo no molestar desactivado."
-            }
-
-        if re.search(r"no\s+molest(?:ar|es)", text_lower):
-            self.set_dnd(user_id, True)
-            return {
-                "handled": True,
-                "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
-                                       effect=EffectState.OBSERVED, observation_scope="software_state"),
-                "response": "Modo no molestar activado. Solo recibirás notificaciones urgentes."
-            }
-
-        # Solo urgentes
-        if re.search(r"solo\s+(?:notif|avis).+urgent", text_lower):
-            rule = NotificationRule(
-                rule_id=f"rule_{uuid.uuid4().hex[:6]}",
-                name="Solo urgentes",
-                min_priority=NotificationPriority.URGENT,
-                suppress=True  # Suprimir todo lo que no sea urgente
-            )
-            self.add_rule(user_id, rule)
-            return {
-                "handled": True,
-                "outcome": TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
-                                       effect=EffectState.OBSERVED, observation_scope="software_state"),
-                "response": "Entendido, solo te notificaré cosas urgentes."
-            }
-
-        return {"handled": False, "response": ""}
 
     # ==================== Estado ====================
 

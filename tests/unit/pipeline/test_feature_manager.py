@@ -59,6 +59,9 @@ def _make_intercom():
     m.get_status.return_value = {"zones": 3}
     mock_announcement = MagicMock()
     mock_announcement.announcement_id = "ann-1"
+    mock_announcement.wait_for_delivery = AsyncMock()
+    mock_announcement.delivery_confirmed = True
+    mock_announcement.receipt.return_value = {"announcement_id": "ann-1", "zones": {"kitchen": "confirmed"}}
     m.announce = AsyncMock(return_value=mock_announcement)
     m.announce_emergency = AsyncMock(return_value=mock_announcement)
     m.get_zones.return_value = {"kitchen": "Cocina", "living_room": "Sala"}
@@ -377,6 +380,7 @@ class TestFeatureManagerIntercom:
         """announce should delegate to intercom."""
         result = await fm_full.announce("Cena lista", zones=["kitchen"], priority="high")
         all_deps["intercom"].announce.assert_awaited_once()
+        all_deps["intercom"].announce.return_value.wait_for_delivery.assert_awaited_once()
         assert result["success"] is True
         assert result["announcement_id"] == "ann-1"
 

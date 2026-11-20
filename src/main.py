@@ -1891,6 +1891,7 @@ async def build_application(
             timer_manager=voice_services.features.timer_manager,
             # T030-U1 R1: ring zone of a timer without an origin room (shared-notice zone).
             timer_fallback_zone=timer_fallback_zone(config, getattr(voice_services.features, "voice_delivery", None)),
+            intercom=voice_services.features.intercom,
             voice_routines=voice_routines,
             # Plan #2 OpenClaw
             compactor=compactor,

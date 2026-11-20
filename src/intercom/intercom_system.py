@@ -1,39 +1,59 @@
-"""
-Intercom System - Sistema de Anuncios e Intercomunicador
-Permite anuncios multi-room y comunicación entre zonas.
-
-"Anuncia que la cena está lista"
-"Dile a los niños que bajen"
-"Anuncia en toda la casa que llegó el delivery"
-"""
+"""Intercom announcements through the application's local voice output."""
 
 import asyncio
 import logging
 import re
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Callable, Any
-from enum import StrEnum
+import unicodedata
 import uuid
+from collections import OrderedDict
+from collections.abc import Callable, Hashable, Mapping
+from dataclasses import dataclass, field, replace
+from datetime import datetime
+from enum import StrEnum
+from hashlib import sha256
+from typing import Any
 
-from src.core.voice_delivery import invoke_voice_callback
-from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
+from src.core.household_clock import ZONE_PREFIX
+from src.core.task_outcome import CURRENT_REQUEST_ID, DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
+from src.core.voice_delivery import ResponseResult, VoiceDeliveryError, invoke_voice_callback
+from src.nlu.household_intents import INTERCOM_BROADCAST_TARGETS, intercom_slots
 
 logger = logging.getLogger(__name__)
 
+_ARTICLE = re.compile(r"^(?:el|la|los|las)\s+")
+_VOICE_RECEIPT_LIMIT = 256
+
+
+def _room_name(text: str) -> str:
+    """Fold case, accents and a leading article in a spoken room label."""
+    folded = "".join(char for char in unicodedata.normalize("NFD", text.casefold())
+                     if unicodedata.category(char) != "Mn")
+    return _ARTICLE.sub("", " ".join(folded.split()))
+
 
 class AnnouncementPriority(StrEnum):
-    LOW = "low"           # No interrumpe música
-    NORMAL = "normal"     # Baja volumen temporalmente
-    HIGH = "high"         # Interrumpe todo
-    EMERGENCY = "emergency"  # Máximo volumen, todas las zonas
+    """Priority labels for programmatic producers."""
+
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+    EMERGENCY = "emergency"
+
+
+class ZoneDelivery(StrEnum):
+    """Evidence at the local voice output boundary for one destination."""
+
+    CONFIRMED = "confirmed"
+    FAILED = "failed"
+    UNCERTAIN = "uncertain"
+    NOT_SENT = "not_sent"
 
 
 @dataclass
 class Announcement:
     """Un anuncio para reproducir"""
     announcement_id: str
-    message: str
+    message: str = field(repr=False)
     target_zones: list[str]           # Zonas destino ("all" = todas)
     priority: AnnouncementPriority = AnnouncementPriority.NORMAL
 
@@ -46,110 +66,93 @@ class Announcement:
     delivered: bool = False
     delivered_at: datetime | None = None
     failed_zones: list[str] = field(default_factory=list)
+    zone_receipts: dict[str, ZoneDelivery] = field(default_factory=dict)
 
     # Configuración
     repeat: int = 1                    # Veces a repetir
     delay_between_repeats: float = 2.0 # Segundos entre repeticiones
-    chime_before: bool = True          # Sonido de atención antes
+    _settled: asyncio.Event = field(default_factory=asyncio.Event, init=False, repr=False, compare=False)
+
+    async def wait_for_delivery(self) -> None:
+        """Wait until playback settles or the queue stops before delivery."""
+        await self._settled.wait()
+
+    @property
+    def delivery_confirmed(self) -> bool:
+        """Whether every requested zone has a confirmed output receipt."""
+        return bool(self.zone_receipts) and all(
+            state is ZoneDelivery.CONFIRMED for state in self.zone_receipts.values()
+        )
+
+    def receipt(self) -> dict:
+        """Project the delivery evidence without retaining the message."""
+        receipt = {
+            "announcement_id": self.announcement_id,
+            "zones": {zone: state.value for zone, state in self.zone_receipts.items()},
+        }
+        if not self._settled.is_set():
+            receipt["in_flight"] = True
+        return receipt
+
+    def _receipt_copy(self) -> "Announcement":
+        """Keep a settled receipt without copying the spoken message into the ledger."""
+        receipt = replace(self, message="", target_zones=self.target_zones.copy(),
+                          failed_zones=self.failed_zones.copy(), zone_receipts=self.zone_receipts.copy())
+        receipt._settled.set()
+        return receipt
+
+
+@dataclass(frozen=True)
+class _VoiceAttempt:
+    fingerprint: bytes
+    announcement: Announcement
 
 
 class IntercomSystem:
+    """Deliver announcements to explicit local outputs.
+
+    Args:
+        tts_callback: The shared voice owner, returning a playback receipt.
+        zone_manager: Configured audio routes, used to load available outputs.
+        room_catalog: Configured transport ids and names for spoken destinations.
+            Programmatic producers use the configured audio routes.
     """
-    Sistema de anuncios e intercomunicador.
-
-    Características:
-    - Anuncios a zonas específicas o toda la casa
-    - Prioridades (no interrumpir vs urgente)
-    - Intercomunicador bidireccional
-    - Comandos de voz naturales
-    - Integración con media players de HA
-    """
-
-    # Patrones de voz
-    ANNOUNCE_PATTERNS = [
-        (r"anuncia(?:r)?(?:\s+que)?\s+(.+)", None),  # "Anuncia que la cena está lista"
-        (r"avisa(?:r)?(?:\s+que)?\s+(.+)", None),    # "Avisa que llegué"
-        (r"di(?:le)?(?:s)?(?:\s+(?:a\s+)?(?:los|las|el|la|todo[s]?))?(?:\s+que)?\s+(.+)", None),  # "Diles que bajen"
-        (r"comunica(?:r)?(?:\s+que)?\s+(.+)", None), # "Comunica que hay visitas"
-    ]
-
-    # Zonas comunes
-    ZONE_ALIASES = {
-        "toda la casa": "all",
-        "todas partes": "all",
-        "everywhere": "all",
-        "cocina": "kitchen",
-        "sala": "living_room",
-        "living": "living_room",
-        "comedor": "dining_room",
-        "cuarto principal": "master_bedroom",
-        "habitación principal": "master_bedroom",
-        "cuarto de niños": "kids_room",
-        "cuarto de los niños": "kids_room",
-        "baño": "bathroom",
-        "garage": "garage",
-        "jardín": "garden",
-        "patio": "garden",
-        "oficina": "office",
-        "estudio": "office",
-    }
-
-    # Destinatarios especiales
-    RECIPIENT_PATTERNS = {
-        r"(?:a\s+)?(?:los\s+)?niños": ["kids_room"],
-        r"(?:a\s+)?(?:mi\s+)?(?:esposo|esposa|pareja)": ["master_bedroom", "living_room"],
-        r"(?:a\s+)?todos": ["all"],
-        r"(?:a\s+)?arriba": ["upstairs"],  # Grupo de zonas
-        r"(?:a\s+)?abajo": ["downstairs"],
-    }
 
     def __init__(
         self,
-        tts_callback: Callable[[str, str], Any] = None,
-        media_player_callback: Callable[[str, str, dict], Any] = None,
-        zone_manager = None,
-        ha_client = None,
-        default_volume: float = 0.7,
-        announcement_chime: str = "chime.mp3",
-        emergency_volume: float = 1.0
-    ):
+        tts_callback: Callable[[str, str], Any] | None = None,
+        zone_manager=None,
+        *,
+        room_catalog: Mapping[str, tuple[str, ...]] | None = None,
+    ) -> None:
         self.tts = tts_callback
-        self.media_player = media_player_callback
         self.zone_manager = zone_manager
-        self.ha = ha_client
+        self._room_names = {
+            zone: {_room_name(label) for label in labels} for zone, labels in (room_catalog or {}).items()
+        }
 
-        self.default_volume = default_volume
-        self.emergency_volume = emergency_volume
-        self.announcement_chime = announcement_chime
-
-        # Estado
-        self._announcement_queue: asyncio.Queue = asyncio.Queue()
+        self._announcement_queue: asyncio.Queue[Announcement] = asyncio.Queue()
         self._announcement_history: list[Announcement] = []
+        self._voice_in_flight: dict[str, _VoiceAttempt] = {}
+        self._voice_receipts: OrderedDict[str, _VoiceAttempt] = OrderedDict()
         self._running = False
         self._process_task: asyncio.Task | None = None
-
-        # Zonas disponibles
-        self._zones: dict[str, dict] = {}  # zone_id -> {name, media_player, speaker}
-
-        # Callbacks
+        self._zones: dict[str, dict] = {}
         self._on_announcement_delivered: Callable | None = None
         self._on_announcement_failed: Callable | None = None
 
     async def start(self):
-        """Iniciar sistema de intercomunicador"""
+        """Start announcement processing and load the configured outputs."""
         if self._running:
             return
 
         self._running = True
         self._process_task = asyncio.create_task(self._process_queue())
-
-        # Cargar zonas disponibles
         await self._load_zones()
-
-        logger.info(f"Intercom iniciado con {len(self._zones)} zonas")
+        logger.info("Intercom started with %d audio zones", len(self._zones))
 
     async def stop(self):
-        """Detener sistema"""
+        """Stop processing announcements."""
         self._running = False
         if self._process_task:
             self._process_task.cancel()
@@ -157,371 +160,264 @@ class IntercomSystem:
                 await self._process_task
             except asyncio.CancelledError:
                 pass
+        while not self._announcement_queue.empty():
+            announcement = self._announcement_queue.get_nowait()
+            announcement._settled.set()
+            self._announcement_queue.task_done()
 
     async def _load_zones(self):
-        """Cargar zonas desde Home Assistant o zone_manager"""
+        """Load only explicitly configured audio routes."""
         if self.zone_manager:
             for zone_id, zone in self.zone_manager.get_all_zones().items():
                 self._zones[zone_id] = {
                     "name": zone.name,
                     "media_player": zone.media_player_entity,
                     "speaker": zone.speaker_entity,
-                    "tts_target": zone.tts_target
+                    "tts_target": zone.tts_target,
                 }
-        elif self.ha:
-            # Descubrir media_players
-            try:
-                entities = await self.ha.get_entities("media_player")
-                for entity in entities:
-                    entity_id = entity["entity_id"]
-                    name = entity.get("attributes", {}).get("friendly_name", entity_id)
-
-                    # Inferir zona del nombre
-                    zone_id = entity_id.split(".")[-1]
-
-                    self._zones[zone_id] = {
-                        "name": name,
-                        "media_player": entity_id,
-                        "speaker": None,
-                        "tts_target": entity_id
-                    }
-            except Exception as e:
-                logger.error(f"Error cargando zonas: {e}")
 
     def register_zone(self, zone_id: str, name: str, media_player: str = None, tts_target: str = None):
-        """Registrar zona manualmente"""
+        """Register an explicit route for programmatic producers."""
         self._zones[zone_id] = {
             "name": name,
             "media_player": media_player,
             "speaker": None,
-            "tts_target": tts_target or media_player
+            "tts_target": tts_target or media_player,
         }
 
-    # ==================== Comandos de Voz ====================
+    def _parse_announcement_command(self, complement: str) -> tuple[str, list[str]]:
+        """Resolve only a leading destination slot, keeping message text intact."""
+        target, message_start = intercom_slots(complement)
+        message = complement[message_start:].strip()
+        if target is None or target.casefold() in INTERCOM_BROADCAST_TARGETS:
+            return message, list(self._room_names)
+        label = _room_name(target)
+        matches = [zone for zone, names in self._room_names.items() if label and label in names]
+        return message, matches if len(matches) == 1 else []
 
-    def handle_voice_command(
-        self,
-        text: str,
-        user_id: str = None,
-        source_zone: str = None
-    ) -> dict:
-        """
-        Procesar comando de voz relacionado con anuncios.
+    def _voice_attempt(self, request_id: str) -> _VoiceAttempt | None:
+        return self._voice_in_flight.get(request_id) or self._voice_receipts.get(request_id)
 
-        Returns:
-            {
-                "handled": bool,
-                "response": str,
-                "announcement": Announcement o None
-            }
-        """
-        text_lower = text.lower().strip()
+    def is_voice_replay(self, request_id: str, complement: str) -> bool:
+        """Check the playback owner's ID and exact voice payload before barge-in."""
+        attempt = self._voice_attempt(request_id)
+        return attempt is not None and attempt.fingerprint == sha256(complement.encode("utf-8")).digest()
 
-        # Verificar si es comando de anuncio
-        message, target_zones = self._parse_announcement_command(text_lower)
+    async def announce_from_voice(self, complement: str) -> tuple[TaskOutcome, str, Announcement | None]:
+        """Deliver an admitted P3-F2 request at the ordinary configured volume."""
+        request_id = CURRENT_REQUEST_ID.get()
+        fingerprint = sha256(complement.encode("utf-8")).digest() if request_id is not None else b""
+        if request_id is not None:
+            previous = self._voice_attempt(request_id)
+            if previous is not None:
+                if previous.fingerprint != fingerprint:
+                    return TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN,
+                                       dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED), (
+                        "Esa solicitud ya corresponde a otro anuncio."
+                    ), None
+                receipt = previous.announcement
+                if receipt._settled.is_set():
+                    receipt = receipt._receipt_copy()
+                return self._voice_result(receipt)
+        if not self._running or not self._room_names or self.tts is None:
+            return TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
+                               dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED), (
+                "El intercomunicador no está disponible ahora."
+            ), None
+        message, zones = self._parse_announcement_command(complement)
+        if not zones:
+            return TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN,
+                               dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED), (
+                "Decime el nombre de una sala configurada o pedime anunciar en toda la casa."
+            ), None
+        if not any(char.isalnum() for char in message):
+            return TaskOutcome(TaskStatus.NEEDS_INPUT, persistence=PersistenceState.NOT_WRITTEN,
+                               dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED), (
+                "Decime qué querés anunciar."
+            ), None
 
-        if message:
-            # Crear y encolar anuncio
-            announcement = Announcement(
-                announcement_id=f"ann_{uuid.uuid4().hex[:8]}",
-                message=message,
-                target_zones=target_zones,
-                priority=self._infer_priority(text_lower),
-                created_by=user_id,
-                source_zone=source_zone
-            )
+        announcement = Announcement(f"ann_{uuid.uuid4().hex[:8]}", message, zones)
+        if request_id is not None:
+            self._voice_in_flight[request_id] = _VoiceAttempt(fingerprint, announcement)
+        try:
+            await self._deliver_announcement(announcement)
+        finally:
+            if request_id is not None:
+                self._voice_receipts[request_id] = _VoiceAttempt(fingerprint, announcement._receipt_copy())
+                self._voice_in_flight.pop(request_id)
+                if len(self._voice_receipts) > _VOICE_RECEIPT_LIMIT:
+                    self._voice_receipts.popitem(last=False)
+        return self._voice_result(announcement)
 
-            # Encolar
-            self._announcement_queue.put_nowait(announcement)
-
-            # Respuesta
-            if target_zones == ["all"]:
-                zones_text = "toda la casa"
-            else:
-                zones_text = ", ".join(self._get_zone_name(z) for z in target_zones)
-
-            response = f"Anuncio en espera para {zones_text}"
-
-            return {
-                "handled": True,
-                "response": response,
-                "announcement": announcement,
-                "outcome": TaskOutcome(TaskStatus.QUEUED, persistence=PersistenceState.VOLATILE,
-                                       dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED)
-            }
-
-        return {"handled": False, "response": "", "announcement": None}
-
-    def _parse_announcement_command(self, text: str) -> tuple[str, list[str]]:
-        """
-        Parsear comando de anuncio.
-
-        Returns:
-            (mensaje, lista_de_zonas)
-        """
-        message = None
-        target_zones = ["all"]  # Por defecto toda la casa
-
-        # Buscar patrón de anuncio
-        for pattern, _ in self.ANNOUNCE_PATTERNS:
-            match = re.search(pattern, text)
-            if match:
-                message = match.group(1).strip()
-                break
-
-        if not message:
-            return None, []
-
-        # Buscar zona destino en el texto
-        for zone_text, zone_id in self.ZONE_ALIASES.items():
-            if zone_text in text:
-                target_zones = [zone_id] if zone_id != "all" else ["all"]
-                # Limpiar zona del mensaje
-                message = message.replace(zone_text, "").strip()
-                break
-
-        # Buscar destinatarios especiales
-        for pattern, zones in self.RECIPIENT_PATTERNS.items():
-            if re.search(pattern, text):
-                target_zones = zones
-                break
-
-        # Buscar "en [zona]" al final
-        match = re.search(r"(?:en\s+(?:la\s+|el\s+)?)([\w\s]+)$", message)
-        if match:
-            zone_text = match.group(1).strip()
-            if zone_text in self.ZONE_ALIASES:
-                target_zones = [self.ZONE_ALIASES[zone_text]]
-                message = message[:match.start()].strip()
-
-        return message, target_zones
-
-    def _infer_priority(self, text: str) -> AnnouncementPriority:
-        """Inferir prioridad del mensaje"""
-        urgent_keywords = ["urgente", "emergencia", "importante", "ahora mismo"]
-        if any(kw in text for kw in urgent_keywords):
-            return AnnouncementPriority.HIGH
-
-        emergency_keywords = ["fuego", "incendio", "ayuda", "peligro", "evacuación"]
-        if any(kw in text for kw in emergency_keywords):
-            return AnnouncementPriority.EMERGENCY
-
-        return AnnouncementPriority.NORMAL
-
-    def _get_zone_name(self, zone_id: str) -> str:
-        """Obtener nombre legible de zona"""
-        if zone_id in self._zones:
-            return self._zones[zone_id]["name"]
-        return zone_id.replace("_", " ").title()
-
-    # ==================== Procesamiento ====================
+    @staticmethod
+    def _voice_result(announcement: Announcement) -> tuple[TaskOutcome, str, Announcement]:
+        zones = announcement.target_zones
+        confirmed = sum(state is ZoneDelivery.CONFIRMED for state in announcement.zone_receipts.values())
+        if announcement.delivery_confirmed:
+            return TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
+                               dispatch=DispatchState.ACCEPTED, effect=EffectState.OBSERVED,
+                               observation_scope="software_state"), "Anuncio reproducido.", announcement
+        if confirmed:
+            return TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.VOLATILE,
+                               dispatch=DispatchState.PARTIAL, effect=EffectState.PARTIAL), (
+                f"El anuncio se reprodujo en {confirmed} de {len(zones)} salas."
+            ), announcement
+        if not announcement._settled.is_set() or ZoneDelivery.UNCERTAIN in announcement.zone_receipts.values():
+            return TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.VOLATILE,
+                               dispatch=DispatchState.UNCERTAIN, effect=EffectState.UNCERTAIN), (
+                "No pude confirmar la reproducción del anuncio."
+            ), announcement
+        return TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.VOLATILE,
+                           dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED), (
+            "No pude reproducir el anuncio."
+        ), announcement
 
     async def _process_queue(self):
-        """Procesar cola de anuncios"""
+        """Process announcements admitted by programmatic producers."""
         while self._running:
             try:
-                # Obtener siguiente anuncio
-                announcement = await asyncio.wait_for(
-                    self._announcement_queue.get(),
-                    timeout=1.0
-                )
-
-                await self._deliver_announcement(announcement)
-
-            except asyncio.TimeoutError:
-                continue
+                announcement = await self._announcement_queue.get()
+                try:
+                    await self._deliver_announcement(announcement)
+                finally:
+                    self._announcement_queue.task_done()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"Error procesando anuncio: {e}")
+            except Exception as error:
+                logger.error("Announcement processing failed: %s", type(error).__name__)
 
-    async def _deliver_announcement(self, announcement: Announcement):
-        """Entregar un anuncio a las zonas destino"""
-        logger.info(
-            f"📢 Anuncio [{announcement.priority.value}]: "
-            f"'{announcement.message}' -> {announcement.target_zones}"
-        )
+    async def _deliver_announcement(self, announcement: Announcement) -> None:
+        """Keep playback evidence for each zone, including an interrupted delivery."""
+        try:
+            targets = self._targets(announcement)
+            announcement.zone_receipts = dict.fromkeys(targets, ZoneDelivery.NOT_SENT)
+            outputs: dict[Hashable, list[str]] = {}
+            for zone in announcement.zone_receipts:
+                key = self._playback_output_key(zone)
+                if key is None:
+                    announcement.zone_receipts[zone] = ZoneDelivery.FAILED
+                else:
+                    outputs.setdefault(key, []).append(zone)
+            # One attempt per physical channel in a broadcast, including failures.
+            repeats = announcement.repeat if len(targets) == 1 and "all" not in announcement.target_zones else 1
+            for index in range(repeats):
+                if index:
+                    await asyncio.sleep(announcement.delay_between_repeats)
+                for zones in outputs.values():
+                    previous = announcement.zone_receipts[zones[0]]
+                    # Until the output returns, cancellation or a replay can only
+                    # confirm earlier zones. Later zones remain not_sent.
+                    if previous is not ZoneDelivery.CONFIRMED:
+                        announcement.zone_receipts.update(dict.fromkeys(zones, ZoneDelivery.UNCERTAIN))
+                    delivery = await self._announce_to_zone(zones[0], announcement.message)
+                    if previous is ZoneDelivery.CONFIRMED or (
+                        previous is ZoneDelivery.UNCERTAIN and delivery is not ZoneDelivery.CONFIRMED
+                    ):
+                        delivery = previous
+                    announcement.zone_receipts.update(dict.fromkeys(zones, delivery))
+        finally:
+            # Preserve the legacy summary fields alongside the individual receipts.
+            announcement.failed_zones = [zone for zone, state in announcement.zone_receipts.items()
+                                         if state is not ZoneDelivery.CONFIRMED]
+            announcement.delivered = ZoneDelivery.CONFIRMED in announcement.zone_receipts.values()
+            announcement.delivered_at = datetime.now()
+            self._announcement_history.append(announcement)
+            if len(self._announcement_history) > 100:
+                self._announcement_history = self._announcement_history[-50:]
+            announcement._settled.set()
 
-        # Resolver "all" a todas las zonas
-        if "all" in announcement.target_zones:
-            zones = list(self._zones.keys())
-        else:
-            zones = announcement.target_zones
+        try:
+            if announcement.delivered and self._on_announcement_delivered:
+                self._on_announcement_delivered(announcement)
+            elif not announcement.delivered and self._on_announcement_failed:
+                self._on_announcement_failed(announcement, "No zone confirmed delivery")
+        except Exception as error:
+            logger.warning("Announcement listener failed: %s", type(error).__name__)
 
-        # Determinar volumen según prioridad
-        volume = self.default_volume
-        if announcement.priority == AnnouncementPriority.HIGH:
-            volume = min(1.0, self.default_volume + 0.2)
-        elif announcement.priority == AnnouncementPriority.EMERGENCY:
-            volume = self.emergency_volume
+    def _targets(self, announcement: Announcement) -> list[str]:
+        return list(self._zones) if "all" in announcement.target_zones else announcement.target_zones
 
-        # Entregar a cada zona
-        success_zones = []
-        failed_zones = []
+    def _playback_output_key(self, zone_id: str) -> Hashable | None:
+        if self.zone_manager is not None:
+            return self.zone_manager.playback_output_key(zone_id)
+        room_id = zone_id.removeprefix(ZONE_PREFIX)
+        if room_id in self._zones or ZONE_PREFIX + room_id in self._zones:
+            return ("registered", room_id)
+        return None
 
-        for _ in range(announcement.repeat):
-            for zone_id in zones:
-                try:
-                    await self._announce_to_zone(
-                        zone_id,
-                        announcement.message,
-                        volume=volume,
-                        chime=announcement.chime_before and _ == 0  # Chime solo primera vez
-                    )
-                    success_zones.append(zone_id)
-                except Exception as e:
-                    logger.error(f"Error anunciando en {zone_id}: {e}")
-                    failed_zones.append(zone_id)
-
-            if announcement.repeat > 1:
-                await asyncio.sleep(announcement.delay_between_repeats)
-
-        # Actualizar estado
-        announcement.delivered = len(success_zones) > 0
-        announcement.delivered_at = datetime.now()
-        announcement.failed_zones = failed_zones
-
-        # Guardar en historial
-        self._announcement_history.append(announcement)
-        if len(self._announcement_history) > 100:
-            self._announcement_history = self._announcement_history[-50:]
-
-        # Callbacks
-        if announcement.delivered and self._on_announcement_delivered:
-            self._on_announcement_delivered(announcement)
-        elif not announcement.delivered and self._on_announcement_failed:
-            self._on_announcement_failed(announcement, "All zones failed")
-
-    async def _announce_to_zone(
-        self,
-        zone_id: str,
-        message: str,
-        volume: float = 0.7,
-        chime: bool = True
-    ):
-        """Anunciar mensaje en una zona específica"""
-        zone = self._zones.get(zone_id)
-        if not zone:
-            raise ValueError("Unknown announcement output zone")
-
-        # Reproducir chime primero (si está configurado)
-        if chime and self.announcement_chime and self.ha and zone.get("media_player"):
-            try:
-                await self.ha.call_service(
-                    "media_player",
-                    "play_media",
-                    zone["media_player"],
-                    {
-                        "media_content_id": f"/local/sounds/{self.announcement_chime}",
-                        "media_content_type": "music"
-                    }
-                )
-                await asyncio.sleep(0.5)  # Esperar a que termine el chime
-            except Exception:
-                pass  # Chime es opcional
-
-        # Anunciar con TTS
-        if self.tts:
-            await invoke_voice_callback(self.tts, message, zone_id)
-        elif self.ha and zone.get("tts_target"):
-            # Usar TTS de Home Assistant directamente
-            await self.ha.call_service(
-                "tts",
-                "speak",
-                zone["tts_target"],
-                {
-                    "message": message,
-                    "cache": False
-                }
-            )
-        else:
-            raise RuntimeError("announcement_voice_output_unavailable")
-
-    # ==================== API Programática ====================
+    async def _announce_to_zone(self, zone_id: str, message: str) -> ZoneDelivery:
+        """Deliver through the shared local owner to one configured route."""
+        try:
+            result = await invoke_voice_callback(self.tts, message, zone_id)
+        except VoiceDeliveryError as error:
+            if error.result is not None and error.result.output_started:
+                return ZoneDelivery.UNCERTAIN
+            return ZoneDelivery.FAILED
+        except TimeoutError:
+            return ZoneDelivery.UNCERTAIN
+        except Exception as error:
+            logger.warning("Announcement output failed: %s", type(error).__name__)
+            return ZoneDelivery.FAILED
+        return ZoneDelivery.CONFIRMED if isinstance(result, ResponseResult) else ZoneDelivery.UNCERTAIN
 
     async def announce(
         self,
         message: str,
         zones: list[str] = None,
         priority: AnnouncementPriority = AnnouncementPriority.NORMAL,
-        user_id: str = None
+        user_id: str = None,
     ) -> Announcement:
-        """
-        Hacer un anuncio programáticamente.
-
-        Args:
-            message: Texto del anuncio
-            zones: Lista de zone_ids (None = todas)
-            priority: Prioridad del anuncio
-            user_id: ID del usuario que hace el anuncio
-        """
+        """Enqueue an announcement for a programmatic producer."""
         announcement = Announcement(
             announcement_id=f"ann_{uuid.uuid4().hex[:8]}",
             message=message,
-            target_zones=zones or ["all"],
+            target_zones=["all"] if zones is None else list(zones),
             priority=priority,
-            created_by=user_id
+            created_by=user_id,
         )
-
-        await self._announcement_queue.put(announcement)
+        announcement.zone_receipts = dict.fromkeys(self._targets(announcement), ZoneDelivery.NOT_SENT)
+        if self._running and self.tts is not None:
+            try:
+                self._announcement_queue.put_nowait(announcement)
+                return announcement
+            except Exception as error:
+                logger.warning("Announcement could not be queued: %s", type(error).__name__)
+        announcement._settled.set()
         return announcement
 
-    async def announce_emergency(self, message: str):
-        """Anuncio de emergencia (todas las zonas, máximo volumen)"""
-        return await self.announce(
-            message,
-            zones=["all"],
-            priority=AnnouncementPriority.EMERGENCY
-        )
+    async def announce_emergency(self, message: str) -> Announcement:
+        """Enqueue a programmatic emergency announcement for all zones."""
+        return await self.announce(message, zones=["all"], priority=AnnouncementPriority.EMERGENCY)
 
-    async def call_zone(self, from_zone: str, to_zone: str, message: str = None):
-        """
-        Iniciar llamada entre zonas (intercomunicador).
-
-        Si no hay mensaje, activa modo escucha bidireccional.
-        """
+    async def call_zone(self, from_zone: str, to_zone: str, message: str = None) -> Announcement:
+        """Enqueue a one-way message or a call notice in the destination zone."""
         if message:
-            # Solo enviar mensaje
-            return await self.announce(
-                message,
-                zones=[to_zone],
-                priority=AnnouncementPriority.NORMAL
-            )
-        else:
-            # TODO: Implementar modo escucha bidireccional
-            logger.info(f"Intercom: {from_zone} -> {to_zone}")
-            return await self.announce(
-                f"Llamada desde {self._get_zone_name(from_zone)}",
-                zones=[to_zone],
-                priority=AnnouncementPriority.HIGH
-            )
-
-    # ==================== Callbacks ====================
+            return await self.announce(message, zones=[to_zone])
+        source = self._zones.get(from_zone, {}).get("name", from_zone)
+        return await self.announce(f"Llamada desde {source}", zones=[to_zone], priority=AnnouncementPriority.HIGH)
 
     def on_announcement_delivered(self, callback: Callable[[Announcement], None]):
-        """Registrar callback para anuncio entregado"""
+        """Register a callback when at least one zone confirms playback."""
         self._on_announcement_delivered = callback
 
     def on_announcement_failed(self, callback: Callable[[Announcement, str], None]):
-        """Registrar callback para anuncio fallido"""
+        """Register a callback when no zone confirms playback."""
         self._on_announcement_failed = callback
 
-    # ==================== Estado ====================
-
-    def get_zones(self) -> dict:
-        """Obtener zonas disponibles"""
-        return {z: info["name"] for z, info in self._zones.items()}
+    def get_zones(self) -> dict[str, str]:
+        """Get configured audio routes and their labels."""
+        return {zone_id: info["name"] for zone_id, info in self._zones.items()}
 
     def get_history(self, limit: int = 10) -> list[Announcement]:
-        """Obtener historial de anuncios"""
+        """Get the recent announcements and their delivery receipts."""
         return self._announcement_history[-limit:]
 
     def get_status(self) -> dict:
-        """Obtener estado del sistema"""
+        """Get the state of the announcement processor."""
         return {
             "running": self._running,
             "zones_count": len(self._zones),
             "queue_size": self._announcement_queue.qsize(),
             "total_announcements": len(self._announcement_history),
-            "zones": list(self._zones.keys())
+            "zones": list(self._zones),
         }

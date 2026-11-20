@@ -286,7 +286,10 @@ PRECEDENCE = [
     ("anunciar en la cocina que la comida está lista", None),
     ("activá el no molestar", (F.NOTIFICATION, O.EXECUTE, "R6")),
     ("desactivá el no molestar", (F.NOTIFICATION, O.DISABLE, "R6")),
-    ("solo urgentes esta noche", (F.NOTIFICATION, O.EXECUTE, "R6")),
+    ("solo urgentes esta noche", None),
+    ("solo notificame cosas urgentes", None),
+    ("dijo que anunciá en la cocina que llegó la cena", None),
+    ("decime qué hay en el fogón", None),
     # R5 compounds.
     ("apagá la luz y pausá la música", (F.COMPOUND, O.EXECUTE, "R5")),
     ("cancelá el timer y el recordatorio", (F.COMPOUND, O.EXECUTE, "R5")),

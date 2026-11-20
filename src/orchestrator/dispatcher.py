@@ -55,6 +55,7 @@ from src.home_assistant.home_actions import HomeActionResult, HomeActionService
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
 from src.home_assistant.voice_actions import VoiceActionResult, VoiceHomeActionExecutor
+from src.intercom.intercom_system import IntercomSystem
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.llm.error_classifier import is_consent_withdrawn
 from src.memory.fact_ledger import MemorySource
@@ -72,8 +73,9 @@ from src.nlu.household_intents import (
     is_bare_ring_stop,
     strip_fillers,
 )
+from src.notifications.smart_notifications import VOICE_DND_WEB_REQUIRED
 from src.orchestrator.cancellation import CancellationReason
-from src.orchestrator.compound import CompoundPartContext, CompoundRunner
+from src.orchestrator.compound import CompoundPartContext, CompoundRunner, compound_part_request_id
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.priority_queue import (
     Priority,
@@ -606,6 +608,7 @@ class DispatchResult:
     origin_room: str | None = None
     # Compound turn (T037-U6): content-free summary of each part, in spoken order.
     compound_parts: tuple[dict, ...] | None = field(default=None, repr=False)
+    intercom_receipt: dict | None = None
 
     def __post_init__(self) -> None:
         if self.outcome is None and self.intent in {"simple_query", "conversation"}:
@@ -630,6 +633,8 @@ class DispatchResult:
             "delivery_outcome": self.delivery_outcome.to_dict() if self.delivery_outcome is not None else None,
             "response_requirement": self.response_requirement.value,
             "source_observation": self.observation.to_dict() if self.observation is not None else None,
+            **({"intercom_receipt": self.intercom_receipt} if self.intercom_receipt is not None else {}),
+            **({"compound_parts": list(self.compound_parts)} if self.compound_parts is not None else {}),
         }
 
 
@@ -941,6 +946,7 @@ class RequestDispatcher:
         timer_manager: NamedTimerManager | None = None,
         timer_fallback_zone: str | None = None,
         voice_routines: VoiceRoutineService | None = None,
+        intercom: IntercomSystem | None = None,
     ):
         """
         Args:
@@ -993,6 +999,7 @@ class RequestDispatcher:
                 (T033-U1), la misma instancia que usa el RequestRouter y cuyo
                 scheduler main vincula después (late binding). None conserva
                 las respuestas honestas de "todavía no".
+            intercom: The announcement service owned by the feature manager.
         """
         self.chroma = chroma_sync
         self.ha = ha_client
@@ -1026,6 +1033,7 @@ class RequestDispatcher:
         self.timer_manager = timer_manager
         self.timer_fallback_zone = timer_fallback_zone
         self.voice_routines = voice_routines
+        self.intercom = intercom
         self._timers = TimerVoiceCommands(timer_manager)
         # T037-U6: runs compound turns that reach the dispatcher whole (callers
         # without the router's per-part gates); remembers parts by request id.
@@ -1690,12 +1698,15 @@ class RequestDispatcher:
                 response = "Todavía no manejo rutinas por voz. Podés verlas desde la web."
             return self._household_refusal(PathType.FAST_ROUTINE, "routine", response, TaskStatus.UNSUPPORTED)
         if family is HouseholdFamily.INTERCOM:
-            return self._household_refusal(PathType.FAST_HOUSEHOLD, "intercom",
-                                           "Todavía no hago anuncios por voz.", TaskStatus.UNSUPPORTED)
+            if self.intercom is None:
+                return self._household_refusal(PathType.FAST_HOUSEHOLD, "intercom",
+                                               "El intercomunicador no está disponible ahora.", TaskStatus.UNSUPPORTED)
+            outcome, response, announcement = await self.intercom.announce_from_voice(household.complement)
+            return DispatchResult(path=PathType.FAST_HOUSEHOLD, priority=Priority.HIGH,
+                                  success=outcome.task_completed, response=response, intent="intercom",
+                                  outcome=outcome, intercom_receipt=announcement.receipt() if announcement else None)
         if family is HouseholdFamily.NOTIFICATION:
-            return self._household_refusal(PathType.FAST_HOUSEHOLD, "notification_config",
-                                           "Todavía no cambio el modo no molestar por voz. Podés hacerlo desde la web.",
-                                           TaskStatus.UNSUPPORTED)
+            return notification_dnd_refusal()
         # DEFERRED_ACTION: interim refusal until T031-U5 (reminders with home actions).
         return self._household_refusal(PathType.FAST_HOUSEHOLD, "deferred_action",
                                        "Todavía no programo acciones de la casa por voz; podés crear una rutina en la web.",
@@ -3079,6 +3090,13 @@ def compound_dispatch_result(run) -> DispatchResult:
     )
 
 
+def notification_dnd_refusal() -> DispatchResult:
+    """Voice can give the same authenticated-web guidance on either pipeline path."""
+    return RequestDispatcher._household_refusal(
+        PathType.FAST_HOUSEHOLD, "notification_config", VOICE_DND_WEB_REQUIRED, TaskStatus.UNSUPPORTED,
+    )
+
+
 def has_domotics_action_verb(text: str) -> bool:
     """Whether the text carries a verb the dispatcher routes to FAST_DOMOTICS.
 
@@ -3174,6 +3192,7 @@ class MultiUserOrchestrator:
         timer_manager: NamedTimerManager | None = None,
         timer_fallback_zone: str | None = None,
         voice_routines: VoiceRoutineService | None = None,
+        intercom: IntercomSystem | None = None,
     ):
         """Initialize the multi-user orchestrator.
 
@@ -3288,6 +3307,7 @@ class MultiUserOrchestrator:
             timer_manager=timer_manager,
             timer_fallback_zone=timer_fallback_zone,
             voice_routines=voice_routines,
+            intercom=intercom,
         )
 
         self._running = False
@@ -3395,6 +3415,19 @@ class MultiUserOrchestrator:
         so the choice is the one opened by a household cancel in that room.
         """
         return self.dispatcher.awaits_reminder_choice("unknown", context_room_id, text)
+
+    def is_intercom_replay(self, request_id: str, household: HouseholdIntent) -> bool:
+        """Check admitted intercom IDs in a voice turn before cancelling local audio."""
+        intercom = self.dispatcher.intercom
+        if intercom is None:
+            return False
+        if household.family is HouseholdFamily.INTERCOM:
+            return intercom.is_voice_replay(request_id, household.complement)
+        return any(
+            part.intent is not None and part.intent.family is HouseholdFamily.INTERCOM
+            and intercom.is_voice_replay(compound_part_request_id(request_id, index), part.intent.complement)
+            for index, part in enumerate(household.parts, start=1)
+        )
 
     def drop_reminder_choice(self, context_room_id: str | None) -> bool:
         """Drop the household reminder choice open in this room (review T032-NUM-FV-2).

@@ -32,8 +32,10 @@ import logging
 import uuid
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from dataclasses import dataclass, field
+from copy import deepcopy
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from hashlib import sha256
 
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID,
@@ -44,6 +46,7 @@ from src.core.task_outcome import (
     TaskOutcome,
     TaskStatus,
 )
+from src.nlu.household_intents import HouseholdFamily
 
 logger = logging.getLogger(__name__)
 
@@ -154,13 +157,17 @@ class CompoundPartReport:
     Attributes:
         index: 1-based spoken position.
         request_id: The part's request id.
-        segment: The part's words as heard (only for the reply; never logged).
+        segment: The part's words as heard, used for replay and ordinary replies.
         verdict: How the reply reports it.
         outcome: The part's own TaskOutcome.
         response: The part handler's own reply ("" when silent or none).
         reason: A content-free code (receipt reason or refusal intent), or None.
         path: The part's PathType value, or None.
         retried: The report comes from an earlier run of the same turn.
+        intercom_receipt: Per-zone playback evidence for an intercom part.
+        reply_label: Content-free spoken name for a part with a literal message.
+        intercom_fingerprint: Digest of the original complement, preserving
+            literal delimiters for idempotency checks.
     """
 
     index: int
@@ -172,13 +179,19 @@ class CompoundPartReport:
     reason: str | None = None
     path: str | None = None
     retried: bool = False
+    intercom_receipt: dict | None = field(default=None, repr=False)
+    reply_label: str | None = None
+    intercom_fingerprint: bytes | None = field(default=None, repr=False)
 
     def summary(self) -> dict:
         """Content-free description for turn results and logs."""
-        return {"index": self.index, "request_id": self.request_id, "verdict": self.verdict.value,
+        summary = {"index": self.index, "request_id": self.request_id, "verdict": self.verdict.value,
                 "task_status": self.outcome.status.value, "dispatch": self.outcome.dispatch.value,
                 "effect": self.outcome.effect.value, "path": self.path, "reason": self.reason,
                 "retried": self.retried}
+        if self.intercom_receipt is not None:
+            summary["intercom_receipt"] = deepcopy(self.intercom_receipt)
+        return summary
 
 
 @dataclass(frozen=True)
@@ -303,7 +316,7 @@ def compose_reply(reports: Iterable[CompoundPartReport]) -> str:
     """One reply naming every part in spoken order (design ``compound_contract.reply``)."""
     sentences = []
     for report in reports:
-        head = report.segment[:1].upper() + report.segment[1:]
+        head = report.reply_label or (report.segment[:1].upper() + report.segment[1:])
         own = _sentence(report.response)
         if report.verdict is PartVerdict.DONE:
             sentences.append(f"{head}: {own}" if own else f"{head}: hecho.")
@@ -312,7 +325,8 @@ def compose_reply(reports: Iterable[CompoundPartReport]) -> str:
                 report.outcome.status, "No pude hacerlo.")
             sentences.append(f"{head}: no lo hice. {reason}")
         elif report.verdict is PartVerdict.UNCERTAIN:
-            sentences.append(f"{head}: no sé si se hizo; fijate antes de repetirlo.")
+            detail = own if report.intercom_receipt is not None else ""
+            sentences.append(f"{head}: {detail or 'no sé si se hizo; fijate antes de repetirlo.'}")
         elif report.verdict is PartVerdict.INTERRUPTED:
             sentences.append(f"{head}: no lo intenté porque me interrumpiste.")
         elif report.verdict is PartVerdict.SAME_TARGET:
@@ -325,6 +339,11 @@ def compose_reply(reports: Iterable[CompoundPartReport]) -> str:
 
 
 RunPart = Callable[[CompoundPartContext], Awaitable[object]]
+
+
+def compound_part_request_id(request_id: str, index: int) -> str:
+    """Return the identity checked by the runner and the part's effect owner."""
+    return f"{request_id}:part{index}"
 
 
 class CompoundRunner:
@@ -361,30 +380,33 @@ class CompoundRunner:
         reports: list[CompoundPartReport] = []
         stopped = False
         for index, part in enumerate(parts, start=1):
-            request_id = f"{base}:part{index}"
+            request_id = compound_part_request_id(base, index)
             segment = getattr(part, "segment", "")
+            intent = getattr(part, "intent", None)
+            reply_label = "El anuncio" if getattr(intent, "family", None) is HouseholdFamily.INTERCOM else None
             if stopped or interrupted():
                 stopped = True
                 reports.append(CompoundPartReport(index, request_id, segment, PartVerdict.INTERRUPTED,
-                                                  _skipped_outcome(PartVerdict.INTERRUPTED)))
+                                                  _skipped_outcome(PartVerdict.INTERRUPTED), reply_label=reply_label))
                 continue
             earlier = self._ledger.get(request_id)
+            fingerprint = sha256(intent.complement.encode("utf-8")).digest() if reply_label is not None else None
             if earlier is not None:
-                if earlier.segment == segment:
-                    report = CompoundPartReport(index, request_id, segment, earlier.verdict, earlier.outcome,
-                                                earlier.response, earlier.reason, earlier.path, retried=True)
+                if earlier.segment == segment and earlier.intercom_fingerprint == fingerprint:
+                    report = replace(earlier, retried=True)
                 else:
                     report = CompoundPartReport(index, request_id, segment, PartVerdict.NOT_DONE,
                                                 TaskOutcome(TaskStatus.FAILED, dispatch=DispatchState.NOT_SENT,
                                                             effect=EffectState.NOT_OBSERVED),
-                                                reason="request_id_conflict")
+                                                reason="request_id_conflict", reply_label=reply_label)
                 reports.append(report)
                 state.record(part_target(part), report.outcome.status)
                 continue
             target = part_target(part)
             blocked = state.check(target) if target else None
             if blocked is not None:
-                reports.append(CompoundPartReport(index, request_id, segment, blocked, _skipped_outcome(blocked)))
+                reports.append(CompoundPartReport(index, request_id, segment, blocked, _skipped_outcome(blocked),
+                                                  reply_label=reply_label))
                 continue
             context = CompoundPartContext(index, request_id, part, state)
             token = CURRENT_REQUEST_ID.set(request_id)
@@ -399,8 +421,18 @@ class CompoundRunner:
             finally:
                 CURRENT_REQUEST_ID.reset(token)
             report = self._report(context, result, segment)
+            remember = True
+            if reply_label is not None:
+                in_flight = report.intercom_receipt is not None and report.intercom_receipt.get("in_flight") is True
+                report = replace(report, reply_label=reply_label, intercom_fingerprint=fingerprint, retried=in_flight)
+                # Intercom owns live progress and refuses reuse of an active ID
+                # with a different payload. Neither reply can replace its result.
+                conflict = (report.outcome.status is TaskStatus.FAILED
+                            and report.outcome.persistence is PersistenceState.NOT_WRITTEN)
+                remember = not (in_flight or conflict)
             reports.append(report)
-            self._remember(report)
+            if remember:
+                self._remember(report)
             if context.skipped is not None:
                 continue  # sent nothing: the target is as the earlier parts left it
             action = getattr(result, "action", None)
@@ -428,9 +460,11 @@ class CompoundRunner:
         response = "" if silent else (getattr(result, "response", "") or "")
         receipt = getattr(result, "receipt", None)
         reason = getattr(receipt, "reason", None) or getattr(result, "intent", None)
+        intercom_receipt = getattr(result, "intercom_receipt", None)
         return CompoundPartReport(context.index, context.request_id, segment, _verdict(outcome), outcome,
                                   response if isinstance(response, str) else "",
-                                  reason if isinstance(reason, str) else None, path)
+                                  reason if isinstance(reason, str) else None, path,
+                                  intercom_receipt=deepcopy(intercom_receipt) if isinstance(intercom_receipt, dict) else None)
 
     def _remember(self, report: CompoundPartReport) -> None:
         self._ledger[report.request_id] = report

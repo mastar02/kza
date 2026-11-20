@@ -137,6 +137,15 @@ class ZoneManager:
     def get_all_zones(self) -> dict[str, "Zone"]:
         """Devuelve todas las zonas como dict {zone_id: Zone}."""
         return dict(self.zones)
+
+    def playback_output_key(self, zone_id: str) -> tuple[str, int | None] | None:
+        """Identify the physical route used by streamed playback for a zone."""
+        zone = self.get_zone(zone_id)
+        if zone is None:
+            return None
+        if self.ma1260:
+            return ("ma1260", zone.ma1260_zone)
+        return ("default_pcm", None)
     
     def get_zone_by_mic(self, mic_index: int) -> Zone | None:
         """Obtener zona por índice de micrófono"""

@@ -41,7 +41,7 @@ import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from functools import lru_cache
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from src.nlu.command_grammar import (
@@ -117,6 +117,7 @@ class HouseholdIntent:
             ``no_time``, ``new_routine``, ``clock_alarm``,
             ``ring_stop``), or None.
         parts: COMPOUND only: the parts in spoken order.
+        literal_span: Intercom message offsets in the original transcript.
     """
 
     family: HouseholdFamily
@@ -126,6 +127,7 @@ class HouseholdIntent:
     verb: str = ""
     reason: str | None = None
     parts: tuple[HouseholdPart, ...] = ()
+    literal_span: tuple[int, int] | None = field(default=None, repr=False, compare=False)
 
     @property
     def controls_routine(self) -> bool:
@@ -233,6 +235,10 @@ class HouseholdIntentClassifier:
 
 # A one-digit decimal ("1,5 horas") stays one token, as in src.timers.voice_request.
 _WORD_RE = re.compile(r"\d+(?:[:.]\d{2}|[.,]\d(?!\d))?|[^\W\d_]+")
+_QUOTE_CLOSERS = {"«": "»", '"': '"', "'": "'"}
+_QUOTED_PUNCTUATION = re.compile(r"[,.;:?!…¡¿—-]+")
+_SEPARATOR_AFTER_EMPTY = re.compile(r"\s*(?:(?:\.{3}|…)\s*)?(?:[,;:?!—-]|$)")
+_MAX_QUOTE_DEPTH = 6
 _LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras", "bueno",
                          "bue", "dale"})
 # Fillers dropped at the end of a turn ("..., por favor", "... porfa"); "por favor" is matched as a pair
@@ -293,39 +299,219 @@ def _tokens(text: str) -> _Utterance:
     return _Utterance(original, tuple(_fold(t) for t in original), source, tuple(word.end() for word in words))
 
 
+def _quote_spans(text: str) -> list[tuple[int, int]]:
+    """Find balanced quotes across lines, keeping each outer span intact."""
+    def opening_boundary(before: str) -> bool:
+        return not before or before.isspace() or before in "«»([{\"':,;.¡¿…—-"
+
+    def starts_content(offset: int) -> bool:
+        start = offset + 1
+        punctuation = _QUOTED_PUNCTUATION.match(text, start)
+        if punctuation and text.startswith(_QUOTE_CLOSERS[text[offset]], punctuation.end()):
+            after_close = text[punctuation.end() + 1:punctuation.end() + 2]
+            if not after_close or after_close.isspace() or after_close in ",.;:?!…)]}»\"'—-":
+                return True
+        nested_openers = False
+        while start < len(text) and (text[start].isspace() or text[start] in _QUOTE_CLOSERS):
+            nested_openers |= text[start] in _QUOTE_CLOSERS
+            start += 1
+        after = text[start:start + 1]
+        if not after or after in ")]}»\"'":
+            # A balanced child can be the only item, even if it is empty.
+            return nested_openers
+        if nested_openers and after in ",.;:?!…":
+            # Punctuation alone after an empty pair does not start nested content.
+            return re.match(r"[,.;:?!…\s¡¿«\"'([{—-]*[^\W_]", text[start:]) is not None
+        following = text[start + 1:start + 2]
+        if after in "—-":
+            return bool(following) and not following.isspace() and following not in ",.;:?!…)]}»\"'—-"
+        if text.startswith(("...", "…"), start):
+            ellipsis_end = start + (3 if text.startswith("...", start) else 1)
+            # Opening punctuation and nested quotes can precede the word.
+            return re.match(r"""\s*(?:(?:[«"'¡¿(\[{]|\.{3}|…)\s*)*[^\W_]""", text[ellipsis_end:]) is not None
+        return (
+            after not in ",.;:?!…"
+            or bool(following) and not following.isspace() and following not in ",.;:?!…)]}»\"'"
+        )
+
+    markers: list[tuple[int, str, bool, bool]] = []
+    for offset, char in enumerate(text):
+        if char == "«":
+            markers.append((offset, char, True, False))
+        elif char == "»":
+            markers.append((offset, char, False, True))
+        elif char in ('"', "'"):
+            before, after = text[max(0, offset - 1):offset], text[offset + 1:offset + 2]
+            if char == "'" and before.isalnum() and after.isalnum():
+                continue  # Apostrophe inside a word.
+            markers.append((offset, char, opening_boundary(before) and starts_content(offset),
+                            bool(before) and before not in "«([{¡¿"))
+
+    if not markers:
+        return []
+
+    # Two trailing straight marks attached to words can be stray punctuation.
+    # Keep a preceding empty pair separate unless the tail supplies a boundary.
+    bare_trailing_closers = False
+    if len(markers) >= 4:
+        penultimate, penultimate_char, penultimate_can_open, _ = markers[-2]
+        last, last_char, last_can_open, _ = markers[-1]
+        bare_trailing_closers = (
+            penultimate_char == last_char and last_char in "\"'"
+            and not (penultimate_can_open or last_can_open)
+            and text[penultimate - 1:penultimate].isalnum() and text[penultimate + 1:penultimate + 2].isspace()
+            and text[last - 1:last].isalnum() and not text[last + 1:].strip()
+        )
+
+    sibling_connector = re.compile(
+        r"(?:\.{3}|…)\s*(?:[,;]\s*)?(?:(?:y|e|o|u|pero|(?:y\s+)?(?:luego|despu[eé]s))\s*)?",
+        re.IGNORECASE,
+    )
+
+    empty_pairs: set[int] = set()
+    definite_empty_pairs: set[int] = set()
+    for index in range(len(markers) - 2, -1, -1):
+        start, opener, _, _ = markers[index]
+        end, closer, second_can_open, _ = markers[index + 1]
+        if (_QUOTE_CLOSERS.get(opener) == closer and not text[start + 1:end].strip()
+                and opening_boundary(text[max(0, start - 1):start])):
+            empty_pairs.add(index)
+            if (not second_can_open or _SEPARATOR_AFTER_EMPTY.match(text, end + 1)
+                    or (bare_trailing_closers and index == len(markers) - 4)):
+                definite_empty_pairs.add(index)
+            elif index + 2 in definite_empty_pairs:
+                # An empty pair beyond the separator cannot open a child.
+                next_offset = markers[index + 2][0]
+                gap = text[end + 1:next_offset].lstrip()
+                if not gap or sibling_connector.fullmatch(gap):
+                    definite_empty_pairs.add(index)
+
+    def continuations(index: int, stack: str) -> tuple[tuple[int, str], ...]:
+        offset, char, can_open, can_close = markers[index]
+        empty = ((index + 2, stack),) if index in empty_pairs else ()
+        can_push = can_open and index not in definite_empty_pairs and len(stack) < _MAX_QUOTE_DEPTH
+        if not stack or stack[-1] != char:
+            if index in definite_empty_pairs:
+                return empty
+            following = stack + _QUOTE_CLOSERS[char] if can_push else stack
+            return (*empty, (index + 1, following))
+        closed = (index + 1, stack[:-1])
+        separated_empty = bool(empty) and text[offset - 1:offset].isspace()
+        if not can_push:
+            return (*empty, closed) if separated_empty else (closed, *empty)
+        opened = (index + 1, stack + _QUOTE_CLOSERS[char])
+        if not can_close:
+            return (*empty, opened)
+        if empty:
+            return (*empty, closed, opened) if separated_empty else (closed, *empty, opened)
+        if text[offset + 1:offset + 2].isspace():
+            return closed, opened
+        if index + 1 < len(markers):
+            next_offset, _, next_can_open, _ = markers[index + 1]
+            if next_can_open and sibling_connector.fullmatch(text, offset + 1, next_offset):
+                return closed, opened
+        return opened, closed
+
+    # A state only needs the expected closers, not their source offsets.
+    # Prefer the parse with the fewest unmatched marks.
+    choices: dict[tuple[int, str], tuple[int, tuple[int, str]]] = {}
+    pending = [(0, "")]
+    while pending:
+        state = pending[-1]
+        index, stack = state
+        if index == len(markers):
+            choices[state] = (len(stack), state)
+        else:
+            best = (len(markers) + 1, state)
+            for successor in continuations(index, stack):
+                if successor not in choices:
+                    pending.append(successor)
+                    break
+                cost, _ = choices[successor]
+                # An ignored mark is unmatched. A consumed pair costs zero.
+                cost += successor == (index + 1, stack)
+                if cost < best[0]:
+                    best = (cost, successor)
+                if cost == 0:
+                    choices[state] = best
+                    break
+            else:
+                choices[state] = best
+        if state in choices:
+            pending.pop()
+
+    opened: list[tuple[int, bool]] = []
+    spans: list[tuple[int, int]] = []
+    index = 0
+    stack = ""
+    while index < len(markers):
+        offset = markers[index][0]
+        # Keep literal text between marks. Consumed empty children contribute
+        # nothing, while a child with content also counts toward its parent.
+        if opened and not opened[-1][1]:
+            start, _ = opened[-1]
+            previous_end = markers[index - 1][0] + 1
+            opened[-1] = (start, bool(text[previous_end:offset].strip()))
+        _, (next_index, next_stack) = choices[index, stack]
+        if len(next_stack) > len(stack):
+            opened.append((offset, False))
+        elif len(next_stack) < len(stack):
+            start, has_content = opened.pop()
+            if has_content:
+                spans.append((start, offset + 1))
+                if opened:
+                    opened[-1] = (opened[-1][0], True)
+        elif next_index == index + 1 and opened:
+            opened[-1] = (opened[-1][0], True)
+        index = next_index
+        stack = next_stack
+    return sorted(spans)
+
+
 def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str], extra_leads: frozenset[str],
                    extra_trails: frozenset[str], paused_trails: frozenset[str] = frozenset()) -> tuple[int, int]:
     """Token range of ``utt`` (the tokens of ``text``) without its lead and trail fillers.
 
     A word of ``paused_trails`` is a trailing filler only after a pause
     (",", ";", "." or "!" before it: "..., dale"); a colon is not one
-    ("decirle a Juan: dale" keeps it).
+    ("decirle a Juan: dale" keeps it). Words inside explicit quotes stay.
     """
     lowered = (text or "").lower()
     spans = [m.span() for m in _WORD_RE.finditer(lowered)]
+    quotes = _quote_spans(lowered)
+
+    def crosses_quote(first: int, last: int) -> bool:
+        return any(left < spans[last][1] and spans[first][0] < right for left, right in quotes)
+
     leads = WAKE_TERMS | {_fold(w) for w in wake_words} | _LEAD_WORDS | extra_leads
     trails = _TRAIL_WORDS | extra_trails
     start, end = 0, len(utt)
     for _ in range(_MAX_LEADS):
         word = utt.at(start)
         if word in leads:
-            start += 1
+            next_start = start + 1
         elif word == "por" and utt.at(start + 1) == "favor":
-            start += 2
+            next_start = start + 2
         elif word == "no" and _PAUSE_AFTER.match(lowered, spans[start][1]):
-            start += 1
+            next_start = start + 1
         else:
             break
+        if crosses_quote(start, next_start - 1):
+            break
+        start = next_start
     while end > start:
         if end - start >= 2 and utt.folded[end - 2:end] == ("por", "favor"):
-            end -= 2
+            next_end = end - 2
         elif utt.folded[end - 1] in trails:
-            end -= 1
+            next_end = end - 1
         elif utt.folded[end - 1] in paused_trails and end - start >= 2 \
                 and _PAUSE_BEFORE_TRAIL.match(lowered, spans[end - 2][1]):
-            end -= 1
+            next_end = end - 1
         else:
             break
+        if crosses_quote(next_end, end - 1):
+            break
+        end = next_end
     return start, end
 
 
@@ -488,7 +674,7 @@ _forms(_ROUTINE_EXEC, "ejecuta", "ejecute", "ejecutar", "corre", "corra", "corre
 _forms(_ROUTINE_PROPOSE, "crea", "crear", "arma", "arme", "armar", "hace", "haga", "hacer", "programa", "programe",
        "programar", "activa", "active", "activar", "configura", "configure", "configurar", "agenda", "agendar")
 _forms(_AUTOMATE, "automatiza", "automatice", "automatizar")
-_forms(_INTERCOM, "anuncia", "anuncie", "anunciar", "avisa", "avise", "deci", "di", "diga")
+_forms(_INTERCOM, "anuncia", "anuncie", "anunciar", "avisa", "avise", "comunica", "comunique", "deci", "di", "diga")
 _forms(_DOMOTICS, "prende", "prenda", "prendan", "prender", "encende", "enciende", "encienda", "encender", "apaga",
        "apague", "apaguen", "apagar", "sube", "subi", "suba", "subir", "baja", "baje", "bajen", "bajar", "abri",
        "abre", "abra", "abrir", "cierra", "cerra", "cierre", "cerrar", "pone", "pon", "ponga", "poner", "activa",
@@ -565,10 +751,20 @@ _CLOCK = re.compile(r"\b(?:a|para|cuando sean?) (?:las? )?(?:\d{1,2}(?:[:.]\d{2}
 # T031-U2-RV5: the form the minutes question suggests).
 _ARTICLE_CLOCK_UNIT = re.compile(rf"\b(?:a|para|de) (?:la|las) {_ALARM_HOUR} "
                                  rf"(?:h|hs|hrs|horas?|y {_NUMBER} (?:minutos?|mins?))\b")
-_INTERCOM_TARGET = re.compile(
-    r"\b(?:en|a|por) (?:el |la |los |las |toda la |todas las )?(?:casa|todos|parlantes|"
-    + "|".join(re.escape(alias) for alias in sorted(ROOM_ALIASES)) + r")\b")
-_NOTIFICATION = re.compile(r"\bno molestar\b|\bsolo (?:las )?urgen(?:tes|cias)\b")
+_INTERCOM_DESTINATION_HEADS = frozenset({"en", "a", "al", "por", "para"})
+INTERCOM_BROADCAST_TARGETS = frozenset({
+    "toda la casa", "todas las salas", "todas partes", "todos lados", "todos", "parlantes",
+    "todos los parlantes",
+})
+_INTERCOM_PUNCTUATION = re.compile(r"[^\w]*")
+_INTERCOM_DIRECTION = re.compile(
+    r"(?:" + "|".join(sorted(_INTERCOM_DESTINATION_HEADS)) + r")\b\s*", re.IGNORECASE,
+)
+_INTERCOM_MESSAGE_MARKER = re.compile(r"\bque\b|:", re.IGNORECASE)
+_NOTIFICATION = re.compile(
+    r"(?:(?:(?P<disable>desactiva|desactive|quita|quite|saca|saque)|activa|active|pone|pon) )?"
+    r"(?:el )?(?:modo )?no molestar"
+)
 _MUSIC_WORDS = frozenset({"musica", "cancion", "canciones", "tema", "temas", "playlist", "spotify", "reproduccion",
                           "album", "disco"})
 _QUERY_HEADS = frozenset({"que", "cuales", "cuantos", "cuantas"})
@@ -1034,6 +1230,59 @@ def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
     return None
 
 
+def intercom_slots(complement: str) -> tuple[str | None, int]:
+    """Return the explicit destination, if any, and the literal message offset.
+
+    An opening quote with a matching close marks literal text before any
+    room syntax is considered. Ordinary punctuation can precede a destination.
+    """
+    start = _INTERCOM_PUNCTUATION.match(complement).end()
+    quotes = _quote_spans(complement)
+    if quotes and quotes[0][0] < start:
+        return None, quotes[0][0]
+    direction = _INTERCOM_DIRECTION.match(complement, start)
+    marker = _INTERCOM_MESSAGE_MARKER.search(complement, start)
+    target_start = direction.end() if direction else start
+    target_end = marker.start() if marker else len(complement)
+    target = " ".join(complement[target_start:target_end].strip(" ,").split())
+    if direction or target.casefold() in INTERCOM_BROADCAST_TARGETS:
+        return target, marker.end() if marker else len(complement)
+    opening_colon = complement.find(":", 0, start)
+    if opening_colon != -1:
+        return None, opening_colon + 1
+    if marker and marker.start() == start:
+        return None, marker.end()
+    return None, 0
+
+
+def _intercom_intent(utt: _Utterance, verb: _Verb | None) -> HouseholdIntent | None:
+    """Claim the command head and leave destination resolution to intercom."""
+    if verb is None or _INTERCOM not in verb.classes or verb.infinitive:
+        return None
+    head = utt.at(0)
+    next_word = utt.at(verb.end)
+    explicit_destination = next_word in _INTERCOM_DESTINATION_HEADS
+    announce = head == verb.form and (head.startswith(("anunci", "comunic")) or (
+        head in {"avisa", "avise"} and next_word == "que"
+    ))
+    if not announce and (not explicit_destination or head.endswith(("me", "nos"))):
+        return None
+    if not utt.word_ends:
+        return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6",
+                               _rest(utt, verb.end), verb.form)
+
+    start, last_word = utt.word_ends[verb.end - 1], utt.word_ends[-1]
+    tail = _INTERCOM_PUNCTUATION.match(utt.source, last_word)
+    end = tail.end()
+    if end != len(utt.source):
+        # A following filler or clause is outside the payload.
+        end = last_word + len(tail[0].rstrip(" \t,;:"))
+    complement = utt.source[start:end]
+    _, message_start = intercom_slots(complement)
+    return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6",
+                           complement.strip(), verb.form, literal_span=(start + message_start, end))
+
+
 def _r6(utt: _Utterance) -> HouseholdIntent | None:
     created = _routine_creation(utt)
     if created is not None:
@@ -1057,16 +1306,12 @@ def _r6(utt: _Utterance) -> HouseholdIntent | None:
                 complement = (_routine_name_after(utt, noun) if operation is HouseholdOperation.EXECUTE
                               else _rest(utt, noun + 1))
                 return HouseholdIntent(HouseholdFamily.ROUTINE, operation, "R6", complement, verb.form)
-    if _NOTIFICATION.search(utt.text):
-        disable = verb is not None and bool(verb.classes & {_DISABLE, _CANCEL, _STOP_RINGING})
+    notification = _NOTIFICATION.fullmatch(utt.text)
+    if notification is not None:
         return HouseholdIntent(HouseholdFamily.NOTIFICATION,
-                               HouseholdOperation.DISABLE if disable else HouseholdOperation.EXECUTE, "R6",
+                               HouseholdOperation.DISABLE if notification["disable"] else HouseholdOperation.EXECUTE, "R6",
                                utt.heard, verb.form if verb is not None else "")
-    if verb is not None and _INTERCOM in verb.classes and not verb.infinitive:
-        if verb.form.startswith("anunci") or _INTERCOM_TARGET.search(" ".join(utt.folded[verb.end:])):
-            return HouseholdIntent(HouseholdFamily.INTERCOM, HouseholdOperation.EXECUTE, "R6",
-                                   _rest(utt, verb.end), verb.form)
-    return None
+    return _intercom_intent(utt, verb)
 
 
 _SINGLE_RULES = (_r3, _r1, _r2, _r3a, _r4, _r6)
@@ -1090,6 +1335,9 @@ def _split_clauses(utt: _Utterance) -> list[_Utterance]:
     for k in range(1, len(utt)):
         if utt.at(k) not in _CONJUNCTIONS or k <= start:
             continue
+        segment = utt.slice(start)
+        if _intercom_intent(segment, _verb_at(segment, 0)) is not None:
+            break
         if _CONTENT_MARKERS & set(utt.folded[start:k]):
             return []
         j = k + 1
@@ -1287,6 +1535,9 @@ def classify_household_intent(text: str, *, wake_words: Iterable[str] = (),
     if not len(utt):
         return None
     found = _r3(utt)
+    if found is not None:
+        return found
+    found = _intercom_intent(utt, _verb_at(utt, 0))
     if found is not None:
         return found
     found = _r5(utt, max_compound_parts)
