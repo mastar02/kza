@@ -52,21 +52,25 @@ _UNCLAIMED_CREATION = re.compile(
     r"\b(?:(?:crea|crear) (?:una )?(?:rutina|automatizacion)|nueva (?:rutina|automatizacion)|automatiza)\b"
 )
 # Keep each lookbehind fixed-width for Python's regex engine.
-_CONFIGURATION_CONTEXT = (
-    r"(?<!\bse )(?<!\bqu[eé] )(?<!\b(?:c[oó]mo|cu[aá]l) )"
-    r"(?<!\b(?:d[oó]nde|qui[eé]n) )(?<!\bcu[aá]ndo )"
+_INDICATIVE_CONTEXT = (
+    r"(?<!\bse )(?<!\b(?:como|cual) )(?<!\b(?:donde|quien) )(?<!\bcuando )"
 )
 _ROUTINE_DIRECTIVE = re.compile(
-    rf"{_CONFIGURATION_CONTEXT}\b(?:programa|configura) que\b"
+    rf"{_INDICATIVE_CONTEXT}\b(?:programa|configura) que\b"
     r"|\b(?:quiero|necesito|haz|hace|pon|pone) que (?:cuando|cada vez que)\b"
 )
 _RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
 _RECURRENCE_QUESTION = re.compile(r"\bcuando se\b")
-_CONFIGURATION_VERB = re.compile(rf"{_CONFIGURATION_CONTEXT}\b(?:configur(?:a|ame|ar|e)|program(?:a|ame|ar|e))\b")
-_VOSEO_PROGRAM_VERB = re.compile(rf"{_CONFIGURATION_CONTEXT}\bprogramá\b", re.I)
+# Subjunctive forms can follow "que se" in a request ("hacé que se programe").
+_CONFIGURATION_VERB = re.compile(
+    rf"{_INDICATIVE_CONTEXT}\b(?:configura|programa)\b"
+    r"|\b(?:configur|program)(?:ame|ar|e)\b"
+)
+_VOSEO_PROGRAM_VERB = re.compile(r"\bprogramá\b", re.I)
 _NOMINAL_PROGRAM = re.compile(
     r"\b(?:el|del|al|un|una|algun|alguna|este|ese|aquel|mi|tu|su|nuestro|otro|mismo|cualquier)"
-    r"(?: (?:buen|buena|gran|mejor|nuevo|nueva|viejo|mismo|otro|primer|ultimo|pequeno|lindo|unico))? programa\b"
+    r"(?: [a-z]+)? programa\b"
+    r"(?! (?:el|la|los|las|un|una|unos|unas|mi|tu|su|este|esta|ese|esa)\b)"
 )
 _QUESTION_MARKER = re.compile(r"[¿?]|\b(?:cuándo|qué|cuál(?:es)?|dónde|cómo|quién(?:es)?|cuánt[oa]s?)\b", re.I)
 _INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"

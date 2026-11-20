@@ -55,6 +55,11 @@ async def voice_router(orchestrated, utterance, *, scheduler=None):
     ("para la automatización de riego configurá el horario a las ocho", "no creo rutinas por voz"),
     ("después del riego programá el horario de la automatización de jardín", "no creo rutinas por voz"),
     ("con tu permiso programá el horario de la automatización de riego", "no creo rutinas por voz"),
+    ("del riego programa la rutina para las ocho", "no creo rutinas por voz"),
+    ("del riego programá la rutina para las ocho", "no creo rutinas por voz"),
+    ("hacé que se programe el horario de la automatización de riego a las ocho", "no creo rutinas por voz"),
+    ("necesito que se configure el horario de la automatización de riego", "no creo rutinas por voz"),
+    ("quiero que programe el horario de la automatización de riego", "no creo rutinas por voz"),
     ("programa que arranque el riego al anochecer", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego", "no creo rutinas por voz"),
     ("quiero que cuando anochezca empiece el riego, ¿podés?", "no creo rutinas por voz"),
@@ -102,6 +107,7 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "cada vez que hay un empate cuando se juega el desempate",
     "quiero escuchar algún programa de rutinas de ejercicio",
     "quiero escuchar un buen programa de rutinas de ejercicio",
+    "quiero escuchar un excelente programa de rutinas de ejercicio",
     "¿se configura el horario de la automatización de riego desde la web?",
     "podés decirme quién configura el horario de la automatización de riego",
 ])
@@ -129,6 +135,8 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
     "podés decirme quién normalmente configura el horario de la automatización de riego",
     "se configura que empiece de noche la automatización de riego?",
     "me podés decir si el horario de la automatización de riego se configura desde la web?",
+    "¿sabés si ya se programa sola la automatización de riego?",
+    "¿quién programa el horario de la automatización de riego?",
 ])
 def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance):
     assert not is_unclaimed_routine_creation(f"Nexa, {utterance}")
