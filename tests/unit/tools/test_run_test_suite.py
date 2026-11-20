@@ -140,15 +140,25 @@ def test_sanitize_env_strips_inherited_overrides():
     assert cleaned["PYTHONFAULTHANDLER"] == "1"
 
 
-def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path):
+def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path, monkeypatch):
+    import pytest
+
     solo = tmp_path / "runs" / "SOLO_WINDOW"
     solo.parent.mkdir(parents=True)
-    guard = runner.acquire_solo_window(solo, tier=2, platform="linux")
+    monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", solo)
+
+    # Alternate path arguments / kwargs must be rejected at API level too.
+    with pytest.raises(TypeError):
+        runner.acquire_solo_window(tmp_path / "other" / "SOLO_WINDOW", tier=2, platform="linux")  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        runner.acquire_solo_window(solo_file=tmp_path / "other" / "SOLO_WINDOW", tier=2, platform="linux")  # type: ignore[call-arg]
+
+    guard = runner.acquire_solo_window(tier=2, platform="linux")
     assert guard.marker_path == solo and solo.is_file()
     try:
         for tier in (0, 1, 2):
             try:
-                runner.acquire_solo_window(solo, tier=tier, platform="linux")
+                runner.acquire_solo_window(tier=tier, platform="linux")
                 raise AssertionError("expected RuntimeError when SOLO_WINDOW is held")
             except RuntimeError as exc:
                 assert "lock" in str(exc).lower() or "solo_window" in str(exc).lower()
@@ -157,11 +167,11 @@ def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path):
     assert not solo.exists()
 
     # An active Tier 0/1 holding LOCK_SH must block Tier 2 from starting mid-run.
-    tier1_guard = runner.acquire_solo_window(solo, tier=1, platform="linux")
+    tier1_guard = runner.acquire_solo_window(tier=1, platform="linux")
     assert tier1_guard.marker_path is None and tier1_guard.lock_fh is not None
     try:
         try:
-            runner.acquire_solo_window(solo, tier=2, platform="linux")
+            runner.acquire_solo_window(tier=2, platform="linux")
             raise AssertionError("expected Tier 2 to fail closed while Tier 1 holds LOCK_SH")
         except RuntimeError as exc:
             assert "lock" in str(exc).lower()
@@ -170,9 +180,10 @@ def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path):
 
     # Missing host directory must fail closed for ALL tiers (0, 1, and 2) on Linux.
     missing_default = tmp_path / "missing" / "runs" / "SOLO_WINDOW"
+    monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", missing_default)
     for tier in (0, 1, 2):
         try:
-            runner.acquire_solo_window(missing_default, tier=tier, platform="linux")
+            runner.acquire_solo_window(tier=tier, platform="linux")
             raise AssertionError(f"expected Tier {tier} to fail closed when host dir is missing")
         except RuntimeError as exc:
             assert "host exclusion directory" in str(exc).lower()
@@ -181,6 +192,7 @@ def test_acquire_solo_window_blocks_concurrent_runs_and_releases(tmp_path):
 def test_acquire_solo_window_cleans_marker_and_lock_if_write_fails(tmp_path, monkeypatch):
     solo = tmp_path / "runs" / "SOLO_WINDOW"
     solo.parent.mkdir(parents=True)
+    monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", solo)
 
     class _FailWriter:
         def __enter__(self):
@@ -203,7 +215,7 @@ def test_acquire_solo_window_cleans_marker_and_lock_if_write_fails(tmp_path, mon
 
     monkeypatch.setattr(runner.os, "fdopen", fail_fdopen)
     try:
-        runner.acquire_solo_window(solo, tier=2, platform="linux")
+        runner.acquire_solo_window(tier=2, platform="linux")
         raise AssertionError("expected OSError")
     except OSError:
         pass
@@ -211,7 +223,7 @@ def test_acquire_solo_window_cleans_marker_and_lock_if_write_fails(tmp_path, mon
     assert not solo.exists()
 
     # Subsequent Tier 2 acquisition must still succeed cleanly.
-    guard = runner.acquire_solo_window(solo, tier=2, platform="linux")
+    guard = runner.acquire_solo_window(tier=2, platform="linux")
     try:
         assert solo.exists()
     finally:
@@ -362,7 +374,9 @@ def test_main_cleans_shm_basetemp_when_prebuild_fails(tmp_path, monkeypatch):
     shm.mkdir()
     out_dir = tmp_path / "out"
     solo = tmp_path / "runs" / "SOLO_WINDOW"
+    solo.parent.mkdir(parents=True)
     monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", solo)
+    monkeypatch.setattr(runner.sys, "platform", "linux")
     monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=32 * 1024**3, f_frsize=1))
     monkeypatch.setattr(runner, "_shm_has_capacity", lambda *_args, **_kw: True)
     monkeypatch.setattr(
@@ -394,3 +408,5 @@ def test_main_cleans_shm_basetemp_when_prebuild_fails(tmp_path, monkeypatch):
     except RuntimeError as exc:
         assert "boom" in str(exc)
     assert not (shm / "reserved-bt").exists()
+    guard = runner.acquire_solo_window(tier=2, platform="linux")
+    guard.release()

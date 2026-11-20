@@ -163,36 +163,30 @@ class SoloWindowGuard:
                     self.lock_fh = None
 
 
-def _solo_lock_file(solo_file: Path) -> Path:
-    if solo_file.name == "SOLO_WINDOW":
-        return solo_file.parent / "feature-pytest.lock"
-    return solo_file.with_name(f".{solo_file.name}.lock")
-
-
 def acquire_solo_window(
-    solo_file: Path | None = None,
     *,
     tier: int,
     platform: str | None = None,
 ) -> SoloWindowGuard:
     """Enforce mutual exclusion on Linux via the single canonical host lock + SOLO_WINDOW.
 
-    All Linux tiers (0, 1 and 2) share the same canonical host directory and
-    lock file so no invocation can overlap or start unlocked before Tier 2.
+    All Linux tiers (0, 1 and 2) share ``DEFAULT_SOLO_WINDOW_FILE`` and
+    ``DEFAULT_SOLO_WINDOW_FILE.parent / "feature-pytest.lock"`` so no invocation
+    can pass an alternate lock path, overlap, or start unlocked before Tier 2.
     Tiers 0/1 hold ``LOCK_SH`` while Tier 2 holds ``LOCK_EX`` + ``O_EXCL`` marker.
     """
     plat = platform or sys.platform
     if not plat.startswith("linux"):
         return SoloWindowGuard()
 
-    target_solo = DEFAULT_SOLO_WINDOW_FILE if solo_file is None else solo_file
+    target_solo = DEFAULT_SOLO_WINDOW_FILE
     if not target_solo.parent.is_dir():
         raise RuntimeError(
             f"Required host exclusion directory missing at {target_solo.parent}; "
             f"refusing unlocked Tier {tier} run on Linux"
         )
 
-    lock_path = _solo_lock_file(target_solo)
+    lock_path = target_solo.parent / "feature-pytest.lock"
     lock_fh = lock_path.open("a+", encoding="utf-8")
     lock_mode = (fcntl.LOCK_EX if tier == 2 else fcntl.LOCK_SH) | fcntl.LOCK_NB
     try:
