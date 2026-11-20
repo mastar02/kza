@@ -113,6 +113,19 @@
       const notice = node('p', 'access-dialog-status'); notice.setAttribute('role', 'status');
       const submit = node('button', 'identity-primary', row ? 'Enviar modificación' : 'Crear credencial'); submit.type = 'submit';
       const actions = node('div', 'modal-actions'); actions.append(button('Cancelar', closeForm), submit);
+      let visitExpiry = null;
+      if (!row) {
+        const visit = button('Visita (7 días)', () => {
+          role.value = 'home'; person.value = '';
+          visitExpiry = Date.now() / 1000 + 7 * 86400;
+          expires.value = localDate(visitExpiry);
+          if (!subject.value.trim()) subject.value = 'Visita';
+          roleChanged();
+        });
+        visit.classList.add('access-visit-preset');
+        form.append(visit);
+        expires.addEventListener('input', () => { visitExpiry = null; });
+      }
       form.append(subjectLabel, roleLabel, expiresLabel, home, samples, notice, actions); dialog.append(form);
       function read() {
         const selected = [];
@@ -123,7 +136,9 @@
         }
         const chosen = role.value === 'home' ? person.value : '';
         if (chosen && !formState.choices.has(chosen)) throw Error('unavailable_person');
-        const grant = { role: role.value, expires_at: new Date(expires.value).getTime() / 1000,
+        const deadline = visitExpiry !== null && expires.value === localDate(visitExpiry)
+          ? visitExpiry : new Date(expires.value).getTime() / 1000;
+        const grant = { role: role.value, expires_at: deadline,
           user_id: chosen || null, selections: selected, ...(row ? {} : { subject: subject.value.trim() }) };
         return root.NexoAccessOwner.normalizeGrant(grant, !row);
       }

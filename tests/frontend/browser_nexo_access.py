@@ -223,6 +223,7 @@ async def main():
                         await page.wait_for('!!document.querySelector('+json.dumps(selector)+')')
                         await click_text(page, selector+' button', 'Modificar')
                         await page.wait_for("document.querySelector('#access-dialog').open && document.querySelectorAll('#access-dialog form select')[1].options.length===3")
+                        assert await page.evaluate("!document.querySelector('#access-dialog .access-visit-preset')")
                         await page.evaluate("(()=>{const form=document.querySelector('#access-dialog form');form.querySelectorAll('select')[1].value="+json.dumps(person_a.user_id)+";form.dispatchEvent(new Event('input',{bubbles:true}));form.requestSubmit()})()")
                         await page.wait_for("!document.querySelector('#access-dialog').open && !document.querySelector('#add-access').disabled")
                         changed = next(row for row in authority.commands.catalog(root)['rows'] if row['id'] == home['id'])
@@ -249,6 +250,38 @@ async def main():
                         assert await page.evaluate('window.__credentialPosts.length==='+str(before+1)+" && !document.querySelector('#access-secret-dialog').open")
                         assert sum(row['subject'] == 'Synthetic lost receipt' for row in authority.commands.catalog(root)['rows']) == 1
                         checks.append('lost JSON receipt reconciles without second POST or secret')
+                        phase = 'seven-day visitor preset'
+                        await page.evaluate("document.querySelector('#add-access').click()")
+                        await page.wait_for("document.querySelector('#access-dialog').open && document.querySelectorAll('#access-dialog form select')[1].options.length===3")
+                        await page.evaluate("document.querySelectorAll('#access-dialog form select')[1].value=" + json.dumps(person_a.user_id))
+                        for width in (320, 390, 1440):
+                            await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 900,
+                                'deviceScaleFactor': 1, 'mobile': width <= 390})
+                            assert await page.evaluate("""(() => {
+                              const {width, height} = document.querySelector('.access-visit-preset').getBoundingClientRect();
+                              return width >= 44 && height >= 44;
+                            })()""")
+                        before_preset = time.time()
+                        await click_text(page, '#access-dialog button', 'Visita (7 días)')
+                        assert await page.evaluate("""(() => {
+                          const form = document.querySelector('#access-dialog form');
+                          const [role, person] = form.querySelectorAll('select');
+                          const subject = form.querySelector('input[type=text]');
+                          if (role.value !== 'home' || person.value !== '' || subject.value !== 'Visita') return false;
+                          subject.value = 'Visita sintética';
+                          form.querySelector('.access-visit-preset').click();
+                          if (subject.value !== 'Visita sintética') return false;
+                          form.requestSubmit();
+                          return true;
+                        })()""")
+                        await page.wait_for("document.querySelector('#access-secret-dialog').open")
+                        await escape(page)
+                        await page.wait_for("!document.querySelector('#access-secret-dialog').open && !document.querySelector('#add-access').disabled")
+                        visit = next(row for row in authority.commands.catalog(root)['rows'] if row['subject'] == 'Visita sintética')
+                        assert visit['role'] == 'home' and visit['user_id'] is None
+                        assert before_preset + 7 * 86400 <= visit['expires_at'] <= time.time() + 7 * 86400
+                        checks.append('seven-day visitor preset clears the person, preserves a custom name and issues a real home grant')
+                        await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
                         phase = 'voice selection and native retirement before import'
                         await page.evaluate("document.querySelector('#app-nav [data-view=voices]').click()")
                         await page.wait_for("document.querySelectorAll('[data-capture-id]').length===3")
@@ -360,6 +393,16 @@ async def main():
                 server.should_exit = True
                 await serving
                 await dashboard.stop()
+
+
+def test_nexo_access_browser(monkeypatch):
+    """Run the existing browser workflow when this file is selected in pytest."""
+    monkeypatch.setenv('KZA_DASHBOARD_TOKEN', 'synthetic-nexo-access-root')
+    mask = os.umask(0o077)
+    try:
+        asyncio.run(main())
+    finally:
+        os.umask(mask)
 
 
 if __name__ == '__main__':

@@ -90,17 +90,17 @@ VIEWPORTS = {
     'desktop': {'width': 1440, 'height': 900, 'deviceScaleFactor': 2, 'mobile': False},
     'mobile': {'width': 390, 'height': 844, 'deviceScaleFactor': 3, 'mobile': True},
 }
-VIEW_HASHES = ('#hogar', '#acciones', '#rutinas', '#memoria', '#mis-recuerdos', '#personas', '#voces',
+VIEW_HASHES = ('#hogar', '#acciones', '#rutinas', '#tareas', '#memoria', '#mis-recuerdos', '#personas', '#voces',
                '#accesos', '#evaluacion')
 # runs.views_load: each view loaded by a role that can see it (confirmed against state.js by a unit check).
-VIEW_ROLES = {'#hogar': 'home', '#acciones': 'home', '#rutinas': 'home', '#mis-recuerdos': 'home',
+VIEW_ROLES = {'#hogar': 'home', '#acciones': 'home', '#rutinas': 'home', '#tareas': 'home', '#mis-recuerdos': 'home',
               '#memoria': 'operator', '#personas': 'operator', '#voces': 'operator', '#accesos': 'operator',
               '#evaluacion': 'evaluator'}
 MOBILE_VIEWS = ('#hogar', '#acciones', '#voces')
 INTERACTION_VIEWS = ('#hogar', '#acciones', '#voces')
 # R6-7 (fixture_backend.not_represented): views whose services the fixture answers with 503; their C10 rows are
 # descriptive only (excluded from C10 acceptance and from before/after claims).
-FIXTURE_UNAVAILABLE_VIEWS = ('#rutinas', '#memoria', '#mis-recuerdos')
+FIXTURE_UNAVAILABLE_VIEWS = ('#rutinas', '#tareas', '#memoria', '#mis-recuerdos')
 FIXTURE_UNAVAILABLE_NOTE = 'no representado en la fixture: el servicio responde 503'
 # R6-2 (runs.count, smoke_gate.smoke_batches): the batch composition is fixed per mode, never a CLI value.
 BATCH_COMPOSITION = {

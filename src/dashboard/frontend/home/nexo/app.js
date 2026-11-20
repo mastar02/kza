@@ -18,6 +18,8 @@ import './notices-owner.js';
 import './notices.js';
 import './routine-owner.js';
 import './routines.js';
+import './tasks-owner.js';
+import './tasks.js';
 import './memory-owner.js';
 import './memory.js';
 import './my-memory-owner.js';
@@ -36,9 +38,9 @@ let epoch = 0, poller, sessionTimer, ticker, catalog = null, clock = null, lastE
 let roomId, layer = 'lights', house, logoutPending = false, authBusy = false, activeView = null;
 let staleFocus = null;
 let navigationVersion = 0, desiredView = null, accessView = null, viewsReady = true, viewDrain = Promise.resolve(true), privateSuspended = false;
-const viewIds = { home: 'home-view', actions: 'actions-view', routines: 'routines-view', memory: 'memory-view', mymemory: 'my-memory-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
-const viewHashes = { home: '#hogar', actions: '#acciones', routines: '#rutinas', memory: '#memoria', mymemory: '#mis-recuerdos', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
-const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation', 'routines', 'memory', 'mymemory'].includes(view);
+const viewIds = { home: 'home-view', actions: 'actions-view', routines: 'routines-view', tasks: 'tasks-view', memory: 'memory-view', mymemory: 'my-memory-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
+const viewHashes = { home: '#hogar', actions: '#acciones', routines: '#rutinas', tasks: '#tareas', memory: '#memoria', mymemory: '#mis-recuerdos', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
+const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation', 'routines', 'tasks', 'memory', 'mymemory'].includes(view);
 try { logoutPending = sessionStorage.getItem('kza.logoutPending') === 'true'; } catch (_) { /* Storage is optional. */ }
 
 function node(tag, className, text) {
@@ -141,6 +143,18 @@ function closeRoutines() {
   const dispose = routinesView; routinesView = null; dispose?.();
   return routines.leave();
 }
+const tasks = window.NexoTasksOwner.createTasksOwner({ api, session,
+  onAccountChanged(generation) {
+    setTimeout(() => {
+      if (generation !== session.generation()) return;
+      retire('La cuenta cambió en otra pestaña.'); void bootstrap();
+    }, 0);
+  } });
+let tasksView = null;
+function closeTasks() {
+  const dispose = tasksView; tasksView = null; dispose?.();
+  return tasks.leave();
+}
 // Memoria follows the same owner rules; every open asks whoami before reading (F5).
 const memory = window.NexoMemoryOwner.createMemoryOwner({ api, session,
   onAccountChanged: () => { setTimeout(() => { retire('La cuenta cambió en otra pestaña.'); void bootstrap(); }, 0); } });
@@ -191,7 +205,7 @@ function trackViewDrain(promises) {
 }
 function drainViews() {
   people.leave();
-  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess(), closeRoutines(), closeMemory(), closeMyMemory(), closeVoiceAdmin()]);
+  return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess(), closeRoutines(), closeTasks(), closeMemory(), closeMyMemory(), closeVoiceAdmin()]);
 }
 
 function pendingLogout(value) {
@@ -217,7 +231,8 @@ function retire(message = '', { endSession = true } = {}) {
   closeNotices({ endSession: true });
   people.clear(); const accessClosing = closeAccess(), routinesClosing = closeRoutines(), memoryClosing = closeMemory(), myMemoryClosing = closeMyMemory(), voiceAdminClosing = closeVoiceAdmin();
   trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing, routinesClosing, routines.clear({ wipe: endSession }),
-    memoryClosing, memory.clear({ wipe: endSession }), myMemoryClosing, myMemory.clear({ wipe: endSession }), myVoice.clear({ wipe: endSession }), voiceAdminClosing, voiceAdmin.clear({ wipe: endSession })]);
+    closeTasks(), tasks.clear({ wipe: endSession }), memoryClosing, memory.clear({ wipe: endSession }),
+    myMemoryClosing, myMemory.clear({ wipe: endSession }), myVoice.clear({ wipe: endSession }), voiceAdminClosing, voiceAdmin.clear({ wipe: endSession })]);
   actions.clear(); destroyHouse(); catalog = clock = lastError = staleFocus = null; roomId = undefined; activeView = null;
   byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
   byId('view-transition-status').hidden = true;
@@ -411,6 +426,7 @@ function renderNavigation() {
     { id: 'people', label: 'Personas', icon: 'user' },
     { id: 'actions', label: 'Acciones', icon: 'list' },
     { id: 'routines', label: 'Rutinas', icon: 'clock' },
+    { id: 'tasks', label: 'Tareas', icon: 'list' },
     { id: 'memory', label: 'Memoria', icon: 'layers' },
     { id: 'mymemory', label: 'Mis recuerdos', icon: 'user' },
     { id: 'access', label: 'Accesos', icon: 'shield' },
@@ -470,6 +486,10 @@ async function activate(view, push = true, force = false) {
       routinesView = window.NexoRoutines.mountRoutines({ container: byId('routines-view'), dialog: byId('routine-dialog'),
         confirmDialog: byId('routine-confirm-dialog'), owner: routines, icon });
       opened = await routines.open();
+    }
+    if (view === 'tasks') {
+      tasksView = window.NexoTasks.mountTasks({ container: byId('tasks-view'), confirmDialog: byId('tasks-confirm-dialog'), owner: tasks });
+      opened = await tasks.open();
     }
     if (view === 'memory') {
       memoryView = window.NexoMemory.mountMemory({ container: byId('memory-view'), confirmDialog: byId('memory-confirm-dialog'), owner: memory, icon });
