@@ -734,10 +734,11 @@ reminders:
   # 120 s (2 minutos) confirmado por el usuario el 2026-11-16 (Q09/Q2 del plan P3-P4).
   late_action_grace_s: 120
 
-# Rutinas web persistentes, independientes de las automatizaciones de HA.
+# Rutinas persistentes, independientes de las automatizaciones de HA.
 routines:
   db_path: "./data/routines.db"
   timezone: "America/Montevideo"
+  voice_brake: true  # Permite frenar o desactivar rutinas por voz.
 
 # Capa de precedencia de intenciones del hogar (P3-F2): temporizadores,
 # recordatorios, listas, rutinas, anuncios, no molestar, acciones diferidas y

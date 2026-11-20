@@ -4,7 +4,11 @@
   'use strict';
   const RUN_LABELS = { running: 'En curso', succeeded: 'Confirmada', failed: 'Fallida', uncertain: 'Incierta: Home Assistant no confirmó todas las acciones', skipped: 'Omitida por condición', interrupted: 'Interrumpida' };
   const ACTION_LABELS = { pending: 'Pendiente', sending: 'Enviando', confirmed: 'Confirmada', failed: 'Fallida', uncertain: 'Incierta', not_executed: 'No ejecutada' };
-  const SOURCE_LABELS = { manual: 'Manual', schedule: 'Programada' };
+  const SOURCE_LABELS = { manual: 'Manual', schedule: 'Programada', scheduled: 'Programada', household_voice: 'Por voz' };
+  const BRAKE_LABELS = { stop_requested: 'Último freno por voz: se detuvieron las acciones pendientes.',
+    nothing_to_stop: 'Último freno por voz: no quedaban acciones pendientes.',
+    disabled: 'Último freno por voz: se desactivó la rutina para revisión.',
+    already_disabled: 'Último freno por voz: la rutina ya estaba desactivada.' };
   const DAYS = [['Lu', 'Lunes'], ['Ma', 'Martes'], ['Mi', 'Miércoles'], ['Ju', 'Jueves'], ['Vi', 'Viernes'], ['Sá', 'Sábado'], ['Do', 'Domingo']];
 
   function mountRoutines({ container, dialog, confirmDialog, owner, icon }) {
@@ -97,6 +101,7 @@
       if (attempt?.state === 'active') card.append(node('p', 'routine-state', 'Ejecución en curso.'));
       if (attempt?.run) card.append(runBlock(state, attempt.run, 'Resultado de tu intento'));
       if (routine.latest_run && routine.latest_run.run_id !== attempt?.run?.run_id) card.append(runBlock(state, routine.latest_run, 'Última ejecución registrada'));
+      if (routine.latest_voice_brake) card.append(node('p', 'routine-detail', BRAKE_LABELS[routine.latest_voice_brake.status]));
       if (attempt?.run || routine.latest_run) card.append(node('p', 'routine-footnote', '«Confirmada» es lo que informó Home Assistant; no comprueba el resultado físico.'));
       const message = node('p', 'routine-notice', state.notices[id] || ''); message.dataset.routineNotice = id; card.append(message);
       const controls = node('div', 'routine-controls');

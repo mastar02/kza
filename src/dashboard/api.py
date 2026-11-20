@@ -58,6 +58,7 @@ from src.routines.models import (
     RoutineConflict, RoutineNotFound, RoutineSpec, RoutineValidationError, ScheduledRoutine,
     parse_routine_spec, routine_to_dict, run_to_dict,
 )
+from src.routines.routine_store import HOUSEHOLD_VOICE
 from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
 
 logger = logging.getLogger(__name__)
@@ -1383,9 +1384,17 @@ class DashboardAPI:
         return self.scheduler
 
     async def _routine_to_response(self, routine: ScheduledRoutine) -> dict:
-        """Serialize canonical top-level fields and the latest receipt via the facade."""
+        """Project execution and voice brake receipts independently."""
         latest_run = await self.scheduler.get_latest_run(routine.routine_id)
-        return {**routine_to_dict(routine), "latest_run": run_to_dict(latest_run) if latest_run else None}
+        brake = await self.scheduler.get_latest_brake(routine.routine_id)
+        return {
+            **routine_to_dict(routine),
+            "latest_run": run_to_dict(latest_run) if latest_run else None,
+            "latest_voice_brake": ({
+                "receipt_id": brake.receipt_id, "source": HOUSEHOLD_VOICE,
+                "operation": brake.operation.value, "status": brake.status.value,
+            } if brake else None),
+        }
 
     async def _broadcast_ws(self, message: dict):
         """Enviar mensaje a todos los WebSocket clients"""

@@ -21,9 +21,10 @@ from src.routines.voice_routines import RoutineReadKind, RoutineReadQuery, Voice
 from tests.mocks.c02_matrix import effects
 from tests.mocks.household_dispatch import CountedLeaves
 
-READS = ("list_all", "get", "get_run", "get_latest_run", "get_run_by_occurrence")
+READS = ("list_all", "get", "get_run", "get_latest_run", "get_run_by_occurrence", "resolve_name",
+         "get_latest_brake")
 WRITES = ("save", "delete", "claim_run", "mark_action_sending", "record_action", "finish_run",
-          "recover_interrupted")
+          "recover_interrupted", "brake")
 
 
 def spec(name, *, enabled=True, schedule=None, entity="light.living"):
@@ -343,7 +344,7 @@ NON_ROUTINE_TURNS = [
     "cuando juega Peñarol", "cuándo es el cumpleaños de Ana", "algo rutinario, pará", "algo rutinario",
     "apagá la luz del living",
     "qué tiempo hace", "qué recordatorios tengo", "agregá leche a la lista de compras", "qué listas hay",
-    "poné un timer de 5 minutos", "ejecutá la rutina buenas noches", "desactivá la rutina de la noche",
+    "poné un timer de 5 minutos",
     "creá una rutina que apague las luces", "explicame la relatividad",
 ]
 
@@ -360,6 +361,17 @@ async def test_non_routine_turns_never_read_the_routine_store(leaves, routines):
             # Honest refusals, or the legacy handler (a spy here) with no completion evidence.
             assert result.outcome.status in (TaskStatus.UNSUPPORTED, TaskStatus.UNCERTAIN), text
     assert counted.calls == []
+
+
+@pytest.mark.parametrize("text", ["ejecutá la rutina buenas noches", "desactivá la rutina buenas noches"])
+async def test_routine_controls_without_capture_authority_skip_the_store(leaves, routines, text):
+    scheduler, store = routines
+    await store.save(spec("Buenas noches"), actor="admin")
+    counted = CountedStore(store)
+    dispatcher = leaves.dispatcher(voice_routines=VoiceRoutineService(scheduler, voice_brake=True))
+    result = await dispatcher.dispatch(user_id="unknown", text=text)
+    assert result.outcome.status is TaskStatus.CANCELLED
+    assert result.response == "" and counted.calls == []
 
 
 @pytest.mark.parametrize(("success", "status"), [(True, TaskStatus.UNCERTAIN), (False, TaskStatus.FAILED)])

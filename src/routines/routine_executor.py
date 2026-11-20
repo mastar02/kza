@@ -114,7 +114,8 @@ class RoutineExecutor:
                 advancing the sequence, preserving evidence for recovery.
         """
         for index, action in enumerate(run.snapshot.spec.actions):
-            await self.store.mark_action_sending(run.run_id, index)
+            if not await self.store.mark_action_sending(run.run_id, index):
+                return await self.store.finish_run(run.run_id, RunStatus.INTERRUPTED)
             request = HomeActionRequest(
                 entity_id=action.entity_id,
                 operation=str(action.operation),

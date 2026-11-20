@@ -8,12 +8,14 @@ from datetime import datetime, timezone as utc_timezone
 from enum import StrEnum
 import json
 import logging
-import uuid
 from zoneinfo import ZoneInfo
 
 from src.routines.models import (
     ClaimResult,
+    RoutineBrake,
+    RoutineBrakeReceipt,
     RoutineConflict,
+    RoutineNameConflict,
     RoutineNotFound,
     RoutineRun,
     RoutineSpec,
@@ -24,7 +26,7 @@ from src.routines.models import (
     run_to_dict,
     spec_to_dict,
 )
-from src.routines.routine_store import RoutineStore
+from src.routines.routine_store import HOUSEHOLD_VOICE, RoutineStore
 from src.core.sqlite_work import AuthorityGuard
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest
@@ -160,20 +162,48 @@ class RoutineScheduler:
         return spec_to_dict(parse_routine_spec(spec_to_dict(spec)))
 
     async def execute_by_id(self, routine_id: str, *, actor: str, request_id: str,
-                            guard: AuthorityGuard | None = None) -> RoutineRun:
-        """Own claim and worker publication even after the HTTP observer disappears."""
+                            guard: AuthorityGuard | None = None, expected_name: str | None = None,
+                            source: str = 'manual') -> RoutineRun:
+        """Own the claim and worker publication after the caller stops waiting."""
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise RoutineValidationError('request_id_required')
+        if source == HOUSEHOLD_VOICE and (actor != 'household' or guard is None or expected_name is None):
+            raise PermissionError('voice_routine_authority_required')
         async with self._lifecycle_lock:
             if self._stopping:
                 raise RoutineConflict('scheduler_stopping')
-            occurrence_key = json.dumps(['manual', actor, request_id], separators=(',', ':'))
-            claim = await self.store.claim_run(routine_id, occurrence_key, actor=actor, source='manual',
-                guard=guard, publish=self._start_claimed_run)
+            occurrence_key = (self._voice_key(request_id) if source == HOUSEHOLD_VOICE
+                              else json.dumps(['manual', actor, request_id], separators=(',', ':')))
+            claim = await self.store.claim_run(routine_id, occurrence_key, actor=actor, source=source,
+                expected_name=expected_name, guard=guard, publish=self._start_claimed_run)
             return claim.run
+
+    @staticmethod
+    def _voice_key(request_id: str) -> str:
+        return json.dumps([HOUSEHOLD_VOICE, request_id], separators=(',', ':'))
+
+    async def resolve_name(self, name: str, *, guard: AuthorityGuard | None = None) -> ScheduledRoutine:
+        """Resolve a complete name in the saved definitions."""
+        return await self.store.resolve_name(name, guard=guard)
+
+    async def brake_by_name(self, name: str, operation: RoutineBrake, *, request_id: str,
+                            guard: AuthorityGuard) -> RoutineBrakeReceipt:
+        """Order a local brake against manual, voice and scheduled claims."""
+        if not isinstance(request_id, str) or not request_id.strip():
+            raise RoutineValidationError('request_id_required')
+        async with self._lifecycle_lock:
+            if self._stopping:
+                raise RoutineConflict('scheduler_stopping')
+            return await self.store.brake(name, self._voice_key(request_id), operation, guard=guard)
+
+    async def get_latest_brake(self, routine_id: str) -> RoutineBrakeReceipt | None:
+        """Read the committed voice brake without changing execution history."""
+        return await self.store.get_latest_brake(routine_id)
 
     async def get_run(self, routine_id: str, run_id: str) -> RoutineRun:
         """Load a receipt only when it belongs to the requested routine."""
         run = await self.store.get_run(run_id)
-        if run is None or run.routine_id != routine_id:
+        if run is None or run.routine_id != routine_id or run.snapshot.routine_id != routine_id:
             raise RoutineNotFound(run_id)
         return run
 
@@ -190,22 +220,17 @@ class RoutineScheduler:
         return await self.store.get_latest_run(routine_id)
 
     async def execute_by_name(self, name: str, context: dict | None = None) -> dict | None:
-        """Retain legacy name lookup through durable claims, without voice wiring.
-
-        Context may supply actor and request_id. Without a request_id each legacy
-        invocation is a new attempt; web callers must use execute_by_id instead.
-        """
-        routines = await self.get_all_routines()
-        name_lower = name.lower()
-        routine = next((item for item in routines if item.spec.name.lower() == name_lower), None)
-        if routine is None:
-            routine = next((item for item in routines if name_lower in item.spec.name.lower()), None)
-        if routine is None:
-            return None
+        """Claim an exact saved name only when the caller supplies its request id."""
         context = context or {}
-        run = await self.execute_by_id(routine.routine_id,
-                                      actor=context.get('actor', 'system:legacy'),
-                                      request_id=context.get('request_id') or uuid.uuid4().hex)
+        request_id = context.get('request_id')
+        if not isinstance(request_id, str) or not request_id.strip():
+            return None
+        try:
+            routine = await self.resolve_name(name)
+            run = await self.execute_by_id(routine.routine_id, actor=context.get('actor', 'system:legacy'),
+                                           request_id=request_id, expected_name=name)
+        except (RoutineNotFound, RoutineNameConflict):
+            return None
         return run_to_dict(run)
 
     async def start(self) -> None:

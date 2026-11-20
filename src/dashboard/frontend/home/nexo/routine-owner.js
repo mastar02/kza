@@ -67,6 +67,13 @@
     return { run_id: value.run_id, routine_id: value.routine_id, status: value.status, source: string(value.source) ? value.source : null,
       scheduled_for: string(value.scheduled_for) ? value.scheduled_for : null, reason: string(value.reason) ? value.reason : null, actions };
   }
+  function parseVoiceBrake(value) {
+    if (value == null) return null;
+    if (!string(value.receipt_id) || !value.receipt_id || value.source !== 'household_voice'
+        || !(value.operation === 'stop' && ['stop_requested', 'nothing_to_stop'].includes(value.status)
+          || value.operation === 'disable' && ['disabled', 'already_disabled'].includes(value.status))) throw Error('invalid_routine_brake');
+    return { receipt_id: value.receipt_id, operation: value.operation, status: value.status };
+  }
   function parseRoutine(value) {
     const schedule = value?.schedule;
     if (!value || typeof value !== 'object' || !string(value.routine_id) || !value.routine_id || !Number.isSafeInteger(value.revision) || value.revision < 1
@@ -74,7 +81,9 @@
         || !(schedule === null || (schedule && string(schedule.at) && Array.isArray(schedule.weekdays)))
         || !Array.isArray(value.conditions) || !Array.isArray(value.actions)) throw Error('invalid_routine');
     // created_by is disclosed by the server but never kept for presentation.
-    return { routine_id: value.routine_id, revision: value.revision, ...definition(value), latest_run: value.latest_run == null ? null : parseRun(value.latest_run) };
+    return { routine_id: value.routine_id, revision: value.revision, ...definition(value),
+      latest_run: value.latest_run == null ? null : parseRun(value.latest_run),
+      latest_voice_brake: parseVoiceBrake(value.latest_voice_brake) };
   }
 
   function detailCode(error) {
@@ -306,7 +315,8 @@
           for (const item of [...state.routines]) {
             if (state.attempts[item.routine_id]?.state === 'active' || item.latest_run?.status === 'running') await consult(item.routine_id, true);
           }
-        } else await refresh();
+        }
+        await refresh();
         if (!opened || ticket !== epoch) return;
         pollDelay = Math.min(pollDelay * 2, 15000); planPoll();
       }, pollDelay);

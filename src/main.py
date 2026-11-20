@@ -882,11 +882,11 @@ async def build_application(
 
     # Routine Manager
     routine_manager = RoutineManager(ha_client, chroma, llm)
-    # T033-U1: read-only voice routines over the persistent scheduler. The
+    # Voice routines use the persistent scheduler. The
     # scheduler is built after the orchestrator and the RequestRouter (it needs
     # the shared Casa services), so both receive this one service now and the
     # scheduler is bound below, once _initialize_routines returns.
-    voice_routines = VoiceRoutineService()
+    voice_routines = VoiceRoutineService(voice_brake=(config.get("routines") or {}).get("voice_brake") is True)
 
     # Fast Router (GPU 2) - para clasificación rápida con KV-Cache
     router_config = config.get("router", {})
@@ -2129,6 +2129,7 @@ async def build_application(
         native_drains=capture_drains, native_supported=capture_native_supported,
         shutdown=shutdown, verify_only=verify_only,
     )
+    request_router.bind_routine_capture_gate(lambda: capture_control.capture_allowed)
 
     if dashboard_config.get("enabled", True):
         health_aggregator = HealthAggregator(
