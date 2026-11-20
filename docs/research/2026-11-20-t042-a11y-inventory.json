@@ -1,0 +1,216 @@
+{
+  "schema_version": 1,
+  "task": "T042-U4",
+  "criterion": "C07",
+  "date": "2026-11-20",
+  "source_revision": "bddc8605a367779855e0486bd88f95fec306f0ff",
+  "standard": "https://www.w3.org/TR/WCAG22/",
+  "modal_guidance": "https://www.w3.org/WAI/ARIA/apg/patterns/dialog-modal/",
+  "product_target_css_px": 44,
+  "audit_status": "inventory_and_findings_only",
+  "states": {
+    "loading": "Retener la primera respuesta o la transición. Verificar progreso anunciado y acciones dependientes inactivas.",
+    "stale": "Vencer una observación o retener la actualización. Verificar aviso, deshabilitación y recuperación de foco o borrador cuando corresponda.",
+    "401": "Vencer o retirar la sesión. Verificar anuncio y foco hacia el acceso, con retiro de contenido privado.",
+    "403": "Rechazar una solicitud con sesión válida. Verificar feedback o transición autorizada sin exponer datos ni afirmar éxito.",
+    "409": "Cambiar la revisión entre lectura y escritura. Verificar el conflicto, la nueva lectura y la ausencia de reenvío automático.",
+    "503": "Indisponer la autoridad o dependencia. Verificar estado degradado, anuncio, reintento y ausencia de falso vacío.",
+    "no_permission": "Entrar con un rol sin capacidad para la vista o la acción. Verificar navegación y DOM acordes al rol. Si la acción se omite por diseño, no se espera un mensaje sobre el contenido protegido.",
+    "empty": "Responder correctamente sin elementos. Distinguir el vacío de carga, datos vencidos, falta de permiso y errores."
+  },
+  "surfaces": [
+    {
+      "id": "nexo",
+      "navigation_source": "src/dashboard/frontend/home/nexo/app.js",
+      "views": [
+        {
+          "id": "sesion",
+          "route": "/",
+          "source": "src/dashboard/frontend/home/index.html",
+          "harness": "tests/frontend/browser_nexo_access.py",
+          "states": ["loading", "401", "403", "503", "no_permission"],
+          "processes": ["Ingresar con credencial", "Recuperarse de una sesión retirada", "Cerrar sesión"],
+          "evidence": ["a11y-accesos-sesion-401.json"]
+        },
+        {
+          "id": "hogar",
+          "route": "/#hogar",
+          "source": "src/dashboard/frontend/home/nexo/house.js",
+          "harness": "tests/frontend/browser_nexo_home.py",
+          "states": ["loading", "stale", "401", "503", "no_permission", "empty"],
+          "processes": ["Navegar entre ambientes", "Consultar el estado de dispositivos", "Actualizar el catálogo y restaurar foco y borrador"],
+          "evidence": ["a11y-hogar.json", "a11y-hogar-stale.json"]
+        },
+        {
+          "id": "avisos",
+          "route": "/#hogar",
+          "source": "src/dashboard/frontend/home/nexo/notices.js",
+          "harness": "tests/frontend/browser_nexo_home.py",
+          "states": ["loading", "stale", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Consultar y actualizar avisos", "Descartar con confirmación operativa", "Distinguir recibo incierto, desconexión y lista vacía"],
+          "evidence": ["a11y-avisos.json", "a11y-avisos-empty.json", "a11y-avisos-stale.json", "a11y-avisos-offline.json", "a11y-avisos-dismissed.json"]
+        },
+        {
+          "id": "acciones",
+          "route": "/#acciones",
+          "source": "src/dashboard/frontend/home/nexo/app.js",
+          "harness": "tests/frontend/browser_nexo_home.py",
+          "states": ["loading", "stale", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Consultar efectos", "Enviar una acción de dispositivo", "Consultar un recibo pendiente o incierto"],
+          "evidence": ["a11y-acciones.json"]
+        },
+        {
+          "id": "voces",
+          "route": "/#voces",
+          "source": "src/dashboard/frontend/home/nexo/voices.js",
+          "harness": "tests/frontend/browser_nexo_voices.py",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Filtrar, reproducir y leer muestras", "Confirmar perfil o dejar voz desconocida", "Unir o separar grupos", "Vincular y desvincular una persona", "Gestionar etapa y consentimientos de voz", "Preparar evaluación"],
+          "evidence": ["a11y-voces.json", "a11y-voces-persona.json", "a11y-voces-persona-409.json", "a11y-voces-persona-503.json"]
+        },
+        {
+          "id": "personas",
+          "route": "/#personas",
+          "source": "src/dashboard/frontend/home/nexo/people.js",
+          "harness": "tests/frontend/browser_nexo_home.py",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Listar y seleccionar una persona", "Crear y modificar", "Cancelar o confirmar retiro de cuenta", "Recuperar catálogo tras un recibo perdido"],
+          "evidence": ["a11y-personas.json", "a11y-personas-retirar.json", "a11y-personas-loading.json", "a11y-personas-503.json"]
+        },
+        {
+          "id": "rutinas",
+          "route": "/#rutinas",
+          "source": "src/dashboard/frontend/home/nexo/routines.js",
+          "harness": "tests/frontend/browser_nexo_routines.py",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Consultar propuestas y rutinas", "Revisar y decidir sobre propuestas", "Gestionar una rutina existente"]
+        },
+        {
+          "id": "memoria",
+          "route": "/#memoria",
+          "source": "src/dashboard/frontend/home/nexo/memory.js",
+          "harness": "tests/frontend/browser_nexo_memory.py",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Consultar hechos y fuentes", "Confirmar o descartar", "Asignar propietario y resolver derivados", "Eliminar en cascada y volver al control al cancelar"]
+        },
+        {
+          "id": "mis-recuerdos",
+          "route": "/#mis-recuerdos",
+          "source": "src/dashboard/frontend/home/nexo/my-memory.js",
+          "harness": "tests/frontend/browser_nexo_my_memory.py",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Consultar recuerdos propios", "Devolver o eliminar", "Retirar contenido personal al salir"]
+        },
+        {
+          "id": "mi-voz",
+          "route": "/#mis-recuerdos",
+          "source": "src/dashboard/frontend/home/nexo/my-voice.js",
+          "harness": "tests/frontend/browser_nexo_my_voice.py",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Consultar estado personal", "Dar o retirar consentimiento de voz", "Revisar confirmación antes de aplicar"]
+        },
+        {
+          "id": "accesos",
+          "route": "/#accesos",
+          "source": "src/dashboard/frontend/home/nexo/access.js",
+          "harness": "tests/frontend/browser_nexo_access.py",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Listar y actualizar accesos", "Emitir, editar y revocar", "Copiar, guardar o cerrar una credencial de única lectura", "Conciliar un recibo perdido"],
+          "evidence": ["a11y-accesos.json", "a11y-accesos-alta.json", "a11y-accesos-credencial.json", "a11y-accesos-credencial-copied.json"]
+        },
+        {
+          "id": "evaluacion",
+          "route": "/#evaluacion",
+          "source": "src/dashboard/frontend/home/nexo/evaluation.js",
+          "harness": "tests/frontend/browser_nexo_access.py",
+          "states": ["loading", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Seleccionar muestra autorizada y modalidad", "Escuchar vista previa o pedir texto", "Retirar medios y texto al revocar o cambiar modalidad"],
+          "evidence": ["a11y-evaluacion.json"]
+        }
+      ]
+    },
+    {
+      "id": "obs",
+      "navigation_source": "src/dashboard/frontend/obs/src/app.jsx",
+      "harness": "tests/frontend/browser_obs_panel.py",
+      "views": [
+        {
+          "id": "sesion",
+          "route": "/obs/",
+          "source": "src/dashboard/frontend/obs/src/session.js",
+          "states": ["loading", "401", "403", "503", "no_permission"],
+          "processes": ["Abrir diálogo de acceso admin", "Autenticar, cancelar y recuperar foco", "Reintentar cuando la autoridad no está disponible"]
+        },
+        {
+          "id": "live",
+          "route": "/obs/#live",
+          "source": "src/dashboard/frontend/obs/src/views/live.jsx",
+          "states": ["loading", "stale", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Seguir eventos", "Actualizar y reconectar", "Retirar datos al cambiar sesión"]
+        },
+        {
+          "id": "conversations",
+          "route": "/obs/#conversations",
+          "source": "src/dashboard/frontend/obs/src/views/conversations.jsx",
+          "states": ["loading", "stale", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Filtrar por voz o recorrido", "Inspeccionar conversaciones", "Actualizar tras desconexión"]
+        },
+        {
+          "id": "privacy",
+          "route": "/obs/#privacy",
+          "source": "src/dashboard/frontend/obs/src/views/privacy.jsx",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Consultar estado de privacidad", "Cambiar captura diagnóstica", "Grabar o retirar captura ambiental y reconciliar cambios de revisión"]
+        },
+        {
+          "id": "alerts",
+          "route": "/obs/#alerts",
+          "source": "src/dashboard/frontend/obs/src/views/alerts.jsx",
+          "states": ["loading", "stale", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Listar alertas", "Marcar una alerta como procesada y confirmar su actualización"]
+        },
+        {
+          "id": "ha",
+          "route": "/obs/#ha",
+          "source": "src/dashboard/frontend/obs/src/views/ha.jsx",
+          "states": ["loading", "stale", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Consultar conexión y observaciones de Home Assistant", "Actualizar datos técnicos"]
+        },
+        {
+          "id": "llm",
+          "route": "/obs/#llm",
+          "source": "src/dashboard/frontend/obs/src/views/llm.jsx",
+          "states": ["loading", "stale", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Consultar distribución de rutas y métricas", "Distinguir datos vacíos y fuente degradada"]
+        },
+        {
+          "id": "users",
+          "route": "/obs/#users",
+          "source": "src/dashboard/frontend/obs/src/views/users.jsx",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Filtrar muestras y revisar perfiles", "Escuchar o pedir transcripción", "Confirmar y corregir agrupaciones"]
+        },
+        {
+          "id": "system",
+          "route": "/obs/#system",
+          "source": "src/dashboard/frontend/obs/src/views/system.jsx",
+          "states": ["loading", "stale", "401", "403", "503", "no_permission", "empty"],
+          "processes": ["Consultar métricas, hardware y servicios", "Actualizar datos técnicos"]
+        },
+        {
+          "id": "admin",
+          "route": "/obs/#admin",
+          "source": "src/dashboard/frontend/obs/src/views/admin.jsx",
+          "states": ["loading", "stale", "401", "403", "409", "503", "no_permission", "empty"],
+          "processes": ["Operar el formulario de usuarios", "Abrir y cerrar el enrolamiento", "Consultar acciones de servicios y sus restricciones"]
+        }
+      ]
+    }
+  ],
+  "coverage_notes": [
+    "Los estados por vista son escenarios para verificar, sujetos a la capacidad y a la operación. No acreditan que se haya observado cada respuesta.",
+    "En /obs/ se inventarían también navegación por teclado, menú móvil y apertura de rutas con atrás o adelante mediante el arnés existente.",
+    "Los nombres de evidencia indican artefactos que escribe el arnés cuando alcanza el escenario. No se versionan resultados de ejecución ni se certifica conformidad WCAG.",
+    "Se requiere revisión manual para anuncios con tecnologías de asistencia, pintura compleja, excepciones de tamaño de objetivo y escalado en navegadores y dispositivos reales."
+  ]
+}

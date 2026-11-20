@@ -27,7 +27,10 @@ from src.users.user_manager import PermissionLevel
 from src.users.voice_ledger import VoiceReviewer
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import audit_view, browser_binary, browser_profile_root, evidence_directory
+from tests.frontend.browser_support import (
+    audit_modal_focus, audit_modal_return, audit_status, audit_view, browser_binary, browser_profile_root,
+    evidence_directory,
+)
 from tests.frontend.browser_voice_review import (
     CAPTURE_QUERY, NEXO_REVIEW, VOICE_FILTERS, VoicePage, click_button, filter_with_keyboard, read_transcript, search_voice,
 )
@@ -277,10 +280,13 @@ async def main() -> None:
                         assert await voices.acall(person_link,voices,profile_id) == (person_a.user_id,1)
                         assert await page.evaluate("document.querySelector('#voice-linked-person').textContent==='Synthetic homonym'")
                         await screenshot(page,evidence/'voices-person-linked.png')
-                        await page.evaluate("document.querySelector('#voice-person-edit').click()")
+                        await page.evaluate("(()=>{const trigger=document.querySelector('#voice-person-edit');trigger.focus();trigger.click()})()")
                         await page.wait_for("document.querySelector('#voice-link-dialog').open")
+                        link_focus = await audit_modal_focus(page, '#voice-link-dialog')
                         await screenshot(page,evidence/'voices-person-dialog.png')
                         await page.evaluate("document.querySelector('#voice-link-dialog>button').click()")
+                        await audit_modal_return(page, evidence, 'voces-persona', link_focus,
+                                                 dialog='#voice-link-dialog', opener='#voice-person-edit')
                         await choose_person(page,None)
                         await page.wait_for("document.querySelector('#voice-linked-person')?.textContent==='Sin persona asignada'")
                         assert await voices.acall(person_link,voices,profile_id) == (None,2)
@@ -295,12 +301,14 @@ async def main() -> None:
                             await choose_person(page,None)
                             await page.wait_for("document.querySelector('#voices-content .identity-form-error').textContent.includes('Actualizá')")
                         assert await page.evaluate("window.__personWrites.length===4 && window.__personWrites.at(-1).status===409")
+                        await audit_status(page, evidence, 'voces-persona', '409', '#voices-content .identity-form-error')
                         assert await voices.acall(person_link,voices,profile_id) == (person_a.user_id,4)
                         await refresh_voices(page); await editable_person(page)
                         with patch.object(voices.ledger.people,'set_person',side_effect=RuntimeError('synthetic_unavailable')):
                             await choose_person(page,person_b.user_id)
                             await page.wait_for("document.querySelector('#voices-content .identity-form-error').textContent.includes('Actualizá')")
                         assert await page.evaluate("window.__personWrites.length===5 && window.__personWrites.at(-1).status===503")
+                        await audit_status(page, evidence, 'voces-persona', '503', '#voices-content .identity-form-error')
                         assert await voices.acall(person_link,voices,profile_id) == (person_a.user_id,4)
                         await refresh_voices(page); await editable_person(page)
                         await page.evaluate('window.__holdPeople=true')

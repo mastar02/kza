@@ -24,8 +24,8 @@ from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderS
 from src.rooms.room_context import RoomConfig
 from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_support import (
-    Page, audit_view, browser_binary, browser_profile_root, evidence_directory, press_enter,
-    reduced_motion_house,
+    Page, audit_modal_focus, audit_modal_return, audit_status, audit_view, browser_binary,
+    browser_profile_root, evidence_directory, press_enter, reduced_motion_house,
 )
 from tests.integration.test_typed_home_operations import typed_graph
 
@@ -121,6 +121,7 @@ async def screenshot(page: Page, path: Path, *, full: bool = True, scroll_top: b
 async def check_notices(page: Page, evidence: Path, store: ReminderStore, requests: list[dict]) -> dict:
     """Exercise real shared HTTP reads, committed dismissals and degraded states at 390px."""
     await page.wait_for(NOTICES_EMPTY)
+    await audit_status(page, evidence, 'avisos', 'empty', '#home-notices .notice-status')
     now = time.time()
     long_notice = 'Aviso compartido <img src=x> ' + 'reflow' * 24
     pending = await store.create('synthetic-owner', long_notice, now - 10, scope=ReminderScope.SHARED)
@@ -159,15 +160,18 @@ async def check_notices(page: Page, evidence: Path, store: ReminderStore, reques
     assert await page.evaluate(f"document.activeElement==={control} && {control}.getAttribute('aria-disabled')==='true'")
     await press_enter(page)
     assert post_count() == before
+    await audit_status(page, evidence, 'avisos', 'stale', '#home-notices .notice-status')
     await page.evaluate("window.__qaFailNotices=true;window.__qaReleaseNotices()")
     await page.wait_for("document.querySelector('#home-notices .notice-status').textContent.includes('contactar')")
     assert await page.evaluate("document.querySelector('#home-notices .notice-status').textContent.includes('desactualizada')")
+    await audit_status(page, evidence, 'avisos', 'offline', '#home-notices .notice-status')
     await page.evaluate("window.__qaFailNotices=false;document.querySelector('#home-notices button').click()")
     await page.wait_for(f"{NOTICES_READY} && {control}.getAttribute('aria-disabled')==='false'")
     assert await page.evaluate(f"document.activeElement==={control}")
     await press_enter(page)
     await page.wait_for("document.querySelector('#home-notices .notice-feedback').textContent==='Aviso descartado.'")
     assert await page.evaluate(f"!{control} && document.activeElement===document.querySelector('#home-notices button')")
+    await audit_status(page, evidence, 'avisos', 'dismissed', '#home-notices .notice-feedback')
     assert (await store.get_by_id(pending.id)).state is ReminderState.FIRED
     assert post_count() == before + 1
 
@@ -327,6 +331,7 @@ async def main() -> None:
                         await asyncio.sleep(0.05)
                     else:
                         raise AssertionError('held catalog did not expire the climate observation')
+                    await audit_status(page, evidence, 'hogar', 'stale', '#connection-status')
                     held_focus = await page.evaluate("document.activeElement===window.__qaHeldInput?'retained':document.activeElement===document.body?'body':String(document.activeElement?.id||document.activeElement?.tagName)")
                     await page.evaluate("window.__qaReleaseCatalog();delete window.__qaReleaseCatalog")
                     await page.wait_for("(()=>{const input=window.__qaHeldInput;return input.isConnected&&!input.disabled&&input.closest('.device-card').dataset.observation==='current'&&!document.querySelector('#connection-status').classList.contains('is-stale')})()")
@@ -447,6 +452,7 @@ async def main() -> None:
                     assert await page.evaluate("!document.querySelector('#house-canvas canvas') && window.__qaFrames.size===0")
                     await page.evaluate("window.__qaReleasePeople=null;window.__qaHoldPeople=true;document.querySelector('#refresh-people').click()")
                     await page.wait_for("typeof window.__qaReleasePeople==='function'")
+                    await audit_status(page, evidence, 'personas', 'loading', '#people-status')
                     users.update_user(unsafe_name.user_id, name='Álex de prueba')
                     await page.evaluate("document.querySelector('#refresh-people').click()")
                     await page.wait_for("document.querySelector('#people-grid').textContent.includes('Álex de prueba')")
@@ -476,11 +482,15 @@ async def main() -> None:
                         expires_at=time.time() + 120, user_id=created.user_id)
                     personal_session = await authority.login(personal.token)
                     assert personal_session.lease.principal.role is DashboardRole.HOME
-                    await page.evaluate("document.querySelector('#person-detail .identity-danger').click()")
+                    await page.evaluate("(()=>{const trigger=document.querySelector('#person-detail .identity-danger');trigger.focus();trigger.click()})()")
                     await page.wait_for("document.querySelector('#person-dialog').open")
+                    removal_focus = await audit_modal_focus(page, '#person-dialog', initial='#person-dialog .identity-secondary')
                     assert not any(item['method'] == 'DELETE' for item in requests[marker:])
                     assert personal_session.lease.current()
-                    await page.evaluate("document.querySelector('#person-dialog .identity-secondary').click();document.querySelector('#person-detail .identity-danger').click();(()=>{const button=document.querySelector('#confirm-person-removal');button.click();button.click()})()")
+                    await page.evaluate("document.querySelector('#person-dialog .identity-secondary').click()")
+                    await audit_modal_return(page, evidence, 'personas-retirar', removal_focus,
+                                             dialog='#person-dialog', opener='#person-detail .identity-danger')
+                    await page.evaluate("document.querySelector('#person-detail .identity-danger').click();(()=>{const button=document.querySelector('#confirm-person-removal');button.click();button.click()})()")
                     await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===3 && document.querySelector('#people-status').textContent.includes('Persona retirada')")
                     assert users.get_user(created.user_id) is None
                     assert authority.resolve(personal.token) is None and not personal_session.lease.current()
@@ -500,6 +510,7 @@ async def main() -> None:
                     assert await page.evaluate('document.documentElement.scrollWidth<=window.innerWidth && document.querySelector("#person-dialog").getBoundingClientRect().right<=window.innerWidth')
                     await page.evaluate("document.querySelector('#person-form [name=personName]').value='Borrador preservado';window.__qaPeopleUnavailable=true;document.dispatchEvent(new Event('visibilitychange'))")
                     await page.wait_for("document.querySelector('#person-dialog .person-dialog-status').textContent.includes('no está disponible')")
+                    await audit_status(page, evidence, 'personas', '503', '#person-dialog .person-dialog-status')
                     assert await page.evaluate("document.querySelector('#person-dialog').open && document.querySelector('#person-form button[type=submit]').disabled && document.querySelector('#person-form [name=personName]').value==='Borrador preservado'")
                     await page.evaluate("document.querySelector('#person-dialog .icon-button').click()")
                     assert await page.evaluate("document.querySelector('#add-person').disabled && !document.querySelectorAll('#people-grid [data-person]').length && !document.querySelector('#people-grid').textContent.includes('Todavía no hay')")
