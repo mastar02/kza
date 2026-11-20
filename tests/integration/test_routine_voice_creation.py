@@ -7,31 +7,35 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from src.home_assistant.control_policy import HomeControlPolicy
+from src.home_assistant.home_actions import HomeActionService
 from src.nlu.llm_router import CommandClassification
 from src.orchestrator.dispatcher import DispatchResult, MultiUserOrchestrator, PathType, Priority
 from src.pipeline.command_event import CommandEvent
 from src.pipeline.command_processor import ProcessedCommand
 from src.pipeline.request_router import RequestRouter
 from src.routines.voice_routines import VoiceRoutineService, is_unclaimed_routine_creation
+from tests.integration.test_home_control_policy import ObservedHA, write_selection
 from tests.mocks.responses import response_handler_mock
 
 
 @asynccontextmanager
-async def voice_router(orchestrated, utterance, *, scheduler=None):
+async def voice_router(orchestrated, utterance, *, scheduler=None, home_actions=None):
     processor = MagicMock()
     processor.process_command = AsyncMock(return_value=ProcessedCommand(
         text=f"Nexa, {utterance}", success=True, timings={},
     ))
-    chroma, ha, reasoner = MagicMock(), AsyncMock(), MagicMock()
+    chroma, reasoner = MagicMock(), MagicMock()
+    ha = home_actions.ha if home_actions is not None else AsyncMock()
     voice_routines = VoiceRoutineService(scheduler)
-    orchestrator = MultiUserOrchestrator(chroma, ha, llm=reasoner, voice_routines=voice_routines)
+    orchestrator = MultiUserOrchestrator(chroma, ha, llm=reasoner, voice_routines=voice_routines, home_actions=home_actions)
     orchestrator.dispatcher._slow_path = AsyncMock(side_effect=AssertionError("routine reached cloud"))
     audio_manager = MagicMock()
     audio_manager.detect_source_zone.return_value = None
     router = RequestRouter(
         processor, response_handler_mock(), audio_manager, orchestrator=orchestrator, orchestrator_enabled=orchestrated,
         chroma_sync=chroma, ha_client=ha, llm_reasoner=reasoner, voice_routines=voice_routines,
-        wake_acoustically_confirmed=True,
+        wake_acoustically_confirmed=True, home_actions=home_actions,
     )
     try:
         yield router, orchestrator.dispatcher
@@ -144,6 +148,54 @@ async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(orches
             "unsupported", "not_written", "not_sent",
         )
         assert not router.ha.mock_calls and not router.chroma.mock_calls and not router.llm.mock_calls
+        dispatcher._slow_path.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("orchestrated", [True, False])
+@pytest.mark.parametrize(("utterance", "replies_at_gate"), [
+    ("para el último programa que vimos, necesito que me enciendan las luces al salir el sol", False),
+    ("para el último programa que vimos, haz que se enciendan las luces al salir el sol", False),
+    ("para el último programa que vimos, hacé que se enciendan las luces al ponerse el sol", False),
+    ("para el último programa que vimos, poné que se enciendan las luces al amanecer", False),
+    ("para el último programa que vimos, quiero que me enciendan las luces al atardecer", False),
+    ("para el último programa que vimos, prendé la luz a las 8", True),
+])
+async def test_scheduled_programming_cannot_turn_on_an_authorized_light(
+    orchestrated, utterance, replies_at_gate, tmp_path,
+):
+    selection = tmp_path / "selection.json"
+    write_selection(selection)
+    ha = ObservedHA()
+    actions = HomeActionService(ha, policy=HomeControlPolicy(selection_path=str(selection)))
+    async with voice_router(orchestrated, utterance, home_actions=actions) as (router, dispatcher):
+        command = {
+            "domain": "light", "service": "turn_on", "entity_id": "light.test_lamp",
+            "description": "luz de prueba", "similarity": 0.95,
+        }
+        router.chroma.search_command.return_value = command
+        router.chroma.asearch_command = AsyncMock(return_value=command)
+        classify = AsyncMock(return_value=CommandClassification(is_command=True, confidence=0.99, intent="turn_on"))
+        router.llm_command_router = SimpleNamespace(classify=classify)
+        event = CommandEvent(
+            np.zeros(16000, dtype=np.float32), room_id="", capture_trigger="wake", wake_score=0.9,
+            textual_wake=True,
+        )
+
+        result = await router.process_command(event)
+
+        assert ha.sends == ha.reads == []
+        assert result["intent"] == "routine"
+        if orchestrated and not replies_at_gate:
+            classify.assert_awaited_once()
+            assert result["path"] == "fast_routine"
+        else:
+            classify.assert_not_called()
+        outcome = result["outcome"]
+        assert (outcome["status"], outcome["persistence"], outcome["dispatch"]) == (
+            "unsupported", "not_written", "not_sent",
+        )
+        assert not router.chroma.mock_calls and not router.llm.mock_calls
         dispatcher._slow_path.assert_not_called()
 
 
@@ -271,6 +323,13 @@ def test_accented_program_verb_survives_nominal_filtering():
     "para el próximo programa que vamos a grabar mañana",
     "después del último programa que vimos quiero que me enciendan las luces",
     "después del último programa que vimos, me programás el riego",
+    "para el último programa que vimos, necesito que funcione bien",
+    "para el último programa que vimos, activar al caer el sol",
+    "para el último programa que vimos, cerrar el acceso cada semana",
+    "para el último programa que vimos, encendé las luces",
+    "para el último programa que vimos, modificá el riego",
+    "necesitamos que funcione al anochecer",
+    "poné que empiece todos los días",
 ])
 def test_program_directive_survives_nominal_filtering(utterance):
     assert is_unclaimed_routine_creation(f"Nexa, {utterance}")

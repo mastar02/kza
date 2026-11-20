@@ -55,9 +55,18 @@ _UNCLAIMED_CREATION = re.compile(
 _INDICATIVE_CONTEXT = (
     r"(?<!\bse )(?<!\b(?:como|cual) )(?<!\b(?:donde|quien) )(?<!\bcuando )"
 )
+_SUBORDINATE_DIRECTIVE = (
+    r"(?:quiero|queria|queremos|quisiera|necesito|necesitamos|preciso|haz|hace|haceme|haga"
+    r"|pon|pone|ponga|deja|deje|manda|pedi|pide|(?:me )?(?:podes|podrias) hacer)(?: *,)? que"
+)
+_ROUTINE_SCHEDULE = re.compile(
+    r"\b(?:al (?:salir|ponerse|caer) el sol|al (?:amanecer|atardecer|anochecer)"
+    r"|a las? (?:[0-9]+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)"
+    r"|cada (?:vez que|dia|semana|hora|[0-9]+)|tod[oa]s l[oa]s)\b"
+)
 _ROUTINE_DIRECTIVE = re.compile(
     rf"{_INDICATIVE_CONTEXT}\b(?:programa|configura) que\b"
-    r"|\b(?:quiero|necesito|haz|hace|pon|pone) que (?:cuando|cada vez que)\b"
+    rf"|\b{_SUBORDINATE_DIRECTIVE}\b(?: cuando\b|.*{_ROUTINE_SCHEDULE.pattern})"
 )
 _RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
 _RECURRENCE_QUESTION = re.compile(r"\bcuando se\b")
@@ -87,9 +96,9 @@ _PROGRAM_COMPLEMENT_CONTEXT = (
 )
 _INTERROGATIVE = r"(?:cuando|que|cual(?:es)?|donde|como|quien(?:es)?|cuant[oa]s?)"
 _PROGRAM_DESIRE = r"(?:quiero|queria|queremos|quisiera)"
-_PROGRAM_EXPLICIT_DIRECTIVE = (
-    rf"(?:{_PROGRAM_DESIRE} que|(?:me|te|nos|le|les) (?:program|configur)(?:a|as|e|en|es)"
-    rf"|(?:program|configur)(?:a|ame|e) (?:que|{_PROGRAM_OBJECT}))"
+_PROGRAM_EXPLICIT_DIRECTIVE = re.compile(
+    rf"\b(?:{_SUBORDINATE_DIRECTIVE}|(?:me|te|nos|le|les) (?:program|configur)(?:a|as|e|en|es)"
+    rf"|(?:program|configur)(?:a|ame|e) (?:que|{_PROGRAM_OBJECT}))\b"
 )
 # Keep the accent that distinguishes "escuché" from the subjunctive "escuche".
 _ACCENTED_MEDIA_PRETERITE = re.compile(r"(\b(?:grab|escuch|mir)é\b)", re.I)
@@ -99,12 +108,12 @@ _PROGRAM_PAST_RELATIVE = (
     r"(?:vi|viste|vio|vimos|vieron|(?:grab|escuch|mir)(?:é|aste|o|amos|aron)"
     r"|gan(?:o|aron)(?: (?:el|un) premio)?"
     r"|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron)|estren(?:o|aron)))"
-    rf"\b(?![^¿?!.;]*\b{_PROGRAM_EXPLICIT_DIRECTIVE}\b)"
+    r"\b(?P<past_program_tail>[^?!.;]*)"
 )
 # A prospective relative can still be the complement of "programa que".
 # Require a conversational clause or a clearly separated question.
 _PROGRAM_CONVERSATIONAL_HEAD = (
-    rf"(?:{_PROGRAM_DESIRE}\b(?! que\b)"
+    rf"(?:{_PROGRAM_DESIRE}\b(?!(?: *,)? que\b)"
     r"|buscame|busca|decime|dime|contame|mostrame|explicame|resumi|resumime|anota|recordame|acordate"
     r"|prepara|preparame|hablemos|charlemos|comentame|avisame|pensaba|tengo|tenemos|puedo|podemos|podes|podrias"
     r"|(?:me|te|nos) (?:podes|puedes|podrias|puede|pueden|ayudas|buscas|contas|cuentas|cuento"
@@ -335,9 +344,14 @@ def _words(text: str) -> list[str]:
 
 
 def _mask_nominal_program(match: re.Match[str]) -> str:
-    question = match["unmarked_program_question"]
-    # A comma alone does not disambiguate an embedded device clause from a question.
-    if question and (match_intent_rules(question, extract_entity(question)) or re.search(r"\briego\b", question)):
+    tail = match["past_program_tail"]
+    if tail and (_PROGRAM_EXPLICIT_DIRECTIVE.search(tail) or _ROUTINE_SCHEDULE.search(tail)):
+        return match[0]
+    # Neither a past media verb nor a comma makes an embedded device action nominal.
+    continuation = tail or match["unmarked_program_question"]
+    if continuation and (
+        match_intent_rules(continuation, extract_entity(continuation)) or re.search(r"\briego\b", continuation)
+    ):
         return match[0]
     return " "
 

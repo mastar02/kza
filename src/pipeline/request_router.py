@@ -17,6 +17,7 @@ import threading
 import time
 import unicodedata
 from dataclasses import asdict
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -63,6 +64,9 @@ from src.core.voice_delivery import GenerationState, ResponseResult
 from src.core.observation import Observation
 from src.nlu.llm_router import LLMCommandRouter
 from src.world.household_time import WEEKDAYS, parse_clock_query
+
+if TYPE_CHECKING:
+    from src.stt.whisper_fast import STTResult
 
 logger = logging.getLogger(__name__)
 
@@ -1066,6 +1070,32 @@ class RequestRouter:
             return AcceptanceDecision(False, check.reason, gate_decision.signals)
         return gate_decision
 
+    def _evaluate_voice_admission(
+        self, text: str, stt_confidence: "STTResult | None", room_id: str | None,
+    ) -> tuple[AcceptanceDecision, bool]:
+        """Admit a deferred routine's local refusal without admitting an action."""
+        decision = self.command_gate.evaluate(text, stt_confidence=stt_confidence)
+        refusal_only = (
+            not decision.accept and decision.reason == "non_immediate:deferred"
+            and self.household_intents.classify(text) is None
+            and is_unclaimed_routine_creation(text, wake_words=self.household_intents.settings.wake_words)
+        )
+        if refusal_only:
+            reply = self.command_gate.evaluate(text, stt_confidence=stt_confidence, reply_to_deferred_routine=True)
+            if reply.reason != "gate_error":
+                decision = reply
+        return self._verify_wake(text, decision, room_id), refusal_only
+
+    async def _refuse_routine(self, result: dict, pipeline_start: float, response: str = ROUTINE_CREATE_REFUSAL) -> dict:
+        """Finish a retired routine request without handing it to a producer."""
+        result.update(intent="routine", response=response, success=False, _task_outcome=TaskOutcome(
+            TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
+            dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED,
+        ))
+        await self._speak_response(response)
+        result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+        return result
+
     async def _process_command_orchestrated(self, audio: np.ndarray, room_id: str = None,
                                               pretranscribed_text: str | None = None,
                                               ambient_strict: bool = False,
@@ -1138,9 +1168,9 @@ class RequestRouter:
         # 1a. Command acceptance gate: corta antes del orchestrator si el texto
         #     es claramente ruido (TV, eco del TTS, repetición) o confianza baja.
         #     Evita que esas muestras vayan al slow path LLM (caro + bloquea queue).
-        gate_decision = self._verify_wake(text, self.command_gate.evaluate(
-            text, stt_confidence=getattr(cmd, "stt_confidence", None)
-        ), room_id)
+        gate_decision, refusal_only = self._evaluate_voice_admission(text, getattr(cmd, "stt_confidence", None), room_id)
+        if refusal_only and gate_decision.accept:
+            return await self._refuse_routine(result, pipeline_start)
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
             result["intent"] = f"gate_rejected:{gate_decision.reason}"
@@ -1987,9 +2017,9 @@ class RequestRouter:
             return result
 
         # 1a. Command acceptance gate — mismo corto-circuito que el path orchestrated
-        gate_decision = self._verify_wake(text, self.command_gate.evaluate(
-            text, stt_confidence=getattr(cmd, "stt_confidence", None)
-        ), room_id)
+        gate_decision, refusal_only = self._evaluate_voice_admission(text, getattr(cmd, "stt_confidence", None), room_id)
+        if refusal_only and gate_decision.accept:
+            return await self._refuse_routine(result, pipeline_start)
         gate_decision = self._legacy_household_drop(text, gate_decision)
         if not gate_decision.accept:
             logger.info(f"Gate reject ({gate_decision.reason}): {text!r}")
@@ -2111,13 +2141,7 @@ class RequestRouter:
         if refuse_routine:
             response = (ROUTINE_CREATE_REFUSAL if household is None or household.reason == "new_routine"
                         else "Todavía no manejo rutinas por voz. Podés verlas desde la web.")
-            result.update(intent="routine", response=response, success=False, _task_outcome=TaskOutcome(
-                TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
-                dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED,
-            ))
-            await self._speak_response(response)
-            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            return result
+            return await self._refuse_routine(result, pipeline_start, response)
 
         # 1b. Confidence gate — si confidence baja y combo sensible, pide
         #     confirmación en vez de ejecutar. Comandos sin intent/entity o
