@@ -299,15 +299,20 @@ def _tokens(text: str) -> _Utterance:
 def _quote_spans(text: str) -> list[tuple[int, int]]:
     """Find balanced quotes across lines, keeping each outer span intact."""
     def opening_boundary(before: str) -> bool:
-        return not before or before.isspace() or before in "«([{:,;¡¿"
+        return not before or before.isspace() or before in "«([{\"':,;¡¿"
 
     def starts_content(offset: int) -> bool:
         start = offset + 1
-        while start < len(text) and text[start].isspace():
+        nested_openers = False
+        while start < len(text) and (text[start].isspace() or text[start] in "«\"'"):
+            nested_openers |= text[start] in "«\"'"
             start += 1
         after = text[start:start + 1]
         if not after or after in ")]}»\"'":
             return False
+        if nested_openers and after in ",.;:?!…":
+            # Punctuation alone after an empty pair does not start nested content.
+            return re.match(r"[,.;:?!…\s¡¿]*[^\W_]", text[start:]) is not None
         following = text[start + 1:start + 2]
         return (
             after not in ",.;:?!"

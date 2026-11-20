@@ -249,7 +249,12 @@ class CommandAcceptanceGate:
 
         action_block = non_immediate_action_reason(text)
         if action_block and not self._claimed_non_immediate(text) and not self._routine_read(text):
-            return action_block
+            command_text = self._without_intercom_message(text)
+            if command_text == text:
+                return action_block
+            action_block = non_immediate_action_reason(command_text)
+            if action_block:
+                return action_block
         norm = _normalize(text)
         if not norm:
             return "empty_after_norm"

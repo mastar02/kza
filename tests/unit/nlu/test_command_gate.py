@@ -15,6 +15,17 @@ def test_accepts_real_command():
     assert d.reason == "ok"
 
 
+def test_intercom_body_negation_does_not_block_the_announcement():
+    decision = _gate().evaluate('Nexa, anunciá en la cocina: "No apaguen la luz."')
+    assert decision.accept and decision.reason == "ok"
+
+
+def test_intercom_body_does_not_exempt_a_condition_on_another_action():
+    decision = _gate().evaluate('Nexa, apagá la luz si llueve y anunciá: "Ya llegó."')
+    assert not decision.accept
+    assert decision.reason.startswith("non_immediate:")
+
+
 def test_rejects_empty():
     assert _gate().evaluate("").accept is False
 

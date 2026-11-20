@@ -222,6 +222,35 @@ def test_quote_starting_on_the_next_line_stays_literal(quote):
     assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
 
 
+@pytest.mark.parametrize(("outer", "inner"), [('"', "'"), ("'", '"')])
+@pytest.mark.parametrize("separator", ["", "\n"])
+@pytest.mark.parametrize("trailing_filler", ["", ", por favor"])
+@pytest.mark.parametrize("all_contiguous", [False, True])
+def test_contiguous_mixed_quote_openings_keep_all_three_layers(
+    outer, inner, separator, trailing_filler, all_contiguous,
+):
+    if all_contiguous:
+        innermost = "«En la cocina: esperen, por favor.»"
+        body = f"{separator}{innermost}"
+    else:
+        innermost = "«ya»"
+        body = f"En la cocina: esperen a que diga {innermost}, por favor"
+    middle = f"{inner}{body}{inner}"
+    message = f"{outer}{separator}{middle}, dijo Ana.{outer}"
+    assert [message[start:end] for start, end in _quote_spans(message)] == [message, middle, innermost]
+    text = f"Anunciá: {message}{trailing_filler}"
+    assert CommandAcceptanceGate().evaluate(text).accept
+    intent = classify_household_intent(text)
+    intercom = IntercomSystem(room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
+
+
+@pytest.mark.parametrize("empty", ['""', "''"])
+@pytest.mark.parametrize("suffix", ["", " ", ", ", "...", "…", "»"])
+def test_empty_straight_quotes_are_not_treated_as_nested_openers(empty, suffix):
+    assert _quote_spans(empty + suffix) == []
+
+
 @pytest.mark.parametrize("text", [
     "Avisa, en el fogon: Llego Ana",
     "Avisa, en el ambiente: Llego Ana",
