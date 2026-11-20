@@ -83,6 +83,8 @@ LAYOUT_PROBE = r"""(() => {
   const visible = selector => [...document.querySelectorAll(selector)].filter(el => el.getClientRects().length);
   const root = document.documentElement;
   const fields = 'input:not([type=checkbox]):not([type=radio]), select, textarea';
+  const review = '#view-users section[aria-label="Escuchar muestra"]';
+  const reviewCard = document.querySelector(review);
   return {
     width: window.innerWidth, client: root.clientWidth,
     page: Math.max(root.scrollWidth, document.body.scrollWidth),
@@ -99,7 +101,18 @@ LAYOUT_PROBE = r"""(() => {
       return {name: region.getAttribute('aria-label'), role: region.getAttribute('role'),
               tabindex: region.tabIndex, overflow: getComputedStyle(region).overflowX};
     }),
-    audio: visible('audio').map(el => [el.getAttribute('aria-label'), bounds(el).width, el.parentElement.clientWidth]),
+    voice: reviewCard ? {
+      bounds: [bounds(reviewCard).left, bounds(reviewCard).right],
+      captures: visible('#view-users [data-capture-id]').length,
+      audio: [...reviewCard.querySelectorAll('audio')].map(el => ({
+        hasPreview: el.src.startsWith('blob:'), paused: el.paused, controls: el.controls,
+        autoplay: el.autoplay, preload: el.preload,
+      })),
+      buttons: visible(`${review} button`).map(el => ({
+        name: el.textContent.trim(), left: bounds(el).left, right: bounds(el).right,
+        width: bounds(el).width, height: bounds(el).height, disabled: el.disabled, tabindex: el.tabIndex,
+      })),
+    } : null,
     overlays: visible('.admin-overlay > .card, dialog.login-dialog:modal').map(el => [bounds(el).left, bounds(el).right]),
   };
 })()"""
@@ -124,6 +137,9 @@ LAYOUT_CONVERSATION = r"""(() => {
   }], {wall, mono: performance.now()});
 })()"""
 LAYOUT_VOICE = r"""(async () => {
+  const wav = await encodeWav(new Int16Array(16000), 16000).arrayBuffer();
+  const audio_base64 = btoa(String.fromCharCode(...new Uint8Array(wav)));
+  await window.__kzaVoiceController.settled();
   const state = window.__kzaVoiceState, wall = Date.now(), now = wall / 1000;
   const started = {wall, mono: performance.now()};
   const id = 'vf_' + 'a'.repeat(64);
@@ -134,8 +150,6 @@ LAYOUT_VOICE = r"""(async () => {
     group_revision: 1, group_size: 1, group_state: 'unknown', group_reason: 'unreviewed',
     group_similarity: null, group_expires_at: timing.expires_at,
   }], started);
-  const wav = await encodeWav(new Int16Array(16000), 16000).arrayBuffer();
-  const audio_base64 = btoa(String.fromCharCode(...new Uint8Array(wav)));
   return captures && state.review.receive([{
     id, ...timing, room_id: 'Synthetic room', transcript: 'Synthetic audio phrase',
     duration_s: 1, clip_duration_s: 1, clip_truncated: false, transcript_scope: 'full_segment',
@@ -205,15 +219,25 @@ async def check_layout(page: Page, width: int, view: str, *, names=(), overlay: 
     for item in probe['tables']:
         assert item['role'] == 'region' and item['tabindex'] == 0 and item['overflow'] == 'auto', item
     if view == 'users':
-        assert len(probe['audio']) == 1, (width, probe)
-        name, actual, available = probe['audio'][0]
-        assert name == 'Audio de la muestra' and abs(actual - available) < 1, (width, probe)
+        voice = probe['voice']
+        assert voice and voice['captures'] == 1, (width, probe)
+        assert voice['audio'] == [{'hasPreview': True, 'paused': True, 'controls': False,
+                                   'autoplay': False, 'preload': 'auto'}], (width, voice)
+        assert len(voice['buttons']) == 1, (width, voice)
+        play = voice['buttons'][0]
+        left, right = voice['bounds']
+        assert 0 <= left <= play['left'] < play['right'] <= right <= probe['client'], (width, voice)
+        assert play['width'] >= 44 and play['height'] >= 44, (width, play)
+        assert play['name'] == 'Reproducir' and play['tabindex'] == 0 and not play['disabled'], (width, play)
     tree = (await page.command('Accessibility.getFullAXTree'))['nodes']
     exposed = {(item.get('role', {}).get('value'), item.get('name', {}).get('value'))
                for item in tree if not item.get('ignored')}
     if view == 'login':
         assert ('dialog', 'Acceso admin') in exposed, (width, exposed)
         assert ('button', 'Abrir acceso admin') not in exposed, (width, exposed)
+    if view == 'users':
+        assert ('region', 'Escuchar muestra') in exposed, (width, exposed)
+        assert ('button', 'Reproducir') in exposed, (width, exposed)
     for name in regions:
         assert ('region', name) in exposed, (width, view, name)
     exposed_names = {name for _, name in exposed}
@@ -345,7 +369,7 @@ async def responsive_layout(page: Page) -> dict:
                 names += ('Todas las voces', 'Todos los recorridos')
             if view == 'users':
                 assert await page.evaluate(LAYOUT_VOICE)
-                names += ('Nombre del perfil', 'Audio de la muestra')
+                names += ('Nombre del perfil',)
             if view == 'admin':
                 await page.wait_for("!!document.querySelector('.user-actions button')")
                 names += ('Nombre del usuario', 'Nivel de permiso', 'Enrolar voz de Synthetic account',
