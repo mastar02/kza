@@ -61,9 +61,13 @@ _SUBORDINATE_DIRECTIVE = (
     r"(?:quiero|queria|queremos|quisiera|necesito|necesitamos|preciso|haz|hace|haceme|haga"
     r"|pon|pone|ponga|deja|deje|manda|pedi|pide|(?:me )?(?:podes|podrias) hacer)(?: *,)? que"
 )
+_CLOCK_TIME = (
+    r"a las? (?:[0-9]+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)"
+    r"(?:(?::| )[0-5][0-9]| y (?:media|cuarto))?(?: de la (?:manana|tarde|noche))?"
+)
 _ROUTINE_SCHEDULE = re.compile(
     r"\b(?:al (?:salir|ponerse|caer) el sol|al (?:amanecer|atardecer|anochecer)"
-    r"|a las? (?:[0-9]+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)"
+    rf"|{_CLOCK_TIME}"
     r"|cada (?:vez que|dia|semana|hora|[0-9]+)|tod[oa]s l[oa]s)\b"
 )
 _ROUTINE_DIRECTIVE = re.compile(rf"{_INDICATIVE_CONTEXT}\b(?:programa|configura) que\b")
@@ -161,17 +165,18 @@ _INFORMATION_COMPLEMENT = re.compile(
     rf"(?:si|(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE}))\b"
 )
 _IRRIGATION_ACTION = re.compile(r"\b(?:rieg(?:a[sn]?|ue[sn]?)|regar|(?:pon\w*|activ\w*) (?:el )?riego)\b")
-_CONTROL_CLAUSE_SEPARATOR = re.compile(r"\b(?:y|e|pero|ademas|luego|despues)\b|[,;¿]")
+_CONTROL_CLAUSE_SEPARATOR = re.compile(r"\by\b(?! +(?:media|cuarto)\b)|\b(?:e|pero|ademas|luego|despues)\b|[,;¿]")
+_CONTROL_SCHEDULE_PREFIX = rf"(?:{_ROUTINE_SCHEDULE.pattern} +)?"
 _COURTESY_MODAL = r"(?:podes|puedes|podrias|podria)"
-_COURTESY_HEAD = re.compile(rf"(?:(?:me|te|nos) +)?{_COURTESY_MODAL}\b")
+_COURTESY_HEAD = re.compile(rf"{_CONTROL_SCHEDULE_PREFIX}(?:(?:me|te|nos) +)?{_COURTESY_MODAL}\b")
 _CONTROL_HEAD = re.compile(
-    rf"(?:(?:que|me|te|nos|le|les|se|{_COURTESY_MODAL}|por favor) +)*"
+    rf"{_CONTROL_SCHEDULE_PREFIX}(?:(?:que|me|te|nos|le|les|se|{_COURTESY_MODAL}|por favor) +)*"
     r"(?:(?P<object>lo|la|los|las) +)?(?P<verb>[a-z]+)\b"
 )
 _CONTROL_VERB = re.compile(
-    r"(?:prend|encend|sub|abr)(?:e|er|i|ir|a[sn]?)|enciend(?:e|a[sn]?)|cierr(?:a|e[sn]?)"
-    r"|(?:apag|baj|cerr|activ|desactiv|dej|ajust|regul|bloque|desbloque|cambi|ilumin|cort)(?:a|ar|e[sn]?)"
-    r"|apague[sn]?|pon(?:er|e|g[ae][sn]?)?"
+    r"(?:prend|encend|sub|abr)(?:e[rs]?|i[rs]?|a[sn]?)|enciend(?:es?|a[sn]?)|cierr(?:as?|e[sn]?)"
+    r"|(?:apag|baj|cerr|activ|desactiv|dej|ajust|regul|bloque|desbloque|cambi|ilumin|cort)(?:a[rs]?|e[sn]?)"
+    r"|apague[sn]?|pon(?:e[rs]?|g[ae][sn]?)?"
 )
 _CONTROL_ENTITY = re.compile(r"\b(?:riego|puertas?|porton|cerraduras?|aspersores?|enchufes?)\b")
 
@@ -376,6 +381,7 @@ def _fold_program_text(original: str) -> str:
 
 
 def _has_device_action(text: str) -> bool:
+    text = _fold(text)
     # Check the verb at the beginning of each request or coordinated clause.
     # A verb inside a factual question ("a qué hora prenden las luces") is its topic.
     for clause in _CONTROL_CLAUSE_SEPARATOR.split(text):

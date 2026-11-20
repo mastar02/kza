@@ -165,7 +165,7 @@ from src.orchestrator import RequestDispatcher
 dispatcher = RequestDispatcher(
     chroma_sync=chroma,
     ha_client=ha,
-    voice_routines=voice_routines,  # VoiceRoutineService compartido con el scheduler
+    voice_routines=voice_routines,  # VoiceRoutineService vinculado al scheduler
     router=router_7b,       # Para fast path
     llm=llm_72b,            # Para slow path
     context_manager=context_manager,

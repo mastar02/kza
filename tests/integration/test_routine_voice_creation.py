@@ -168,8 +168,17 @@ async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(orches
     ("quiero que me cuentes el resultado y dejes la luz al 50 por ciento al amanecer", "verb_evidence"),
     ("después del último programa que vimos, ¿podés prender la luz a las ocho?", "gate"),
     ("después del último programa que vimos, podes prender la luz a las ocho?", "gate"),
+    ("después del último programa que vimos, a las ocho podés prender la luz?", "gate"),
+    ("después del último programa que vimos, ¿a las ocho podés prender la luz?", "gate"),
+    ("después del último programa que vimos, a las ocho prendés la luz?", "gate"),
+    ("después del último programa que vimos, a las ocho prendé la luz?", "gate"),
+    ("después del último programa que vimos, ¿a las ocho de la noche apagás la luz?", "gate"),
+    ("después del último programa que vimos, a las ocho y media podés prender la luz?", "gate"),
+    ("después del último programa que vimos, ¿a las 8:30 podés prender la luz?", "gate"),
     ("¿podés prender la luz a las ocho?", "gate"),
     ("podes prender la luz a las ocho", "gate"),
+    ("a las ocho podés prender la luz?", "gate"),
+    ("¿a las ocho y cuarto de la mañana podés prender la luz?", "gate"),
 ])
 async def test_scheduled_programming_cannot_turn_on_an_authorized_light(
     orchestrated, utterance, orchestrated_stage, tmp_path,
@@ -228,6 +237,7 @@ async def authorized_light_router(orchestrated, utterance, tmp_path):
     "quiero que me cuentes qué pasa cada vez que hay un empate",
     "después del último programa que vimos, ¿a las ocho entregaron el premio?",
     "después del último programa que vimos, a las ocho entregaron el premio?",
+    "después del último programa que vimos, ¿quién ganó el premio?",
 ])
 async def test_factual_questions_cannot_turn_on_an_authorized_light(orchestrated, utterance, tmp_path):
     async with authorized_light_router(orchestrated, utterance, tmp_path) as (router, dispatcher, ha, classify):
@@ -347,6 +357,7 @@ async def test_utterance_without_automation_intent_stays_conversational(orchestr
     "después del último programa que miré quiero hablar del premio",
     "después del último programa que vimos ayer",
     "después del último programa que escuche quiero hablar del premio",
+    "después del último programa que vimos, ¿a las ocho prenden las luces del estadio?",
 ])
 def test_indirect_routine_cues_preserve_nominal_programs_and_questions(utterance):
     assert not is_unclaimed_routine_creation(f"Nexa, {utterance}")
@@ -358,6 +369,12 @@ def test_accented_program_verb_survives_nominal_filtering():
 
 @pytest.mark.parametrize("utterance", [
     "después del riego, programa ahora la rutina de jardín",
+    "después del último programa que vimos, ¿a las ocho encendés la luz?",
+    "después del último programa que vimos, ¿a las ocho abrís la persiana?",
+    "después del último programa que vimos, ¿a las ocho subís la persiana?",
+    "después del último programa que vimos, ¿a las ocho cerrás la persiana?",
+    "después del último programa que vimos, ¿a las ocho bajás la persiana?",
+    "después del último programa que vimos, ¿a las ocho ponés la luz al 50 por ciento?",
     "para el riego programa ahora el horario de la automatización",
     "después del riego programa dos rutinas para las ocho",
     "después del riego programa 2 rutinas para las ocho",
