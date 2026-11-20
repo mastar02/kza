@@ -163,6 +163,7 @@ _PRIVACY_BORROWERS = {
     "src.pipeline.multi_room_audio_loop": ("MultiRoomAudioLoop",),
     "src.pipeline.command_processor": ("CommandProcessor",),
     "src.pipeline.request_router": ("RequestRouter",),
+    "src.routines.proposals": ("RoutineProposalTray",),
 }
 
 
