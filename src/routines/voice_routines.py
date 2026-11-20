@@ -169,18 +169,19 @@ _CONTROL_CLAUSE_SEPARATOR = re.compile(r"\by\b(?! +(?:media|cuarto)\b)|\b(?:e|pe
 _CONTROL_SCHEDULE_PREFIX = rf"(?:{_ROUTINE_SCHEDULE.pattern} +)?"
 _COURTESY_MODAL = r"(?:podes|puedes|podrias|podria)"
 _COURTESY_HEAD = re.compile(rf"{_CONTROL_SCHEDULE_PREFIX}(?:(?:me|te|nos) +)?{_COURTESY_MODAL}\b")
+_CONTROL_LEAD = rf"(?:{_ROUTINE_SCHEDULE.pattern}|que|me|te|nos|le|les|{_COURTESY_MODAL}|por favor)"
 _CONTROL_HEAD = re.compile(
-    rf"{_CONTROL_SCHEDULE_PREFIX}(?:(?:que|me|te|nos|le|les|{_COURTESY_MODAL}|por favor) +)*"
-    r"(?P<reflexive>se +)?(?:(?P<object>lo|la|los|las) +)?(?P<verb>[a-z]+)\b"
+    rf"(?:{_CONTROL_LEAD} +)*(?:(?P<reflexive>se +)(?:{_CONTROL_LEAD} +)*)?"
+    r"(?:(?P<object>lo|la|los|las) +)?(?P<verb>[a-z]+)\b"
 )
 _CONTROL_VERB = re.compile(
     r"(?:prend|encend|sub|abr)(?:e[rs]?|i[rs]?|a[sn]?)|enciend(?:es?|a[sn]?)|cierr(?:as?|e[sn]?)"
-    r"|(?:apag|baj|cerr|activ|desactiv|dej|ajust|regul|bloque|desbloque|cambi|ilumin|cort)(?:a[rs]?|e[sn]?)"
-    r"|apague[sn]?|pon(?:e[rs]?|g[ae][sn]?)?"
+    r"|(?:apag|baj|cerr|activ|desactiv|dej|ajust|regul|bloque|desbloque|cambi|ilumin|cort|atenu)(?:a[rs]?|e[sn]?)"
+    r"|(?:apague|intensifique)[sn]?|pon(?:e[rs]?|g[ae][sn]?)?"
 )
 _SUBJUNCTIVE_CONTROL_VERB = re.compile(
     r"(?:prend|enciend|abr|sub|pong)a[sn]?"
-    r"|(?:apagu|desactiv|activ|cambi|cierr|baj|dej|ajust|regul|bloque|desbloque|ilumin|cort|riegu)e[sn]?"
+    r"|(?:apagu|desactiv|activ|cambi|cierr|baj|dej|ajust|regul|bloque|desbloque|ilumin|cort|riegu|atenu|intensifiqu)e[sn]?"
 )
 _CONTROL_ENTITY = re.compile(r"\b(?:riego|puertas?|porton|cerraduras?|aspersores?|enchufes?)\b")
 

@@ -185,6 +185,13 @@ async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(orches
     ("quiero que me cuentes el resultado y se rieguen los jardines a las ocho", "verb_evidence"),
     ("quiero que me cuentes el resultado y se bloqueen las puertas a las ocho", "verb_evidence"),
     ("quiero que me cuentes el resultado y se desbloquee la puerta a las ocho", "verb_evidence"),
+    ("quiero que me cuentes el resultado y se me cierre el portón a las ocho", "verb_evidence"),
+    ("quiero que me cuentes el resultado y se me apague la luz a las ocho", "gate"),
+    ("quiero que me cuentes el resultado y que a las ocho se nos apaguen las luces", "gate"),
+    ("quiero que a las ocho pongas la luz al 50 por ciento", "gate"),
+    ("hacé que se le desactive el riego a las ocho", "verb_evidence"),
+    ("quiero que me cuentes el resultado y se me atenúe la luz a las ocho", "gate"),
+    ("quiero que me cuentes el resultado y se nos intensifique la luz a las ocho", "gate"),
 ])
 async def test_scheduled_programming_cannot_turn_on_an_authorized_light(
     orchestrated, utterance, orchestrated_stage, tmp_path,
@@ -245,6 +252,8 @@ async def authorized_light_router(orchestrated, utterance, tmp_path):
     "después del último programa que vimos, a las ocho entregaron el premio?",
     "después del último programa que vimos, ¿quién ganó el premio?",
     "después del último programa que vimos, ¿a las ocho se abre el portón del estadio?",
+    "después del último programa que vimos, ¿a las ocho se me abre el portón del estadio?",
+    "después del último programa que vimos, ¿a las ocho se nos apaga la luz del estadio?",
     "después del último programa que vimos, a las ocho se abre el portón del estadio?",
     "después del último programa que vimos, ¿a las ocho se cambia el enchufe del estadio?",
     "después del último programa que vimos, a las ocho se cambia el enchufe del estadio?",
@@ -388,6 +397,8 @@ def test_accented_program_verb_survives_nominal_filtering():
 
 @pytest.mark.parametrize("utterance", [
     "después del riego, programa ahora la rutina de jardín",
+    "quiero que me cuentes el resultado y atenúes la luz a las ocho",
+    "quiero que me cuentes el resultado y intensifiques la luz a las ocho",
     "después del último programa que vimos, ¿a las ocho encendés la luz?",
     "después del último programa que vimos, ¿a las ocho abrís la persiana?",
     "después del último programa que vimos, ¿a las ocho subís la persiana?",
