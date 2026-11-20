@@ -1632,7 +1632,8 @@ class RequestDispatcher:
                                                "Decime el recordatorio y la orden por separado.", TaskStatus.NEEDS_INPUT)
             if household.reason == "other_person":
                 return self._household_refusal(PathType.FAST_REMINDER, "reminder",
-                                               "Todavía no puedo crear recordatorios para otra persona.",
+                                               "Por voz gestiono recordatorios del hogar. "
+                                               "Para gestionar tus recordatorios personales necesitás iniciar sesión en la web.",
                                                TaskStatus.UNSUPPORTED)
             if operation not in (HouseholdOperation.CREATE, HouseholdOperation.CANCEL, HouseholdOperation.QUERY):
                 return self._household_refusal(PathType.FAST_REMINDER, "reminder",
@@ -2368,7 +2369,7 @@ class RequestDispatcher:
                     selected = await self.list_manager.get_list(user_id, name, shared_only=True)
                     if selected is None:
                         return DispatchResult(PathType.FAST_LIST, Priority.HIGH, False,
-                            "No encontré esa lista compartida. Indicá el nombre de una lista del hogar.",
+                            "No encontré esa lista compartida. Para consultar listas personales necesitás iniciar sesión en la web.",
                             intent="list", outcome=outcome)
                     items = await self.list_manager.get_items_by_list_id(selected.id, shared_only=True)
                 else:
