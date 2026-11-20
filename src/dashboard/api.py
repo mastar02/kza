@@ -6,7 +6,7 @@ API REST con FastAPI para gestión de rutinas, presencia y configuración
 import asyncio
 from contextlib import AsyncExitStack
 from contextvars import Context
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import json
 import logging
 import math
@@ -27,7 +27,10 @@ from src.core.observation import Observation, ObservationReason, ObservationSour
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
-from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session, session_guard
+from src.dashboard.auth import (
+    COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session, session_guard,
+    web_session_requested,
+)
 from src.dashboard.authority import DashboardAuthority, DashboardPermission
 from src.home_assistant.control_policy import HomeActor
 from src.lists.list_store import OwnerType
@@ -58,6 +61,7 @@ from src.routines.models import (
     RoutineConflict, RoutineNotFound, RoutineSpec, RoutineValidationError, ScheduledRoutine,
     parse_routine_spec, routine_to_dict, run_to_dict,
 )
+from src.routines.proposals import ProposalNotFound, ProposalUnavailable, RoutineProposalTray
 from src.routines.routine_store import HOUSEHOLD_VOICE
 from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
 
@@ -382,6 +386,7 @@ class DashboardAPI:
         observability_use_mocks: bool = False,
         *,
         authority: DashboardAuthority | None = None,
+        routine_proposals: RoutineProposalTray | None = None,
         home_rooms: Mapping[str, RoomConfig] | None = None,
         home_actions: HomeActionService | None = None,
         microphone_snapshot_provider: Callable[[], MicrophonesSnapshot | None] | None = None,
@@ -395,6 +400,7 @@ class DashboardAPI:
         consent_gate=None,
     ):
         self.scheduler = routine_scheduler
+        self.routine_proposals = routine_proposals
         self.authority = authority
         self.executor = routine_executor
         self.presence = presence_detector
@@ -517,6 +523,8 @@ class DashboardAPI:
             """Normalize a definition without reads, writes or actions."""
             scheduler = self._require_routines(principal, {"routines:manage"})
             return scheduler.preview(routine.to_spec())
+
+        self._register_routine_proposal_routes()
 
         @self.app.get("/api/routines/{routine_id}")
         async def get_routine(
@@ -1349,8 +1357,58 @@ class DashboardAPI:
         return any(mic.room_id == room_id and mic.capture.state in (CaptureState.WAITING, CaptureState.RECEIVING)
                    for mic in snapshot.microphones)
 
+    def _register_routine_proposal_routes(self) -> None:
+        """Expose review only to an authorized dashboard cookie session."""
+        permissions = frozenset({DashboardPermission.ROUTINES_MANAGE})
+        path = "/api/routines/proposals"
+
+        async def review_session(
+            request: Request,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ) -> DashboardPrincipal:
+            if not web_session_requested(request) or not session_guard(request, permissions, principal)():
+                raise HTTPException(403, detail="routine_proposals_require_session")
+            if self.routine_proposals is None:
+                raise ProposalUnavailable
+            return principal
+
+        @self.app.get(path)
+        async def list_proposals(_: DashboardPrincipal = Depends(review_session)):
+            return {"proposals": self.routine_proposals.list_pending(), "cleared_on_restart": True}
+
+        @self.app.get(path + "/{proposal_id}")
+        async def preview_proposal(proposal_id: str, principal: DashboardPrincipal = Depends(review_session)):
+            scheduler = self._require_routines(principal, permissions)
+            return await self.routine_proposals.preview(proposal_id, scheduler)
+
+        @self.app.post(path + "/{proposal_id}/confirm")
+        async def confirm_proposal(
+            proposal_id: str, request: Request, principal: DashboardPrincipal = Depends(review_session),
+        ):
+            scheduler = self._require_routines(principal, permissions)
+            try:
+                receipt = await self.routine_proposals.confirm(
+                    proposal_id, scheduler, actor=principal.subject,
+                    guard=session_guard(request, permissions, principal),
+                )
+            except PermissionError as error:
+                raise HTTPException(403, detail="routine_write_denied") from error
+            return asdict(receipt)
+
+        @self.app.post(path + "/{proposal_id}/reject")
+        async def reject_proposal(proposal_id: str, _: DashboardPrincipal = Depends(review_session)):
+            return asdict(self.routine_proposals.reject(proposal_id))
+
     def _register_routine_exception_handlers(self) -> None:
         """Translate domain and unavailable-storage failures without private details."""
+        @self.app.exception_handler(ProposalNotFound)
+        async def proposal_not_found(request, error):
+            return JSONResponse(status_code=404, content={"detail": "routine_proposal_not_found"})
+
+        @self.app.exception_handler(ProposalUnavailable)
+        async def proposals_unavailable(request, error):
+            return JSONResponse(status_code=503, content={"detail": "routine_proposals_unavailable"})
+
         @self.app.exception_handler(RoutineNotFound)
         async def routine_not_found(request, error):
             return JSONResponse(status_code=404, content={"detail": "routine_not_found"})
@@ -1375,7 +1433,7 @@ class DashboardAPI:
                 raise error
             return JSONResponse(status_code=503, content={"detail": "routines unavailable"})
 
-    def _require_routines(self, principal: DashboardPrincipal, permissions: set[str]):
+    def _require_routines(self, principal: DashboardPrincipal, permissions: set[str] | frozenset[str]):
         """Check server permissions and require an initialized routines facade."""
         if not permissions.issubset(principal.permissions):
             raise HTTPException(status_code=403, detail="permission denied")
