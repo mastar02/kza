@@ -447,6 +447,61 @@ for (const reason of ['expired in flight','omitted from the capped options']) te
   assert.deepEqual(f.acks,[]);
 });
 
+for (const wallSkew of [0,-48*3600000]) {
+  test(`a six-second response preserves captures past the options deadline, wall skew ${wallSkew} ms`,async t=>{
+    const f=controllerFixture(createVoiceController,{wallSkew}), {controller:c,state}=f;
+    t.after(()=>c.dispose());
+    const room={kind:'room',id:'Synthetic room'}, row=groupedCapture();
+    await c.setFilters({room});
+    f.advance(6000);
+    f.latest().respond({rows:[row],fields:{expires_at:NOW+10,matching_count:1,scan_complete:true,
+      count_expires_at:NOW+10,room_options:[room.id],room_options_expires_at:NOW+3}});
+    await c.settled();
+    assert.equal(state.captures.status(),'real');
+    assert.deepEqual(state.captures.snapshot().map(item=>item.id),[row.id]);
+    assert.equal(state.captures.deliveryToken(),B);
+    assert.deepEqual(c.captureFilters().room,room);
+    assert.deepEqual(c.captureSummary(),{count:1,rooms:[],roomNotice:''});
+    assert.equal(f.calls.length,1);
+    f.advance(3999); await flush();
+    assert.equal(state.captures.snapshot()[0].id,row.id);
+    assert.deepEqual(f.acks,[]);
+    f.advance(1); await flush();
+    assert.deepEqual(state.captures.snapshot(),[]);
+    assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B]);
+  });
+
+  test(`pagination with a newer observation charges only its own request, wall skew ${wallSkew} ms`,async t=>{
+    const f=controllerFixture(createVoiceController,{wallSkew}), {controller:c,state}=f;
+    t.after(()=>c.dispose());
+    const first={...groupedCapture(),group_expires_at:NOW+40}, second={...groupedCapture(),id:review().id};
+    const summary={matching_count:1,scan_complete:true,room_options:['Synthetic room']};
+    await c.setFilters({listenable_only:true});
+    f.advance(4000);
+    f.latest().respond({rows:[first],fields:{...summary,observed_at:NOW+4,expires_at:NOW+40,
+      next_cursor:CURSOR,count_expires_at:NOW+40,room_options_expires_at:NOW+40}});
+    await c.settled();
+    assert.equal(state.captures.snapshot()[0].id,first.id);
+    assert.equal(state.captures.deliveryToken(),B);
+    f.advance(2000);
+    assert.equal(c.next('captures'),true);
+    assert.equal(f.query().cursor,CURSOR);
+    f.latest().respond({eventId:C,rows:[second],fields:{...summary,observed_at:NOW+6,expires_at:NOW+10,
+      count_expires_at:NOW+10,room_options_expires_at:NOW+10}});
+    await c.settled();
+    assert.equal(state.captures.status(),'real');
+    assert.deepEqual(state.captures.snapshot().map(item=>item.id),[second.id]);
+    assert.equal(state.captures.deliveryToken(),C);
+    assert.equal(c.captureSummary().count,1);
+    f.advance(3999); await flush();
+    assert.equal(state.captures.snapshot()[0].id,second.id);
+    assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B]);
+    f.advance(1); await flush();
+    assert.deepEqual(state.captures.snapshot(),[]);
+    assert.deepEqual(f.acks.flatMap(ack=>ack.receipts).map(receipt=>receipt.ticket),[B,C]);
+  });
+}
+
 for (const withdrawal of ['expiry','retire']) test(`OBS drops a selected room from the DOM before ACK on ${withdrawal}`,async t=>{
   const {readFileSync}=require('node:fs'), {runInNewContext}=require('node:vm');
   const {createDocument,Element}=require('../mocks/dom_shim.cjs');

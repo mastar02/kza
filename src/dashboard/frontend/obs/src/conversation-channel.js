@@ -10,7 +10,7 @@
     let observation = null;
     const inflight = new Set(), controllers = new Set(), retired = new Set();
     function leaseTiming(observedAt, started) {
-      if (!observation) return started;
+      if (!observation || observedAt > observation.server) return started;
       // A replacement ticket can repeat an older observation. Charge the time
       // already spent since that observation against its remaining lease.
       const lag = (observation.server-observedAt)*1000 + started.mono-observation.mono;
@@ -104,9 +104,8 @@
           // One ticket covers the whole batch, so the earliest source retires it all.
           const timing = leaseTiming(batch.observed_at,started);
           const elapsed = Math.max(0,monotonic()-timing.mono,wall()-timing.wall)/1000;
-          const expiry = (trackObservedAt
-            ? Math.min(batch.expires_at,wall()/1000+(batch.expires_at-batch.observed_at))
-            : batch.expires_at) - elapsed;
+          const budget = batch.expires_at - batch.observed_at - elapsed;
+          const expiry = trackObservedAt ? Math.min(batch.expires_at,wall()/1000+budget) : batch.expires_at-elapsed;
           accepting = true;
           try {
             if (!metadata.receive({ type:'turn', event_id:batch.event_id, expires_at:expiry,
@@ -114,7 +113,9 @@
             const rows = batch.rows.map(row => ({ ...row, observed_at:batch.observed_at,
               expires_at:Math.min(row.expires_at ?? batch.expires_at,batch.expires_at) }));
             if (store.receive(rows,timing,{variant,rowId})) {
-              if (trackObservedAt && timing === started) observation = {server:batch.observed_at,mono:started.mono};
+              if (trackObservedAt && (!observation || batch.observed_at > observation.server)) {
+                observation = {server:batch.observed_at,mono:monotonic()};
+              }
               status = 'real';
             } else metadata.clear();
           } finally { accepting = false; }
