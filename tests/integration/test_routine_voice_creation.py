@@ -153,16 +153,20 @@ async def test_programming_request_is_refused_even_if_7b_suggests_turn_on(orches
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("orchestrated", [True, False])
-@pytest.mark.parametrize(("utterance", "replies_at_gate"), [
-    ("para el último programa que vimos, necesito que me enciendan las luces al salir el sol", False),
-    ("para el último programa que vimos, haz que se enciendan las luces al salir el sol", False),
-    ("para el último programa que vimos, hacé que se enciendan las luces al ponerse el sol", False),
-    ("para el último programa que vimos, poné que se enciendan las luces al amanecer", False),
-    ("para el último programa que vimos, quiero que me enciendan las luces al atardecer", False),
-    ("para el último programa que vimos, prendé la luz a las 8", True),
+@pytest.mark.parametrize(("utterance", "orchestrated_stage"), [
+    ("para el último programa que vimos, necesito que me enciendan las luces al salir el sol", "dispatcher"),
+    ("para el último programa que vimos, haz que se enciendan las luces al salir el sol", "dispatcher"),
+    ("para el último programa que vimos, hacé que se enciendan las luces al ponerse el sol", "dispatcher"),
+    ("para el último programa que vimos, poné que se enciendan las luces al amanecer", "dispatcher"),
+    ("para el último programa que vimos, quiero que me enciendan las luces al atardecer", "dispatcher"),
+    ("para el último programa que vimos, prendé la luz a las 8", "gate"),
+    ("necesito que prendas las luces a las ocho", "gate"),
+    ("quiero que se riegue cada vez que anochezca", "verb_evidence"),
+    ("quiero que pongas riego a las ocho", "verb_evidence"),
+    ("necesito que me digas qué partido empieza a las ocho y que prendas las luces al salir el sol", "gate"),
 ])
 async def test_scheduled_programming_cannot_turn_on_an_authorized_light(
-    orchestrated, utterance, replies_at_gate, tmp_path,
+    orchestrated, utterance, orchestrated_stage, tmp_path,
 ):
     selection = tmp_path / "selection.json"
     write_selection(selection)
@@ -186,11 +190,14 @@ async def test_scheduled_programming_cannot_turn_on_an_authorized_light(
 
         assert ha.sends == ha.reads == []
         assert result["intent"] == "routine"
-        if orchestrated and not replies_at_gate:
+        if orchestrated and orchestrated_stage != "gate":
             classify.assert_awaited_once()
-            assert result["path"] == "fast_routine"
         else:
             classify.assert_not_called()
+        if orchestrated and orchestrated_stage == "dispatcher":
+            assert result["path"] == "fast_routine"
+        else:
+            assert result.get("path") is None
         outcome = result["outcome"]
         assert (outcome["status"], outcome["persistence"], outcome["dispatch"]) == (
             "unsupported", "not_written", "not_sent",
@@ -234,6 +241,18 @@ async def test_catalog_question_with_automation_vocabulary_still_reads(orchestra
     "después del último programa que se emitió anoche, hablemos del premio",
     "para el programa que vamos a grabar mañana, me podés buscar información sobre el premio",
     "después del último programa que vimos, ¿quién ganó el premio?",
+    "después del último programa que vimos, ¿a las ocho entregaron el premio?",
+    "despues del ultimo programa que vimos, ¿a las ocho entregaron el premio?",
+    "necesito que me digas qué partido empieza a las ocho",
+    "necesito que me digas que partido empieza a las ocho",
+    "quiero que me cuentes qué pasa cada vez que hay un empate",
+    "quiero que me cuentes que pasa cada vez que hay un empate",
+    "quiero que me expliques por que revisan las jugadas cada vez que hay un empate",
+    "necesito que me confirmes si entregan el premio a las ocho",
+    "quiero que lo revises y necesito que me digas qué partido empieza a las ocho",
+    "quiero que verifiques a qué hora entregan el premio a las ocho",
+    "cada vez que hay un empate quiero que me cuentes que pasa con el desempate",
+    "después del último programa que vimos, necesito que me digas qué partido empieza a las ocho",
     "después del último programa que vimos quién ganó el premio",
     "para el próximo programa que vamos a grabar, ¿quién ganó el premio?",
     "para el próximo programa que vamos a grabar, quién ganó el premio",

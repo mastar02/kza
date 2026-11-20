@@ -1403,6 +1403,10 @@ class RequestRouter:
             if not grammar_backed and not llm_intent_evidenced(
                 classification.intent, text
             ):
+                if household is None and is_unclaimed_routine_creation(
+                    text, wake_words=self.household_intents.settings.wake_words,
+                ):
+                    return await self._refuse_routine(result, pipeline_start)
                 logger.info(
                     f"[LLMRouter] intent {classification.intent} sin verbo que "
                     f"lo evidencie en el texto — rechazado: {text!r}"

@@ -64,9 +64,9 @@ _ROUTINE_SCHEDULE = re.compile(
     r"|a las? (?:[0-9]+|una?|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce)"
     r"|cada (?:vez que|dia|semana|hora|[0-9]+)|tod[oa]s l[oa]s)\b"
 )
-_ROUTINE_DIRECTIVE = re.compile(
-    rf"{_INDICATIVE_CONTEXT}\b(?:programa|configura) que\b"
-    rf"|\b{_SUBORDINATE_DIRECTIVE}\b(?: cuando\b|.*{_ROUTINE_SCHEDULE.pattern})"
+_ROUTINE_DIRECTIVE = re.compile(rf"{_INDICATIVE_CONTEXT}\b(?:programa|configura) que\b")
+_SUBORDINATE_REQUEST = re.compile(
+    rf"\b{_SUBORDINATE_DIRECTIVE}\b +(?P<complement>.*?)(?=\b{_SUBORDINATE_DIRECTIVE}\b|$)"
 )
 _RECURRENCE_CLAUSE = re.compile(r"\bcada vez que\b")
 _RECURRENCE_QUESTION = re.compile(r"\bcuando se\b")
@@ -108,7 +108,7 @@ _PROGRAM_PAST_RELATIVE = (
     r"(?:vi|viste|vio|vimos|vieron|(?:grab|escuch|mir)(?:é|aste|o|amos|aron)"
     r"|gan(?:o|aron)(?: (?:el|un) premio)?"
     r"|se (?:(?:emiti|(?:re)?transmiti)(?:o|eron)|estren(?:o|aron)))"
-    r"\b(?P<past_program_tail>[^?!.;]*)"
+    r"\b(?P<past_program_tail>[^¿?!.;]*)"
 )
 # A prospective relative can still be the complement of "programa que".
 # Require a conversational clause or a clearly separated question.
@@ -150,6 +150,14 @@ _QUESTION_OPENING = re.compile(
     r"|^(?:(?:me )?(?:podes|podrias|puedes) )?(?:decime|dime|decirme|decir|contame|contarme|sabes) "
     rf"(?:si|desde|(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE})\b"
 )
+_INFORMATION_COMPLEMENT = re.compile(
+    r"(?:(?:me|te|nos|le|les) )?(?:"
+    r"diga[sn]?|contes|cuente[sn]?|explique[sn]?|mostres|muestre[sn]?|confirme[sn]?|busque[sn]?"
+    r"|averigue[sn]?|responda[sn]?|aclare[sn]?|lea[sn]?|recuerde[sn]?"
+    r"|(?:consultes|compruebes|investigues|revises|verifiques) "
+    rf"(?:si|(?:(?:a|con|de|en|hasta|para|por) )?{_INTERROGATIVE}))\b"
+)
+_IRRIGATION_ACTION = re.compile(r"\b(?:rieg(?:a[sn]?|ue[sn]?)|regar|(?:pon\w*|activ\w*) (?:el )?riego)\b")
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
 _PLURAL_NOUNS = frozenset({"rutinas", "automatizaciones"})
@@ -343,10 +351,27 @@ def _words(text: str) -> list[str]:
     return re.sub(r"[^a-z0-9]+", " ", _fold(text)).split()
 
 
+def _has_device_action(text: str) -> bool:
+    return bool(match_intent_rules(text, extract_entity(text)) or _IRRIGATION_ACTION.search(text))
+
+
+def _is_informational_complement(text: str) -> bool:
+    """A request to tell or check something can mention a schedule as its topic."""
+    return bool(_INFORMATION_COMPLEMENT.match(text)) and not (
+        _has_device_action(text) or _ROUTINE_DIRECTIVE.search(text) or _UNCLAIMED_CREATION.search(text)
+        or (_CONFIGURATION_VERB.search(text) and not _ROUTINE_VOCABULARY.isdisjoint(text.split()))
+    )
+
+
 def _mask_nominal_program(match: re.Match[str]) -> str:
     tail = match["past_program_tail"]
-    if tail and (_PROGRAM_EXPLICIT_DIRECTIVE.search(tail) or _ROUTINE_SCHEDULE.search(tail)):
-        return match[0]
+    if tail:
+        continuation = tail.lstrip(" ,")
+        request = _SUBORDINATE_REQUEST.fullmatch(continuation)
+        if request and _is_informational_complement(request["complement"]):
+            return " "
+        if _PROGRAM_EXPLICIT_DIRECTIVE.search(tail) or _ROUTINE_SCHEDULE.search(tail):
+            return match[0]
     # Neither a past media verb nor a comma makes an embedded device action nominal.
     continuation = tail or match["unmarked_program_question"]
     if continuation and (
@@ -384,6 +409,15 @@ def is_unclaimed_routine_creation(text: str, *, wake_words: Iterable[str] = ()) 
         names_routine and (voseo_program or _CONFIGURATION_VERB.search(command_text))
     ):
         return True
+    informational = False
+    for request in _SUBORDINATE_REQUEST.finditer(command_text):
+        complement = request["complement"]
+        if _is_informational_complement(complement):
+            informational = True
+        elif complement.startswith("cuando ") or _ROUTINE_SCHEDULE.search(complement):
+            return True
+    if informational and not _has_device_action(command_text):
+        return False
     recurrence = _RECURRENCE_CLAUSE.search(phrase)
     if recurrence is None or (recurrence.start() != 0 and not names_routine):
         return False
