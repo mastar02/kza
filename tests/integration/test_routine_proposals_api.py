@@ -29,9 +29,14 @@ PATH = "/api/routines/proposals"
 
 
 @asynccontextmanager
-async def application(config, leaves, dashboard_auth):
+async def application(config, leaves, dashboard_auth, *, buffer_http=False):
     async with AsyncExitStack() as stack:
         graph = await build_application(config, shutdown=stack, factories=leaves)
+        if buffer_http:
+            @graph.dashboard.app.middleware("http")
+            async def buffer(request, call_next):
+                return await call_next(request)
+
         async with AsyncClient(
             transport=ASGITransport(app=graph.dashboard.app), base_url="http://testserver",
         ) as client:
@@ -41,11 +46,11 @@ async def application(config, leaves, dashboard_auth):
 
 
 @pytest.fixture
-async def review(leaves, tmp_path, dashboard_auth):
+async def review(leaves, tmp_path, dashboard_auth, request):
     transport = TaskTransport()
     async with transport.serve() as url:
         config, selection = configuration(tmp_path, url)
-        async with application(config, leaves, dashboard_auth) as (graph, client):
+        async with application(config, leaves, dashboard_auth, buffer_http=getattr(request, "param", False)) as (graph, client):
             tray = graph.dashboard.routine_proposals
             assert tray is graph.producer_coverage.context_erasure.routine_proposals
             yield SimpleNamespace(
@@ -315,6 +320,74 @@ async def test_registered_erasure_removes_pending_and_terminal_proposals(review)
     with pytest.raises(PermissionError, match="proposal_source_unavailable"):
         propose(review, "create", source=source)
     assert await review.scheduler.get_all_routines() == []
+
+
+@pytest.mark.parametrize(("view", "review", "cancel_observer"), [
+    ("list", False, False), ("preview", False, False),
+    ("list", True, True), ("preview", True, False),
+], indirect=["review"])
+async def test_erasure_between_headers_and_body_retires_the_owned_proposal_delivery(
+    review, view, cancel_observer,
+):
+    app = review.graph.dashboard.app
+    source = str(uuid4())
+    proposal_id = propose(review, "create", source=source, name="Synthetic private diff")
+    survivor = propose(review, "create", name="Synthetic surviving proposal")
+    route = PATH if view == "list" else f"{PATH}/{proposal_id}"
+    headers_sent, release = asyncio.Event(), asyncio.Event()
+    messages = []
+
+    async def gated(scope, receive, send):
+        async def actual(message):
+            messages.append(message.copy())
+            await send(message)
+            if message["type"] == "http.response.start":
+                headers_sent.set()
+                await release.wait()
+
+        await app(scope, receive, actual)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=gated), base_url="http://testserver", cookies=review.client.cookies,
+    ) as reader:
+        pending = asyncio.create_task(reader.get(route))
+        try:
+            await asyncio.wait_for(headers_sent.wait(), 3)
+            assert messages[0]["status"] == 200
+            if cancel_observer:
+                pending.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await pending
+            owner = review.graph.erasure_services
+            receipt = await owner.request(source, MemoryReviewer("synthetic-reviewer"))
+            async with asyncio.timeout(3):
+                while True:
+                    await owner.reconcile()
+                    status = await owner.privacy.acall(owner.journal.snapshot, receipt["id"])
+                    if any(
+                        step["participant"] == "contexts" and step["state"] == "pending"
+                        and step["pending_count"] == 1 for step in status["steps"]
+                    ):
+                        break
+                    await asyncio.sleep(.001)
+            assert proposal_id not in review.tray._entries
+            release.set()
+            if not cancel_observer:
+                # With headers already sent, ASGITransport reports an incomplete response.
+                with pytest.raises(AssertionError):
+                    await pending
+            async with asyncio.timeout(3):
+                while review.tray._deliveries:
+                    await asyncio.sleep(.001)
+            assert [message["type"] for message in messages] == ["http.response.start"]
+        finally:
+            release.set()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    listed = await review.client.get(PATH)
+    assert listed.status_code == 200
+    assert [entry["proposal_id"] for entry in listed.json()["proposals"]] == [survivor]
+    assert (await review.client.get(f"{PATH}/{proposal_id}")).status_code == 404
 
 
 async def test_cancelled_confirm_after_native_commit_replays_the_single_receipt(review, monkeypatch):

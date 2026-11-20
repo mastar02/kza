@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -88,6 +88,22 @@ class _Proposal:
         }
 
 
+@dataclass(eq=False, repr=False)
+class ProposalDelivery:
+    """Track the private lineage of one actual HTTP projection."""
+
+    _tray: RoutineProposalTray
+    _sources: tuple[tuple[str, str], ...] = ()
+
+    def current(self) -> bool:
+        """Recheck every projected proposal without retaining its definition."""
+        for proposal_id, _ in self._sources:
+            entry = self._tray._entries.get(proposal_id)
+            if entry is None or entry.receipt is not None or not self._tray._source_current(entry):
+                return False
+        return True
+
+
 class RoutineProposalTray:
     """Hold pending reviews on the event loop, with native commit-time source checks.
 
@@ -100,6 +116,7 @@ class RoutineProposalTray:
         self.retention_notify: Callable[[], None] | None = None
         self._entries: dict[str, _Proposal] = {}
         self._confirming: dict[str, str] = {}
+        self._deliveries: set[ProposalDelivery] = set()
         self._work = OwnedBlockingWork(isolate_context=True)
 
     def submit(
@@ -162,20 +179,45 @@ class RoutineProposalTray:
             self.retention_notify()
         return proposal_id
 
-    def list_pending(self) -> list[dict]:
+    async def own_delivery(self, serve: Callable[[ProposalDelivery | None], Awaitable[None]]) -> None:
+        """Retain the actual ASGI scope, including buffered sends, through cancellation."""
+        work = self._work.status()
+        if work["closed"] or work["operations"] >= work["capacity"]:
+            # Normal dashboard auth still runs. A review handler without an
+            # owned scope cannot project private data.
+            await serve(None)
+            return
+
+        async def owned() -> None:
+            delivery = ProposalDelivery(self)
+            self._deliveries.add(delivery)
+            try:
+                await serve(delivery)
+            finally:
+                self._deliveries.remove(delivery)
+                delivery._sources = ()
+
+        await self._work.run_async(owned)
+
+    def list_pending(self, delivery: ProposalDelivery) -> list[dict]:
         """Return only reviewable metadata, without private source identifiers."""
         self._require_available()
         self.prune_retained()
-        return [
-            entry.summary() for entry in self._entries.values()
+        entries = [
+            entry for entry in self._entries.values()
             if entry.receipt is None and self._source_current(entry)
         ]
+        self._bind_delivery(delivery, entries)
+        return [entry.summary() for entry in entries]
 
-    async def preview(self, proposal_id: str, scheduler: RoutineScheduler) -> dict:
+    async def preview(
+        self, proposal_id: str, scheduler: RoutineScheduler, delivery: ProposalDelivery,
+    ) -> dict:
         """Project the proposal and current definition without mutating either."""
         entry = self._get(proposal_id)
         if entry.receipt is not None:
             raise ProposalNotFound
+        self._bind_delivery(delivery, [entry])
         current = await scheduler.get_routine(entry.routine_id) if entry.routine_id is not None else None
         if not self._source_current(entry) or entry.receipt is not None:
             raise ProposalNotFound
@@ -190,6 +232,11 @@ class RoutineProposalTray:
             "stale": revision != entry.expected_revision,
             "diff": {"before": before, "after": after},
         }
+
+    def _bind_delivery(self, delivery: ProposalDelivery, entries: list[_Proposal]) -> None:
+        if delivery not in self._deliveries:
+            raise ProposalUnavailable
+        delivery._sources = tuple((entry.proposal_id, entry.conversation_id) for entry in entries)
 
     async def confirm(
         self, proposal_id: str, scheduler: RoutineScheduler, *, actor: str, guard: AuthorityGuard,
@@ -278,15 +325,18 @@ class RoutineProposalTray:
         )
         return {
             "next_at": min((entry.expires_at for entry in self._entries.values()), default=now + 30),
-            "pruned": removed, "unknown": 0, "pending_operations": len(self._confirming),
+            "pruned": removed, "unknown": 0,
+            "pending_operations": len(self._confirming) + sum(bool(item._sources) for item in self._deliveries),
         }
 
     def erase_conversation(self, conversation_id: str) -> int:
-        """Remove a committed source and count any still-retained confirmations."""
+        """Remove a committed source and count its retained commits and HTTP scopes."""
         if not self.source_policy.conversation_committed_revoked(conversation_id):
             raise RuntimeError("proposal_erasure_authority_unavailable")
         self._drop(lambda entry: entry.conversation_id == conversation_id)
-        return sum(source == conversation_id for source in self._confirming.values())
+        return sum(source == conversation_id for source in self._confirming.values()) + sum(
+            any(source == conversation_id for _, source in item._sources) for item in self._deliveries
+        )
 
     async def aclose(self) -> None:
         """Seal the tray before the scheduler closes and drain admitted commits."""

@@ -46,7 +46,7 @@ from src.dashboard.home_catalog import HomeCatalogService
 from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.memory_api import register_memory_routes
 from src.dashboard.memory_voice_api import register_memory_voice_routes
-from src.dashboard.rest_delivery import DashboardApplication
+from src.dashboard.rest_delivery import DashboardApplication, PROPOSAL_DELIVERY_SCOPE, ROUTINE_PROPOSALS_PATH
 from src.dashboard.voice_api import register_voice_routes
 from src.dashboard.evaluation_api import register_evaluation_routes
 from src.dashboard.credential_api import register_credential_routes
@@ -61,7 +61,7 @@ from src.routines.models import (
     RoutineConflict, RoutineNotFound, RoutineSpec, RoutineValidationError, ScheduledRoutine,
     parse_routine_spec, routine_to_dict, run_to_dict,
 )
-from src.routines.proposals import ProposalNotFound, ProposalUnavailable, RoutineProposalTray
+from src.routines.proposals import ProposalDelivery, ProposalNotFound, ProposalUnavailable, RoutineProposalTray
 from src.routines.routine_store import HOUSEHOLD_VOICE
 from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService
 
@@ -447,6 +447,7 @@ class DashboardAPI:
             docs_url=None, redoc_url=None, openapi_url=None,
         )
         self.app.state.dashboard_authority = authority
+        self.app.state.routine_proposals = routine_proposals
         self.admin_work = ensure_admin_work(self.app)
         if self.capture_control is not None:
             self.capture_control.bind_enrollment_work(self.admin_work)
@@ -1360,7 +1361,7 @@ class DashboardAPI:
     def _register_routine_proposal_routes(self) -> None:
         """Expose review only to an authorized dashboard cookie session."""
         permissions = frozenset({DashboardPermission.ROUTINES_MANAGE})
-        path = "/api/routines/proposals"
+        path = ROUTINE_PROPOSALS_PATH
 
         async def review_session(
             request: Request,
@@ -1372,14 +1373,23 @@ class DashboardAPI:
                 raise ProposalUnavailable
             return principal
 
+        def delivery_scope(request: Request) -> ProposalDelivery:
+            delivery = request.scope.get(PROPOSAL_DELIVERY_SCOPE)
+            if not isinstance(delivery, ProposalDelivery):
+                raise ProposalUnavailable
+            return delivery
+
         @self.app.get(path)
-        async def list_proposals(_: DashboardPrincipal = Depends(review_session)):
-            return {"proposals": self.routine_proposals.list_pending(), "cleared_on_restart": True}
+        async def list_proposals(request: Request, _: DashboardPrincipal = Depends(review_session)):
+            proposals = self.routine_proposals.list_pending(delivery_scope(request))
+            return {"proposals": proposals, "cleared_on_restart": True}
 
         @self.app.get(path + "/{proposal_id}")
-        async def preview_proposal(proposal_id: str, principal: DashboardPrincipal = Depends(review_session)):
+        async def preview_proposal(
+            proposal_id: str, request: Request, principal: DashboardPrincipal = Depends(review_session),
+        ):
             scheduler = self._require_routines(principal, permissions)
-            return await self.routine_proposals.preview(proposal_id, scheduler)
+            return await self.routine_proposals.preview(proposal_id, scheduler, delivery_scope(request))
 
         @self.app.post(path + "/{proposal_id}/confirm")
         async def confirm_proposal(
