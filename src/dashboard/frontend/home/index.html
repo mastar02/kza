@@ -4,6 +4,35 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark">
 <title>KZA · Tu casa, en sintonía</title><meta name="description" content="KZA. Tu hogar, voces, personas y acciones con control local.">
 <link rel="stylesheet" href="/home/nexo/style.css"><link rel="stylesheet" href="/home/nexo/climate.css"><link rel="stylesheet" href="/home/nexo/identity.css"><link rel="stylesheet" href="/home/nexo/kza.css">
+<style>
+#tasks-view .identity-heading { flex-wrap: wrap; align-items: center }
+#tasks-view .tasks-status { font-size: 14px; color: var(--text); margin: 0 0 12px }
+#tasks-view .tasks-status:empty { margin: 0 }
+#tasks-view .tasks-scope { min-width: 0; margin: 0 0 20px; padding: clamp(14px, 2vw, 24px); overflow-wrap: anywhere }
+#tasks-view .tasks-scope h3 { font-size: 19px; margin: 0 0 14px }
+#tasks-view .tasks-scope h4 { font-size: 15px; margin: 0 0 8px }
+#tasks-view .tasks-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr)); gap: 18px }
+#tasks-view .tasks-card { min-width: 0; margin-top: 12px; padding: 14px; border: 1px solid var(--border); border-radius: 10px }
+#tasks-view .tasks-card > :last-child { margin-bottom: 0 }
+#tasks-view .tasks-card ul { padding-inline-start: 20px }
+#tasks-view .tasks-card li + li { margin-top: 8px }
+#tasks-view .tasks-detail { color: var(--muted); font-size: 13px; line-height: 1.6; margin: 6px 0 }
+#tasks-view .tasks-card .identity-danger { margin-top: 8px }
+#tasks-view .tasks-form { max-width: 30rem; margin: 8px 0 14px }
+#tasks-view .tasks-form input { width: 100%; min-width: 0; font-size: 14px; border-color: #8193ad }
+#tasks-view summary { display: list-item; align-content: center; width: fit-content; padding: 8px 10px; cursor: pointer }
+#tasks-view button, #tasks-view input, #tasks-view summary, #tasks-confirm-dialog button,
+#app-nav [data-view=tasks], #rail-nav [data-view=tasks], #access-dialog .access-visit-preset { min-width: 44px; min-height: 44px }
+#tasks-view button, #tasks-view summary, #tasks-confirm-dialog button, #access-dialog .access-visit-preset { font-size: 13px }
+#tasks-view button, #tasks-confirm-dialog button { max-width: 100%; white-space: normal }
+#tasks-view [aria-disabled=true] { opacity: .6; cursor: progress }
+#tasks-view summary:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px }
+#tasks-confirm-dialog { width: 34rem; max-height: calc(100dvh - 24px); overflow: auto }
+#tasks-confirm-dialog .memory-content { margin: 0 0 14px }
+#tasks-confirm-dialog .modal-description { font-size: 13px }
+#tasks-confirm-dialog .modal-actions { flex-wrap: wrap }
+#access-dialog .access-visit-preset { margin: 0 0 10px }
+</style>
 <script type="module" src="/home/nexo/app.js"></script>
 </head>
 <body>
@@ -40,6 +69,7 @@
 </div>
 <section id="actions-view" hidden aria-labelledby="actions-title"><div class="identity-heading"><div><p class="eyebrow">DEL CONTROL AL RESULTADO</p><h2 id="actions-title">Acciones para tu hogar.</h2><p>Controles disponibles en el catálogo actual.</p></div></div><div id="action-list" class="action-list"></div></section>
 <section id="routines-view" hidden aria-labelledby="routines-title"></section>
+<section id="tasks-view" hidden aria-labelledby="tasks-title"></section>
 <section id="memory-view" hidden aria-labelledby="memory-title"></section>
 <section id="my-memory-view" hidden aria-labelledby="my-memory-title"></section>
 <section id="people-view" hidden aria-labelledby="people-title"></section>
@@ -56,6 +86,7 @@
 <dialog id="voice-link-dialog" class="identity-dialog voice-link-dialog" aria-label="Vincular voz y persona"></dialog>
 <dialog id="routine-dialog" class="identity-dialog routine-dialog" tabindex="-1"></dialog>
 <dialog id="routine-confirm-dialog" class="identity-dialog routine-confirm-dialog" tabindex="-1"></dialog>
+<dialog id="tasks-confirm-dialog" class="identity-dialog memory-confirm-dialog" tabindex="-1"></dialog>
 <dialog id="memory-confirm-dialog" class="identity-dialog memory-confirm-dialog" tabindex="-1"></dialog>
 <dialog id="my-memory-confirm-dialog" class="identity-dialog memory-confirm-dialog" tabindex="-1"></dialog>
 <dialog id="my-voice-confirm-dialog" class="identity-dialog memory-confirm-dialog" tabindex="-1"></dialog>

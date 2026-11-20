@@ -1,7 +1,7 @@
 /* Session and catalog presentation; voice labels never select authority. */
 (function (root) {
   'use strict';
-  const VIEWS = { home: ['home:read'], actions: ['home:read'], routines: ['home:read'], memory: ['memory:read'], mymemory: ['memory:own:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
+  const VIEWS = { home: ['home:read'], actions: ['home:read'], routines: ['home:read'], tasks: ['tasks:read'], memory: ['memory:read'], mymemory: ['memory:own:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
   function createSession({ wall = Date.now, monotonic = () => root.performance.now() } = {}) {
     let identity = null, deadline = 0, generation = 0;
     function clear() { identity = null; deadline = 0; generation++; }
@@ -98,10 +98,33 @@
   function canReadNotices(session) {
     return ['home', 'operator'].includes(session.role()) && session.can('home:read') && session.can('tasks:read');
   }
+  function taskPermission(pathname, method, query, body) {
+    const collection = pathname === '/api/lists' || pathname === '/api/reminders';
+    const items = /^\/api\/lists\/[^/]+\/items$/.test(pathname);
+    const item = /^\/api\/lists\/[^/]+\/items\/[^/]+$/.test(pathname);
+    const reminder = /^\/api\/reminders\/[^/]+$/.test(pathname) &&
+      ![NOTICE_LIST, '/api/reminders/status'].includes(pathname);
+    if (!(collection || items || item || reminder)) return null;
+    if (query !== undefined && !(collection && method === 'GET')) return null;
+    const params = new URLSearchParams(query);
+    const scopes = params.getAll('scope');
+    if ([...params.keys()].some(key => key !== 'scope') || scopes.length > 1 ||
+        scopes.some(scope => !['shared', 'personal'].includes(scope))) return null;
+    if (method === 'GET' && (collection || items)) {
+      return scopes[0] === 'personal' ? ['tasks:read', 'tasks:personal'] : 'tasks:read';
+    }
+    if (method === 'POST' && (collection || items)) {
+      if (body && Object.hasOwn(body, 'user_id')) return null;
+      const personal = body && collection && (pathname === '/api/lists' ? body.shared !== true : body.scope !== 'shared');
+      return personal ? ['tasks:write', 'tasks:personal'] : 'tasks:write';
+    }
+    return method === 'DELETE' && (item || reminder) ? 'tasks:write' : null;
+  }
   function createScopedApi({ session, transport, onRetired = () => {} }) {
     return async function api(path, options = {}) {
       const method = (options.method || 'GET').toUpperCase();
-      const pathname = typeof path === 'string' ? path.split('?')[0] : '';
+      const [pathname, ...queryParts] = typeof path === 'string' ? path.split('?') : [''];
+      const query = queryParts.length ? queryParts.join('?') : undefined;
       const publicAuth = pathname === '/api/admin/auth/whoami' && method === 'GET' ||
         ['/api/admin/auth/login', '/api/admin/auth/logout'].includes(pathname) && method === 'POST';
       const noticeRoute = pathname === NOTICE_LIST || pathname === NOTICE_DISMISS;
@@ -115,7 +138,8 @@
         pathname === '/api/admin/users' && ['GET', 'POST'].includes(method) ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+\/permissions$/.test(pathname) && method === 'PUT' ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+$/.test(pathname) && method === 'DELETE' ? ['admin:manage', 'auth:manage'] :
-        routinePermission(pathname, method) || memoryPermission(pathname, method);
+        routinePermission(pathname, method) || memoryPermission(pathname, method) ||
+        taskPermission(pathname, method, query, options.body);
       const permitted = () => (!noticeRoute || canReadNotices(session)) &&
         (!proposalRoute || canReviewRoutineProposals(session)) && (
         typeof permission === 'function' ? permission(session.can) :
