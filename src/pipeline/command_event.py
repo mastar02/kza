@@ -108,11 +108,9 @@ class CommandEvent:
     # matcheó) y un verbo+luz alucinado ejecutaba luces fantasma.
     textual_wake: bool = False
     # Silero probability of the wake frame and what opened the capture
-    # ("wake", "follow_up", "barge_in", "inline"; None for other producers;
-    # the single-room AudioLoop sets only "follow_up").
-    # Used by the shadow wake verification (V2 2026-11-17) and, since T037-U5,
-    # by the router: any trigger other than "wake" or "inline" (the wake's
-    # own utterance) needs the 7B veto.
+    # ("wake", "follow_up", "barge_in", "inline"; None for untagged producers).
+    # The single-room AudioLoop tags "wake" and "follow_up" and leaves wake_vad unset.
+    # The router uses trigger provenance for the 7B veto and routine admission.
     wake_vad: float | None = None
     capture_trigger: str | None = None
     # How the post-wake endpoint closed the capture ("close_silence",

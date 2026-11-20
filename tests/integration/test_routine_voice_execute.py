@@ -253,6 +253,27 @@ async def test_command_and_stt_confidence_gates_run_before_any_claim(home, monke
     assert home.transport.sends == []
 
 
+@pytest.mark.parametrize("verb", ["ejecutá", "pará", "desactivá"])
+async def test_routine_controls_fail_closed_on_command_gate_error(home, monkeypatch, verb):
+    routine = await save(home)
+    gate = home.graph.pipeline.request_router.command_gate
+    text = f"{verb} la rutina mañana"
+
+    def fail_evaluation(*_args):
+        raise RuntimeError("Synthetic command gate failure")
+
+    monkeypatch.setattr(gate, "_evaluate", fail_evaluation)
+    fallback = gate.evaluate(text)
+    assert fallback.accept and fallback.reason == "gate_error"
+
+    result = await say(home, text)
+    assert await home.scheduler.get_routine(routine.routine_id) == routine
+    assert await home.scheduler.get_latest_run(routine.routine_id) is None
+    assert await home.scheduler.get_latest_brake(routine.routine_id) is None
+    assert home.transport.sends == []
+    assert result["intent"] == "gate_rejected:routine_capture" and not result["response"]
+
+
 @pytest.mark.parametrize("verb", ["ejecutá", "desactivá"])
 async def test_total_mute_retires_authority_before_native_commit(home, dashboard_auth, monkeypatch, verb):
     routine = await save(home)

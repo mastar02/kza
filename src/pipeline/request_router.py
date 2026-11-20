@@ -369,9 +369,9 @@ class RequestRouter:
             household_intents: Household intent classifier (P3-F2), the same
                 instance the dispatcher uses; None builds one with the default
                 settings and this router's wake words.
-            voice_routines: Read-only voice routines (T033-U1), the same
-                instance the orchestrator's dispatcher uses; main binds its
-                scheduler after construction. None keeps the legacy handlers.
+            voice_routines: Saved routine reads and controls shared with the
+                orchestrator's dispatcher. Main binds the scheduler after
+                construction. None keeps the legacy handlers.
         """
         # Core pipeline components
         self.command_processor = command_processor
@@ -1152,7 +1152,9 @@ class RequestRouter:
                         and privacy.scopes.buffer_boundary(room_id, origin=source.origin).allows(source.captured_at)
                         and privacy.sources_available(sources))
 
-            if (textual_wake or ambient_strict or not self.wake_acoustically_confirmed
+            # The command gate can accept as a fallback after an internal error.
+            # Routine effects require a successful evaluation.
+            if (gate_decision.reason != "ok" or textual_wake or ambient_strict or not self.wake_acoustically_confirmed
                     or capture_trigger not in _OWN_WAKE_TRIGGERS
                     or not finite_number(wake_score) or not _GRAMMAR_BONUS_MIN_WAKE_SCORE <= wake_score <= 1
                     or (gate_decision.signals or {}).get("would_reject") or not routine_guard()):
