@@ -617,7 +617,7 @@ async def test_each_route_refuses_on_its_own_when_the_route_permission_layer_is_
         clients = await _clients(graph, stack, dashboard_auth)
         graph.api._voice_room_available = lambda room_id: True
         before = _dump(graph)
-        monkeypatch.setattr(auth_module, "_route_permissions", lambda request: frozenset())
+        monkeypatch.setattr(auth_module, "_route_permissions", lambda request, _principal=None: frozenset())
         person = {"detail": "memory_person_required"}
         cases = [(actor, method, path, payload, person) for actor in ("operator", "legacy_bearer", "home_none",
                                                                       "evaluator")
