@@ -33,9 +33,9 @@ from src.memory.services import build_memory_services
 from src.users.user_manager import PermissionLevel, UserManager
 from src.users.voice_ledger import VoiceReviewer
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_nexo_memory import INSTRUMENT, TEXT_ZOOM, TEXT_ZOOM_CHECK
+from tests.frontend.browser_nexo_memory import ACTIVE_CONTROL, INSTRUMENT, TEXT_ZOOM, TEXT_ZOOM_CHECK
 from tests.frontend.browser_nexo_voices import person_link
-from tests.frontend.browser_support import Page, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session
+from tests.frontend.browser_support import Page, _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session
 from tests.mocks.memory_graph import MemoryClient
 from tests.mocks.voice_registry import ACTOR, graph as voice_graph, seed as voice_seed
 
@@ -294,6 +294,27 @@ async def main() -> None:
                         assert bidi == {'dir': 'auto', 'bidi': 'isolate', 'text': bidi_text}, bidi
                         checks.append('untrusted text with U+202E rendered verbatim with dir=auto and unicode-bidi:isolate')
 
+                        # WEB-11: a concurrent deletion is reflected when the held list response reaches the view.
+                        removed_id = await own('web11', 'Recuerdo sintético temporal.', person_a.user_id)
+                        await click('#my-memory-refresh')
+                        await page.wait_for(f"document.querySelector({card(removed_id)})")
+                        assert await memory.acall(memory.delete_fact, removed_id, MemoryReviewer('synthetic-seed-reviewer'))
+                        await rule('GET', '/api/memory/mine', 'hold')
+                        await page.evaluate('window.__qaHeld=null')
+                        await click('#my-memory-refresh')
+                        await page.wait_for("window.__qaHeld==='/api/memory/mine'")
+                        await page.evaluate(f"document.querySelector('{key(a_return + ':return')}').focus()")
+                        await _press_tab(page)
+                        focus_before = await page.evaluate(ACTIVE_CONTROL)
+                        assert focus_before == {'tag': 'BUTTON', 'key': a_return + ':delete'}, focus_before
+                        assert await page.evaluate(f"document.querySelector({card(removed_id)})?.compareDocumentPosition(document.activeElement) & Node.DOCUMENT_POSITION_FOLLOWING")
+                        await page.evaluate('window.__qaRelease()')
+                        await page.wait_for(f"!document.querySelector({card(removed_id)})")
+                        focus_after = await page.evaluate(ACTIVE_CONTROL)
+                        assert focus_after == focus_before, (focus_before, focus_after)
+                        web11 = {'removed_card': removed_id, 'before': focus_before, 'after': focus_after}
+                        checks.append('WEB-11: real Tab reaches the delete button during a refresh and focus survives removal of another card')
+
                         # 'No es mío': the dialog states the notice before acting; cancel sends nothing; accept returns it.
                         await page.evaluate(f"document.querySelector('{key(a_return + ':return')}').focus()")
                         await press(key(a_return + ':return'))
@@ -508,7 +529,7 @@ async def main() -> None:
                                   'real_voice_link': True,
                                   'roles': ['home-person-a', 'home-person-b', 'home-without-person', 'evaluator', 'operator'],
                                   'widths': list(WIDTHS), 'text_zoom_widths': list(ZOOM_WIDTHS),
-                                  'checks': checks, 'a11y_evidence': [f'a11y-{view}.json' for view in audits] + ['text-zoom-mis-recuerdos.json'],
+                                  'checks': checks, 'web11_focus': web11, 'a11y_evidence': [f'a11y-{view}.json' for view in audits] + ['text-zoom-mis-recuerdos.json'],
                                   'a11y_findings': {view: len(audit['findings']) for view, audit in audits.items()},
                                   'text_zoom_findings': len(zoom_findings), 'requests': len(requests), 'javascript_exceptions': len(page.errors)}
                         (evidence / 'browser-result.json').write_text(json.dumps(result, indent=2, ensure_ascii=False) + '\n')

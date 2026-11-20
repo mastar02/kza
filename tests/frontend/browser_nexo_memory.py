@@ -34,7 +34,7 @@ from src.memory.services import build_memory_services
 from src.rooms.room_context import RoomConfig
 from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import Page, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
+from tests.frontend.browser_support import Page, _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
 from tests.integration.test_typed_home_operations import typed_graph
 from tests.mocks.memory_graph import MemoryClient
 
@@ -47,6 +47,7 @@ DEPENDENTS_SCOPE = ('Se eliminan los recuerdos derivados que existan al momento 
 EVIDENCE = evidence_directory('KZA_NEXO_MEMORY_EVIDENCE', 'data/autonomous-roadmap-20261102/t040-t041/u3-memory-browser-runs')
 WIDTHS = (320, 390, 768, 1024, 1280, 1440)
 ZOOM_WIDTHS = (320, 390)
+ACTIVE_CONTROL = "({tag: document.activeElement.tagName, key: document.activeElement.dataset.key || null})"
 INSTRUMENT = r"""(() => {
   const fetcher = window.fetch.bind(window);
   window.__qaRules = [];
@@ -317,6 +318,26 @@ async def main() -> None:
                         await press(key(long_id + ':expand'))
                         await page.wait_for(f"!document.querySelector({card(long_id, '.memory-content')}).textContent.endsWith('…') && document.activeElement?.dataset.key==='{long_id}:expand'")
                         checks.append('long text is clamped with an expandable control that keeps focus')
+
+                        # WEB-11: the owner timer removes a newer proposal while the older card has keyboard focus.
+                        await page.wait_for("document.querySelector('#memory-refresh').getAttribute('aria-disabled')==='false'")
+                        now = time.time()
+                        short_source = manager.source_for_capture(str(uuid4()), now, 'web-11-room', expires_at=now + 8)
+                        expiring_id = (await memory.acall(memory.propose, 'Propuesta sintética de corta duración.', (short_source,)))['id']
+                        await click('#memory-refresh')
+                        await page.wait_for(f"document.querySelector({card(expiring_id)})")
+                        await page.evaluate(f"document.querySelector('{key(confirm_id + ':confirm')}').focus()")
+                        await _press_tab(page)
+                        focus_before = await page.evaluate(ACTIVE_CONTROL)
+                        assert focus_before == {'tag': 'BUTTON', 'key': confirm_id + ':reject'}, focus_before
+                        assert await page.evaluate(f"document.querySelector({card(expiring_id)})?.compareDocumentPosition(document.activeElement) & Node.DOCUMENT_POSITION_FOLLOWING")
+                        reads_before_expiry = count('GET', '/api/memory')
+                        await page.wait_for(f"!document.querySelector({card(expiring_id)})")
+                        assert count('GET', '/api/memory') == reads_before_expiry
+                        focus_after = await page.evaluate(ACTIVE_CONTROL)
+                        assert focus_after == focus_before, (focus_before, focus_after)
+                        web11 = {'expired_card': expiring_id, 'before': focus_before, 'after': focus_after}
+                        checks.append('WEB-11: real Tab reaches the proposal reject button and focus survives another proposal expiring')
 
                         # Confirm: the card moves to Recuerdos guardados and focus follows it.
                         await page.evaluate(f"document.querySelector('{key(confirm_id + ':confirm')}').focus()")
@@ -709,7 +730,7 @@ async def main() -> None:
 
                         result = {'passed': True, 'synthetic_fixture': True, 'actual_chromium_http_login': True, 'real_memory_services': True,
                                   'roles': ['operator', 'operator-b', 'home', 'home-person-a', 'evaluator'], 'widths': list(WIDTHS), 'text_zoom_widths': list(ZOOM_WIDTHS),
-                                  'checks': checks, 'a11y_evidence': [f'a11y-{view}.json' for view in audits] + ['text-zoom-memoria.json'],
+                                  'checks': checks, 'web11_focus': web11, 'a11y_evidence': [f'a11y-{view}.json' for view in audits] + ['text-zoom-memoria.json'],
                                   'a11y_findings': {view: len(audit['findings']) for view, audit in audits.items()},
                                   'text_zoom_findings': len(zoom_findings), 'requests': len(requests), 'javascript_exceptions': len(page.errors)}
                         (evidence / 'browser-result.json').write_text(json.dumps(result, indent=2, ensure_ascii=False) + '\n')

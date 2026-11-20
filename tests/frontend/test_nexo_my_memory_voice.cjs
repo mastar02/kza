@@ -131,6 +131,22 @@ test('view: the pending card shows the title, hour times and exactly «Descartar
   view.dispose();
 });
 
+test('refresh removing an earlier memory leaves the focused card attached', async t => {
+  const f = memoryFixture();
+  f.read(page([item(ID('a')), item(ID('b'))]), page([item(ID('b'))]));
+  const view = mountMemory(f);
+  await f.owner.open(); await settle();
+  const grid = view.container.querySelector('#my-memory-facts');
+  const card = grid.children[1], control = card.querySelector(`[data-key="${ID('b')}:delete"]`);
+  control.focus();
+  const insert = t.mock.method(grid, 'insertBefore');
+  await f.owner.refresh(); await settle();
+  assert.deepEqual(grid.children, [card]);
+  assert.ok(!insert.mock.calls.some(call => call.arguments[0] === card), 'moving a focused subtree detaches it');
+  assert.equal(view.doc.activeElement, control);
+  view.dispose();
+});
+
 test('view: a blocked pending card keeps its buttons focusable with aria-disabled and ignores clicks', async () => {
   const f = memoryFixture();
   let release;

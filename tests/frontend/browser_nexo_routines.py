@@ -394,6 +394,28 @@ async def main() -> None:
                     await page.evaluate("document.querySelector('#routines-refresh').click()")
                     await asyncio.sleep(0.4)
                     assert await page.evaluate("document.activeElement?.dataset.key==='name' && document.activeElement.value==='Escribiendo' && document.activeElement.selectionStart===3")
+                    # WEB-11: complete a held refresh with a non-collapsed selection in the field reached by Tab.
+                    await page.wait_for("document.querySelector('#routines-refresh').getAttribute('aria-disabled')==='false'")
+                    await fill('description', 'Descripción sintética')
+                    await rule('GET', '/api/routines', 'hold')
+                    await page.evaluate('window.__qaHeld=null')
+                    await click('#routines-refresh')
+                    await page.wait_for("window.__qaHeld==='/api/routines'")
+                    await page.evaluate("document.querySelector('#routine-dialog [data-key=name]').focus()")
+                    await _press_tab(page)
+                    await page.evaluate("document.querySelector('#routine-dialog [data-key=description]').setSelectionRange(2, 7)")
+                    editor_focus = """(e => ({tag: e.tagName, id: e.id || null, key: e.dataset.key || null, dialog: e.closest('dialog')?.id,
+                        selectionStart: e.selectionStart, selectionEnd: e.selectionEnd}))(document.activeElement)"""
+                    focus_before = await page.evaluate(editor_focus)
+                    assert focus_before == {'tag': 'INPUT', 'id': None, 'key': 'description', 'dialog': 'routine-dialog',
+                                            'selectionStart': 2, 'selectionEnd': 7}, focus_before
+                    await page.evaluate('window.__qaRelease()')
+                    await page.wait_for("document.querySelector('#routines-refresh').getAttribute('aria-disabled')==='false'")
+                    focus_after = await page.evaluate(editor_focus)
+                    assert focus_after == focus_before, (focus_before, focus_after)
+                    web11 = {'before': focus_before, 'after': focus_after}
+                    checks.append('WEB-11: the editor field reached by real Tab keeps both selection endpoints after refresh')
+
                     await click('#routine-dialog [data-key="close"]')
                     await page.wait_for("!document.querySelector('#routine-dialog').open")
                     await page.evaluate(f"document.querySelector('[data-key=\"{main_id}:toggle\"]').focus()")
@@ -591,7 +613,7 @@ async def main() -> None:
                     assert page.errors == [], page.errors
 
                     result = {'passed': True, 'synthetic_fixture': True, 'actual_chromium_http_login': True, 'real_routine_scheduler': True,
-                              'roles': ['operator', 'home', 'evaluator'], 'widths': list(WIDTHS), 'checks': checks,
+                              'roles': ['operator', 'home', 'evaluator'], 'widths': list(WIDTHS), 'checks': checks, 'web11_focus': web11,
                               'runs_on_server': run_count(database), 'home_effects': len(ha.sends),
                               'a11y_evidence': [f'a11y-{view}.json' for view in audits],
                               'a11y_findings': {view: len(audit['findings']) for view, audit in audits.items()},

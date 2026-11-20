@@ -38,7 +38,7 @@ function sessionMock(subject = 'synthetic-a', permissions = ['memory:read', 'mem
 const whoami = (subject = 'synthetic-a', role = 'operator', permissions = ['memory:read', 'memory:review']) => ({ ok: true, subject, role, permissions });
 
 /** A scripted server: each handler gets (path, options) and returns or throws. */
-function fixture({ storage = storageMock(), session = sessionMock(), identity = () => whoami(), onAccountChanged = () => {}, maxPages, extra = {} } = {}) {
+function fixture({ storage = storageMock(), session = sessionMock(), identity = () => whoami(), onAccountChanged = () => {}, maxPages, schedule = () => 0, extra = {} } = {}) {
   const calls = [];
   let reads = [], writes = [];
   let time = 0;
@@ -68,7 +68,7 @@ function fixture({ storage = storageMock(), session = sessionMock(), identity = 
     if (!handler) return Promise.reject(Object.assign(Error('no write scripted'), { status: 599 }));
     return Promise.resolve().then(() => typeof handler === 'function' ? handler(path, options) : handler);
   };
-  const owner = createMemoryOwner({ api, session, storage, schedule: () => 0, cancel: () => {}, monotonic: () => time, wall: () => time, onAccountChanged, ...(maxPages ? { maxPages } : {}) });
+  const owner = createMemoryOwner({ api, session, storage, schedule, cancel: () => {}, monotonic: () => time, wall: () => time, onAccountChanged, ...(maxPages ? { maxPages } : {}) });
   return { owner, calls, storage, read: (...handlers) => reads.push(...handlers), write: (...handlers) => writes.push(...handlers),
     advance(ms) { time += ms; }, writes: () => calls.filter(call => !call.startsWith('GET')) };
 }
@@ -82,6 +82,27 @@ test('open confirms the account before the first read and shows the snapshot', a
   assert.deepEqual(f.calls, ['GET /api/admin/auth/whoami', 'GET /api/memory']);
   const state = f.owner.getState();
   assert.deepEqual([state.facts.length, state.proposals.length, state.loaded], [1, 1, true]);
+});
+
+test('expiring the preceding proposal leaves the focused card attached', async t => {
+  const { mountMemory } = require('../../src/dashboard/frontend/home/nexo/memory.js');
+  const { createDocument, icon } = require('../mocks/dom_shim.cjs');
+  let expire;
+  const f = fixture({ schedule: callback => { expire = callback; return 1; } });
+  const doc = createDocument(), container = doc.createElement('section');
+  f.read(snap([], [proposal(ID('a'), { expires_at: 101 }), proposal(ID('b'))]));
+  await f.owner.open(); await settle();
+  const dispose = mountMemory({ container, confirmDialog: doc.createElement('dialog'), owner: f.owner, icon: icon(doc) });
+  const grid = container.querySelector('#memory-proposals');
+  const card = grid.children[1], control = card.querySelector(`[data-key="${ID('b')}:reject"]`);
+  control.focus();
+  const insert = t.mock.method(grid, 'insertBefore');
+  f.advance(2000);
+  expire();
+  assert.deepEqual(grid.children, [card]);
+  assert.ok(!insert.mock.calls.some(call => call.arguments[0] === card), 'moving a focused subtree detaches it');
+  assert.equal(doc.activeElement, control);
+  dispose();
 });
 
 test('F5: another account on open sends no memory read and calls onAccountChanged once', async () => {
