@@ -4,8 +4,10 @@ The copied-slot rollback rehearsal runs the earliest managed-capable revision
 (80b47f5). Its own admission probes the delegated source state with the original
 non-blocking flock while its own historical diagnostic maintenance can hold that
 state's ``metrics_policy_v1.jsonl.sqlite3.lock``. The rehearsal harness backports
-the 431e44e mutex; these tests keep the original probe and a real flock.
+the 431e44e mutex; these tests cover both the original flock probe and the binding's
+SQLite authority capture.
 """
+from contextlib import closing
 import fcntl
 import os
 from pathlib import Path
@@ -15,6 +17,8 @@ from types import SimpleNamespace
 import pytest
 
 from scripts import stage_runtime
+from src.obs.diagnostic_store import DiagnosticStore
+from tests.mocks import managed_slot_graph
 from tests.mocks.managed_slot_graph import serialize_older_history
 
 OLD_STATE_LOCKS = ("privacy.db.lock", "dashboard-auth.db.lease", "metrics_policy_v1.jsonl.sqlite3.lock")
@@ -57,7 +61,8 @@ class _HistoricalDiagnostics:
 
 
 def _older_application(state):
-    stage = SimpleNamespace(_assert_writers_closed=_original_probe)
+    stage = SimpleNamespace(_assert_writers_closed=_original_probe,
+                            _binding_snapshot=stage_runtime._binding_snapshot)
     admission = SimpleNamespace(_stage=lambda: stage)
     diagnostics = SimpleNamespace(DiagnosticServices=type("DiagnosticServices", (_HistoricalDiagnostics,), {}))
     for name in OLD_STATE_LOCKS:
@@ -99,6 +104,92 @@ def test_final_probe_waits_for_the_applications_own_historical_catalog_close(tmp
     assert probe_outcome == {"value": None}, probe_outcome
 
 
+def test_binding_snapshot_excludes_transient_staged_publication(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    config = state / "config"
+    config.mkdir(parents=True)
+    privacy = config / "privacy.yaml"
+    privacy.write_text("consent: true\n")
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    (runtime / "release.json").write_text("{}")
+    manifest = {"git_commit": "80b47f55", "python_magic": "test"}
+    metrics = state / "metrics_policy_v1.jsonl"
+
+    class HistoricalDiagnostics:
+        def _invoke_history(self, path, conversation):
+            with closing(DiagnosticStore(path, clock=lambda: 0, retention_days=1,
+                                         rotate_bytes=1024, project=dict)) as store:
+                store.prune()
+
+    services = HistoricalDiagnostics()
+    services._invoke_history(metrics, None)
+    metrics.unlink()  # A missing projection forces the next prune to publish.
+    monkeypatch.setattr(stage_runtime, "_checked_slot", lambda root, name: (runtime, state, manifest))
+    monkeypatch.setattr(stage_runtime, "_assert_writers_closed", _original_probe)
+    baseline = stage_runtime._binding_snapshot(tmp_path, "old")
+
+    probe_passed = threading.Event()
+    writer_blocked_or_staged = threading.Event()
+    authority_captured = threading.Event()
+    lock = threading.RLock()
+    capture = stage_runtime.capture_state_authority
+    replace = os.replace
+
+    class ObservedGate:
+        def __enter__(self):
+            if not lock.acquire(blocking=False):
+                writer_blocked_or_staged.set()
+                lock.acquire()
+
+        def __exit__(self, *_exc):
+            lock.release()
+
+    def capture_after_writer_attempt(state):
+        # The real binding snapshot calls this after the writer probe succeeds.
+        probe_passed.set()
+        assert writer_blocked_or_staged.wait(30)
+        try:
+            return capture(state)
+        finally:
+            authority_captured.set()
+
+    def pause_at_publish(source, target):
+        if target == metrics:
+            # _publish has committed the INSERT and has yet to DELETE the row.
+            writer_blocked_or_staged.set()
+            assert authority_captured.wait(30)
+        return replace(source, target)
+
+    def run_history():
+        assert probe_passed.wait(30)
+        services._invoke_history(metrics, None)
+
+    admission = SimpleNamespace(_stage=lambda: stage_runtime)
+    diagnostics = SimpleNamespace(DiagnosticServices=HistoricalDiagnostics)
+    tables = baseline["authority"]["projection"]["tables"]
+    assert tables[metrics.name + ".sqlite3"]["staged"]["row_hashes"] == []
+    with monkeypatch.context() as patch:
+        patch.setattr(managed_slot_graph, "threading", SimpleNamespace(RLock=ObservedGate))
+        patch.setattr(stage_runtime, "capture_state_authority", capture_after_writer_attempt)
+        patch.setattr(os, "replace", pause_at_publish)
+        assert serialize_older_history(patch, admission, diagnostics) is True
+        history, history_outcome = _run(run_history)
+        snapshot, snapshot_outcome = _run(stage_runtime._binding_snapshot, tmp_path, "old")
+        snapshot.join(30)
+        authority_captured.set()
+        history.join(30)
+        assert not snapshot.is_alive() and not history.is_alive(), (snapshot_outcome, history_outcome)
+
+    assert history_outcome == {"value": None}, history_outcome
+    assert snapshot_outcome == {"value": baseline}, snapshot_outcome
+    assert metrics.is_file()
+    assert stage_runtime._binding_snapshot(tmp_path, "old") == baseline
+    privacy.write_text("consent: false\n")
+    changed = stage_runtime._binding_snapshot(tmp_path, "old")
+    assert changed["authority"]["digest"] != baseline["authority"]["digest"]
+
+
 def test_backport_still_refuses_a_real_writer_outside_the_historical_worker(tmp_path, monkeypatch):
     state = tmp_path / "old/state/data/graph"
     state.mkdir(parents=True)
@@ -126,16 +217,19 @@ def test_application_with_the_gate_is_left_unchanged(monkeypatch):
     assert diagnostic_erasure.DiagnosticServices._invoke_history is original
 
 
-def test_undo_restores_the_original_probe_and_worker(tmp_path):
+def test_undo_restores_the_original_probe_snapshot_and_worker(tmp_path):
     state = tmp_path / "state"
     state.mkdir()
     stage, admission, diagnostics = _older_application(state)
+    snapshot = stage._binding_snapshot
     worker = diagnostics.DiagnosticServices._invoke_history
     patch = pytest.MonkeyPatch()
     assert serialize_older_history(patch, admission, diagnostics) is True
     assert stage._assert_writers_closed is not _original_probe
+    assert stage._binding_snapshot is not snapshot
     patch.undo()
     assert stage._assert_writers_closed is _original_probe
+    assert stage._binding_snapshot is snapshot
     assert diagnostics.DiagnosticServices._invoke_history is worker
 
 

@@ -101,41 +101,44 @@ def _bridge(control):
 
 
 def serialize_older_history(patch, admission, diagnostics) -> bool:
-    """Give an older application the history/writer-probe exclusion of 431e44e (G01).
+    """Serialize an older application's binding snapshots and historical worker.
 
-    An application whose ``src.main`` runs its own admission never reaches the
-    bridge below, so before 3fc5ac6/431e44e its historical diagnostic
-    maintenance can hold a delegated source's catalog flock
-    (``metrics_policy_v1.jsonl.sqlite3.lock``) while its own admission probes
-    that source: ``runtime_admission_writer_active`` from the application's
-    own serialized worker. Current code holds one mutex around both. This
-    backports only that mutex: the original probe still runs unchanged and
-    still refuses every holder other than this process's historical worker.
+    Before 3fc5ac6/431e44e, the worker can hold a delegated source's catalog
+    flock during the writer probe. It can also publish a transient `staged`
+    row after the probe, which changes the protected authority snapshot.
+    Share one gate through the entire snapshot while keeping the original
+    writer probe and authority capture intact.
 
     Args:
-        patch: The phase's MonkeyPatch; its undo removes both wrappers.
+        patch: The phase's MonkeyPatch, which removes the wrappers on undo.
         admission: The application's own ``src.core.runtime_admission``.
         diagnostics: The application's own ``src.obs.diagnostic_erasure``.
 
     Returns:
-        True when installed; False for an application that already has the gate.
+        True when installed, False for an application that already has the gate.
     """
     if hasattr(diagnostics, "diagnostic_history_validation_gate"):
         return False
     stage = admission._stage()
     gate = threading.RLock()
     probe = stage._assert_writers_closed
+    snapshot = stage._binding_snapshot
     history = diagnostics.DiagnosticServices._invoke_history
 
     def serialized_probe(state):
         with gate:
             return probe(state)
 
+    def serialized_snapshot(root, name, **kwargs):
+        with gate:
+            return snapshot(root, name, **kwargs)
+
     def serialized_history(self, path, conversation):
         with gate:
             return history(self, path, conversation)
 
     patch.setattr(stage, "_assert_writers_closed", serialized_probe)
+    patch.setattr(stage, "_binding_snapshot", serialized_snapshot)
     patch.setattr(diagnostics.DiagnosticServices, "_invoke_history", serialized_history)
     return True
 
