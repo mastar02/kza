@@ -101,6 +101,15 @@ def test_voice_resolves_only_configured_room_labels(text, message, zones):
     "En la cocina:\nesperen.",
     "En la cocina:\nesperen, por favor.",
     "—En la cocina: esperen —dijo Ana.",
+    "... ¿En la cocina: esperen?",
+    "... ¡En la cocina: esperen!",
+    "... ¿En el fogón: esperen?",
+    "... ¡En el fogón: esperen!",
+    "… (En la cocina: esperen)",
+    "... [En la cocina: esperen]",
+    "… {En la cocina: esperen}",
+    " —En la cocina: esperen —dijo Ana.",
+    " —En el fogón: esperen —dijo Ana.",
 ])
 async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, closing, body, trailing_filler):
     attempts = []
@@ -121,6 +130,7 @@ async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, clo
         assert outcome.task_completed
         assert announcement.receipt()["zones"] == {"zone_cocina": "confirmed", "zone_sala": "confirmed"}
         assert attempts == [(message, "zone_cocina"), (message, "zone_sala")]
+        assert [message[start:end] for start, end in _quote_spans(message)] == [message]
     finally:
         await intercom.stop()
 
@@ -300,12 +310,14 @@ def test_empty_quote_pairs_do_not_create_spans_between_or_around_them(text):
 @pytest.mark.parametrize("location", ["la cocina", "el fogón"])
 @pytest.mark.parametrize("depth", [2, 3])
 @pytest.mark.parametrize("ending", [".", ", por favor."])
-@pytest.mark.parametrize("inner_prefix", ["", "... ", "… ", " ", "\n"])
+@pytest.mark.parametrize(("inner_prefix", "inner_suffix"), [
+    ("", ""), ("... ", ""), ("… ", ""), (" ", ""), ("\n", ""), ("... ¿", "?"), ("… ¡", "!"),
+])
 @pytest.mark.parametrize(("speech_boundary", "verb"), [(", ", "Anunciá"), (" ", "Anuncia")])
 async def test_nested_same_delimiter_at_start_preserves_broadcast_literal(
-    quote, gap, location, depth, ending, inner_prefix, speech_boundary, verb,
+    quote, gap, location, depth, ending, inner_prefix, inner_suffix, speech_boundary, verb,
 ):
-    inner = f"{quote}{inner_prefix}En {location}: esperen{quote}"
+    inner = f"{quote}{inner_prefix}En {location}: esperen{inner_suffix}{quote}"
     message = f"{quote}{gap}{inner}{speech_boundary}dijo Ana{ending}{quote}"
     spans = [message, inner]
     if depth == 3:

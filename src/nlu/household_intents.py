@@ -324,14 +324,11 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
             return re.match(r"[,.;:?!…\s¡¿«\"'([{—-]*[^\W_]", text[start:]) is not None
         following = text[start + 1:start + 2]
         if after in "—-":
-            return (
-                start == offset + 1 and bool(following) and not following.isspace()
-                and following not in ",.;:?!…)]}»\"'—-"
-            )
+            return bool(following) and not following.isspace() and following not in ",.;:?!…)]}»\"'—-"
         if text.startswith(("...", "…"), start):
             ellipsis_end = start + (3 if text.startswith("...", start) else 1)
-            # A nested opening may come between the ellipsis and the word.
-            return re.match(r"""\s*(?:(?:[«"']|\.{3}|…)\s*)*[^\W_]""", text[ellipsis_end:]) is not None
+            # Opening punctuation and nested quotes can precede the word.
+            return re.match(r"""\s*(?:(?:[«"'¡¿(\[{]|\.{3}|…)\s*)*[^\W_]""", text[ellipsis_end:]) is not None
         return (
             after not in ",.;:?!…"
             or bool(following) and not following.isspace() and following not in ",.;:?!…)]}»\"'"
