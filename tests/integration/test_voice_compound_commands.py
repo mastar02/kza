@@ -157,6 +157,8 @@ async def test_compound_preserves_intercom_receipts_and_replays_without_playback
         assert timer["task_status"] == "completed" and "intercom_receipt" not in timer
         assert announcement["task_status"] == "uncertain" and announcement["dispatch"] == "partial"
         assert "1 de 2 salas" in first["response"]
+        assert graph.spoken() == first["response"]
+        assert "el pedido está listo" not in graph.spoken().casefold()
         receipt = intercom.get_history()[-1].receipt()
         assert receipt["zones"] == {"zone_cocina": "confirmed", "zone_escritorio": "failed"}
         assert announcement["intercom_receipt"] == receipt
@@ -165,9 +167,50 @@ async def test_compound_preserves_intercom_receipts_and_replays_without_playback
         replay = await graph.turn(text, request_id=request_id)
         assert replay["compound_parts"][1]["retried"] is True
         assert replay["compound_parts"][1]["intercom_receipt"] == receipt
+        assert graph.spoken() == replay["response"]
+        assert "el pedido está listo" not in graph.spoken().casefold()
         assert attempts == [
             ("El pedido está listo.", "zone_cocina"), ("El pedido está listo.", "zone_escritorio"),
         ]
+    finally:
+        await intercom.stop()
+
+
+@pytest.mark.parametrize(("destination", "status"), [("la cocina", "completed"), ("el fogón", "needs_input")])
+async def test_compound_summary_does_not_speak_intercom_payload_in_origin(graph, destination, status):
+    attempts = []
+    body = "El pedido está listo."
+
+    async def speak(message, zone):
+        attempts.append((message, zone))
+        return ResponseResult(message, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    intercom = IntercomSystem(speak, room_catalog={
+        "zone_cocina": ("Cocina",), "zone_escritorio": ("Escritorio",),
+    })
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("escritorio", "Escritorio")
+    graph.orchestrator.dispatcher.intercom = intercom
+    await intercom.start()
+    try:
+        text = f"Poné un timer de 5 minutos y comunicá en {destination}: {body}"
+        first = await graph.turn(text, request_id="voice:compound-intercom-privacy")
+        replay = await graph.turn(text, request_id="voice:compound-intercom-privacy")
+        replies = [first["response"], replay["response"]]
+        assert [call.args[0] for call in graph.handler.aspeak.await_args_list] == replies
+        assert [call.kwargs["zone_id"] for call in graph.handler.aspeak.await_args_list] == ["zone_escritorio"] * 2
+        for response in replies:
+            assert "El anuncio" in response
+            assert body.rstrip(".").casefold() not in response.casefold()
+
+        assert first["compound_parts"][1]["task_status"] == status
+        assert replay["compound_parts"][1]["retried"] is True
+        if status == "completed":
+            assert attempts == [(body, "zone_cocina")]
+        else:
+            assert "sala configurada" in first["response"]
+            assert "intercom_receipt" not in first["compound_parts"][1]
+            assert attempts == []
     finally:
         await intercom.stop()
 

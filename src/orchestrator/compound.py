@@ -45,6 +45,7 @@ from src.core.task_outcome import (
     TaskOutcome,
     TaskStatus,
 )
+from src.nlu.household_intents import HouseholdFamily
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +156,7 @@ class CompoundPartReport:
     Attributes:
         index: 1-based spoken position.
         request_id: The part's request id.
-        segment: The part's words as heard (only for the reply; never logged).
+        segment: The part's words as heard, used for replay and ordinary replies.
         verdict: How the reply reports it.
         outcome: The part's own TaskOutcome.
         response: The part handler's own reply ("" when silent or none).
@@ -163,6 +164,7 @@ class CompoundPartReport:
         path: The part's PathType value, or None.
         retried: The report comes from an earlier run of the same turn.
         intercom_receipt: Per-zone playback evidence for an intercom part.
+        reply_label: Content-free spoken name for a part with a literal message.
     """
 
     index: int
@@ -175,6 +177,7 @@ class CompoundPartReport:
     path: str | None = None
     retried: bool = False
     intercom_receipt: dict | None = field(default=None, repr=False)
+    reply_label: str | None = None
 
     def summary(self) -> dict:
         """Content-free description for turn results and logs."""
@@ -309,7 +312,7 @@ def compose_reply(reports: Iterable[CompoundPartReport]) -> str:
     """One reply naming every part in spoken order (design ``compound_contract.reply``)."""
     sentences = []
     for report in reports:
-        head = report.segment[:1].upper() + report.segment[1:]
+        head = report.reply_label or (report.segment[:1].upper() + report.segment[1:])
         own = _sentence(report.response)
         if report.verdict is PartVerdict.DONE:
             sentences.append(f"{head}: {own}" if own else f"{head}: hecho.")
@@ -370,10 +373,12 @@ class CompoundRunner:
         for index, part in enumerate(parts, start=1):
             request_id = f"{base}:part{index}"
             segment = getattr(part, "segment", "")
+            intent = getattr(part, "intent", None)
+            reply_label = "El anuncio" if getattr(intent, "family", None) is HouseholdFamily.INTERCOM else None
             if stopped or interrupted():
                 stopped = True
                 reports.append(CompoundPartReport(index, request_id, segment, PartVerdict.INTERRUPTED,
-                                                  _skipped_outcome(PartVerdict.INTERRUPTED)))
+                                                  _skipped_outcome(PartVerdict.INTERRUPTED), reply_label=reply_label))
                 continue
             earlier = self._ledger.get(request_id)
             if earlier is not None:
@@ -383,14 +388,15 @@ class CompoundRunner:
                     report = CompoundPartReport(index, request_id, segment, PartVerdict.NOT_DONE,
                                                 TaskOutcome(TaskStatus.FAILED, dispatch=DispatchState.NOT_SENT,
                                                             effect=EffectState.NOT_OBSERVED),
-                                                reason="request_id_conflict")
+                                                reason="request_id_conflict", reply_label=reply_label)
                 reports.append(report)
                 state.record(part_target(part), report.outcome.status)
                 continue
             target = part_target(part)
             blocked = state.check(target) if target else None
             if blocked is not None:
-                reports.append(CompoundPartReport(index, request_id, segment, blocked, _skipped_outcome(blocked)))
+                reports.append(CompoundPartReport(index, request_id, segment, blocked, _skipped_outcome(blocked),
+                                                  reply_label=reply_label))
                 continue
             context = CompoundPartContext(index, request_id, part, state)
             token = CURRENT_REQUEST_ID.set(request_id)
@@ -405,6 +411,8 @@ class CompoundRunner:
             finally:
                 CURRENT_REQUEST_ID.reset(token)
             report = self._report(context, result, segment)
+            if reply_label is not None:
+                report = replace(report, reply_label=reply_label)
             reports.append(report)
             self._remember(report)
             if context.skipped is not None:

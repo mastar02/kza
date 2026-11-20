@@ -67,6 +67,7 @@ def test_zone_defaults_intercom_fields_to_none():
     ("Avisá en el fogón que Llegó Ana", "Llegó Ana", ["zone_cocina"]),
     ("Avisa, en la cocina: Llego Ana", "Llego Ana", ["zone_cocina"]),
     ("Avisa: en la cocina: Llego Ana", "Llego Ana", ["zone_cocina"]),
+    ('Anunciá en la cocina: "En la sala: llegó Ana."', '"En la sala: llegó Ana."', ["zone_cocina"]),
     ("Decile al Salón: Llegó Ana", "Llegó Ana", ["zone_sala"]),
     ("Decí en toda la casa que Llegó Ana", "Llegó Ana", ["zone_cocina", "zone_sala"]),
     ("Anunciá: Ana vino al Salón", "Ana vino al Salón", ["zone_cocina", "zone_sala"]),
@@ -84,6 +85,31 @@ def test_voice_resolves_only_configured_room_labels(text, message, zones):
     intent = classify_household_intent(text)
     assert intent.family is HouseholdFamily.INTERCOM
     assert intercom._parse_announcement_command(intent.complement) == (message, zones)
+
+
+@pytest.mark.parametrize(("opening", "closing"), [("«", "»"), ('"', '"'), ("'", "'")])
+@pytest.mark.parametrize("body", ["En la cocina: se corto el agua.", "En la cocina se corto el agua."])
+async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, closing, body):
+    attempts = []
+
+    async def speak(message, zone):
+        attempts.append((message, zone))
+        return ResponseResult(message, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    intercom = IntercomSystem(speak, room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("sala", "Sala")
+    await intercom.start()
+    try:
+        message = f"{opening}{body}{closing}"
+        intent = classify_household_intent(f"Anuncia: {message}")
+        assert intent.family is HouseholdFamily.INTERCOM
+        outcome, _, announcement = await intercom.announce_from_voice(intent.complement)
+        assert outcome.task_completed
+        assert announcement.receipt()["zones"] == {"zone_cocina": "confirmed", "zone_sala": "confirmed"}
+        assert attempts == [(message, "zone_cocina"), (message, "zone_sala")]
+    finally:
+        await intercom.stop()
 
 
 @pytest.mark.parametrize("text", [
@@ -113,6 +139,7 @@ def test_gate_accepts_noise_words_in_intercom_payload_and_preserves_other_reject
     gate = CommandAcceptanceGate()
     assert gate.evaluate("Anuncia: El pedido esta listo.").accept
     assert gate.evaluate("Anunciá: ¡Gracias por ver!").accept
+    assert gate.evaluate("Anunciá: «En la cocina: El pedido está listo.»").accept
     rejected = gate.evaluate("Gracias por ver, anunciá que llegó Ana")
     assert not rejected.accept and rejected.reason == "noise_phrase:'gracias por ver'"
 

@@ -573,6 +573,7 @@ INTERCOM_BROADCAST_TARGETS = frozenset({
     "todos los parlantes",
 })
 _INTERCOM_PUNCTUATION = re.compile(r"[^\w]*")
+_INTERCOM_QUOTES = {"«": "»", '"': '"', "'": "'"}
 _INTERCOM_DIRECTION = re.compile(
     r"(?:" + "|".join(sorted(_INTERCOM_DESTINATION_HEADS)) + r")\b\s*", re.IGNORECASE,
 )
@@ -1039,10 +1040,14 @@ def _routine_creation(utt: _Utterance) -> HouseholdIntent | None:
 def intercom_slots(complement: str) -> tuple[str | None, int]:
     """Return the explicit destination, if any, and the literal message offset.
 
-    Punctuation between the verb and a destination cannot turn a room
-    request into broadcast. "Que" marks the start of an explicitly literal body.
+    An opening quote with a matching close marks literal text before any
+    room syntax is considered. Ordinary punctuation can precede a destination.
     """
     start = _INTERCOM_PUNCTUATION.match(complement).end()
+    for offset, char in enumerate(complement[:start]):
+        closing = _INTERCOM_QUOTES.get(char)
+        if closing is not None and complement.find(closing, start) != -1:
+            return None, offset
     direction = _INTERCOM_DIRECTION.match(complement, start)
     marker = _INTERCOM_MESSAGE_MARKER.search(complement, start)
     target_start = direction.end() if direction else start
