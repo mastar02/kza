@@ -1,226 +1,72 @@
 # KZA — Asistente de Voz Local para Domótica
 
-## Flujo de trabajo acordado — 2026-10-25
+> Detalle extenso (mapa de archivos/módulos, ejemplos de estilo, hardware, persistencia, comandos y guía multi-consola) en [`docs/referencia/guia-operativa.md`](docs/referencia/guia-operativa.md).
 
-En Linux, desarrollar, probar, construir y operar Git como `yo` en
-`/home/yo/projects/kza`. La migración a Mac autorizada el 2026-11-05 permite
-trabajar con la cuenta y el checkout locales del nuevo equipo. El estado de
-sus dependencias, pruebas nativas y límites se registra en el handoff.
-Leer primero `AGENTS.md` y
-`docs/runbooks/2026-11-05-mac-development-handoff.md`. La cuenta `kza` es
-administrativa y de ejecución: no editar ni instalar dependencias de desarrollo
-en su despliegue. El servidor permanece bajo `kza`; las versiones se publican
-allí al hacer una release. Los archivos de la versión instalada se conservan
-hasta su reemplazo por esa release. El destino acordado es transferirle únicamente artefactos
-compilados y recursos de ejecución construidos bajo `yo`. El mecanismo de
-construcción de bytecode está en `scripts/build_runtime.py`. La release operativa
-del 2026-10-28 ejecuta el slot compilado `b0866e8`, con estado privado separado;
-el checkout anterior se conserva para rollback, dependencias e índice de código.
-Ver `docs/architecture/DEPLOYMENT.md` para el estado y las limitaciones reales.
-La instalación no cierra la aceptación de H6. Las instrucciones históricas de
-desarrollo en el server o de puente desde una laptop quedan reemplazadas por
-este acuerdo.
+## Flujo de trabajo y despliegue acordado
 
-Sistema de control por voz local para Home Assistant. Latencia <300ms para domótica (fast path 100% local); razonamiento complejo delegado al gateway LLM `:8200` (MiniMax cloud, decisión 2026-05-30 con `cloud.consent`). **2x RTX 3070 hoy** (cuda:1 audio completo + TTS + llama-server 7B fast-path NLU `:8101`; cuda:0 casi libre — Emotion deshabilitado; BGE-M3 vive en CPU, no en GPU) — se irán conectando más GPUs; cualquier reasignación se discute primero. Python 3.13, async/await, ~38K líneas, 2740+ tests.
+- **Leer primero:** `AGENTS.md` y `docs/runbooks/2026-11-05-mac-development-handoff.md`.
+- **Entorno Mac (autorizado 2026-11-05):** trabajar con la cuenta habitual sin privilegios y checkout local (`/Users/gabriel/Documents/Proyectos/kza`, `.venv` CPython 3.13); en Linux se usa `yo` en `/home/yo/projects/kza`.
+- **Separación estricta de producción:** `kza` es la cuenta administrativa/runtime del servidor. **Nunca** editar código, instalar dependencias, compilar ni hacer `git pull` en `/home/kza/kza` o `/home/kza/app`, ni reiniciar/publicar servicios sin GO explícito de release.
+- **Releases compiladas:** construir y probar artefactos de bytecode CPython 3.13 sin `.py` con `scripts/build_runtime.py` (`docs/architecture/DEPLOYMENT.md`). La release operativa `b0866e8` (2026-10-28) conserva estado privado separado y el checkout anterior para rollback.
 
-## Source of truth cross-project
+## Resumen del Sistema
 
-Este proyecto cubre **solo** el pipeline de voz. Para las convenciones del servidor compartido (usuarios/UID, sub-rangos de puertos, Podman rootless + Quadlets, GPU por CDI, onboarding), la fuente operativa es el espejo local **`docs/SERVER_CONVENTIONS.md`**. **Notion** (workspace KZA, root page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`) sigue siendo la fuente canónica si ambas difieren, pero se consulta **bajo demanda**: su MCP ya no se carga en KZA.
-
-- **El MCP de notion NO está disponible en este proyecto** (desde 2026-08-03). Cargaba 24 tools / 20.485 tokens en cada sesión y en 123 sesiones no se llamó ni una vez — el espejo local cubría todo. No escribir código ni instrucciones que asuman `mcp__notion__*` acá.
-- **Para consultar Notion**, dos caminos. El barato: `cd ~/Documents/homelab-infra && claude`, que ya la tiene declarada. El otro, re-declararla acá tomando el token de `~/Documents/.mcp.json` (fuera de todo repo — **nunca pegar el token en este archivo, que sí se commitea**):
-  ```bash
-  claude mcp add-json -s local notion "$(python3 -c "import json;print(json.dumps(json.load(open('/Users/yo/Documents/.mcp.json'))['mcpServers']['notion']))")"
-  claude mcp remove -s local notion   # al terminar, para no volver a pagar los 20.485 tok/sesión
-  ```
-- **No** leer la memoria de `~/Documents/homelab-infra/` ni `~/Documents/homelab-services/`.
-- Páginas de Notion por tema, para cuando se consulte: pág 8 (contrato compartido), pág 11 (red), pág 10 (HA), pág 12 (mail), pág 14 (obs).
-- Cuando el código de KZA depende de algo compartido (gateway LLM :8200, sub-rangos puertos 9500-9599), seguir `docs/SERVER_CONVENTIONS.md`; ir a Notion pág 8 solo si el espejo no alcanza.
-
-## Reglas para Claude — LEER SIEMPRE
-
-### SIEMPRE hacer
-- Usar `async/await` para toda operación I/O (HA, audio, red, disco)
-- Inyectar dependencias por constructor (patrón dominante del proyecto)
-- Usar `@dataclass` para DTOs y estructuras de datos
-- Usar `Enum` para estados y tipos (`ModelState`, `PathType`, `AlertPriority`)
-- Escribir docstrings Google-style en clases y métodos públicos
-- Type hints en parámetros y return de funciones públicas
-- Imports: stdlib → third-party → `from src.modulo import Clase`
-- Logging con `logger = logging.getLogger(__name__)` y prefijos descriptivos
-- Mensajes de voz y UI en español, código/logs en inglés
-- Tests con pytest + fixtures en `conftest.py`, mocks en `tests/mocks/`
-- Respetar asignación de GPUs (2 hoy): cuda:1 = STT + SpeakerID + TTS + llama-server 7B `:8101` (todo el audio + fast-path NLU, comparten GPU); cuda:0 = Emotion (deshabilitado) + fallback whisper del ambient path, casi libre. BGE-M3 corre en CPU, no en GPU. Al conectar GPUs nuevas, la reasignación se discute primero
-
-### NUNCA hacer
-- Herencia profunda (usar composición siempre)
-- Imports relativos (usar `from src.modulo`)
-- Bloquear el event loop con llamadas síncronas
-- Cambiar asignación de GPUs sin discutir primero
-- Agregar dependencias sin justificar (8GB VRAM por GPU es limitado)
-- Crear archivos de configuración nuevos (todo va en `config/settings.yaml`)
-- Modificar `src/main.py` sin entender la cadena de DI completa
-- Usar `print()` en lugar de `logger`
-- Pedir confirmación para continuar cuando el siguiente paso es obvio. Si hay un plan con pasos secuenciales (BL-001, BL-002, etc.), avanzar al siguiente sin preguntar "¿seguimos?". Solo detenerse si hay una decisión de diseño ambigua, un bloqueante real, o se necesita input del usuario que no se puede inferir
-
-### Estilo de código
-```python
-# Naming
-class MiClase:              # PascalCase
-def mi_funcion():            # snake_case
-CONSTANTE_GLOBAL = "valor"   # UPPER_SNAKE_CASE
-self._privado = None         # prefijo _
-
-# Estructura de clase típica
-@dataclass
-class ResultadoAlgo:
-    campo: str
-    confianza: float = 0.0
-    datos: dict = field(default_factory=dict)
-
-class MiServicio:
-    """Descripción breve del servicio."""
-
-    def __init__(self, dependencia_a, dependencia_b, config: dict = None):
-        self.dep_a = dependencia_a
-        self.dep_b = dependencia_b
-        self._config = config or {}
-        self._running = False
-
-    async def process(self, input_data: dict) -> ResultadoAlgo:
-        """Procesar datos de entrada."""
-        ...
-```
-
-## Arquitectura
+Sistema de control por voz local para Home Assistant. Latencia `<300ms` para domótica (fast path 100 % local); razonamiento complejo delegado al gateway LLM `:8200` (MiniMax cloud, decisión 2026-05-30 con `cloud.consent`). **2× RTX 3070 hoy:** `cuda:1` = STT + SpeakerID + TTS + `llama-server` 7B `:8101`; `cuda:0` = Emotion (deshabilitado) + fallback ambient (casi libre); BGE-M3 corre en CPU. Cualquier reasignación de GPUs se discute primero. Python 3.13, `async/await`, ~38K líneas, 8,900+ tests.
 
 ```
 Mic → WakeWord(CPU) → STT(GPU1) → Router 7B(GPU1 :8101) → TTS(GPU1) → Speaker
                          ↕                  ↕
                    SpeakerID(GPU1)   Reasoner cloud (gateway :8200)
-                   Emotion(GPU0)     ChromaDB
-                   BGE-M3(CPU)       HomeAssistant
+                   Emotion(GPU0)     ChromaDB / HomeAssistant
+                   BGE-M3(CPU)
 ```
 
-**Paths de ejecución:**
-- **Fast path** (<300ms): Domótica → VectorSearch → HA action → TTS
-- **Music path** (~500ms): Spotify → MoodMapper → ZoneController → TTS
-- **Slow path** (segundos): Reasoner cloud (gateway `:8200` → MiniMax) → Memory → TTS
+- **Paths:** Fast path (`<300ms`: HA → VectorSearch → TTS) · Music path (`~500ms`: Spotify → MoodMapper → ZoneController) · Slow path (gateway `:8200` → Memory → TTS).
+- **Multi-usuario:** `MultiUserOrchestrator` → `PriorityRequestQueue` → `ContextManager` → `CancellationManager`.
+- **Source of truth cross-project:** espejo local `docs/SERVER_CONVENTIONS.md` (puertos `9500-9599`, gateway `:8200`, Podman rootless). Notion se consulta solo bajo demanda; su MCP está retirado en KZA (no asumir `mcp__notion__*`). No leer memorias de `homelab-infra` ni `homelab-services`.
 
-**Orquestación multi-usuario:** `MultiUserOrchestrator` → `PriorityRequestQueue` → `ContextManager` (contexto por usuario) → `CancellationManager`
+## Reglas de Ingeniería — LEER SIEMPRE
 
-## Mapa de Archivos Clave
+### SIEMPRE hacer
+- `async/await` para toda operación I/O (HA, audio, red, disco).
+- Inyección de dependencias por constructor; composición en lugar de herencia profunda.
+- `@dataclass` para DTOs y `Enum` para estados/tipos (`ModelState`, `PathType`, `AlertPriority`).
+- Docstrings Google-style y type hints en clases y funciones públicas.
+- Orden de imports: stdlib → third-party → `from src.modulo import Clase` (nunca relativos).
+- Logging con `logger = logging.getLogger(__name__)`; mensajes de voz/UI en español, código/logs en inglés.
+- Tests con `.venv/bin/pytest` + fixtures en `tests/conftest.py`, mocks en `tests/mocks/`.
+- Respetar asignación de GPUs (`cuda:1` audio+7B, `cuda:0` casi libre, BGE-M3 en CPU) y centralizar toda config en `config/settings.yaml`.
+- Conservar la separación entre voz, persona, cuenta, roles, consentimiento y administración, y las releases gestionadas autocontenidas (`mem:decisions`).
 
-| Ruta | Qué hace | Cuándo tocarlo |
-|------|----------|----------------|
-| `src/main.py` | Entry point, DI de todos los servicios | Solo al agregar nuevo servicio top-level |
-| `src/pipeline/voice_pipeline.py` | Pipeline completo de voz | Cambios en flujo de audio |
-| `src/pipeline/command_processor.py` | Audio → texto + speaker + emotion | Cambios en procesamiento |
-| `src/pipeline/response_handler.py` | Texto → audio con streaming | Cambios en respuesta |
-| `src/orchestrator/request_dispatcher.py` | Routing fast/slow path | Agregar nuevos paths |
-| `src/orchestrator/context_manager.py` | Contexto conversacional por usuario | Cambios en memoria |
-| `src/llm/reasoner.py` | HttpReasoner (gateway :8200) + FastRouter 7B | Cambios en inferencia |
-| `src/home_assistant/ha_client.py` | Cliente HA REST + WebSocket | Nuevas integraciones HA |
-| `src/spotify/music_dispatcher.py` | Routing de comandos musicales | Nuevos comandos Spotify |
-| `src/spotify/speaker_groups.py` | Gestión de bocinas y zonas | Cambios en multi-room |
-| `src/users/speaker_identifier.py` | Identificación por voz ECAPA-TDNN | Cambios en speaker ID |
-| `src/users/emotion_detector.py` | Detección de emociones wav2vec2 | Cambios en emotion |
-| `src/alerts/alert_manager.py` | Sistema de alertas proactivas | Nuevos tipos de alerta |
-| `src/vectordb/chroma_sync.py` | Sync HA entities → ChromaDB | Cambios en búsqueda |
-| `src/code_index/` | Servicio índice semántico del codebase (:9515) | Cambios en búsqueda de código para agentes |
-| `src/audio/zone_manager.py` | Multi-zona + MA1260 | Cambios en zonas |
-| `src/rooms/room_context.py` | Contexto por habitación (mic+BT) | Nuevas habitaciones |
-| `src/ambient/textual_wake.py` | Wake textual "nexa" sobre stream ambient (red de seguridad) | Cambios en disparo textual |
-| `config/settings.yaml` | TODA la configuración centralizada | Cualquier config nueva |
-| `tests/conftest.py` | Fixtures globales de tests | Nuevos mocks/fixtures |
+### NUNCA hacer
+- Bloquear el event loop con I/O síncrono ni usar `print()` en código de aplicación.
+- Cambiar asignación de GPUs, agregar dependencias pesadas sin justificar (8 GB VRAM/GPU) o crear archivos de config nuevos fuera de `config/settings.yaml`.
+- Modificar `src/main.py` sin revisar la cadena de DI completa.
+- Hacer push directo a `main`, usar `git stash`, `git add -A` / `git add .`, ni commitear `.env`, `data/`, `models/`, secretos, audio o PII.
+- Pedir confirmación cuando el siguiente paso de un plan autorizado es obvio; detenerse solo ante decisión ambigua, bloqueante real o acción destructiva.
 
-## Módulos del Sistema (20+)
+## Workflow Multi-Consola (`herdr-app` + `hc` + `gpt-6-luna`)
 
-| Módulo | Líneas | Función principal |
-|--------|--------|-------------------|
-| spotify | 4,568 | Multi-room, mood mapping, enrollment |
-| orchestrator | 3,075 | Multi-usuario, routing, prioridades |
-| alerts | 3,159 | Alertas seguridad/patrones/dispositivos |
-| training | 2,600 | LoRA nocturno, personalidad |
-| pipeline | 2,492 | Voice pipeline, command processor |
-| users | 1,511 | Speaker ID, emociones, permisos |
-| audio | 1,271 | Multi-zona, MA1260, captura |
-| llm | 948 | HttpReasoner (cloud gateway) + Router 7B |
-| memory | 721 | Short/long term, preferencias |
-| presence | ~600 | BLE scanning, tracking por zona |
-| rooms | ~400 | Contexto por habitación |
+- **Orquestador agnóstico (`claude`/`agy`/`codex`/`muse`):** mantiene roadmap, cierra decisiones previas con el usuario, despacha especialistas en worktrees aislados (`~/.herdr/worktrees/kza/<alias>`), juzga gates y mergea PRs. Nunca comparte un mismo worktree entre dos agentes ni implementa código de aplicación desde la raíz mientras coordina workers.
+- **Pre-Task Spec Gate:** antes de cambios medianos/complejos, despachar `kza-analista` (read-only) para emitir Spec `<= 2 KB` con alcance, invariantes y decisiones abiertas.
+- **Roles KZA (`herdr/templates/kza-*.md`):** `kza-analista` (spec), `kza-dev` (implementación), `kza-pregate` (pre-revisión rápida), `kza-qa` (gate independiente cross-model con 4 lentes: corrección/diseño, fallos silenciosos, rigor de tests, comentarios/afirmaciones), `kza-privacy` (autoridad/privacidad/releases autocontenidas), `kza-ui` (verificación browser/NEXO enrutada dinámicamente), `kza-ops` (packaging/CI/tooling, sin tocar prod).
+- **Enrutamiento dinámico por cuotas reales:** `scripts/kza_router.py` consulta OpenAI Decisions API (`gpt-6-luna`, 0 output tokens) ponderado por `scripts/kza_quota.py` (`claude`, `codex`, `muse`, `agy`), con fallback determinista local y exclusión cross-model por **familia real** (`anthropic`|`openai`|`meta`|`google`). Nunca hardcodear un modelo único; actualizar capacidades/benchmarks en el catálogo cuando salgan modelos nuevos.
+- **Asientos y notificación push sin polling:** abrir y cerrar vía `scripts/kza_seat.py` (`--label project=kza`, tab renombrado en `herdr-app` sin robar foco, `dirty=0` en detached). Los workers escriben su reporte en `~/.local/state/kza-router/reports/<alias>.md` y envían `<= 6` líneas con `hc send $HC_TERMINAL_ID`. El orquestador espera con `hc wait --children any` y verifica reporte, `HEAD` exacto y PR antes de aceptar `done`.
+- **Aislamiento de proyectos y confianza:** jamás tocar terminales, templates (`tu-*`, `gsm-*`) ni worktrees de otros proyectos. Nunca bypassear diálogos de confianza de `agy`/`codex`/`muse`; aprobarlos en el tab visible de `herdr-app`.
+- **Hooks y skills portables:** safety guard (`scripts/kza_safety_guard.py`) + `PreCompact` (`scripts/kza_precompact.py`) activos en `.claude/settings.json` y `.codex/hooks.json`; skills portables en `.agents/skills/kza-*` (enlazados en `.claude/skills/`).
 
-## Comandos de Desarrollo
+## Comandos Rápidos
 
 ```bash
-# Tests
-pytest tests/                              # Todos los tests (2740+)
-pytest tests/unit/spotify/                 # Tests de un módulo
-pytest tests/ -k "test_speaker"            # Tests por nombre
-pytest tests/ --cov=src --cov-report=html  # Coverage
+# Tests (Mac .venv CPython 3.13)
+.venv/bin/pytest tests/unit/workflow/
+.venv/bin/pytest tests/ -k "test_speaker"
 
-# Ejecutar
-python -m src.main                         # Iniciar sistema
-python -m src.rooms.room_context --detect  # Detectar dispositivos USB
-
-# Benchmark
-python tools/benchmark_latency.py --iterations 20
-
-# Búsqueda semántica del codebase (requiere kza-code-index en el server)
-python tools/code_search.py "cómo se maneja el timeout de HA al boot"
-
-# Modelos
-./scripts/download_models.sh               # Descargar todos los modelos
+# Orquestación multi-consola
+python3 scripts/kza_quota.py --json
+python3 scripts/kza_router.py route --role kza-qa --exclude-family google --summary "Revisar PR"
+python3 scripts/kza_seat.py sync-templates
+python3 scripts/kza_seat.py open --alias kza-qa-pr1 --role kza-qa --ref HEAD --exclude-family google --task "..."
+python3 scripts/kza_seat.py status
+python3 scripts/kza_seat.py close --alias kza-qa-pr1 --done-readonly
 ```
-
-## Worktrees
-
-- **Regla: nunca trabajar en este repo y en un worktree a la vez** (comparten `.git`: locks de index y refs pueden colisionar; ya pasó con un `index.lock` colgado). **Vale igual para dos sesiones de Claude sobre el mismo checkout**: el 2026-08-03 una hizo `checkout main` y le sacó el árbol de abajo a la otra a mitad de trabajo. Antes de arrancar, `lsof -a -p <pid> -d cwd` sobre los `claude` vivos.
-- **Cómo se integra**: el trabajo de un worktree se mergea a `main` desde la laptop (PR o merge local + push); el worktree NO pushea por su cuenta nada que no esté coordinado con la rama principal.
-- **Cuándo se elimina — NO usar `git log <rama> ^main`.** Ese conteo miente: cuenta commits, y el trabajo se integra reescrito, squasheado o reimplementado. El 2026-08-03 daba 10 y 15 commits "sin integrar" en dos ramas cuyo contenido estaba **entero** en main. Ni `git cherry` (patch-id) alcanza: seguía marcando 2 y 13 ausentes. **Comparar contenido:**
-  ```bash
-  comm -23 <(git ls-tree -r --name-only <rama> -- src/ tests/ | sort) \
-           <(git ls-tree -r --name-only main  -- src/ tests/ | sort)   # archivos que main NO tiene
-  git diff --shortstat main <rama> -- src/ tests/                      # si es casi todo deleciones, la rama está atrás
-  ```
-  Vacío + deleciones masivas ⇒ contenida en main: `git tag archive/<rama> <rama>` (rescate), `git worktree remove <path>`, `git branch -D <rama>`.
-- Worktrees activos: ninguno. `kza-dashboard` y `llm-failover-cooldown` se eliminaron el 2026-08-03 tras verificar por contenido; recuperables en los tags `archive/*`.
-
-## Hardware Resumen (detalle en docs/architecture/HARDWARE.md)
-
-- **CPU**: Threadripper PRO 7965WX — 24c/48t (el LLM 72B local en CPU se retiró 2026-05-30; el reasoner es cloud vía gateway :8200)
-- **RAM**: 128GB DDR5-5600 RDIMM (8x16GB, 8 canales, ~358 GB/s)
-- **GPUs**: **2x RTX 3070 8GB hoy** — cuda:1 = audio completo + llama-server 7B :8101 (STT/SpeakerID/TTS/fast-path NLU, ~7.4GB), cuda:0 = Emotion (deshabilitado) + fallback ambient, casi libre (~1.9GB). BGE-M3 corre en CPU. Se irán conectando más GPUs a futuro; ver contrato en `docs/SERVER_CONVENTIONS.md`
-- **Audio**: ReSpeaker XVF3800 por habitación + extensores USB Cat5e
-- **Amplificador**: Dayton Audio MA1260 Multi-Zone (12 canales / 6 zonas estéreo, control RS-232)
-- **BLE**: UGREEN BT 5.3 por habitación para presencia
-
-## Estado Actual
-
-**Funcionando:** Pipeline completo de voz, multi-usuario, Spotify multi-room, alertas, identificación por voz, emociones, presencia BLE, memoria contextual, entrenamiento LoRA nocturno, personalidad configurable.
-
-**Latencia actual:** ~150-280ms (objetivo <300ms cumplido).
-
-**Pendiente:** Wake word personalizado entrenado, dashboard web, fine-tuning real con datos de usuario, integración calendarios, cámaras (Frigate).
-
-## Variables de Entorno (.env)
-
-```bash
-HOME_ASSISTANT_URL=http://192.168.1.100:8123
-HOME_ASSISTANT_TOKEN=<token>
-SPOTIFY_CLIENT_ID=<id>
-SPOTIFY_CLIENT_SECRET=<secret>
-CONFIG_PATH=config/settings.yaml
-```
-
-## Persistencia de Datos
-
-| Qué | Formato | Path |
-|-----|---------|------|
-| Embeddings/búsqueda | ChromaDB | `./data/chroma_db/` |
-| Eventos/latencia | SQLite | `./data/events.db`, `./data/latency.db` |
-| Usuarios/preferencias | JSON | `./data/users.json`, `./data/preferences.json` |
-| Contextos de usuario | JSON | `./data/contexts/` |
-| Modelos LLM | GGUF | `./models/` |
-| Modelos LoRA | Safetensors | `./models/lora_adapters/` |
-| Config completa | YAML | `config/settings.yaml` |

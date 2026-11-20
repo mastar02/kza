@@ -35,7 +35,7 @@
   No borrar los archivos que necesita la versión instalada para adelantar esa
   limpieza, ni solicitar acceso administrativo mientras sólo se desarrolla.
 
-## Delegación de agentes
+## Delegación de agentes y workflow multi-consola
 
 - Podemos usar más de cuatro agentes cuando haya trabajo útil para paralelizar.
   El máximo acordado es de ocho agentes activos en total, incluido el
@@ -43,10 +43,17 @@
 - La cantidad efectiva respeta las plazas disponibles en cada sesión. Si el
   entorno admite menos de ocho, usar ese límite sin interpretar cuatro como un
   máximo permanente del proyecto.
+- En Mac (`herdr-app` + `hc`), los especialistas se abren en worktrees aislados
+  (`~/.herdr/worktrees/kza/<alias>`) mediante `scripts/kza_seat.py`, con
+  enrutamiento dinámico ponderado por cuotas vía `scripts/kza_router.py`
+  (`gpt-6-luna`) y `scripts/kza_quota.py`. Jamás tocar terminales, templates
+  (`tu-*`, `gsm-*`) ni worktrees de otros proyectos.
 - Las pruebas que requieran interacción con la PC, mediante el navegador o
-  aplicaciones de escritorio, se delegan a un subagente con el modelo
-  `gpt-6.1-terra` (Terra). El coordinador define qué verificar y revisa la
-  evidencia obtenida.
+  aplicaciones de escritorio (rol `kza-ui`), se delegan a un especialista
+  seleccionado dinámicamente vía `scripts/kza_router.py` según capacidades,
+  documentación/benchmarks vigentes y cuotas reales (sin fijar un modelo único
+  en duro; p. ej. `gpt-6.1-terra` y modelos multimodales/computer-use futuros).
+  El coordinador define qué verificar y revisa la evidencia obtenida.
 
 ## Contexto
 
@@ -54,4 +61,5 @@
   `docs/research/2026-10-25-production-recovery.json`.
 - Desarrollo y despliegue: `docs/architecture/DEPLOYMENT.md`.
 - Convenciones del servidor compartido: `docs/SERVER_CONVENTIONS.md`.
-- Arquitectura y convenciones de código: `CLAUDE.md`.
+- Arquitectura y convenciones de código: `CLAUDE.md` y
+  `docs/referencia/guia-operativa.md`.
