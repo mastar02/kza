@@ -17,7 +17,7 @@ from src.core.voice_delivery import SIGNALS_OUTPUT_FREE, DeliveryState, Response
 from src.reminders.recurrence import next_trigger
 from src.reminders.reminder_store import (
     NOTICE_ID_PREFIX, Reminder, ReminderActionStatus, ReminderHomeActionReceipt, ReminderLedgerRow,
-    ReminderState, ReminderStore,
+    ReminderScope, ReminderState, ReminderStore,
 )
 from src.home_assistant.control_policy import ActionOrigin, HomeActor
 from src.home_assistant.home_actions import HomeActionService
@@ -677,6 +677,8 @@ class ReminderScheduler:
 
     async def _shared_occurrence(self, reminder: Reminder, *, guard: AuthorityGuard | None = None) -> Reminder | None:
         """Resolve the same active, due shared occurrence without adopting its successor."""
+        if reminder.scope is not ReminderScope.SHARED:
+            return None  # Q18: personal reminders stay pending for the person's web session.
         identity, selected_trigger = reminder.id, reminder.trigger_at
         current = await self._store.get_by_id(identity, shared_only=True, guard=guard)
         if (current is None or current.state is not ReminderState.ACTIVE
@@ -1158,9 +1160,9 @@ class ReminderScheduler:
         """
         loop = self._loop
         if loop is None:
-            logger.debug("Scheduler loop not available yet, ignoring arrival of %s", user_id)
+            logger.debug("Scheduler loop not available yet, ignoring arrival")
             return
-        logger.info("User %s arrived, waking the reminder loop", user_id)
+        logger.info("Presence arrival woke the reminder loop")
         try:
             loop.call_soon_threadsafe(self._wake_event.set)
         except RuntimeError:
@@ -1197,8 +1199,10 @@ class ReminderScheduler:
         self._in_flight.add(reminder_id)
         try:
             current = await self._store.get_by_id(reminder_id, shared_only=True, guard=guard)
-            if (current is not None and current.state is ReminderState.ACTIVE
-                    and current.trigger_at == trigger_at and trigger_at <= self._clock()):
+            if current is None:
+                return NoticeDismissal.NOT_FOUND
+            if (current.state is ReminderState.ACTIVE and current.trigger_at == trigger_at
+                    and trigger_at <= self._clock()):
                 attempts = await self._attempts(current, guard=guard)
                 if any(row.status in _TERMINAL for row in attempts):
                     await self._advance(current, guard=guard)
@@ -1258,9 +1262,12 @@ class ReminderScheduler:
             if identity not in texts:
                 shared = await self._store.get_by_id(identity, shared_only=True, guard=guard)
                 texts[identity] = shared.text if shared is not None else None
+            text = texts[identity]
+            if text is None:
+                continue
             attempts = await self._store.probe_ledger(
                 lambda attempt, i=identity, t=trigger_at: notice_request_id(i, t, attempt), guard=guard)
-            entries.append(NoticeEntry(identity, trigger_at, texts[identity], row.status.value, row.reason,
+            entries.append(NoticeEntry(identity, trigger_at, text, row.status.value, row.reason,
                                        len(attempts),
                                        sum(item.status is ReminderActionStatus.FAILED for item in attempts),
                                        claimed_at))

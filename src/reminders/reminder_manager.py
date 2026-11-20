@@ -201,9 +201,11 @@ class ReminderManager:
             guard=guard,
             scope=scope,
         )
-        # Household text never goes above DEBUG (design household_conventions.logging).
-        logger.info("Created reminder %s (scope=%s) at %s", reminder.id, scope.value,
-                    self._household_clock.format_time(trigger_at))
+        if scope is ReminderScope.SHARED:
+            logger.info("Created reminder %s (scope=shared) at %s", reminder.id,
+                        self._household_clock.format_time(trigger_at))
+        else:
+            logger.info("Created personal reminder")
         return reminder
 
     async def cancel_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None,

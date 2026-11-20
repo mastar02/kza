@@ -133,3 +133,27 @@ async def test_owner_scope_and_shared_view_for_a_person(store):
     assert (await store.get_by_id(other.id)).state is ReminderState.ACTIVE
     assert await store.cancel(shared.id, owner="ana") is True
     assert await store.cancel(own.id, owner="ana") is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_private_reminders_without_a_verified_person_are_quarantined(store):
+    from src.reminders.reminder_store import ReminderScope
+
+    legacy = await store.create("former-profile", "legacy text", 1.)
+    blank = await store.create("placeholder", "legacy without owner", 1.)
+    await store._work.write(lambda db: db.execute(
+        "UPDATE reminders SET user_id = '' WHERE id = ?", (blank.id,)).rowcount)
+    store.bind_person_verifier(lambda person: person == "active-person")
+    shared = await store.create("household", "shared", 2., scope=ReminderScope.SHARED)
+
+    for person in (None, "active-person", "former-profile", ""):
+        assert await store.get_active_for_user(person, include_shared=True) == [shared]
+        assert await store.get_overdue_for_user(person, 3.) == []
+        for reminder in (legacy, blank):
+            assert await store.get_by_id(reminder.id, owner=person) is None
+            assert await store.cancel(reminder.id, owner=person) is False
+    assert await store.get_due(3.) == await store.get_due(3., shared_only=True) == [shared]
+    assert await store.get_next_pending() == shared
+    assert await store.count_active() == 1
+    with pytest.raises(PermissionError, match="reminder_person_unverified"):
+        await store.create("former-profile", "refused", 3.)

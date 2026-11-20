@@ -17,6 +17,7 @@ from src.pipeline.command_event import CommandEvent
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
+from src.users.user_manager import PermissionLevel
 from tests.integration.test_capability_application import configuration
 from tests.mocks.application_graph import OfflineEncoder, OfflineSTT, OfflineTTS, OfflineWake
 from tests.mocks.audio_output import AudioBackend
@@ -175,9 +176,12 @@ async def test_actual_factory_private_jobs_stay_silent_and_shared_jobs_deliver_o
             assert scheduler is graph.dashboard.reminder_scheduler
             action = {'domain': 'light', 'service': 'turn_on', 'entity_id': 'light.living'}
             now = time.time()
-            private = await manager.create('unknown', 'zxq privado', now - 60,
+            users = graph.dashboard.user_manager
+            person, _ = await asyncio.to_thread(users.add_user, 'Synthetic person', PermissionLevel.ADULT)
+            second, _ = await asyncio.to_thread(users.add_user, 'Synthetic other', PermissionLevel.ADULT)
+            private = await manager.create(person.user_id, 'zxq privado', now - 60,
                 recurrence='daily', ha_actions=[action])
-            other = await manager.create('known-profile', 'pky oculto', now - 30, ha_actions=[action])
+            other = await manager.create(second.user_id, 'pky oculto', now - 30, ha_actions=[action])
             before = list(tts.texts)
             await scheduler._fire_reminder(private)
             await scheduler._execute_home_actions(replace(other, scope=ReminderScope.SHARED))

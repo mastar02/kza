@@ -1,17 +1,23 @@
 """Integration tests for lists and reminders end-to-end flow."""
 import asyncio
+from contextlib import AsyncExitStack, asynccontextmanager, closing
+import sqlite3
 import time
 
+from httpx import ASGITransport, AsyncClient
 import pytest
 import pytest_asyncio
 from unittest.mock import AsyncMock, MagicMock
 
+from src.dashboard.api import DashboardAPI
+from src.dashboard.authority import DashboardAuthority, DashboardRole
 from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
 from src.lists.ha_sync import HASyncManager
 from src.reminders.reminder_store import ReminderStore, ReminderScope
 from src.reminders.reminder_manager import ReminderManager
 from src.reminders.reminder_scheduler import ReminderScheduler
+from src.users.user_manager import PermissionLevel, UserManager
 from tests.mocks.home_control import selected_actions
 from tests.mocks.responses import voice_output
 
@@ -179,3 +185,98 @@ class TestReminderFlow:
         active = await mgr.get_active(user_id="u1")
         assert len(active) == 1
         assert active[0].text == "ir al dentista"
+
+
+@pytest.mark.asyncio
+async def test_personal_task_retirement_survives_restoring_compatible_stores(tmp_path, dashboard_auth):
+    users_path = str(tmp_path / "users.json")
+    lists_path, reminders_path = tmp_path / "lists.db", tmp_path / "reminders.db"
+    lists_copy, reminders_copy = tmp_path / "lists.copy", tmp_path / "reminders.copy"
+
+    @asynccontextmanager
+    async def dashboard():
+        async with AsyncExitStack() as stack:
+            users = UserManager(users_path, retirement_proof=lambda ids: authority.users_retired(ids))
+            authority = DashboardAuthority(tmp_path / "auth.db", account_provider=users.active_accounts)
+            stack.push_async_callback(authority.aclose)
+            await authority.initialize()
+            lists, reminders = ListStore(str(lists_path)), ReminderStore(str(reminders_path))
+            for store in (lists, reminders):
+                stack.push_async_callback(store.close)
+                await store.initialize()
+            api = DashboardAPI(authority=authority, user_manager=users,
+                               list_manager=ListManager(lists), reminder_manager=ReminderManager(reminders))
+            await stack.enter_async_context(api.app.router.lifespan_context(api.app))
+            client = await stack.enter_async_context(AsyncClient(
+                transport=ASGITransport(app=api.app), base_url="http://testserver"))
+            yield users, authority, client
+
+    def copy_database(source, destination):
+        with closing(sqlite3.connect(source)) as original, closing(sqlite3.connect(destination)) as copy:
+            original.backup(copy)
+
+    def stored_ids(path, table):
+        with closing(sqlite3.connect(path)) as db:
+            return {row[0] for row in db.execute(f"SELECT id FROM {table}")}
+
+    async with dashboard() as (users, authority, client):
+        retired, _ = await asyncio.to_thread(users.add_user, "Synthetic person", PermissionLevel.ADULT)
+        survivor, _ = await asyncio.to_thread(users.add_user, "Synthetic survivor", PermissionLevel.ADULT)
+        admin = authority.resolve(dashboard_auth["Authorization"])
+        person_headers = {}
+        for person in (retired, survivor):
+            credential = await authority.issue_credential(
+                admin, subject=person.user_id, role=DashboardRole.HOME, user_id=person.user_id,
+                expires_at=time.time() + 3600)
+            person_headers[person.user_id] = {"Authorization": f"Bearer {credential.token}"}
+        owner, other = person_headers[retired.user_id], person_headers[survivor.user_id]
+
+        async def post(url, headers, **body):
+            response = await client.post(url, headers=headers, json=body)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        personal = await post("/api/lists", owner, name="personal list", shared=False)
+        item = await post(f"/api/lists/{personal['id']}/items", owner, text="personal item")
+        shared = await post("/api/lists", dashboard_auth, name="shared list", shared=True)
+        shared_item = await post(f"/api/lists/{shared['id']}/items", dashboard_auth, text="shared item")
+        pending = await post("/api/reminders", owner, text="personal reminder", trigger_at=1.)
+        other_job = await post("/api/reminders", other, text="other reminder", trigger_at=2.)
+        shared_job = await post("/api/reminders", dashboard_auth, text="shared reminder",
+                                trigger_at=3., scope="shared")
+        for resource, identity in (("lists", personal["id"]), ("reminders", pending["id"])):
+            response = await client.get(f"/api/{resource}", headers=owner, params={"scope": "personal"})
+            assert response.status_code == 200 and [row["id"] for row in response.json()] == [identity]
+            assert (await client.get(f"/api/{resource}", headers=dashboard_auth,
+                                     params={"scope": "personal"})).status_code == 403
+            response = await client.get(f"/api/{resource}", headers=other)
+            assert response.status_code == 200 and identity not in {row["id"] for row in response.json()}
+        assert (await client.get(f"/api/lists/{personal['id']}/items", headers=other)).status_code == 404
+
+        await asyncio.to_thread(copy_database, lists_path, lists_copy)
+        await asyncio.to_thread(copy_database, reminders_path, reminders_copy)
+        response = await client.delete(f"/api/admin/users/{retired.user_id}", headers=dashboard_auth)
+        assert response.status_code == 200 and response.json()["ok"], response.text
+        assert authority.users_retired(frozenset({retired.user_id}))
+        assert users.get_user(retired.user_id) is None
+        assert (await client.get("/api/reminders", headers=owner)).status_code == 401
+
+    assert stored_ids(lists_path, "lists") == {shared["id"]}
+    assert stored_ids(lists_path, "list_items") == {shared_item["id"]}
+    assert stored_ids(reminders_path, "reminders") == {other_job["id"], shared_job["id"]}
+
+    # Recover only the compatible task stores. The authority DB and its
+    # retirement mark remain current, as required by a compatible restore.
+    await asyncio.to_thread(copy_database, lists_copy, lists_path)
+    await asyncio.to_thread(copy_database, reminders_copy, reminders_path)
+    assert personal["id"] in stored_ids(lists_path, "lists")
+    assert item["id"] in stored_ids(lists_path, "list_items")
+    assert pending["id"] in stored_ids(reminders_path, "reminders")
+
+    async with dashboard() as (users, authority, client):
+        assert authority.users_retired(frozenset({retired.user_id}))
+        assert (await client.get("/api/lists", headers=owner)).status_code == 401
+        assert (await client.get(f"/api/lists/{personal['id']}/items", headers=other)).status_code == 404
+        assert stored_ids(lists_path, "lists") == {shared["id"]}
+        assert stored_ids(lists_path, "list_items") == {shared_item["id"]}
+        assert stored_ids(reminders_path, "reminders") == {other_job["id"], shared_job["id"]}

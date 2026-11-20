@@ -216,6 +216,9 @@ RULES: list[Rule] = [
     Rule("src/lists/list_store.py", "ListStore.delete_list.operation",
          ("DELETE FROM list_items", "DELETE FROM lists",), "user",
          "list commands (voice/dashboard)"),
+    Rule("src/lists/list_store.py", "ListStore.purge_retired_people.operation",
+         ("DELETE FROM list_items", "DELETE FROM lists"), "boot_repair",
+         "dashboard startup restored-residue repair (skipped in verify mode); also dashboard account deletion"),
     # src/memory/capture_control.py
     Rule("src/memory/capture_control.py", "CaptureControl._load_policy",
          ("INSERT INTO capture_runtime_control",), "boot_init",
@@ -413,6 +416,9 @@ RULES: list[Rule] = [
     Rule("src/reminders/reminder_store.py", "ReminderStore.cleanup_old.operation",
          ("DELETE FROM reminders",), "user",
          "no caller in src at 0bd9f98"),
+    Rule("src/reminders/reminder_store.py", "ReminderStore.purge_retired_people.operation",
+         ("DELETE FROM reminders",), "boot_repair",
+         "dashboard startup restored-residue repair (skipped in verify mode); also dashboard account deletion"),
     # src/routines/routine_store.py
     Rule("src/routines/routine_store.py", "RoutineStore.save.operation", ("INSERT INTO routines",), "user",
          "routine save"),

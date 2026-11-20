@@ -130,3 +130,28 @@ async def test_owner_scope_admits_shared_and_own_lists_only(store):
     assert await store.remove_item(foreign.id, owner="ana") is False
     assert [i.text for i in await store.get_items(other.id)] == ["secreto"]
     assert await store.remove_item(foreign.id, list_id=other.id) is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_lists_without_a_verified_person_are_quarantined(store):
+    orphan = await store.create_list("legacy name", "user", "former-profile")
+    item = await store.add_item(orphan.id, "legacy item")
+    ownerless = await store.create_list("legacy without owner", "user", "placeholder")
+    await store._work.write(lambda db: db.execute(
+        "UPDATE lists SET owner_id = NULL WHERE id = ?", (ownerless.id,)).rowcount)
+    store.bind_person_verifier(lambda person: person == "active-person")
+    shared = await store.create_list("shared", "shared", None)
+
+    for person in (None, "active-person", "former-profile"):
+        assert await store.get_lists_for_user(person) == [shared]
+        for legacy in (orphan, ownerless):
+            assert await store.find_list_by_name(legacy.name, person) is None
+            assert await store.get_items_in_scope(legacy.id, owner=person) is None
+    assert await store.get_lists_for_user(None, shared_only=True) == [shared]
+    assert await store.get_items(orphan.id) == []
+    assert await store.complete_item(item.id) is None
+    assert await store.add_item(orphan.id, "refused") is None
+    assert await store.remove_item(item.id) is False
+    assert await store.delete_list(orphan.id) is False
+    with pytest.raises(PermissionError, match="list_person_unverified"):
+        await store.create_list("refused", "user", "former-profile")
