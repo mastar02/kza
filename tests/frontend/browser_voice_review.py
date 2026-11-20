@@ -97,6 +97,36 @@ async def read_transcript(page, identity, panel, text):
         + json.dumps(text) + ')')
 
 
+async def refresh_obs_capture(page, identity, requests):
+    """Activate OBS refresh with the keyboard and require the fresh capture to render."""
+    assert await page.evaluate('''(() => {
+        const button=[...document.querySelectorAll('#view-users .page-head button')]
+            .find(node=>node.textContent==='Actualizar');
+        const filters=window.__kzaVoiceController?.captureFilters();
+        if (!button || button.disabled || !filters || Object.values(filters).some(Boolean)) return false;
+        button.focus();
+        return document.activeElement===button;
+    })()'''), 'OBS refresh must be enabled and use the default filters'
+    marker, server_marker = len(page.voice_requests), len(requests)
+    await press_enter(page)
+    selector = json.dumps(f'#view-users [data-capture-id="{identity}"]')
+    try:
+        await page.wait_for(f'document.querySelector({selector})?.querySelector("button:not(:disabled)") &&'
+            ' window.__kzaVoiceState?.captures.status()==="real"')
+        observed = [(method,url.path,url.query) for method,url in page.voice_requests[marker:]]
+        assert ('GET','/api/voices/profiles','') in observed
+        assert ('POST',CAPTURE_QUERY,'') in observed
+    except AssertionError:
+        print(json.dumps({'diagnostic':'obs_refresh_capture','expected':identity,'requests':requests[server_marker:],
+            'client':await page.evaluate('''({
+                captures:window.__kzaVoiceState?.captures.status(),
+                profiles:window.__kzaVoiceState?.profiles.status(),
+                socket:window.__kzaLiveWs?.readyState,
+                rendered:[...document.querySelectorAll('#view-users [data-capture-id]')].map(row=>row.dataset.captureId)
+            })''')}))
+        raise
+
+
 async def click_button(page, selector, label):
     """Click a visible DOM button through Chromium's input pipeline."""
     point = await page.evaluate('''(() => {
@@ -474,15 +504,19 @@ async def main(*,browser_binary=None):
                         except TimeoutError:
                             print(json.dumps({'diagnostic':'voice_idle_ack','client':await page.evaluate("({status:window.__kzaVoiceState.review.status(),pending:window.__kzaVoiceState.review.retirementStatus(),captureToken:window.__kzaVoiceState.captures.deliveryToken(),reviewToken:window.__kzaVoiceState.review.deliveryToken(),socket:window.__kzaLiveWs?.readyState})")}))
                             raise
+                        # Release the frozen server deadline after proving client-only expiry.
+                        # A room-options refresh must not readmit the audio fixture during the text case.
+                        clock.now = expiring.expires_at
+                        await voices.acall(voices.ledger.prune)
                         expiring_text,expiring_text_id = await sample('Synthetic independent text expiry',ttl=3)
-                        await click_button(page,'#view-users button','Actualizar')
-                        await page.wait_for(f'document.querySelector({json.dumps(f"[data-capture-id={expiring_text_id}] button")})')
+                        await refresh_obs_capture(page,expiring_text_id,requests)
                         await read_transcript(page,expiring_text_id,OBS_REVIEW,'Synthetic independent text expiry')
                         await page.wait_for("!document.body.textContent.includes('Synthetic independent text expiry')")
                         assert voices.privacy.sources_available((expiring_text,))
+                        clock.now = expiring_text.expires_at
+                        await voices.acall(voices.ledger.prune)
                         retired_text,retired_text_id = await sample('Synthetic erased text')
-                        await click_button(page,'#view-users button','Actualizar')
-                        await page.wait_for(f'document.querySelector({json.dumps(f"[data-capture-id={retired_text_id}] button")})')
+                        await refresh_obs_capture(page,retired_text_id,requests)
                         await read_transcript(page,retired_text_id,OBS_REVIEW,'Synthetic erased text')
                         await owner.request(retired_text.conversation_id,MemoryReviewer('synthetic-admin'))
                         await page.wait_for("!document.body.textContent.includes('Synthetic erased text')")

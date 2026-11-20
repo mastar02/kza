@@ -194,6 +194,10 @@
       },
       resetFilters() {
         if (closed || profilesOnly) return;
+        if (Object.keys(DEFAULT_FILTERS).every(key => filters[key] === DEFAULT_FILTERS[key])) {
+          roomNotice = ''; notifyFilters(true);
+          return;
+        }
         clearFilters();
         void reapplyCaptures();
       },

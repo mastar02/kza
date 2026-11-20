@@ -332,6 +332,32 @@ test('a filter applied during a full refresh takes precedence over its initial c
   f.latest().respond(); await c.settled(); c.dispose();
 });
 
+test('resetting filter controls preserves a live unfiltered page and reloads a filtered page',async()=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  const initial=c.refresh(); await flush();
+  f.latest().respond(); await initial;
+  const fields={next_cursor:CURSOR,matching_count:1,scan_complete:true,count_expires_at:NOW+8,
+    room_options:['Synthetic room'],room_options_expires_at:NOW+10};
+  f.latest().respond({rows:[groupedCapture()],fields}); await c.settled();
+  const [unfiltered]=state.captures.snapshot(), notifications=[];
+  c.subscribeFilters(reset=>notifications.push(reset));
+  c.resetFilters(); await flush();
+  assert.equal(f.calls.length,2);
+  assert.equal(state.captures.snapshot()[0],unfiltered);
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.equal(c.hasNext('captures'),true);
+  assert.equal(c.captureSummary().count,1);
+  assert.deepEqual(notifications,[true]);
+  await c.setFilters({text:'synthetic phrase'});
+  f.latest().respond({eventId:C,rows:[groupedCapture()]}); await c.settled();
+  c.resetFilters();
+  assert.deepEqual(state.captures.snapshot(),[]);
+  assert.equal(c.captureFilters().text,null);
+  await flush();
+  assert.deepEqual(f.query(),DEFAULTS);
+  f.latest().respond(); await c.settled(); c.dispose();
+});
+
 test('room options survive an empty filtered page and their original ACK waits for retirement',async()=>{
   const f=controllerFixture(), {controller:c}=f;
   await c.setFilters({listenable_only:true});
