@@ -353,6 +353,7 @@ class HomeAssistantClient:
         self._entity_stream_generation = 0
         self._state_subscribe_task: asyncio.Task | None = None
         self._state_callbacks: list = []  # observers opcionales
+        self._state_observers: list[Callable[[str, EntityObservation], None]] = []
         self._state_sync_running = False
         self._state_sync_baseline_serial = 0
         self._calls_recovery_task: asyncio.Task | None = None
@@ -421,10 +422,16 @@ class HomeAssistantClient:
         value = entity_observation(self._state_frame, entity_id, now=self._entity_now())
         if self._closed:
             return observation_view(value, exists=None, reason='source_closed')
-        if (value.source == 'ha-ws-entities' and
-                (not self._state_sync_running or self._state_frame.generation != self._entity_stream_generation)):
+        if value.source == 'ha-ws-entities' and value.generation != self.current_state_stream_generation():
             return observation_view(value, exists=None, reason=value.reason or 'source_changed')
         return value
+
+    def current_state_stream_generation(self) -> int | None:
+        """Return the generation whose published WS baseline is still live."""
+        if (not self._closed and self._state_sync_running and self._state_frame.initialized
+                and self._state_frame.generation == self._entity_stream_generation):
+            return self._entity_stream_generation
+        return None
 
     def _state_failure(self, entity_id: str, reason: str, attempted_at: float) -> EntityObservation:
         """Return metadata-only local rejection without copying historical payloads."""
@@ -522,7 +529,7 @@ class HomeAssistantClient:
         ``published`` runs synchronously with the frame replacement, so evidence
         derived from that frame (channel health) is never observable apart from it.
         """
-        result = replacement = base = notices = callbacks = None
+        result = replacement = base = notices = callbacks = observers = None
         try:
             async with self._state_projection_lock:
                 if not self._state_scope_current(purpose, options):
@@ -531,6 +538,7 @@ class HomeAssistantClient:
                 if kind == 'bulk' and base.initialized:
                     return None
                 callbacks = tuple(self._state_callbacks) if kind == 'delta' else ()
+                observers = tuple(self._state_observers) if kind == 'delta' else ()
                 options = {**options, 'now': self._entity_now()}
                 replacement, result, notices = await self._state_native(
                     kind, base, raw, options, len(callbacks))
@@ -544,6 +552,15 @@ class HomeAssistantClient:
                     raise aiohttp.ClientConnectionError('ha_state_projection_expired')
                 if published is not None:
                     published()
+                if observers:
+                    for identity in replacement.changed_ids + replacement.removed_ids:
+                        value = replacement.entries[identity]
+                        for observer in observers:
+                            if observer in self._state_observers:
+                                try:
+                                    observer(identity, value)
+                                except Exception as error:
+                                    logger.debug('HA state observer failed: %s', type(error).__name__)
                 for identity, payloads in notices:
                     for callback, payload in zip(callbacks, payloads):
                         if callback not in self._state_callbacks:
@@ -559,8 +576,8 @@ class HomeAssistantClient:
                             logger.debug('HA state callback failed: %s', type(error).__name__)
                 return result
         finally:
-            raw = options = result = replacement = base = notices = callbacks = published = None
-            identity = payloads = payload = value = None
+            raw = options = result = replacement = base = notices = callbacks = observers = published = None
+            identity = payloads = payload = value = observer = None
 
     async def _decode_state_message(self, raw, *, deadline, state_generation=None):
         options = dict(transport_generation=self._transport_generation, deadline=deadline,
@@ -2309,18 +2326,22 @@ class HomeAssistantClient:
         self._notify_entity_change(entity_id, historical=True)
 
 
-    def register_state_callback(self, callback) -> None:
-        """Registrar un callback `(entity_id, new_state) -> None` para cambios.
+    def register_state_callback(self, callback: Callable[..., None], *, with_observation: bool = False) -> None:
+        """Subscribe synchronously to state changes.
 
-        Useful para integraciones que quieren reaccionar proactivamente a
-        cambios de state (ej: alerts, analytics).
+        Args:
+            callback: Receives the entity ID and a detached state dict (or None).
+            with_observation: Receive immutable, dated WS evidence in place of
+                the detached state. Legacy historical notifications are omitted.
         """
-        self._state_callbacks.append(callback)
+        callbacks = self._state_observers if with_observation else self._state_callbacks
+        callbacks.append(callback)
 
-    def unregister_state_callback(self, callback: Callable[[str, dict | None], None]) -> None:
+    def unregister_state_callback(self, callback: Callable[..., None], *, with_observation: bool = False) -> None:
         """Detach an observer before its consumer is retired."""
-        if callback in self._state_callbacks:
-            self._state_callbacks.remove(callback)
+        callbacks = self._state_observers if with_observation else self._state_callbacks
+        if callback in callbacks:
+            callbacks.remove(callback)
 
     async def close(self) -> None:
         """Terminal admission seal with retained socket/session retirement."""

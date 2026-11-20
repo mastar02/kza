@@ -9,12 +9,14 @@ import aiohttp
 import pytest
 
 import src.home_assistant.ha_client as ha_module
-from src.alerts.alert_manager import AlertManager, AlertType
+from src.alerts.alert_manager import AlertDelivery, AlertManager, AlertType
 from src.alerts.alert_scheduler import AlertScheduler
 from src.alerts.ha_alert_source import HAAlertSource
+from src.conversation.command_turns import CommandTurns
 from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.home_assistant.ha_client import HAStatesSnapshot
 from src.home_assistant.state_projection import EntityObservation
+from src.pipeline.feature_manager import ALERTS_NONE, ALERTS_UNAVAILABLE, FeatureManager
 from tests.integration.test_ha_entity_stream import _baseline, _delta, _hold_retry
 from tests.integration.test_ha_transport_ownership import (
     WIRE_TIME, _Transport, _client, _compact_state, _reached, _rest_state,
@@ -23,6 +25,7 @@ from tests.integration.test_ha_transport_ownership import (
 pytestmark = pytest.mark.asyncio
 
 DOOR = "binary_sensor.synthetic_contact"
+WINDOW = "binary_sensor.synthetic_window"
 BATTERY = "sensor.synthetic_power"
 LOCK = "lock.synthetic"
 ALARM = "alarm_control_panel.synthetic"
@@ -42,16 +45,23 @@ class Reader:
 
     def __init__(self):
         self.now = 100
+        self.generation = 1
+        self.revision = 0
         self.callbacks = []
         self.observations = {}
         self.snapshot = HAStatesSnapshot(False, None, "ha_states_unavailable")
         self.io = []
 
-    def register_state_callback(self, callback):
+    def register_state_callback(self, callback, *, with_observation):
+        assert with_observation
         self.callbacks.append(callback)
 
-    def unregister_state_callback(self, callback):
+    def unregister_state_callback(self, callback, *, with_observation):
+        assert with_observation
         self.callbacks.remove(callback)
+
+    def current_state_stream_generation(self):
+        return self.generation
 
     def get_entity_observation(self, entity_id):
         self.io.append(("observation", entity_id))
@@ -64,12 +74,13 @@ class Reader:
     def publish(self, entity_id, value, *, changed_at=None):
         changed_at = self.now if changed_at is None else changed_at
         payload = state(entity_id, value, changed_at) if value is not None else None
-        self.observations[entity_id] = EntityObservation(
+        self.revision += 1
+        observation = self.observations[entity_id] = EntityObservation(
             entity_id, payload, payload is not None, "ha-ws-entities", self.now, self.now + 6,
-            reason=None,
+            reason=None, generation=self.generation, revision=self.revision,
         )
         for callback in self.callbacks:
-            assert callback(entity_id, payload) is None
+            assert callback(entity_id, observation) is None
 
     def rest(self, *states):
         self.snapshot = HAStatesSnapshot(True, instant(self.now), None, states, instant(self.now + 6))
@@ -103,9 +114,11 @@ async def test_ha_callback_only_enqueues_a_selected_delta_without_await_or_io(re
         monkeypatch.setattr(source._queue, "put_nowait", spy)
         reader.publish(DOOR, "on", changed_at=90)
         reader.publish("binary_sensor.another_window", "on", changed_at=90)
-        assert puts == [(DOOR, payload)]
+        assert puts == [(DOOR, reader.observations[DOOR])]
+        assert puts[0][1].state == payload
         assert reader.io == [] and manager.get_history() == []
         await source._queue.join()
+        assert reader.io == []
         alert, = manager.get_history()
         assert (alert.source, alert.alert_type, alert.condition) == (DOOR, AlertType.SECURITY, "door_open_unexpected")
     finally:
@@ -162,7 +175,10 @@ async def test_disconnection_retained_snapshot_and_reconnection_do_not_close_an_
     async with _client(transport) as client:
         retrying, retry, _ = _hold_retry(client, transport)
         source = HAAlertSource(client, manager, door_settings)
+        scheduler = AlertScheduler(manager)
+        features = FeatureManager(alert_manager=manager, alert_scheduler=scheduler, ha_alert_source=source)
         await source.start()
+        scheduler_task = asyncio.create_task(scheduler.start())
         try:
             await _baseline(client, events)
             transport.response([_rest_state(DOOR)])
@@ -170,9 +186,15 @@ async def test_disconnection_retained_snapshot_and_reconnection_do_not_close_an_
             await _delta(events, {"c": {DOOR: {"+": {"s": "on", "lc": WIRE_TIME + 1}}}})
             await source._queue.join()
             original, = manager.get_active_alerts()
+            assert await manager.mark_processed(original.alert_id)
+            assert features.get_alert_summary() == ALERTS_NONE
 
             events.frames.put_nowait(aiohttp.ClientConnectionError("synthetic WS disconnect"))
             await _reached(retrying)
+            assert client.current_state_stream_generation() is None
+            assert transport.state_reads == 1
+            assert source.get_status()["unknown"] == 1 and original.resolved_at is None
+            assert features.get_alert_summary() == ALERTS_UNAVAILABLE
             transport.response(status=503)
             await source.reconcile()
             assert source.get_status()["unknown"] == 1 and original.resolved_at is None
@@ -189,6 +211,8 @@ async def test_disconnection_retained_snapshot_and_reconnection_do_not_close_an_
             assert original.resolved_at is not None
             transport.assert_no_effects_or_duplicate_receivers()
         finally:
+            scheduler_task.cancel()
+            await asyncio.gather(scheduler_task, return_exceptions=True)
             await source.stop()
 
 
@@ -216,6 +240,26 @@ async def test_none_stale_or_missing_states_are_unknown(reader, door_settings):
         reader.now += 6
         await source.reconcile()
         assert source.get_status()["unknown"] == 1 and alert.resolved_at is None
+    finally:
+        await source.stop()
+
+
+async def test_pending_delta_from_retired_generation_cannot_close_the_episode(reader, door_settings):
+    manager = AlertManager()
+    source = HAAlertSource(reader, manager, door_settings, clock=lambda: reader.now)
+    await source.start()
+    try:
+        reader.publish(DOOR, "on", changed_at=80)
+        await source._queue.join()
+        original, = manager.get_active_alerts()
+        reader.now += 1
+        reader.publish(DOOR, "off")
+        reader.generation += 1
+        reader.publish(DOOR, "on", changed_at=80)
+        await source._queue.join()
+        assert original.resolved_at is None
+        assert manager.get_history() == [original]
+        assert source.get_status()["known"] == 1
     finally:
         await source.stop()
 
@@ -292,6 +336,7 @@ async def test_restarted_process_notices_existing_condition_once_even_with_reann
                 reader.now += 10
                 reader.rest(state(DOOR, "on", 80))
                 await source.reconcile()
+                await asyncio.sleep(0)
             alert, = manager.get_history()
             assert "presente al iniciar" in alert.message
             delivery.assert_awaited_once_with(f"Alerta importante: {alert.message}")
@@ -305,6 +350,111 @@ async def test_restarted_process_notices_existing_condition_once_even_with_reann
             assert "presente al iniciar" not in reopened.message and reopened is not alert
         finally:
             await source.stop()
+
+
+async def test_recognized_door_closes_and_reopens_in_order_while_voice_is_busy(reader):
+    notices = asyncio.Queue()
+
+    async def speak(message):
+        notices.put_nowait(message)
+        return ResponseResult(message, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    busy = False
+    turns = CommandTurns(lambda: busy)
+    manager = AlertManager(tts_callback=speak)
+    config = {"door_window": {DOOR: {"name": "La ventana", "open_seconds": 0}}}
+    source = HAAlertSource(reader, manager, config, clock=lambda: reader.now)
+    await source.start(turns)
+    try:
+        reader.publish(DOOR, "on", changed_at=90)
+        assert "presente al iniciar" in await asyncio.wait_for(notices.get(), 2)
+        first, = manager.get_active_alerts()
+        assert await manager.mark_processed(first.alert_id)
+
+        busy = True
+        reader.now += 1
+        reader.publish(DOOR, "off")
+        reader.now += 1
+        reader.publish(DOOR, "on")
+        await asyncio.wait_for(source._queue.join(), 2)
+        reopened, = manager.get_active_alerts()
+        assert first.resolved_at is not None and reopened is not first
+        assert not reopened.processed and reopened.delivery is AlertDelivery.PENDING
+        assert notices.empty()
+
+        busy = False
+        turns.settle()
+        assert await asyncio.wait_for(notices.get(), 2) == "Alerta importante: La ventana sigue abierta"
+        assert reopened.delivery is AlertDelivery.DELIVERED
+    finally:
+        await source.stop()
+
+
+async def test_door_closes_while_its_notice_is_in_playback(reader, door_settings):
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def speak(message):
+        entered.set()
+        await release.wait()
+        return ResponseResult(message, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    manager = AlertManager(tts_callback=speak)
+    source = HAAlertSource(reader, manager, door_settings, clock=lambda: reader.now)
+    await source.start()
+    try:
+        reader.publish(DOOR, "on", changed_at=80)
+        await asyncio.wait_for(entered.wait(), 2)
+        original, = manager.get_active_alerts()
+        reader.now += 1
+        reader.publish(DOOR, "off")
+        await asyncio.wait_for(source._queue.join(), 2)
+        assert original.resolved_at is not None and manager.get_active_alerts() == []
+        assert original.delivery is AlertDelivery.PENDING
+    finally:
+        release.set()
+        await source.stop()
+
+
+async def test_history_eviction_does_not_reannounce_either_startup_contact(reader):
+    notices = asyncio.Queue()
+
+    async def speak(message):
+        notices.put_nowait(message)
+        return ResponseResult(message, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    manager = AlertManager(max_history=1, tts_callback=speak, reannounce_interval_seconds=1,
+                           clock=lambda: reader.now)
+    config = {"door_window": {
+        DOOR: {"name": "La puerta", "open_seconds": 0},
+        WINDOW: {"name": "La ventana", "open_seconds": 0},
+    }}
+    source = HAAlertSource(reader, manager, config, clock=lambda: reader.now)
+    await source.start()
+    try:
+        for _ in range(3):
+            reader.now += 5
+            reader.rest(state(DOOR, "on", 80), state(WINDOW, "on", 80))
+            await source.reconcile()
+            await asyncio.sleep(0)
+        initial = [notices.get_nowait(), notices.get_nowait()]
+        assert set(initial) == {
+            "Alerta importante: La puerta sigue abierta (presente al iniciar)",
+            "Alerta importante: La ventana sigue abierta (presente al iniciar)",
+        }
+        assert notices.empty() and len(manager.get_history()) == 1
+        assert {alert.source for alert in manager.get_active_alerts()} == {DOOR, WINDOW}
+        door = next(alert for alert in manager.get_active_alerts() if alert.source == DOOR)
+        assert manager.get_alert(door.alert_id) is door
+        assert await manager.mark_processed(door.alert_id)
+
+        reader.now += 1
+        reader.publish(DOOR, "off")
+        reader.now += 1
+        reader.publish(DOOR, "on")
+        assert await asyncio.wait_for(notices.get(), 2) == "Alerta importante: La puerta sigue abierta"
+        assert door.resolved_at is not None and notices.empty()
+    finally:
+        await source.stop()
 
 
 async def test_only_explicit_read_only_rules_and_no_pattern_producer(reader):

@@ -26,8 +26,11 @@ logger = logging.getLogger(__name__)
 
 
 class _HAStateReader(Protocol):
-    def register_state_callback(self, callback: Callable[[str, dict | None], None]) -> None: ...
-    def unregister_state_callback(self, callback: Callable[[str, dict | None], None]) -> None: ...
+    def register_state_callback(self, callback: Callable[[str, EntityObservation], None],
+                                *, with_observation: bool) -> None: ...
+    def unregister_state_callback(self, callback: Callable[[str, EntityObservation], None],
+                                  *, with_observation: bool) -> None: ...
+    def current_state_stream_generation(self) -> int | None: ...
     def get_entity_observation(self, entity_id: str) -> EntityObservation: ...
     async def get_state_snapshot(self) -> HAStatesSnapshot: ...
 
@@ -47,6 +50,26 @@ class _Rule:
     @property
     def alert_type(self) -> AlertType:
         return AlertType.SECURITY if self.kind is _RuleType.OPEN else AlertType.DEVICE
+
+
+@dataclass(frozen=True)
+class _Evidence:
+    observed_at: float
+    expires_at: float
+    stream_generation: int | None
+    revision: int | None = None
+
+    def current(self, now: float, stream_generation: int | None) -> bool:
+        return (self.observed_at <= now < self.expires_at
+                and (self.stream_generation is None or self.stream_generation == stream_generation))
+
+    def predates(self, previous: _Evidence) -> bool:
+        if self.stream_generation is not None and previous.stream_generation is not None:
+            if self.stream_generation != previous.stream_generation:
+                return self.stream_generation < previous.stream_generation
+            if self.revision is not None and previous.revision is not None:
+                return self.revision < previous.revision
+        return self.observed_at < previous.observed_at
 
 
 def _configured_rules(config: dict, enabled_types: dict) -> dict[str, list[_Rule]]:
@@ -99,14 +122,18 @@ class HAAlertSource:
         maxsize = config.get("queue_maxsize", 128)
         if type(maxsize) is not int or maxsize < 1:
             raise ValueError("alerts.ha.queue_maxsize must be a positive integer")
-        self._queue: asyncio.Queue[tuple[str, dict | None]] = asyncio.Queue(maxsize=maxsize)
+        self._queue: asyncio.Queue[tuple[str, EntityObservation]] = asyncio.Queue(maxsize=maxsize)
         self._evaluate = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        self._notice_task: asyncio.Task | None = None
+        self._notice_wake = asyncio.Event()
+        self._delta_in_flight = False
         self._turns: CommandTurns | None = None
         self._overflow = self._reconciled_overflow = 0
         self._started_at: float | None = None
-        self._latest: dict[str, float] = {}
-        self._fresh_until: dict[tuple[str, _RuleType], float] = {}
+        self._latest: dict[str, _Evidence] = {}
+        self._evidence: dict[tuple[str, _RuleType], _Evidence] = {}
+        self._notice_ready: set[tuple[str, _RuleType]] = set()
         self._baseline: set[tuple[str, _RuleType]] = set()
 
     @property
@@ -128,7 +155,8 @@ class HAAlertSource:
         """Report current evidence coverage without exposing payloads or entity names."""
         count = sum(len(rules) for rules in self._rules.values())
         now = self._clock()
-        known = (sum(now < expires_at for expires_at in self._fresh_until.values())
+        generation = self._ha.current_state_stream_generation()
+        known = (sum(evidence.current(now, generation) for evidence in self._evidence.values())
                  if self.running and not self.uncertain else 0)
         return {"running": self.running, "uncertain": self.uncertain, "overflow": self._overflow,
                 "known": known, "unknown": count - known}
@@ -140,27 +168,33 @@ class HAAlertSource:
         if self._started_at is None:
             self._started_at = self._clock()
         self._turns = command_turns
-        self._ha.register_state_callback(self._enqueue)
+        self._ha.register_state_callback(self._enqueue, with_observation=True)
         self._task = asyncio.create_task(self._consume(), name="ha-alert-deltas")
+        self._notice_task = asyncio.create_task(self._deliver_notices(), name="ha-alert-voice")
 
     async def stop(self) -> None:
         """Unsubscribe and retire the exact consumer before HA and voice close."""
         task = self._task
         if task is None:
             return
-        self._ha.unregister_state_callback(self._enqueue)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        self._task = None
+        self._ha.unregister_state_callback(self._enqueue, with_observation=True)
+        workers = (task, self._notice_task)
+        workers = tuple(worker for worker in workers if worker is not None)
+        for worker in workers:
+            worker.cancel()
+        await asyncio.gather(*workers, return_exceptions=True)
+        self._task = self._notice_task = None
         self._turns = None
         self._clear_queue()
-        self._fresh_until.clear()
+        self._evidence.clear()
+        self._notice_ready.clear()
+        self._notice_wake.clear()
 
-    def _enqueue(self, entity_id: str, state: dict | None) -> None:
+    def _enqueue(self, entity_id: str, observation: EntityObservation) -> None:
         # Called on the HA event loop while it owns its state projection lock.
         if entity_id in self._rules:
             try:
-                self._queue.put_nowait((entity_id, state))
+                self._queue.put_nowait((entity_id, observation))
             except asyncio.QueueFull:
                 self._overflow += 1
 
@@ -171,26 +205,32 @@ class HAAlertSource:
 
     async def _consume(self) -> None:
         while True:
-            entity_id, state = await self._queue.get()
+            entity_id, observation = await self._queue.get()
             reconciled = self._reconciled_overflow
+            self._delta_in_flight = True
             try:
                 async with self._evaluate:
-                    if self._turns is not None:
-                        await self._turns.wait_idle()
                     if self.uncertain or reconciled != self._reconciled_overflow:
                         continue
+                    if (observation.source != "ha-ws-entities"
+                            or observation.generation != self._ha.current_state_stream_generation()):
+                        continue
                     now = self._clock()
-                    observation = self._ha.get_entity_observation(entity_id)
                     if not observation.current(now):
                         self._mark_unknown(entity_id)
-                    elif state is None or (observation.exists and state == observation.state):
-                        await self._apply(entity_id, state, observation.observed_at,
-                                          observation.expires_at)
+                    else:
+                        await self._apply(entity_id, observation.to_state(now), _Evidence(
+                            observation.observed_at, observation.expires_at,
+                            observation.generation, observation.revision,
+                        ))
             except Exception as error:
                 self._mark_unknown(entity_id)
                 logger.warning("HA alert delta evaluation failed: %s", type(error).__name__)
             finally:
+                self._delta_in_flight = False
                 self._queue.task_done()
+                if self._queue.empty():
+                    self._notice_wake.set()
 
     async def reconcile(self) -> None:
         """Read one REST snapshot and reconcile it with fresher WS evidence."""
@@ -199,6 +239,8 @@ class HAAlertSource:
         task, overflow = self._task, self._overflow
         read_started = self._clock()
         snapshot = await self._ha.get_state_snapshot()
+        if not self.uncertain:
+            await self._queue.join()
         async with self._evaluate:
             if self._task is not task or self._overflow != overflow:
                 return
@@ -207,9 +249,8 @@ class HAAlertSource:
             rest = {state["entity_id"]: state for state in snapshot.states
                     if state["entity_id"] in self._rules} if snapshot.available else {}
             for entity_id in self._rules:
-                if self._turns is not None:
-                    await self._turns.wait_idle()
-                if self._task is not task or self._overflow != overflow:
+                if (self._task is not task or self._overflow != overflow
+                        or not self.uncertain and (self._delta_in_flight or not self._queue.empty())):
                     return
                 now = self._clock()
                 rest_current = (snapshot.available and observed_at is not None and expires_at is not None
@@ -218,45 +259,52 @@ class HAAlertSource:
                     if not rest_current:
                         return
                     self._clear_queue()
-                    self._fresh_until.clear()
+                    self._evidence.clear()
+                    self._notice_ready.clear()
                     self._reconciled_overflow = overflow
                 live = self._ha.get_entity_observation(entity_id)
+                previous = self._latest.get(entity_id)
                 # The REST body may represent an earlier instant than the time
                 # it finished downloading. Prefer WS changes seen during the read.
                 if live.current(now) and (not rest_current or live.observed_at >= read_started):
-                    await self._apply(entity_id, live.state if live.exists else None,
-                                      live.observed_at, live.expires_at)
-                elif rest_current and self._latest.get(entity_id, 0) <= read_started:
-                    await self._apply(entity_id, rest.get(entity_id), observed_at, expires_at)
+                    generation = live.generation if live.source == "ha-ws-entities" else None
+                    await self._apply(entity_id, live.to_state(now), _Evidence(
+                        live.observed_at, live.expires_at, generation, live.revision,
+                    ))
+                elif rest_current and (previous is None or previous.observed_at <= read_started):
+                    await self._apply(entity_id, rest.get(entity_id), _Evidence(observed_at, expires_at, None))
                 else:
                     self._mark_unknown(entity_id)
 
     def _mark_unknown(self, entity_id: str) -> None:
         for rule in self._rules[entity_id]:
-            self._fresh_until.pop((entity_id, rule.kind), None)
+            self._forget_evidence((entity_id, rule.kind))
 
-    async def _apply(self, entity_id: str, state: dict | None,
-                     observed_at: float, expires_at: float) -> None:
-        if observed_at < self._latest.get(entity_id, 0):
+    def _forget_evidence(self, key: tuple[str, _RuleType]) -> None:
+        self._evidence.pop(key, None)
+        self._notice_ready.discard(key)
+
+    async def _apply(self, entity_id: str, state: dict | None, evidence: _Evidence) -> None:
+        previous = self._latest.get(entity_id)
+        if previous is not None and evidence.predates(previous):
             return  # An overlapping REST read must not undo a newer delta.
-        self._latest[entity_id] = observed_at
+        self._latest[entity_id] = evidence
         value = state.get("state") if state is not None else None
         if not value or value == "unknown":
             self._mark_unknown(entity_id)
             return
-        changed_at = _state_changed_at(state, observed_at)
+        changed_at = _state_changed_at(state, evidence.observed_at)
         for rule in self._rules[entity_id]:
-            if self._turns is not None:
-                await self._turns.wait_idle()
             now = self._clock()
-            if now >= expires_at or self.uncertain:
+            if self.uncertain or not evidence.current(now, self._ha.current_state_stream_generation()):
                 self._mark_unknown(entity_id)
                 return
-            await self._check_rule(entity_id, rule, value, changed_at, now, expires_at)
+            await self._check_rule(entity_id, rule, value, changed_at, now, evidence)
 
     async def _check_rule(self, entity_id: str, rule: _Rule, value: str,
-                          changed_at: float | None, now: float, expires_at: float) -> None:
+                          changed_at: float | None, now: float, evidence: _Evidence) -> None:
         key = (entity_id, rule.kind)
+        self._notice_ready.discard(key)
         priority = AlertPriority.HIGH
         if rule.kind is _RuleType.BATTERY:
             try:
@@ -264,7 +312,7 @@ class HAAlertSource:
             except ValueError:
                 percent = math.nan
             if not 0 <= percent <= 100:
-                self._fresh_until.pop(key, None)
+                self._forget_evidence(key)
                 return
             active = percent < rule.threshold
             due_at = changed_at
@@ -274,7 +322,7 @@ class HAAlertSource:
         else:
             if rule.kind is _RuleType.OPEN:
                 if value not in ("on", "off"):
-                    self._fresh_until.pop(key, None)
+                    self._forget_evidence(key)
                     return
                 active = value == "on"
                 message = f"{rule.name} sigue abierta"
@@ -282,18 +330,43 @@ class HAAlertSource:
                 active = value == "unavailable"
                 message = f"{rule.name} no está disponible"
             if active and changed_at is None:
-                self._fresh_until.pop(key, None)
+                self._forget_evidence(key)
                 return
             due_at = changed_at + rule.threshold if active else None
 
-        self._fresh_until[key] = expires_at
+        self._evidence[key] = evidence
         at_start = active and key not in self._baseline and (
             due_at is None or due_at <= self._started_at)
         self._baseline.add(key)
-        condition = AlertCondition(entity_id, rule.kind.value, reannounce=not at_start)
+        condition = AlertCondition(entity_id, rule.kind.value, reannounce=not at_start, retain_if_history_full=True)
         if not active:
             await self._alerts.resolve_condition(rule.alert_type, condition)
         elif due_at is None or now >= due_at:
             if at_start:
                 message = f"{message} (presente al iniciar)"
-            await self._alerts.create_alert(rule.alert_type, priority, message, condition=condition)
+            await self._alerts.create_alert(rule.alert_type, priority, message, condition=condition, defer_voice=True)
+            self._notice_ready.add(key)
+            self._notice_wake.set()
+
+    def _notice_current(self, key: tuple[str, _RuleType]) -> bool:
+        evidence = self._evidence.get(key)
+        return (not self.uncertain and not self._delta_in_flight and self._queue.empty()
+                and key in self._notice_ready and evidence is not None
+                and evidence.current(self._clock(), self._ha.current_state_stream_generation())
+                and (self._turns is None or not self._turns.active))
+
+    async def _deliver_notices(self) -> None:
+        while True:
+            await self._notice_wake.wait()
+            self._notice_wake.clear()
+            for entity_id, rules in self._rules.items():
+                for rule in rules:
+                    key = (entity_id, rule.kind)
+                    if key not in self._notice_ready:
+                        continue
+                    if self._turns is not None:
+                        await self._turns.wait_idle()
+                    await self._alerts.deliver_deferred_notice(
+                        rule.alert_type, AlertCondition(entity_id, rule.kind.value),
+                        is_current=lambda: self._notice_current(key),
+                    )

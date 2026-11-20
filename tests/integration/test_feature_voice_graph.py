@@ -161,12 +161,17 @@ async def test_real_ha_delta_reaches_configured_pcm_and_yields_to_an_active_comm
             }}}})
             await asyncio.wait_for(waiting_for_turn.wait(), 2)
             assert not command.done() and engine.calls == []
+            pending, = features.alert_manager.get_history()
+            assert pending.delivery is AlertDelivery.PENDING
         finally:
             release.set()
         result = await asyncio.wait_for(command, 2)
         assert result["path"] == "fast_clock" and result["task_completed"] and result["latency_ms"] < 300
         await asyncio.wait_for(source._queue.join(), 2)
         alert, = features.alert_manager.get_history()
+        async with asyncio.timeout(2):
+            while alert.delivery is AlertDelivery.PENDING:
+                await asyncio.sleep(.001)
         assert (alert.source, alert.delivery) == (door, AlertDelivery.DELIVERED)
         speech = "Alerta importante: La ventana sigue abierta"
         assert engine.calls == [result["response"], speech] and engine.peak_active == 1
@@ -174,7 +179,7 @@ async def test_real_ha_delta_reaches_configured_pcm_and_yields_to_an_active_comm
         amplifier.select_zone.assert_called_once_with(2)
         amplifier.select_all_zones.assert_not_called()
         assert ws_requests == ["subscribe_entities"]
-    assert not source.running and graph.ha_client._state_callbacks == []
+    assert not source.running and graph.ha_client._state_observers == []
 
 
 async def test_feature_delivery_failure_is_not_announced_as_completed_or_retried_via_ha(monkeypatch):
