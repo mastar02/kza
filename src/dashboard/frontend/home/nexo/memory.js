@@ -187,10 +187,16 @@
     }
     // Keyed placement: a card that disappears hands focus to the card now at its position, else the heading.
     function place(grid, entries, state, heading) {
-      const key = focusKey(), seen = new Set();
+      const key = focusKey(), remaining = new Set(entries.map(([item]) => item.id));
       let previous = null, lostFocus = null;
+      // Remove departed cards first so surviving controls stay attached and keep keyboard focus.
+      [...grid.children].forEach((card, index) => {
+        const id = card.dataset.memoryId;
+        if (remaining.has(id)) return;
+        if (card.contains(doc.activeElement)) lostFocus = { index, key };
+        card.remove(); if (cards.get(id)?.grid === grid) cards.delete(id);
+      });
       for (const [item, section] of entries) {
-        seen.add(item.id);
         let entry = cards.get(item.id);
         if (entry && entry.grid !== grid) { if (entry.card.contains(doc.activeElement)) lostFocus = lostFocus || { index: 0, key }; entry.card.remove(); cards.delete(item.id); entry = null; }
         if (!entry) {
@@ -209,12 +215,6 @@
         if (expected !== entry.card) grid.insertBefore(entry.card, expected);
         previous = entry.card;
       }
-      [...grid.children].forEach((card, index) => {
-        const id = card.dataset.memoryId;
-        if (seen.has(id)) return;
-        if (card.contains(doc.activeElement)) lostFocus = { index, key };
-        card.remove(); if (cards.get(id)?.grid === grid) cards.delete(id);
-      });
       if (lostFocus) return () => {
         // The moved card (a confirmation) keeps focus on its own heading when it is listed elsewhere.
         const target = grid.children[Math.min(lostFocus.index, grid.children.length - 1)];

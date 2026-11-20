@@ -151,10 +151,16 @@
       if (controls.childElementCount) card.append(controls);
     }
     function place(state, items) {
-      const key = focusKey(), seen = new Set();
+      const key = focusKey(), remaining = new Set(items.map(item => item.id));
       let previous = null, lost = null;
+      // Remove departed cards first so surviving controls stay attached and keep keyboard focus.
+      [...grid.children].forEach((card, index) => {
+        const id = card.dataset.myMemoryId;
+        if (remaining.has(id)) return;
+        if (card.contains(doc.activeElement)) lost = index;
+        card.remove(); cards.delete(id);
+      });
       for (const item of items) {
-        seen.add(item.id);
         let entry = cards.get(item.id);
         if (!entry) { const card = node('article', 'memory-card panel'); card.dataset.myMemoryId = item.id; card.tabIndex = -1; entry = { card, signature: null }; cards.set(item.id, entry); }
         const signature = JSON.stringify([item, state.markers[item.id] || null, state.notices[item.id] || null, state.capabilities, expanded.has(item.id), owner.blocked(item.id)]);
@@ -169,12 +175,6 @@
         if (expected !== entry.card) grid.insertBefore(entry.card, expected);
         previous = entry.card;
       }
-      [...grid.children].forEach((card, index) => {
-        const id = card.dataset.myMemoryId;
-        if (seen.has(id)) return;
-        if (card.contains(doc.activeElement)) lost = index;
-        card.remove(); cards.delete(id);
-      });
       if (lost !== null) {
         const target = grid.children[Math.min(lost, grid.children.length - 1)];
         (target ? target.querySelector('button:not([disabled])') || target : listTitle).focus({ preventScroll: true });
