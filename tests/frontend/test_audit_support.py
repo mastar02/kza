@@ -76,7 +76,10 @@ async def test_contrast_uses_wcag_luminance_and_computed_paint(page: Page):
         <p style="color:#767676">Normal text passes</p>
         <p style="color:rgba(0,0,0,.5)">Composited text fails</p>
         <input aria-label="Name">
-        <button aria-label="Icon"><svg width="20" height="20"><circle cx="10" cy="10" r="8" fill="#aaa"/></svg></button>
+        <button aria-label="Icon"><svg width="20" height="20"><title>Icon name</title><desc>Icon description</desc>
+          <circle id="audit-glyph" cx="10" cy="10" r="8" fill="#aaa"/></svg></button>
+        <button aria-label="Reference"><svg width="20" height="20"><title>Referenced icon</title>
+          <use href="#audit-glyph"/></svg></button>
         <p style="background:linear-gradient(white,gray)">Review gradient</p>
     ''')
     await page.evaluate(WCAG_SCRIPT)
@@ -89,6 +92,7 @@ async def test_contrast_uses_wcag_luminance_and_computed_paint(page: Page):
     assert all(item['minimum'] == 4.5 for item in small_text)
     assert {item['part'] for item in findings if item['criterion'] == '1.4.11'
             and item['issue'] == 'low_contrast'} == {'control_boundary', 'fill'}
+    assert any(item['criterion'] == '1.4.11' and item['issue'] == 'svg_reference_needs_review' for item in findings)
     assert any(item['criterion'] == '1.4.3' and item['issue'] == 'paint_needs_review' for item in findings)
 
 
@@ -111,6 +115,28 @@ async def test_target_minimum_spacing_and_product_goal(page: Page):
     assert [(item['width'], item['minimum']) for item in product] == [(20, 44)] * 3 + [(24, 44)]
 
 
+async def test_target_spacing_uses_the_center_of_all_fragments(page: Page):
+    await load(page, '''
+        <div style="position:absolute;left:10px;top:10px;font:12px/40px monospace">
+          <span id="wrapped" role="button" tabindex="0">AA<br>AA</span>
+        </div>
+        <button id="neighbor" style="position:absolute;width:24px;height:24px;padding:0">N</button>
+    ''')
+    fragments = await page.evaluate('''(() => {
+        const target = document.querySelector('#wrapped'), neighbor = document.querySelector('#neighbor');
+        const bounds = target.getBoundingClientRect();
+        neighbor.style.left = (bounds.left + bounds.width / 2 + 8) + 'px';
+        neighbor.style.top = (bounds.top + bounds.height / 2 - 12) + 'px';
+        return [...target.getClientRects()].filter(rect => rect.width && rect.height).map(rect => rect.toJSON());
+    })()''')
+    assert len(fragments) == 2 and all(rect['width'] < 24 and rect['height'] < 24 for rect in fragments)
+    findings = [item for item in await audit_wcag(page) if item['criterion'] == '2.5.8']
+    assert len(findings) == 1
+    assert findings[0]['issue'] == 'target_below_minimum_without_spacing'
+    assert await page.evaluate(f'document.querySelector({json.dumps(findings[0]["element"])}).id') == 'wrapped'
+    assert await page.evaluate(f'document.querySelector({json.dumps(findings[0]["neighbor"])}).id') == 'neighbor'
+
+
 async def test_spacing_and_text_resize_report_new_clipping_and_restore_styles(page: Page):
     await load(page, '''
         <style>p {font:16px/16px Arial;margin:0}</style>
@@ -124,6 +150,33 @@ async def test_spacing_and_text_resize_report_new_clipping_and_restore_styles(pa
         ('1.4.12', 'body > p:nth-of-type(1)'), ('1.4.4', 'body > p:nth-of-type(1)'),
     }
     assert await page.evaluate('[...document.querySelectorAll("p")].map(el=>el.getAttribute("style"))') == original
+
+
+@pytest.mark.parametrize(('overflow', 'loses_control'), [
+    ('clip', True), ('hidden', True), ('auto', False), ('scroll', False),
+])
+async def test_text_resize_checks_controls_below_initial_viewport(page: Page, overflow: str, loses_control: bool):
+    await page.command('Emulation.setDeviceMetricsOverride', {
+        'width': 640, 'height': 480, 'deviceScaleFactor': 1, 'mobile': False,
+    })
+    await load(page, f'''
+        <style>body {{margin:0;font:16px Arial}}</style>
+        <div style="height:800px"></div>
+        <section style="width:180px;height:120px;overflow:{overflow}">
+          <div style="height:4em"></div>
+          <button id="resize-control" style="display:block;width:44px;height:44px">Go</button>
+        </section>
+    ''')
+    assert await page.evaluate('''(() => {
+        const button = document.querySelector('#resize-control'), rect = button.getBoundingClientRect();
+        return rect.top > innerHeight && rect.top - button.parentElement.getBoundingClientRect().top === 64
+            && rect.height === 44;
+    })()''')
+    findings = await audit_wcag(page, key_controls=(('#resize-control', None),))
+    usable_findings = [item for item in findings if item['criterion'] == '1.4.4'
+                       and item['issue'] == 'key_control_no_longer_usable']
+    assert len(usable_findings) == int(loses_control)
+    assert await page.evaluate('window.scrollY === 0 && document.querySelector("section").scrollTop === 0')
 
 
 async def test_status_messages_check_live_semantics_without_recording_payload(page: Page, tmp_path: Path):
@@ -207,3 +260,32 @@ async def test_modal_focus_detects_escapes_and_proves_wrap_and_return(page: Page
     await page.evaluate('document.querySelector("#outside").focus()')
     await audit_modal_return(page, tmp_path, 'modal-broken', failed_return, dialog='#modal', opener='#opener')
     assert failed_return['findings'][0]['issue'] == 'focus_not_returned'
+
+
+async def test_modal_focus_finds_intermediate_escape_and_skip_and_restores_body(page: Page):
+    await load(page, '''
+        <div role="dialog" aria-modal="true" id="modal">
+          <button id="first">First</button><button id="second">Second</button>
+          <button id="third">Third</button><button id="last">Last</button>
+        </div>
+        <button id="outside">Outside</button>
+    ''')
+    await page.evaluate('''(() => {
+        const modal = document.querySelector('#modal');
+        modal.addEventListener('keydown', event => {
+            if (event.key !== 'Tab') return;
+            const from = event.target.id;
+            const to = (event.shiftKey ? {first: 'last', third: 'first'} : {last: 'first', second: 'outside'})[from];
+            if (!to) return;
+            event.preventDefault();
+            document.getElementById(to).focus();
+        });
+    })()''')
+    assert await page.evaluate('document.activeElement === document.body')
+    report = await audit_modal_focus(page, '#modal')
+    assert report['tabbables'] == 4
+    assert report['findings'][0]['issue'] == 'initial_focus_incorrect'
+    assert [(item['direction'], item['step'], item['issue']) for item in report['findings'][1:]] == [
+        ('Tab', 2, 'focus_escaped'), ('Shift+Tab', 2, 'focus_out_of_order'),
+    ]
+    assert await page.evaluate('document.activeElement === document.body')

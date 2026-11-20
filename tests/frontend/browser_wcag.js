@@ -115,6 +115,10 @@
 
   const targets = root => [...root.querySelectorAll(interactive)].filter(el =>
     shown(el) && !disabled(el) && !visuallyHidden(el) && getComputedStyle(el).pointerEvents !== 'none');
+  const hasVisibleLabel = control => textNodes(control).some(node => {
+    const el = node.parentElement;
+    return !el.closest('svg') && !visuallyHidden(el) && textRects(node).length > 0;
+  });
   const componentContrast = root => {
     const findings = [];
     for (const el of targets(root)) {
@@ -137,7 +141,7 @@
     }
     for (const svg of root.querySelectorAll('svg')) {
       const control = svg.closest(interactive);
-      if (!shown(svg) || disabled(svg) || (control ? control.textContent.trim() : !svg.matches('[role=img]'))) continue;
+      if (!shown(svg) || disabled(svg) || (control ? hasVisibleLabel(control) : !svg.matches('[role=img]'))) continue;
       if (svg.querySelector('use')) {
         findings.push(finding('1.4.11', 'svg_reference_needs_review', svg, {level: 'review'}));
       }
@@ -162,24 +166,26 @@
       const rects = [...el.getClientRects(), ...labels.flatMap(label => [...label.getClientRects()])]
         .filter(rect => rect.width > 0 && rect.height > 0);
       if (!rects.length) return [];
-      const bounds = rects.reduce((best, rect) =>
+      const size = rects.reduce((best, rect) =>
         Math.min(rect.width, rect.height) > Math.min(best.width, best.height) ? rect : best);
-      return [{el, rects, bounds, small: bounds.width < minimum || bounds.height < minimum}];
+      // A fragment determines the available size. The spacing circle is centered
+      // on the smallest box enclosing the entire pointer target.
+      const x = (Math.min(...rects.map(rect => rect.left)) + Math.max(...rects.map(rect => rect.right))) / 2;
+      const y = (Math.min(...rects.map(rect => rect.top)) + Math.max(...rects.map(rect => rect.bottom))) / 2;
+      return [{el, rects, size, x, y, small: size.width < minimum || size.height < minimum}];
     });
     const findings = [];
-    for (const {el, bounds, small} of boxes) {
-      const {width, height, left, top} = bounds;
+    for (const {el, size, small, x, y} of boxes) {
+      const {width, height} = size;
       if (width < productGoal || height < productGoal) {
         findings.push(finding('product', 'target_below_goal', el, {width, height, minimum: productGoal}));
       }
       if (!small) continue;
       if (el.matches('a[href]') && getComputedStyle(el).display === 'inline'
           && [...el.parentElement.childNodes].some(node => node.nodeType === Node.TEXT_NODE && node.data.trim())) continue;
-      const x = left + width / 2, y = top + height / 2;
       const neighbor = boxes.find(other => {
         if (other.el === el) return false;
-        if (other.small && Math.hypot(x - other.bounds.left - other.bounds.width / 2,
-          y - other.bounds.top - other.bounds.height / 2) < minimum) return true;
+        if (other.small && Math.hypot(x - other.x, y - other.y) < minimum) return true;
         return other.rects.some(rect =>
           Math.hypot(Math.max(rect.left - x, 0, x - rect.right), Math.max(rect.top - y, 0, y - rect.bottom)) < minimum / 2);
       });
@@ -205,20 +211,61 @@
     }
     return false;
   };
+  const usable = el => {
+    if (!shown(el)) return false;
+    const ancestors = [];
+    for (let parent = el.parentElement; parent; parent = parent.parentElement) {
+      const {overflowX, overflowY} = getComputedStyle(parent);
+      if (overflowX !== 'visible' || overflowY !== 'visible' || parent === document.scrollingElement) {
+        ancestors.push({parent, overflowX, overflowY, x: parent.scrollLeft, y: parent.scrollTop});
+      }
+    }
+    const hitVisiblePart = () => {
+      const rect = el.getBoundingClientRect();
+      let left = Math.max(0, rect.left), right = Math.min(document.documentElement.clientWidth, rect.right);
+      let top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
+      for (const {parent, overflowX, overflowY} of ancestors) {
+        if (parent === document.scrollingElement) continue;
+        const box = parent.getBoundingClientRect();
+        const x = box.left + parent.clientLeft, y = box.top + parent.clientTop;
+        if (overflowX !== 'visible') {
+          left = Math.max(left, x);
+          right = Math.min(right, x + parent.clientWidth);
+        }
+        if (overflowY !== 'visible') {
+          top = Math.max(top, y);
+          bottom = Math.min(bottom, y + parent.clientHeight);
+        }
+      }
+      if (left >= right || top >= bottom) return false;
+      const hit = document.elementFromPoint((left + right) / 2, (top + bottom) / 2);
+      return el.contains(hit) || [...(el.labels || [])].some(label => label.contains(hit));
+    };
+    if (hitVisiblePart()) return true;
+    try {
+      el.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'instant'});
+      // scrollIntoView can scroll overflow:hidden programmatically. Test only
+      // positions the user can reach by scrolling the page or an auto/scroll container.
+      for (const {parent, overflowX, overflowY, x, y} of ancestors) {
+        const left = overflowX === 'hidden' ? x : parent.scrollLeft;
+        const top = overflowY === 'hidden' ? y : parent.scrollTop;
+        if (parent.scrollLeft !== left || parent.scrollTop !== top) {
+          parent.scrollTo({left, top, behavior: 'instant'});
+        }
+      }
+      return hitVisiblePart();
+    } finally {
+      for (const {parent, x, y} of ancestors) {
+        if (parent.scrollLeft !== x || parent.scrollTop !== y) {
+          parent.scrollTo({left: x, top: y, behavior: 'instant'});
+        }
+      }
+    }
+  };
   const measureText = (root, criterion, keyControls) => {
     const nodes = textNodes(root).filter(node => !visuallyHidden(node.parentElement) && !clipping(node));
     const controls = keyControls.map(([selector, label]) =>
       [...root.querySelectorAll(selector)].find(el => !label || el.textContent.includes(label))).filter(el => el && shown(el));
-    const usable = el => {
-      if (!shown(el)) return false;
-      const rect = el.getBoundingClientRect();
-      if (rect.left < -1 || rect.right > document.documentElement.clientWidth + 1) return false;
-      const x = rect.left + rect.width / 2, y = rect.top + rect.height / 2;
-      // A control outside the vertical viewport may still be reached by scrolling.
-      if (y < 0 || y >= innerHeight) return true;
-      const hit = document.elementFromPoint(x, y);
-      return el.contains(hit) || [...(el.labels || [])].some(label => label.contains(hit));
-    };
     const usableControls = controls.filter(usable);
     const elements = [root, ...root.querySelectorAll('*')].filter(el => el instanceof HTMLElement && shown(el));
     const sizes = elements.map(el => {
@@ -279,12 +326,12 @@
     if (!dialog) return {found: false, width};
     const initial = document.activeElement;
     const candidates = [...dialog.querySelectorAll(focusable)]
-      .filter(el => shown(el) && !disabled(el) && el.tabIndex >= 0);
+      .filter(el => shown(el) && !el.matches(':disabled') && !el.closest('[inert]') && el.tabIndex >= 0);
     const ordered = candidates.filter(el => el.type !== 'radio' || !el.name
       || (candidates.find(other => other.type === 'radio' && other.name === el.name && other.form === el.form && other.checked)
         || candidates.find(other => other.type === 'radio' && other.name === el.name && other.form === el.form)) === el)
       .sort((a, b) => (a.tabIndex || Infinity) - (b.tabIndex || Infinity));
-    focusProbe = {dialog, initial, first: ordered[0], last: ordered.at(-1)};
+    focusProbe = {dialog, initial, ordered};
     return {
       found: true,
       width,
@@ -293,21 +340,26 @@
       tabbables: ordered.length,
     };
   };
-  const focusBoundary = backward => {
-    const edge = backward ? focusProbe.first : focusProbe.last;
-    edge?.focus({preventScroll: true});
-    return edge != null && document.activeElement === edge;
+  const focusModalStart = backward => {
+    const {ordered} = focusProbe;
+    const start = backward ? ordered.at(-1) : ordered[0];
+    start.focus({preventScroll: true});
+    return document.activeElement === start;
   };
-  const checkBoundary = backward => {
-    const {dialog, first, last} = focusProbe;
+  const checkModalStep = (backward, step) => {
+    const {dialog, ordered} = focusProbe;
     if (!shown(dialog)) return 'dialog_closed';
     if (!dialog.contains(document.activeElement)) return 'focus_escaped';
-    return document.activeElement === (backward ? last : first) ? null : 'focus_did_not_wrap';
+    const offset = step % ordered.length;
+    const expected = backward ? ordered.at(-1 - offset) : ordered[offset];
+    if (document.activeElement === expected) return null;
+    return offset === 0 ? 'focus_did_not_wrap' : 'focus_out_of_order';
   };
   const endModal = () => {
-    if (focusProbe?.dialog.contains(focusProbe.initial)) focusProbe.initial.focus({preventScroll: true});
-    else if (focusProbe?.dialog.isConnected) focusProbe.initial?.focus({preventScroll: true});
+    const {initial} = focusProbe;
     focusProbe = undefined;
+    if (initial === document.body) document.activeElement?.blur();
+    else if (initial?.isConnected) initial.focus({preventScroll: true});
   };
   const returnFocus = (dialogSelector, openerSelector) => {
     if (modal(dialogSelector)) return 'dialog_still_open';
@@ -319,7 +371,7 @@
   window.__kzaWcag = {
     contrast,
     statuses,
-    beginModal, focusBoundary, checkBoundary, endModal, returnFocus,
+    beginModal, focusModalStart, checkModalStep, endModal, returnFocus,
     scan(keyControls, minimum, productGoal, statusMessages) {
       canvasColor = canvas() || [255, 255, 255, 1];
       const root = scope();

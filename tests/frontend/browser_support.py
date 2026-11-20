@@ -409,12 +409,12 @@ async def audit_wcag(page, key_controls: Sequence[tuple[str, str | None]] = (),
 
 
 async def audit_modal_focus(page, selector: str, *, initial: str | None = None) -> dict:
-    """Observe opening focus and test real Tab/Shift+Tab at an open modal's boundaries."""
+    """Observe opening focus and follow a complete Tab cycle in each direction."""
     await page.evaluate(WCAG_SCRIPT)
     report = await page.evaluate(f'window.__kzaWcag.beginModal({json.dumps(selector)}, {json.dumps(initial)})')
     findings = report['findings'] = []
 
-    def add(issue: str, **detail: str) -> None:
+    def add(issue: str, **detail: str | int) -> None:
         findings.append({'criterion': 'APG-modal', 'issue': issue, 'selector': selector, **detail})
 
     if not report['found']:
@@ -425,19 +425,22 @@ async def audit_modal_focus(page, selector: str, *, initial: str | None = None) 
             add('modal_semantics_missing')
         if not report['initial_ok']:
             add('initial_focus_incorrect')
-        if not report['tabbables']:
+        tabbables = report['tabbables']
+        if not tabbables:
             add('no_tabbable_control')
             return report
         for backward, direction in ((False, 'Tab'), (True, 'Shift+Tab')):
             argument = json.dumps(backward)
-            if not await page.evaluate(f'window.__kzaWcag.focusBoundary({argument})'):
+            if not await page.evaluate(f'window.__kzaWcag.focusModalStart({argument})'):
                 add('boundary_unavailable', direction=direction)
                 continue
-            await _press_tab(page, backward=backward)
-            issue = await page.evaluate(f'window.__kzaWcag.checkBoundary({argument})')
-            if issue:
-                add(issue, direction=direction)
-                if issue == 'dialog_closed':
+            for step in range(1, tabbables + 1):
+                await _press_tab(page, backward=backward)
+                issue = await page.evaluate(f'window.__kzaWcag.checkModalStep({argument}, {step})')
+                if issue:
+                    add(issue, direction=direction, step=step)
+                    if issue == 'dialog_closed':
+                        return report
                     break
     finally:
         await page.evaluate('window.__kzaWcag.endModal()')
