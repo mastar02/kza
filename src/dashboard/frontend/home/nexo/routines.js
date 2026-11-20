@@ -118,7 +118,7 @@
         card.append(node('p', 'routine-detail', 'Pendiente · vence ' +
           new Date(item.expiresAt).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Montevideo' })));
       }
-      if (selected?.preview) {
+      if (item && selected?.preview) {
         const diff = node('section'); diff.setAttribute('aria-label', 'Vista previa de la propuesta');
         diff.append(node('h5', '', 'Vista previa'),
           proposalDefinition(state, 'Antes', selected.preview.before), proposalDefinition(state, 'Después', selected.preview.after));
@@ -138,7 +138,7 @@
           (confirm ? 'Reintentar confirmación' : 'Reintentar rechazo'),
           id + ':' + decision.action, () => owner.decideProposal(id, decision.action));
         retry.setAttribute('aria-disabled', String(decision.sending)); controls.append(retry);
-      } else if (selected?.preview) {
+      } else if (item && selected?.preview) {
         if (selected.status === 'pending' && !selected.preview.stale) {
           controls.append(button('Confirmar propuesta', id + ':confirm', () => owner.decideProposal(id, 'confirm'), 'identity-primary'));
         }

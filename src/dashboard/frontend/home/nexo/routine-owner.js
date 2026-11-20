@@ -220,10 +220,10 @@
         return [401, 403].includes(error?.status) ? 'changed' : 'unknown';
       }
     }
-    /** The account changed under this tab: send nothing, forget every identity, leave a reminder. */
+    /** The account changed under this tab. A previously sent request may have committed. */
     function accountChanged() {
       clear({ wipe: true });
-      notice('session', 'La cuenta de esta pestaña cambió en otra pestaña. No se envió nada. Revisá el último resultado de tus rutinas antes de repetirlo.');
+      notice('session', 'La sesión de esta pestaña cambió. Revisá el último resultado y el estado actual de tus rutinas antes de repetir la operación.');
       emit();
       try { onAccountChanged(); } catch (_) { /* The page re-reads the session on its own. */ }
     }
@@ -320,8 +320,10 @@
         const value = await read(ROUTINE_PROPOSALS);
         if (!await verifyProposalAccount(current) || version !== proposalListVersion) return;
         if (!Array.isArray(value?.proposals)) throw Error('invalid_proposal_list');
-        const items = value.proposals.map(parseProposal);
-        if (new Set(items.map(item => item.id)).size !== items.length) throw Error('duplicate_proposal');
+        const items = value.proposals.map(parseProposal), ids = new Set(items.map(item => item.id));
+        if (ids.size !== items.length) throw Error('duplicate_proposal');
+        // Removing the selection also invalidates any detail response still in flight.
+        if (tray.selected && !ids.has(tray.selected.id)) tray.selected = null;
         tray.items = items; tray.loaded = true;
       } catch (error) {
         if (current()) tray.error = error?.message === ACCOUNT_UNKNOWN ? ACCOUNT_UNKNOWN : proposalError(error);
@@ -783,7 +785,7 @@
     async function open() {
       opened = true; restore();
       try {
-        if (storage?.getItem(ENDED_KEY)) { remove(ENDED_KEY); notice('session', 'Una ejecución o un cambio de rutina quedó sin confirmar al terminar la sesión anterior. Revisá el último resultado de tus rutinas antes de repetirlo.'); }
+        if (storage?.getItem(ENDED_KEY)) { remove(ENDED_KEY); notice('session', 'Una ejecución o un cambio de rutina quedó sin confirmar al terminar la sesión anterior. Revisá el último resultado y el estado actual de tus rutinas antes de repetir la operación.'); }
       } catch (_) { /* Reminder is best effort. */ }
       emit();
       // Without a cached actor, skip the account check to avoid a re-bootstrap loop.

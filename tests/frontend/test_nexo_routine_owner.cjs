@@ -907,6 +907,117 @@ test('T033-U3b: an expired replay remains uncertain and a 503 permits only the o
   assert.equal(f.storage.length, 0);
 });
 
+test('T033-U3b: a refreshed list that omits the selected proposal removes its diff and decisions', async () => {
+  for (const empty of [true, false]) {
+    const f = proposalFixture(), proposal = f.add();
+    const view = f.mount();
+    await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+    assert.ok(view.container.querySelector('[data-proposal-diff="after"]'));
+    view.control('confirm').focus();
+    f.server.proposals.delete(proposalId);
+    if (!empty) {
+      const id = 'b'.repeat(32);
+      f.server.proposals.set(id, { ...proposal, summary: { ...proposal.summary, proposal_id: id } });
+    }
+    await f.instance.refreshProposals();
+
+    const state = f.instance.getState().proposals;
+    assert.equal(state.loaded, true);
+    assert.equal(state.items.length, empty ? 0 : 1);
+    assert.equal(state.selected, null);
+    assert.equal(view.container.querySelector('[data-proposal-id="' + proposalId + '"]'), null);
+    assert.equal(view.container.querySelector('[data-proposal-diff="after"]'), null);
+    assert.equal(view.control('confirm'), null);
+    assert.equal(view.control('reject'), null);
+    assert.equal(view.doc.activeElement.dataset.key, 'proposals-refresh');
+    await f.instance.decideProposal(proposalId, 'confirm');
+    await f.instance.decideProposal(proposalId, 'reject');
+    assert.ok(proposalCalls(f.server).every(call => call.method === 'GET'));
+    view.dispose();
+  }
+});
+
+test('T033-U3b: an omitted proposal keeps only its original uncertain decision for replay', async () => {
+  const f = proposalFixture(); f.add();
+  const view = f.mount();
+  await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+  const path = proposalPath + '/confirm';
+  f.server.hooks.push({ method: 'POST', path, mode: 'drop' });
+  await f.instance.decideProposal(proposalId, 'confirm');
+  assert.ok(view.container.querySelector('[data-proposal-diff="after"]'));
+  await f.instance.refreshProposals();
+
+  const state = f.instance.getState().proposals;
+  assert.deepEqual(state.items, []);
+  assert.equal(state.selected, null);
+  assert.equal(state.decisions[proposalId].action, 'confirm');
+  assert.deepEqual([...f.storage.map.values()].map(value => JSON.parse(value)),
+    [{ action: 'confirm', actor: actorFor(f.server.subject) }]);
+  assert.equal(view.container.querySelector('[data-proposal-diff="after"]'), null);
+  assert.equal(view.control('confirm'), null);
+  assert.equal(view.control('reject'), null);
+  await f.instance.reviewProposal(proposalId);
+  assert.equal(view.control('confirm').textContent, 'Reintentar confirmación');
+  assert.equal(view.control('reject'), null);
+  await f.instance.decideProposal(proposalId, 'reject');
+  await f.instance.decideProposal(proposalId, 'confirm');
+  assert.deepEqual(proposalCalls(f.server).filter(call => call.method === 'POST').map(call => call.path), [path, path]);
+  assert.equal(f.server.routines.size, 1);
+  view.dispose();
+});
+
+test('T033-U3b: a successful detail response cannot republish a proposal omitted by a newer list', async () => {
+  const server = fakeServer(), transport = server.api;
+  let release;
+  const delayed = new Promise(resolve => { release = resolve; });
+  server.api = async (path, options) => {
+    const result = await transport(path, options);
+    if (path === proposalPath) await delayed;
+    return result;
+  };
+  const f = proposalFixture({ server }); f.add();
+  const view = f.mount();
+  await f.instance.open(); await turn();
+  const preview = f.instance.reviewProposal(proposalId);
+  await turn();
+  assert.equal(f.instance.getState().proposals.selected.loading, true);
+  assert.equal(proposalCalls(server).at(-1).path, proposalPath);
+  server.proposals.delete(proposalId);
+  await f.instance.refreshProposals();
+  release(); await preview;
+  assert.equal(f.instance.getState().proposals.selected, null);
+  assert.equal(view.container.querySelector('[data-proposal-diff="after"]'), null);
+  assert.equal(view.control('confirm'), null);
+  assert.equal(view.control('reject'), null);
+  view.dispose();
+});
+
+test('T033-U3b: account change after the POST asks the user to check current state', async () => {
+  const f = proposalFixture(), proposal = f.add();
+  const view = f.mount();
+  await f.instance.open(); await turn(); await f.instance.reviewProposal(proposalId);
+  const handle = f.server.handle, path = proposalPath + '/confirm';
+  f.server.handle = (requestPath, options) => {
+    const response = handle(requestPath, options);
+    if (requestPath === path) f.server.routineActor = 'fixture-other-credential';
+    return response;
+  };
+  const before = f.server.calls.length;
+  await f.instance.decideProposal(proposalId, 'confirm');
+  assert.deepEqual(f.server.calls.slice(before).map(call => [call.method, call.path]),
+    [['GET', '/api/admin/auth/whoami'], ['POST', path], ['GET', '/api/admin/auth/whoami']]);
+  assert.equal(proposal.receipt.status, 'confirmed');
+  assert.equal(f.server.routines.size, 1);
+  assert.equal(f.changes(), 1);
+  assert.equal(f.instance.getState().proposals.selected, null);
+  assert.deepEqual(f.instance.getState().proposals.decisions, {});
+  assert.deepEqual([...f.storage.map.entries()], [[routines.ENDED_KEY, '1']]);
+  const text = visibleText(view.container);
+  assert.match(text, /cambió.*Revisá.*estado actual/);
+  assert.doesNotMatch(text, /no se envió nada|propuesta confirmada|rutina propuesta/i);
+  view.dispose();
+});
+
 test('T033-U3b: a new account cannot replay a decision or receive a late proposal preview', async () => {
   for (const inFlight of ['preview', 'retry']) {
     const f = proposalFixture(); f.server.routineActor = actorFor(f.server.subject); f.add();
