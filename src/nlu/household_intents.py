@@ -298,11 +298,28 @@ def _tokens(text: str) -> _Utterance:
 
 def _quote_spans(text: str) -> list[tuple[int, int]]:
     """Find balanced quotes across lines, keeping each outer span intact."""
-    def has_two_closers(char: str, start: int) -> bool:
+    def opening_boundary(before: str) -> bool:
+        return not before or before.isspace() or before in "«([{:,;¡¿"
+
+    def starts_content(offset: int) -> bool:
+        after = text[offset + 1:offset + 2]
+        if not after or after.isspace() or after in ")]}»\"'":
+            return False
+        following = text[offset + 2:offset + 3]
+        return (
+            after not in ",.;:?!"
+            or text.startswith("...", offset + 1)
+            or bool(following) and not following.isspace() and following not in ",.;:?!)]}»\"'"
+        )
+
+    def has_two_closers(char: str, start: int, *, first_must_close: bool) -> bool:
         remaining = 2
         offset = text.find(char, start)
         while offset != -1:
             if char != "'" or not (text[offset - 1].isalnum() and text[offset + 1:offset + 2].isalnum()):
+                if (remaining == 2 and first_must_close
+                        and opening_boundary(text[offset - 1]) and starts_content(offset)):
+                    return False  # The next delimiter starts a sibling after the exterior dots.
                 remaining -= 1
                 if not remaining:
                     return True
@@ -318,19 +335,12 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
             before, after = text[max(0, offset - 1):offset], text[offset + 1:offset + 2]
             if char == "'" and before.isalnum() and after.isalnum():
                 continue  # Apostrophe inside a word.
-            opens = not before or before.isspace() or before in "«([{:,;¡¿"
+            opens = opening_boundary(before)
             if open_quotes and open_quotes[-1][0] == char:
-                if char != "»" and opens and after and not after.isspace() and after not in ")]}»\"'":
-                    following = text[offset + 2:offset + 3]
-                    follows_content = (
-                        after not in ",.;:?!"
-                        or text.startswith("...", offset + 1)
-                        or (following and not following.isspace() and following not in ",.;:?!)]}»\"'")
-                    )
-                    # Ambiguous marks can open an inner quote only if both can close.
-                    if follows_content and has_two_closers(char, offset + 1):
-                        open_quotes.append((char, offset))
-                        continue
+                if (char != "»" and opens and starts_content(offset)
+                        and has_two_closers(char, offset + 1, first_must_close=after in (".", "…"))):
+                    open_quotes.append((char, offset))
+                    continue
                 _, start = open_quotes.pop()
                 spans.append((start, offset + 1))
             elif char in _QUOTE_CLOSERS and opens:

@@ -157,6 +157,26 @@ def test_ambiguous_quote_closure_requires_two_future_delimiters(message, quoted_
     assert [message[start:end] for start, end in _quote_spans(message)] == quoted_spans
 
 
+@pytest.mark.parametrize("quote", ['"', "'"])
+@pytest.mark.parametrize(("prefix", "separator", "fragments"), [
+    ("Anunciá: ", "... y ", ("En la cocina: esperen ", "chau ", "por favor")),
+    ("Anunciá: ", "... y ", ("hola ", "chau")),
+    ("Anunciá ", ", ", ("hola ", "chau")),
+    ("Anunciá: ", "... y ", ("hola ", "... chau")),
+    ("Anunciá: ", "… y ", ("hola ", "chau")),
+])
+def test_sibling_quotes_stay_separate_and_preserve_broadcast(quote, prefix, separator, fragments):
+    siblings = [f"{quote}{fragment}{quote}" for fragment in fragments]
+    message = separator.join(siblings)
+    assert [message[start:end] for start, end in _quote_spans(message)] == siblings
+
+    intercom = IntercomSystem(room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    text = f"{prefix}{message}, por favor"
+    assert CommandAcceptanceGate().evaluate(text).accept
+    intent = classify_household_intent(text)
+    assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
+
+
 @pytest.mark.parametrize("text", [
     "Avisa, en el fogon: Llego Ana",
     "Avisa, en el ambiente: Llego Ana",
