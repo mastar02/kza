@@ -11,8 +11,9 @@
       if (value?.ok !== true || !['operator', 'home', 'evaluator'].includes(value.role)
           || !Array.isArray(value.permissions) || value.permissions.some(permission => typeof permission !== 'string')
           || !Number.isFinite(expires) || expires <= wall()) return false;
-      // The subject only scopes this tab's pending routine identities; it never grants anything.
-      identity = { role: value.role, permissions: new Set(value.permissions), expires, subject: typeof value.subject === 'string' && value.subject ? value.subject : null };
+      identity = { role: value.role, permissions: new Set(value.permissions), expires,
+        subject: typeof value.subject === 'string' && value.subject ? value.subject : null,
+        routineActor: typeof value.routine_actor === 'string' && value.routine_actor ? value.routine_actor : null };
       deadline = monotonic() + Math.max(0, expires - wall());
       return true;
     }
@@ -22,6 +23,7 @@
     return { accept, clear, active, can, remaining, generation: () => generation,
       role: () => active() ? identity.role : null,
       subject: () => active() ? identity.subject : null,
+      routineActor: () => active() ? identity.routineActor : null,
       views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)
         && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')
         // 'Mis recuerdos' is a person's own view: only household credentials bound to a person carry memory:own:read.

@@ -13,30 +13,34 @@ const spec = (name = 'Noche') => ({ name, description: '', enabled: true, timezo
 const failure = (status, detail, extra = {}) => Object.assign(new Error('synthetic'), { status, detail, ...extra });
 const MANAGER = ['home:read', 'home:control', 'routines:manage'];
 const HOUSEHOLD = ['home:read', 'home:control', 'routines:execute'];
+const actorFor = subject => subject == null ? null : 'fixture-actor:' + subject;
 
 function memoryStorage() {
   const map = new Map();
   return { map, get length() { return map.size; }, key: index => [...map.keys()][index] ?? null, getItem: key => map.has(key) ? map.get(key) : null,
     setItem: (key, value) => { map.set(key, String(value)); }, removeItem: key => { map.delete(key); } };
 }
-function session(permissions = MANAGER, subject = 'synthetic-operator') { const set = new Set(permissions); return { can: permission => set.has(permission), subject: () => subject, set }; }
+function session(permissions = MANAGER, subject = 'synthetic-operator', actor = actorFor(subject)) {
+  const set = new Set(permissions);
+  return { can: permission => set.has(permission), subject: () => subject, routineActor: () => actor, set };
+}
 
 /** Minimal server with the store semantics the owner relies on (CAS, actor-scoped idempotent claims). */
 function fakeServer() {
-  // `subject` is the account the shared cookie names now (what whoami answers).
   const server = { routines: new Map(), runs: new Map(), calls: [], hooks: [], serial: 0, subject: 'synthetic-operator', permissions: MANAGER };
-  const attemptKey = (routineId, requestId) => JSON.stringify([routineId, server.subject, requestId]);
-  const canReadRun = run => run && (server.permissions.includes('routines:manage') || run.source === 'manual' && run.actor === server.subject);
+  const actor = () => server.routineActor ?? actorFor(server.subject);
+  const attemptKey = (routineId, requestId) => JSON.stringify([routineId, actor(), requestId]);
+  const canReadRun = run => run && (server.permissions.includes('routines:manage') || run.source === 'manual' && run.actor === actor());
   server.add = (definition, extra = {}) => {
     const id = 'r' + (++server.serial);
     server.routines.set(id, { routine_id: id, revision: 1, created_by: 'synthetic-operator', created_at: '2026-11-10T00:00:00Z', ...JSON.parse(JSON.stringify(definition)), latest_run: null, ...extra });
     return server.routines.get(id);
   };
-  server.run = (routineId, status, actions) => ({ run_id: 'run' + (++server.serial), routine_id: routineId, occurrence_key: '[]', actor: server.subject, source: 'manual', status,
+  server.run = (routineId, status, actions) => ({ run_id: 'run' + (++server.serial), routine_id: routineId, occurrence_key: '[]', actor: actor(), source: 'manual', status,
     snapshot: {}, scheduled_for: null, reason: null, actions: actions || [{ index: 0, entity_id: lamp.entity_id, status: status === 'running' ? 'pending' : 'confirmed', reason: null }] });
   server.handle = (path, options = {}) => {
     const method = options.method || 'GET', url = new URL(path, 'http://x'), parts = url.pathname.split('/').filter(Boolean);
-    if (url.pathname === '/api/admin/auth/whoami') { if (!server.subject) throw failure(401, 'not_authenticated'); return { ok: true, role: server.permissions.includes('routines:manage') ? 'operator' : 'home', permissions: server.permissions, subject: server.subject }; }
+    if (url.pathname === '/api/admin/auth/whoami') { if (!server.subject) throw failure(401, 'not_authenticated'); return { ok: true, role: server.permissions.includes('routines:manage') ? 'operator' : 'home', permissions: server.permissions, subject: server.subject, routine_actor: actor() }; }
     if (url.pathname === '/api/home/catalog') return { rooms: [], entities: [lamp, ac], unassigned_entities: [] };
     if (url.pathname === '/api/routines' && method === 'GET') return [...server.routines.values()].map(item => JSON.parse(JSON.stringify({ ...item, latest_run: canReadRun(item.latest_run) ? item.latest_run : null })));
     if (url.pathname === '/api/routines' && method === 'POST') { const created = server.add(options.body); return JSON.parse(JSON.stringify(created)); }
@@ -163,14 +167,14 @@ test('F1: pending identities survive a reload (new owner, same tab storage) and 
   server.hooks.push({ method: 'PUT', path: '/api/routines/r1', mode: 'reject', error: new TypeError('offline') });
   // pagehide: the page clears its state but keeps this tab's identities.
   await first.instance.clear({ wipe: false });
-  assert.deepEqual(JSON.parse(storage.getItem(routines.PREFIX + 'r1')), { request_id: 'req-1', run_id: null, state: 'unresolved', subject: 'synthetic-operator' });
+  assert.deepEqual(JSON.parse(storage.getItem(routines.PREFIX + 'r1')), { request_id: 'req-1', run_id: null, state: 'unresolved', actor: actorFor('synthetic-operator') });
   const reloaded = owner({ server, storage, ids: () => 'fresh' }); await reloaded.instance.open(); await reloaded.instance.refresh();
   assert.equal(reloaded.instance.getState().attempts.r1.state, 'unresolved');
   await reloaded.instance.consult('r1');
   const state = reloaded.instance.getState();
   assert.equal(state.attempts.r1.run.run_id, [...server.runs.values()][0].run_id, 'consult finds the same run');
   assert.equal(server.runs.size, 1);
-  storage.setItem(routines.WRITE_PREFIX + 'r1', JSON.stringify({ kind: 'disable', routine_id: 'r1', expected_revision: 9, subject: 'synthetic-operator' }));
+  storage.setItem(routines.WRITE_PREFIX + 'r1', JSON.stringify({ kind: 'disable', routine_id: 'r1', expected_revision: 9, actor: actorFor('synthetic-operator') }));
   storage.setItem('kza:other', 'kept');
   await reloaded.instance.clear();
   assert.deepEqual([...storage.map.keys()].sort(), ['kza:other', routines.ENDED_KEY].sort(), 'logout or session end wipes attempts and write markers, leaving only a content-free reminder');
@@ -178,7 +182,7 @@ test('F1: pending identities survive a reload (new owner, same tab storage) and 
 
 test('a terminal flag in storage is not trusted and malformed records are discarded', async () => {
   const storage = memoryStorage(), server = fakeServer(); server.add(spec());
-  storage.setItem(routines.PREFIX + 'r1', JSON.stringify({ request_id: 'own-id', run_id: 'run-x', state: 'terminal', subject: 'synthetic-operator' }));
+  storage.setItem(routines.PREFIX + 'r1', JSON.stringify({ request_id: 'own-id', run_id: 'run-x', state: 'terminal', actor: actorFor('synthetic-operator') }));
   storage.setItem(routines.PREFIX + 'r2', '{not json');
   const { instance } = owner({ server, storage }); await instance.open(); await instance.refresh();
   assert.equal(instance.getState().attempts.r1.state, 'unresolved');
@@ -364,7 +368,7 @@ test('T033-U6: household capabilities allow execution and polling of own receipt
   routine.latest_run = { ...server.run(routine.routine_id, 'running'), actor: 'other-account' };
   server.permissions = HOUSEHOLD; server.subject = 'household-a';
   const identity = createSession({ wall: () => 0, monotonic: () => 0 });
-  identity.accept({ ok: true, role: 'home', permissions: HOUSEHOLD, subject: server.subject, expires_at: 60 });
+  identity.accept({ ok: true, role: 'home', permissions: HOUSEHOLD, subject: server.subject, routine_actor: actorFor(server.subject), expires_at: 60 });
   const api = createScopedApi({ session: identity, transport: server.api });
   const handle = server.handle;
   server.handle = (path, options) => {
@@ -400,7 +404,7 @@ test('T033-U6: household consults a lost response by attempt and retries with th
     server.hooks.push({ method: 'POST', path: '/api/routines/r1/execute', mode: 'drop' });
     assert.equal((await instance.execute('r1')).uncertain, true);
     const pending = JSON.parse(storage.getItem(routines.PREFIX + 'r1'));
-    assert.equal(pending.subject, 'household-a');
+    assert.equal(pending.actor, actorFor('household-a'));
     const before = server.calls.length;
     await recover(instance);
     const [whoami, request] = server.calls.slice(before);
@@ -545,7 +549,7 @@ test('R2: records of another account are dropped on restore and never consulted 
   await first.instance.execute('r1');
   server.hooks.push({ method: 'POST', path: '/api/routines/r1/disable', mode: 'reject', error: new TypeError('offline') });
   await first.instance.setEnabled('r1', false);
-  storage.setItem(routines.PREFIX + 'r9', JSON.stringify({ request_id: 'legacy-unbound', run_id: null, state: 'unresolved' }));
+  storage.setItem(routines.PREFIX + 'r9', JSON.stringify({ request_id: 'legacy-unbound', run_id: null, state: 'unresolved', subject: 'operator-b' }));
   await first.instance.clear({ wipe: false }); // pagehide
   server.subject = 'operator-b';
   const before = server.calls.length;
@@ -561,7 +565,7 @@ test('R2: records of another account are dropped on restore and never consulted 
 test('R2: a retry refuses an in-memory attempt whose account differs from the session', async () => {
   let current = 'operator-a';
   const server = fakeServer(); server.add(spec()); server.subject = 'operator-a';
-  const instance = routines.createRoutineOwner({ api: server.api, session: { can: () => true, subject: () => current }, storage: memoryStorage(), makeId: () => 'id-a', schedule: () => 1, cancel: () => {} });
+  const instance = routines.createRoutineOwner({ api: server.api, session: { can: () => true, routineActor: () => actorFor(current) }, storage: memoryStorage(), makeId: () => 'id-a', schedule: () => 1, cancel: () => {} });
   await instance.open(); await instance.refresh();
   server.hooks.push({ method: 'POST', path: '/api/routines/r1/execute', mode: 'drop' });
   await instance.execute('r1');
@@ -571,7 +575,7 @@ test('R2: a retry refuses an in-memory attempt whose account differs from the se
   assert.equal(instance.getState().attempts.r1, undefined);
 });
 
-test('R2: without a session subject nothing is sent', async () => {
+test('R2: without a session actor nothing is sent', async () => {
   const { instance, server } = await opened({ subject: null });
   server.add(spec()); await instance.refresh();
   assert.deepEqual(await instance.execute('r1'), { sent: false });
@@ -654,6 +658,43 @@ test('R2b: a retry or a consult confirms the account first even without leaving 
   }
 });
 
+test('T033-U6: household credentials with the same name cannot recover each other’s attempts', async () => {
+  for (const recover of [instance => instance.retryAttempt('r1'), instance => instance.consult('r1')]) {
+    const server = fakeServer(); server.add(spec()); server.permissions = HOUSEHOLD;
+    server.subject = 'same-home-name'; server.routineActor = 'fixture-credential-a';
+    const storage = memoryStorage();
+    const identity = createSession({ wall: () => 0, monotonic: () => 0 });
+    const accept = () => identity.accept({ ...server.handle('/api/admin/auth/whoami'), expires_at: 60 });
+    assert.equal(accept(), true);
+    const api = createScopedApi({ session: identity, transport: server.api });
+    const options = { api, session: identity, storage, makeId: () => 'shared-id', schedule: () => 1, cancel: () => {} };
+    const instance = routines.createRoutineOwner(options);
+    await instance.open(); await instance.refresh();
+    server.hooks.push({ method: 'POST', path: '/api/routines/r1/execute', mode: 'drop' });
+    assert.equal((await instance.execute('r1')).uncertain, true);
+    const stored = storage.getItem(routines.PREFIX + 'r1');
+    assert.equal(JSON.parse(stored).actor, 'fixture-credential-a');
+
+    server.routineActor = 'fixture-credential-b';
+    assert.equal(identity.subject(), server.subject);
+    const before = server.calls.length;
+    await recover(instance);
+    assert.deepEqual(server.calls.slice(before).map(call => call.path), ['/api/admin/auth/whoami']);
+    assert.equal(server.runs.size, 1);
+    assert.deepEqual(instance.getState().attempts, {});
+
+    storage.setItem(routines.PREFIX + 'r1', stored);
+    assert.equal(accept(), true);
+    const reloaded = routines.createRoutineOwner(options);
+    await reloaded.open(); await reloaded.refresh();
+    assert.deepEqual(reloaded.getState().attempts, {});
+    assert.equal(reloaded.getState().routines[0].latest_run, null);
+    assert.equal(storage.getItem(routines.PREFIX + 'r1'), null);
+    assert.equal((await reloaded.execute('r1')).sent, true);
+    assert.equal(server.runs.size, 2, 'a new attempt with the same request_id belongs to the second credential');
+  }
+});
+
 test('R2b: when the account cannot be confirmed nothing is sent and the identity is kept', async () => {
   const { instance, server, storage, changed } = await takenOver();
   server.subject = 'operator-a';
@@ -667,11 +708,11 @@ test('R2b: when the account cannot be confirmed nothing is sent and the identity
   assert.equal(server.runs.size, 1, 'and does not duplicate');
 });
 
-test('R2b: a whoami answer without a subject counts as another account', async () => {
+test('R2b: a whoami answer with only the same display name cannot confirm the account', async () => {
   const { instance, server, changed } = await takenOver();
   server.subject = 'operator-a';
   const handle = server.handle;
-  server.handle = (path, options) => (path === '/api/admin/auth/whoami' ? { ok: true, role: 'operator', permissions: MANAGER } : handle(path, options));
+  server.handle = (path, options) => (path === '/api/admin/auth/whoami' ? { ok: true, role: 'operator', permissions: MANAGER, subject: server.subject } : handle(path, options));
   assert.equal((await instance.retryAttempt('r1')).sent, false);
   assert.equal(changed(), 1);
   assert.equal(executes(server).length, 1);

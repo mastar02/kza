@@ -591,9 +591,10 @@ class DashboardAPI:
             """Return the durable claim while its scheduler-owned worker proceeds."""
             permissions = routine_access_permissions(principal, execute=True)
             scheduler = self._require_routines(principal, permissions)
+            actor = self._require_routine_actor(principal)
             try:
                 run = await scheduler.execute_by_id(
-                    routine_id, actor=principal.subject, request_id=body.request_id,
+                    routine_id, actor=actor, request_id=body.request_id,
                     guard=session_guard(request, permissions, principal))
             except PermissionError as error:
                 raise HTTPException(status_code=403, detail="routine_write_denied") from error
@@ -624,7 +625,7 @@ class DashboardAPI:
             """
             scheduler = self._require_routines(principal, routine_access_permissions(principal))
             run = await scheduler.get_manual_attempt(
-                routine_id, actor=principal.subject, request_id=request_id,
+                routine_id, actor=self._require_routine_actor(principal), request_id=request_id,
             )
             return run_to_dict(run)
 
@@ -1391,9 +1392,15 @@ class DashboardAPI:
         return self.scheduler
 
     @staticmethod
+    def _require_routine_actor(principal: DashboardPrincipal) -> str:
+        if principal.routine_actor is None:
+            raise HTTPException(status_code=403, detail="dashboard_permission_denied")
+        return principal.routine_actor
+
+    @staticmethod
     def _can_read_routine_run(principal: DashboardPrincipal, *, actor: str, source: str) -> bool:
         return (DashboardPermission.ROUTINES_MANAGE in principal.permissions
-                or (source == "manual" and actor == principal.subject))
+                or (source == "manual" and actor == principal.routine_actor))
 
     async def _routine_to_response(self, routine: ScheduledRoutine, principal: DashboardPrincipal) -> dict:
         """Project execution and voice brake receipts independently."""

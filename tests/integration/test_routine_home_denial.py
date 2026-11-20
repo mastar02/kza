@@ -91,7 +91,8 @@ async def test_household_can_execute_and_read_own_receipt_but_cannot_manage(sess
         assert first.status_code == replay.status_code == 202
         run = first.json()
         assert run['routine_id'] == routine.routine_id and run['run_id'] == replay.json()['run_id']
-        assert run['actor'] == identity['subject'] and run['source'] == 'manual'
+        assert run['actor'] == identity['routine_actor'] and run['source'] == 'manual'
+        assert run['actor'] != identity['subject']
         await wait_for_worker(scheduler, run['run_id'])
         run_route = route + '/runs/' + run['run_id']
         terminal = await client.get(run_route)
@@ -103,7 +104,10 @@ async def test_household_can_execute_and_read_own_receipt_but_cannot_manage(sess
         assert (await client.get(route)).json()['latest_run'] == terminal.json()
         assert (await client.get('/api/routines')).json()[0]['latest_run'] == terminal.json()
 
-        async with login(graph, dashboard_auth, DashboardRole.HOME, subject='synthetic-other-home') as other:
+        async with login(graph, dashboard_auth, DashboardRole.HOME, subject=identity['subject']) as other:
+            other_identity = (await other.get('/api/admin/auth/whoami')).json()
+            assert other_identity['subject'] == identity['subject']
+            assert other_identity['routine_actor'] != identity['routine_actor']
             for response in (await other.get(run_route), await other.get(route + '/runs/unknown-run'),
                              await other.get(route + '/attempts', params=attempt)):
                 assert (response.status_code, response.json()) == (404, {'detail': 'routine_not_found'})
@@ -112,7 +116,8 @@ async def test_household_can_execute_and_read_own_receipt_but_cannot_manage(sess
             other_claim = await other.post(route + '/execute', json=attempt)
             assert other_claim.status_code == 202
             other_run = other_claim.json()
-            assert other_run['run_id'] != run['run_id'] and other_run['actor'] == 'synthetic-other-home'
+            assert other_run['run_id'] != run['run_id'] and other_run['actor'] == other_identity['routine_actor']
+            assert (await other.get(route + '/attempts', params=attempt)).json()['run_id'] == other_run['run_id']
             await wait_for_worker(scheduler, other_run['run_id'])
         assert (await client.get(route)).json()['latest_run'] is None
         assert (await client.get('/api/routines')).json()[0]['latest_run'] is None
@@ -153,15 +158,21 @@ async def test_latest_run_is_projected_for_each_rest_and_ws_reader(session_graph
     home_subject = 'synthetic-home'
     # Subscribe the foreign reader first so redaction cannot mutate the shared payload.
     async with (
-        login(graph, dashboard_auth, DashboardRole.HOME, subject='synthetic-other-home') as other,
+        login(graph, dashboard_auth, DashboardRole.HOME, subject=home_subject) as other,
         login(graph, dashboard_auth, DashboardRole.HOME, subject=home_subject) as home,
         login(graph, dashboard_auth, DashboardRole.OPERATOR) as operator,
         routine_socket(graph.dashboard.app, other) as other_ws,
         routine_socket(graph.dashboard.app, home) as home_ws,
         routine_socket(graph.dashboard.app, operator) as operator_ws,
     ):
-        for source in ('manual', 'scheduled', HOUSEHOLD_VOICE):
-            payload = definition(f'Synthetic {source} routine')
+        home_actor = (await home.get('/api/admin/auth/whoami')).json()['routine_actor']
+        for example, actor, source, home_can_read in (
+            ('own', home_actor, 'manual', True),
+            ('historical', home_subject, 'manual', False),
+            ('scheduled', home_actor, 'scheduled', False),
+            ('voice', home_actor, HOUSEHOLD_VOICE, False),
+        ):
+            payload = definition(f'Synthetic {example} routine')
             created = await operator.post('/api/routines', json=payload)
             assert created.status_code == 200
             routine = created.json()
@@ -170,18 +181,18 @@ async def test_latest_run_is_projected_for_each_rest_and_ws_reader(session_graph
                 assert frame == {'type': 'routine_created', 'routine': routine}
 
             routine_id = routine['routine_id']
-            # Give each historical source the same actor to test source and ownership independently.
-            key = json.dumps([source, 'synthetic-history'])
-            claim = await scheduler.store.claim_run(routine_id, key, actor=home_subject, source=source)
+            # Synthetic rows separate the ownership and source rules, including the old name-keyed format.
+            key = json.dumps([source, actor, 'synthetic-history'], separators=(',', ':'))
+            claim = await scheduler.store.claim_run(routine_id, key, actor=actor, source=source)
             run = await scheduler.store.finish_run(claim.run.run_id, RunStatus.SKIPPED)
             brake = await scheduler.brake_by_name(payload['name'], RoutineBrake.STOP,
-                request_id=f'{source}-brake', guard=lambda: True)
+                request_id=f'{example}-brake', guard=lambda: True)
             brake_json = {'receipt_id': brake.receipt_id, 'source': HOUSEHOLD_VOICE,
                           'operation': 'stop', 'status': 'nothing_to_stop'}
             route = f'/api/routines/{routine_id}'
             updated = await operator.put(route, json={**payload, 'expected_revision': routine['revision']})
             assert updated.status_code == 200
-            for client, socket, visible in ((other, other_ws, False), (home, home_ws, source == 'manual'),
+            for client, socket, visible in ((other, other_ws, False), (home, home_ws, home_can_read),
                                             (operator, operator_ws, True)):
                 expected_run = updated.json()['latest_run'] if visible else None
                 if visible:
@@ -201,6 +212,25 @@ async def test_latest_run_is_projected_for_each_rest_and_ws_reader(session_graph
                     assert direct.status_code == 200 and direct.json() == expected_run
                 else:
                     assert (direct.status_code, direct.json()) == (404, {'detail': 'routine_not_found'})
+            if example == 'historical':
+                assert (await home.get(route + '/attempts', params={'request_id': 'synthetic-history'})).status_code == 404
+
+
+async def test_routine_actor_is_stable_across_transports_and_logins(session_graph, dashboard_auth):
+    graph = session_graph
+    authority = graph.dashboard_authority
+    grant = await authority.issue_credential(authority.resolve(dashboard_auth['Authorization']),
+        subject='synthetic-home', role=DashboardRole.HOME, expires_at=time.time() + 120)
+    async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver') as client:
+        whoami = '/api/admin/auth/whoami'
+        bearer = await client.get(whoami, headers={'Authorization': f'Bearer {grant.token}'})
+        assert bearer.status_code == 200 and grant.identity not in bearer.text
+        actor = bearer.json()['routine_actor']
+        assert actor and actor != grant.principal.subject
+        for _ in range(2):
+            assert (await client.post('/api/admin/auth/login', json={'token': grant.token})).status_code == 200
+            assert (await client.get(whoami)).json()['routine_actor'] == actor
+            assert (await client.post('/api/admin/auth/logout')).json()['session_revoked']
 
 
 @pytest.mark.parametrize('grants, receipts, execute', [
