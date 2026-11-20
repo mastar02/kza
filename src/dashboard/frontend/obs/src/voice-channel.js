@@ -74,24 +74,31 @@
           : value === 0 && Number.isFinite(observed) ? {value,mono:Infinity,wall:Infinity} : null
         : null;
       const options = page?.room_options;
-      let resetRoom = false;
+      let roomMissing = false;
       if (token && filters.text === null && Array.isArray(options) && options.length <= 32
           && options.every(room => typeof room === 'string' && room.length && [...room].length <= 128 && !/[\x00-\x1f\x7f]/.test(room))) {
         rooms = options.length ? timed(Object.freeze([...options]),page.room_options_expires_at,observed,started,page) : null;
-        if (!rooms?.value.includes(filters.room?.id)) resetRoom = resetMissingRoom();
-      } else if (!token && !rooms) resetRoom = resetMissingRoom();
+        roomMissing = !rooms?.value.includes(filters.room?.id);
+      } else roomMissing = !token && !rooms;
+      const resetRoom = roomMissing && state.captures.snapshot().length === 0 && resetMissingRoom();
       armSummary(); notifyFilters();
       if (resetRoom) void reapplyCaptures();
     }
     function retireSummary(tokens) {
       const countRetired = tokens.includes(count?.token), roomsRetired = tokens.includes(rooms?.token);
-      if (!countRetired && !roomsRetired) return;
+      const resetRoom = !rooms && tokens.includes(capturePageToken) && resetMissingRoom();
+      if (!countRetired && !roomsRetired && !resetRoom) return;
       const refreshRoom = roomsRetired && canRefreshRoom(rooms.token) && resetMissingRoom();
       if (countRetired) count = null;
       if (roomsRetired) rooms = null;
       armSummary(); notifyFilters(); channels.captures.flush();
       if (refreshRoom) void reapplyCaptures();
     }
+    // Clear the selector's selected-room fallback before the channel retires
+    // the capture ticket and queues its ACK.
+    const unsubscribeCaptures = state.captures.subscribe(() => {
+      if (state.captures.snapshot().length === 0) notifyFilters();
+    });
     const channels = Object.fromEntries(Object.keys(PATHS).map(kind => [kind,channelsAPI.createConversationChannel({
       store:state[kind], fetch, path:PATHS[kind], channel:`voices:${kind}`, loadOnOpen:false, hasView,
       emitAck:message => actions.size===0 && emitAck(message), onUnauthorized,
@@ -247,7 +254,11 @@
           expected_profile_revision:profileRevision,expected_link_revision:linkRevision},'PUT');
       },
       deleteProfile(identity,revision) { return mutate('/api/voices/profiles/'+identity,{expected_revision:revision},'DELETE'); },
-      dispose() { closed = true; root?.removeEventListener?.('pagehide',leave); leave(); for (const channel of Object.values(channels)) channel.dispose(); },
+      dispose() {
+        closed = true; root?.removeEventListener?.('pagehide',leave);
+        leave(); unsubscribeCaptures();
+        for (const channel of Object.values(channels)) channel.dispose();
+      },
     };
   }
   const api = { createVoiceController, CAPTURE_QUERY_KEYS };

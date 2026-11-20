@@ -217,14 +217,14 @@ function transcript(id=review().id) {
   return {id,variant:'text',transcript:row.transcript,room_id:row.room_id,duration_s:row.duration_s,
     transcript_scope:row.transcript_scope,transcript_metadata:row.transcript_metadata};
 }
-function controllerFixture(makeController=createVoiceController, {wallSkew=0}={}) {
+function controllerFixture(makeController=createVoiceController, {wallSkew=0,onAck=()=>{}}={}) {
   let now=0, id=0, unauthorized=0;
   const calls=[], acks=[], revoked=[], timers=new Map();
   const clock={monotonic:()=>now,wall:()=>NOW*1000+now+wallSkew,
     schedule:(fn,ms)=>{timers.set(++id,{fn,at:now+ms});return id;},cancel:token=>timers.delete(token)};
   const state=createVoiceState({...clock,url:{createObjectURL:()=>`blob:synthetic-${++id}`,revokeObjectURL:token=>revoked.push(token)}});
   const controller=makeController({state,...clock,canSearch:()=>true,
-    onUnauthorized:()=>unauthorized++,emitAck:ack=>{acks.push(ack);return true;},
+    onUnauthorized:()=>unauthorized++,emitAck:ack=>{onAck(ack);acks.push(ack);return true;},
     fetch:(path,options)=>new Promise(resolve=>{
       const channel=path===QUERY ? 'voices:captures' : path.includes('/profiles') ? 'voices:profiles' : 'voices:review';
       calls.push({path,options,respond({rows=null,fields={},status=200,eventId=B,empty=null}={}) {
@@ -426,6 +426,65 @@ test('an earlier room-options deadline preserves the selected room and its live 
   assert.deepEqual(state.captures.snapshot(),[]);
   assert.equal(c.captureSummary().count,null);
   assert.deepEqual(acknowledged(),[B]);
+});
+
+for (const reason of ['expired in flight','omitted from the capped options']) test(`live filtered rows survive when the room is ${reason}`,async t=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  t.after(()=>c.dispose());
+  const room={kind:'room',id:'Synthetic room'}, row=groupedCapture();
+  await c.setFilters({room});
+  if (reason==='expired in flight') f.advance(3000);
+  const options=reason==='expired in flight' ? [room.id]
+    : Array.from({length:32},(_,index)=>'Other synthetic room '+index);
+  f.latest().respond({rows:[row],fields:{expires_at:NOW+10,matching_count:1,scan_complete:true,
+    count_expires_at:NOW+10,room_options:options,room_options_expires_at:NOW+3}});
+  await flush();
+  assert.equal(f.calls.length,1);
+  assert.deepEqual(state.captures.snapshot().map(item=>item.id),[row.id]);
+  assert.deepEqual(c.captureFilters().room,room);
+  assert.deepEqual(c.captureSummary(),{count:1,rooms:reason==='expired in flight'?[]:options,roomNotice:''});
+  assert.equal(state.captures.deliveryToken(),B);
+  assert.deepEqual(f.acks,[]);
+});
+
+for (const withdrawal of ['expiry','retire']) test(`OBS drops a selected room from the DOM before ACK on ${withdrawal}`,async t=>{
+  const {readFileSync}=require('node:fs'), {runInNewContext}=require('node:vm');
+  const {createDocument,Element}=require('../mocks/dom_shim.cjs');
+  const window={};
+  runInNewContext(readFileSync(require.resolve('../../src/dashboard/frontend/obs/src/voice-filters.js'),'utf8'),{window});
+  const doc=createDocument();
+  Object.defineProperty(doc,'createElement',{value:tag=>{
+    const element=new Element(tag,doc);
+    Object.defineProperty(element,'parentElement',{get:()=>element.parentNode});
+    return element;
+  }});
+  const observed=[];
+  let select;
+  const f=controllerFixture(createVoiceController,{onAck(ack){
+    for (const receipt of ack.receipts) observed.push({ticket:receipt.ticket,value:select.value,text:select.textContent});
+  }});
+  const c=f.controller, room={kind:'room',id:'Synthetic room'};
+  const filters=window.KzaVoiceFilters.mountVoiceFilters({doc,controller:c,button:(text,click)=>{
+    const button=doc.createElement('button'); button.textContent=text;
+    button.addEventListener('click',click); return button;
+  }});
+  select=filters.element.querySelector('select');
+  t.after(()=>{filters.stop();c.dispose();});
+  await c.setFilters({room});
+  f.latest().respond({rows:[groupedCapture()],fields:{expires_at:NOW+10,matching_count:1,scan_complete:true,
+    count_expires_at:NOW+10,room_options:[room.id],room_options_expires_at:NOW+3}});
+  await c.settled();
+  f.advance(3000); await flush();
+  assert.equal(select.value,'room:'+room.id);
+  assert.ok(select.textContent.includes(room.id));
+  assert.deepEqual(observed,[]);
+  if (withdrawal==='expiry') f.advance(7000);
+  else f.retire('voices:captures',B);
+  assert.equal(select.value,'');
+  assert.equal(select.textContent.includes(room.id),false);
+  await flush();
+  assert.deepEqual(observed,[{ticket:B,value:'',text:'TodasSin habitación registrada'}]);
+  if (withdrawal==='retire') assert.equal(c.captureFilters().room,null);
 });
 
 test('room options can expire without unmounting a live unfiltered capture during review',async t=>{

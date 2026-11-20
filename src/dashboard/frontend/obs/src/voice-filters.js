@@ -90,6 +90,7 @@
       const filters = controller.captureFilters(), summary = controller.captureSummary();
       const selectedRoom = filters.room?.kind === 'room' ? filters.room.id : null;
       const visibleRooms = selectedRoom !== null && !summary.rooms.includes(selectedRoom)
+        && controller.state.captures.snapshot().length > 0
         ? [...summary.rooms,selectedRoom] : summary.rooms;
       const roomKey = JSON.stringify(visibleRooms);
       if (roomKey !== drawnRooms) {
@@ -97,7 +98,7 @@
         options(room,[['','Todas'],...visibleRooms.map(id => ['room:'+id,id]),['unrecorded','Sin habitación registrada']]);
       }
       room.value = filters.room?.kind === 'unrecorded' ? 'unrecorded'
-        : selectedRoom !== null ? 'room:'+selectedRoom : '';
+        : visibleRooms.includes(selectedRoom) ? 'room:'+selectedRoom : '';
       group.value = filters.group_state ?? ''; association.value = filters.association ?? '';
       listenable.checked = filters.listenable_only;
       since.parentElement.hidden = until.parentElement.hidden = period.value !== 'custom';

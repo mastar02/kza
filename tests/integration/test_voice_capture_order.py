@@ -302,6 +302,25 @@ async def test_room_options_ignore_the_room_filter_and_expire_at_each_rooms_last
         assert searched.summary.room_options is None and searched.summary.room_options_expires_at is None
 
 
+async def test_room_options_include_the_selected_live_room_beyond_the_cap(tmp_path):
+    async with graph(tmp_path) as (_, _, voices, clock):
+        rooms = tuple(f'Habitación sintética {index:02}' for index in range(33))
+        for room in rooms[:-1]:
+            await capture(voices, clock, room=room, ttl=400)
+        selected, identity = await capture(voices, clock, room=rooms[-1], ttl=50)
+        unfiltered = await query(voices, flt())
+        assert unfiltered.summary.room_options == rooms[:32]
+        filters = flt(room_kind='room', room_id=rooms[-1])
+        projection = await query(voices, filters)
+        assert ids(projection) == {identity}
+        assert projection.summary.room_options == (*rooms[:31], rooms[-1])
+        assert projection.summary.room_options_expires_at == selected.expires_at
+        clock.now = selected.expires_at
+        expired = await query(voices, filters)
+        assert expired.rows == []
+        assert expired.summary.room_options == rooms[:32]
+
+
 async def test_count_expires_at_the_earliest_deadline_among_the_counted_rows(tmp_path):
     """contract.count.expiry: no tolerance window, even when the earliest deadline is an off-page row's."""
     async with graph(tmp_path) as (_, _, voices, clock):
