@@ -126,7 +126,7 @@
           || retired.size + tokens.filter(token => !retired.has(token)).length > 64) return false;
       for (const token of tokens) retired.add(token);
       const accepted = metadata.receive({ ...frame, type:'retire' });
-      if (accepted) onRetire();
+      if (accepted) onRetire(tokens);
       return accepted;
     }
     function clearView() {

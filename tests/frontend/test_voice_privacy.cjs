@@ -354,6 +354,61 @@ test('room options survive an empty filtered page and their original ACK waits f
   c.dispose();
 });
 
+test('room options expire with their snapshot when its deadline is earlier',async()=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  await c.setFilters({listenable_only:true});
+  f.latest().respond({rows:[groupedCapture()],fields:{expires_at:NOW+4,matching_count:1,scan_complete:true,
+    count_expires_at:NOW+8,room_options:['Synthetic room'],room_options_expires_at:NOW+10}});
+  await c.settled();
+  f.advance(3999);
+  assert.deepEqual(c.captureSummary().rooms,['Synthetic room']);
+  assert.equal(state.captures.snapshot().length,1);
+  f.advance(1); await flush();
+  assert.deepEqual(state.captures.snapshot(),[]);
+  assert.deepEqual(c.captureSummary(),{count:null,rooms:[],roomNotice:''});
+  assert.equal(f.calls.length,2);
+  assert.deepEqual(f.query(),{...DEFAULTS,listenable_only:true});
+  f.latest().respond(); await c.settled(); c.dispose();
+});
+
+test('retiring an earlier captures snapshot leaves the current summary intact',async()=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  const fields={matching_count:1,scan_complete:true,count_expires_at:NOW+8,room_options_expires_at:NOW+10};
+  await c.setFilters({listenable_only:true});
+  f.latest().respond({rows:[groupedCapture()],fields:{...fields,room_options:['Old synthetic room']}});
+  await c.settled();
+  await c.setFilters({room:{kind:'room',id:'Old synthetic room'}});
+  f.latest().respond({eventId:C,rows:[{...groupedCapture(),room_id:'Old synthetic room'}],
+    fields:{...fields,room_options:['Current synthetic room','Old synthetic room']}});
+  await c.settled();
+  f.retire('voices:captures',B); await flush();
+  assert.deepEqual(c.captureSummary(),{count:1,rooms:['Current synthetic room','Old synthetic room'],roomNotice:''});
+  assert.equal(state.captures.snapshot().length,1);
+  assert.deepEqual(c.captureFilters().room,{kind:'room',id:'Old synthetic room'});
+  assert.equal(f.calls.length,2);
+  f.retire('voices:captures',C); await flush();
+  assert.deepEqual(c.captureSummary().rooms,[]);
+  assert.equal(c.captureFilters().room,null);
+  assert.equal(f.calls.length,3);
+  f.latest().respond(); await c.settled(); c.dispose();
+});
+
+test('retirement tracks retained room options and search count by their own snapshots',async()=>{
+  const f=controllerFixture(), {controller:c}=f;
+  const fields={matching_count:1,scan_complete:true,count_expires_at:NOW+8};
+  await c.setFilters({listenable_only:true});
+  f.latest().respond({rows:[groupedCapture()],fields:{...fields,room_options:['Synthetic room'],room_options_expires_at:NOW+10}});
+  await c.settled();
+  await c.setFilters({text:'synthetic phrase'});
+  f.latest().respond({eventId:C,rows:[groupedCapture()],fields}); await c.settled();
+  f.retire('voices:captures',B);
+  assert.deepEqual(c.captureSummary(),{count:1,rooms:[],roomNotice:''});
+  f.retire('voices:captures',C);
+  assert.deepEqual(c.captureSummary(),{count:null,rooms:[],roomNotice:''});
+  assert.equal(f.calls.length,2);
+  c.dispose();
+});
+
 test('a cursor conflict restarts captures and a denial does not expire the session',async()=>{
   const f=controllerFixture(), {controller:c,state}=f;
   await c.setFilters({text:'synthetic phrase'});
@@ -363,6 +418,16 @@ test('a cursor conflict restarts captures and a denial does not expire the sessi
   f.latest().respond({status:403}); await c.settled();
   assert.equal(state.captures.status(),'forbidden'); assert.equal(f.unauthorized(),0);
   c.leave(); assert.deepEqual({...c.captureFilters(),cursor:null},DEFAULTS);
+  c.dispose();
+});
+
+test('a filters-only 403 checks session authority even when admin search is available',async()=>{
+  const f=controllerFixture(), {controller:c,state}=f;
+  assert.equal(await c.setFilters({listenable_only:true}),true);
+  assert.equal(f.query().text,null);
+  f.latest().respond({status:403}); await c.settled();
+  assert.equal(f.unauthorized(),1);
+  assert.equal(state.captures.status(),'unavailable');
   c.dispose();
 });
 

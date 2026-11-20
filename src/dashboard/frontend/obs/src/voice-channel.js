@@ -17,18 +17,19 @@
       + (cursor ? (includePerson ? '&' : '?') + 'cursor=' + encodeURIComponent(cursor) : '');
     let closed = false, sequence = 0, capturesSequence = 0, reapplying = false;
     let filters = DEFAULT_FILTERS, count = null, rooms = null, summaryTimer = null, roomNotice = '';
-    let queryCursor = null;
+    let queryCursor = null, queryHasSearch = false;
     const pages = {}, actions = new Set(), aborts = new Set();
     const filterListeners = new Set();
     const searchAllowed = () => !profilesOnly && canSearch() === true;
     const expired = entry => entry && (entry.mono <= monotonic() || entry.wall <= wall());
     const notifyFilters = (reset = false) => { for (const listener of filterListeners) listener(reset); };
-    function timed(value, deadline, observed, started, token) {
+    function timed(value, deadline, observed, started, page) {
       if (!Number.isFinite(observed) || !Number.isFinite(deadline) || deadline <= observed || deadline-observed > 172800) return null;
+      const expiresAt = Math.min(deadline,page.expires_at);
       const elapsed = Math.max(0,monotonic()-started.mono,wall()-started.wall);
-      const budget = (deadline-observed)*1000-elapsed;
-      if (budget <= 0 || deadline*1000 <= wall()) return null;
-      return {value,token,mono:monotonic()+budget,wall:Math.min(deadline*1000,wall()+budget)};
+      const budget = (expiresAt-observed)*1000-elapsed;
+      if (budget <= 0 || expiresAt*1000 <= wall()) return null;
+      return {value,token:page.event_id,mono:monotonic()+budget,wall:Math.min(expiresAt*1000,wall()+budget)};
     }
     function armSummary() {
       if (summaryTimer !== null) cancel(summaryTimer);
@@ -63,29 +64,37 @@
       const observed = page?.count_observed_at ?? page?.observed_at, token = page?.event_id;
       const value = page?.matching_count;
       count = page?.scan_complete === true && Number.isSafeInteger(value) && value >= 0 && value <= 4096
-        ? token ? timed(value,page.count_expires_at,observed,started,token)
+        ? token ? timed(value,page.count_expires_at,observed,started,page)
           : value === 0 && Number.isFinite(observed) ? {value,mono:Infinity,wall:Infinity} : null
         : null;
       const options = page?.room_options;
       let resetRoom = false;
       if (token && filters.text === null && Array.isArray(options) && options.length <= 32
           && options.every(room => typeof room === 'string' && room.length && [...room].length <= 128 && !/[\x00-\x1f\x7f]/.test(room))) {
-        rooms = options.length ? timed(Object.freeze([...options]),page.room_options_expires_at,observed,started,token) : null;
+        rooms = options.length ? timed(Object.freeze([...options]),page.room_options_expires_at,observed,started,page) : null;
         if (!rooms?.value.includes(filters.room?.id)) resetRoom = resetMissingRoom();
       } else if (!token && !rooms) resetRoom = resetMissingRoom();
       armSummary(); notifyFilters();
       if (resetRoom) void reapplyCaptures();
+    }
+    function retireSummary(tokens) {
+      const countRetired = tokens.includes(count?.token), roomsRetired = tokens.includes(rooms?.token);
+      if (!countRetired && !roomsRetired) return;
+      if (countRetired) count = null;
+      if (roomsRetired) rooms = null;
+      if (roomsRetired && resetMissingRoom()) void reapplyCaptures();
+      else { armSummary(); notifyFilters(); }
     }
     const channels = Object.fromEntries(Object.keys(PATHS).map(kind => [kind,channelsAPI.createConversationChannel({
       store:state[kind], fetch, path:PATHS[kind], channel:`voices:${kind}`, loadOnOpen:false, hasView,
       emitAck:message => actions.size===0 && emitAck(message), onUnauthorized,
       monotonic, wall,
       onPage:kind === 'captures' ? capturePage : cursor => { pages[kind] = cursor; },
-      onRetire:kind === 'captures' ? () => { clearSummary(); if (resetMissingRoom()) void reapplyCaptures(); } : undefined,
+      onRetire:kind === 'captures' ? retireSummary : undefined,
       retains:kind === 'captures' ? token => rooms?.token === token || count?.token === token : undefined,
       onHttpError:kind === 'captures' ? status => {
         if (status === 409 && queryCursor !== null) void reapplyCaptures();
-        if (status === 403) { clearSummary(); resetMissingRoom(); notifyFilters(); return true; }
+        if (status === 403) { resetMissingRoom(); clearSummary(); return queryHasSearch; }
         return false;
       } : undefined,
       onState:value => {
@@ -94,9 +103,10 @@
       },
     })]));
     function queryCaptures(cursor = null) {
-      const body = JSON.stringify({...filters,text:searchAllowed() ? filters.text : null,cursor});
+      const text = searchAllowed() ? filters.text : null;
+      const body = JSON.stringify({...filters,text,cursor});
       const accepted = channels.captures.refresh(PATHS.captures,{method:'POST',body});
-      if (accepted) queryCursor = cursor;
+      if (accepted) { queryCursor = cursor; queryHasSearch = text !== null; }
       return accepted;
     }
     async function reapplyCaptures() {
@@ -155,7 +165,7 @@
       return accepted;
     }
     function clearFilters() {
-      capturesSequence++; reapplying = false; queryCursor = null;
+      capturesSequence++; reapplying = false; queryCursor = null; queryHasSearch = false;
       filters = DEFAULT_FILTERS; roomNotice = ''; clearSummary(true);
     }
     function leave() {
