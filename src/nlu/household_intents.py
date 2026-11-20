@@ -237,6 +237,7 @@ class HouseholdIntentClassifier:
 _WORD_RE = re.compile(r"\d+(?:[:.]\d{2}|[.,]\d(?!\d))?|[^\W\d_]+")
 _QUOTE_CLOSERS = {"«": "»", '"': '"', "'": "'"}
 _QUOTED_PUNCTUATION = re.compile(r"[,.;:?!…¡¿—-]+")
+_SEPARATOR_AFTER_EMPTY = re.compile(r"\s*(?:(?:\.{3}|…)\s*)?(?:[,;:?!—-]|$)")
 _MAX_QUOTE_DEPTH = 6
 _LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras", "bueno",
                          "bue", "dale"})
@@ -322,10 +323,17 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
             # Punctuation alone after an empty pair does not start nested content.
             return re.match(r"[,.;:?!…\s¡¿«\"'([{—-]*[^\W_]", text[start:]) is not None
         following = text[start + 1:start + 2]
+        if after in "—-":
+            return (
+                start == offset + 1 and bool(following) and not following.isspace()
+                and following not in ",.;:?!…)]}»\"'—-"
+            )
+        if text.startswith(("...", "…"), start):
+            ellipsis_end = start + (3 if text.startswith("...", start) else 1)
+            # A nested opening may come between the ellipsis and the word.
+            return re.match(r"""\s*(?:(?:[«"']|\.{3}|…)\s*)*[^\W_]""", text[ellipsis_end:]) is not None
         return (
             after not in ",.;:?!…"
-            or text.startswith("...", start)
-            or text.startswith("…", start)
             or bool(following) and not following.isspace() and following not in ",.;:?!…)]}»\"'"
         )
 
@@ -345,35 +353,53 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
     if not markers:
         return []
 
-    word_after_space = re.compile(r"\s+[^\W_]")
-    weak_closers = {
-        index for index, (offset, char, _, _) in enumerate(markers)
-        if char in "\"'" and text[offset - 1:offset].isalnum() and word_after_space.match(text, offset + 1)
-    }
-    empty_pairs: set[int] = set()
-    for index in range(len(markers) - 1):
-        start, opener, _, _ = markers[index]
-        end, closer, _, _ = markers[index + 1]
-        if (_QUOTE_CLOSERS.get(opener) == closer and not text[start + 1:end].strip()
-                and opening_boundary(text[max(0, start - 1):start])):
-            empty_pairs.add(index)
+    # Two trailing straight marks attached to words can be stray punctuation.
+    # Keep a preceding empty pair separate unless the tail supplies a boundary.
+    bare_trailing_closers = False
+    if len(markers) >= 4:
+        penultimate, penultimate_char, penultimate_can_open, _ = markers[-2]
+        last, last_char, last_can_open, _ = markers[-1]
+        bare_trailing_closers = (
+            penultimate_char == last_char and last_char in "\"'"
+            and not (penultimate_can_open or last_can_open)
+            and text[penultimate - 1:penultimate].isalnum() and text[penultimate + 1:penultimate + 2].isspace()
+            and text[last - 1:last].isalnum() and not text[last + 1:].strip()
+        )
 
     sibling_connector = re.compile(
         r"(?:\.{3}|…)\s*(?:[,;]\s*)?(?:(?:y|e|o|u|pero|(?:y\s+)?(?:luego|despu[eé]s))\s*)?",
         re.IGNORECASE,
     )
 
+    empty_pairs: set[int] = set()
+    definite_empty_pairs: set[int] = set()
+    for index in range(len(markers) - 2, -1, -1):
+        start, opener, _, _ = markers[index]
+        end, closer, second_can_open, _ = markers[index + 1]
+        if (_QUOTE_CLOSERS.get(opener) == closer and not text[start + 1:end].strip()
+                and opening_boundary(text[max(0, start - 1):start])):
+            empty_pairs.add(index)
+            if (not second_can_open or _SEPARATOR_AFTER_EMPTY.match(text, end + 1)
+                    or (bare_trailing_closers and index == len(markers) - 4)):
+                definite_empty_pairs.add(index)
+            elif index + 2 in definite_empty_pairs:
+                # An empty pair beyond the separator cannot open a child.
+                next_offset = markers[index + 2][0]
+                gap = text[end + 1:next_offset].lstrip()
+                if not gap or sibling_connector.fullmatch(gap):
+                    definite_empty_pairs.add(index)
+
     def continuations(index: int, stack: str) -> tuple[tuple[int, str], ...]:
         offset, char, can_open, can_close = markers[index]
         empty = ((index + 2, stack),) if index in empty_pairs else ()
-        can_push = can_open and len(stack) < _MAX_QUOTE_DEPTH
+        can_push = can_open and index not in definite_empty_pairs and len(stack) < _MAX_QUOTE_DEPTH
         if not stack or stack[-1] != char:
+            if index in definite_empty_pairs:
+                return empty
             following = stack + _QUOTE_CLOSERS[char] if can_push else stack
             return (*empty, (index + 1, following))
         closed = (index + 1, stack[:-1])
-        separated_empty = (
-            bool(empty) and text[offset - 1:offset].isspace() and text[offset + 1:markers[index + 1][0]].isspace()
-        )
+        separated_empty = bool(empty) and text[offset - 1:offset].isspace()
         if not can_push:
             return (*empty, closed) if separated_empty else (closed, *empty)
         opened = (index + 1, stack + _QUOTE_CLOSERS[char])
@@ -390,7 +416,7 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         return opened, closed
 
     # A state only needs the expected closers, not their source offsets.
-    # Score unmatched marks and weak closures across same-delimiter nesting.
+    # Prefer the parse with the fewest unmatched marks.
     choices: dict[tuple[int, str], tuple[int, tuple[int, str]]] = {}
     pending = [(0, "")]
     while pending:
@@ -399,7 +425,7 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         if index == len(markers):
             choices[state] = (len(stack), state)
         else:
-            best = (2 * len(markers) + 1, state)
+            best = (len(markers) + 1, state)
             for successor in continuations(index, stack):
                 if successor not in choices:
                     pending.append(successor)
@@ -407,11 +433,6 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
                 cost, _ = choices[successor]
                 # An ignored mark is unmatched. A consumed pair costs zero.
                 cost += successor == (index + 1, stack)
-                if (index in weak_closers and len(successor[1]) < len(stack)
-                        and len(stack) > 1 and stack[-2] == stack[-1]):
-                    # Bare marks between words give less evidence of nesting
-                    # than a matched pair with a clause boundary at its close.
-                    cost += 2
                 if cost < best[0]:
                     best = (cost, successor)
                 if cost == 0:

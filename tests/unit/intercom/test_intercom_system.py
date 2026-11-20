@@ -100,6 +100,7 @@ def test_voice_resolves_only_configured_room_labels(text, message, zones):
     "En la cocina esperen, por favor.",
     "En la cocina:\nesperen.",
     "En la cocina:\nesperen, por favor.",
+    "—En la cocina: esperen —dijo Ana.",
 ])
 async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, closing, body, trailing_filler):
     attempts = []
@@ -300,11 +301,12 @@ def test_empty_quote_pairs_do_not_create_spans_between_or_around_them(text):
 @pytest.mark.parametrize("depth", [2, 3])
 @pytest.mark.parametrize("ending", [".", ", por favor."])
 @pytest.mark.parametrize("inner_prefix", ["", "... ", "… ", " ", "\n"])
+@pytest.mark.parametrize(("speech_boundary", "verb"), [(", ", "Anunciá"), (" ", "Anuncia")])
 async def test_nested_same_delimiter_at_start_preserves_broadcast_literal(
-    quote, gap, location, depth, ending, inner_prefix,
+    quote, gap, location, depth, ending, inner_prefix, speech_boundary, verb,
 ):
     inner = f"{quote}{inner_prefix}En {location}: esperen{quote}"
-    message = f"{quote}{gap}{inner}, dijo Ana{ending}{quote}"
+    message = f"{quote}{gap}{inner}{speech_boundary}dijo Ana{ending}{quote}"
     spans = [message, inner]
     if depth == 3:
         message = f"{quote}{gap}{message}, dijo Luis.{quote}"
@@ -320,7 +322,7 @@ async def test_nested_same_delimiter_at_start_preserves_broadcast_literal(
     intercom.register_zone("sala", "Sala")
     await intercom.start()
     try:
-        text = f"Anunciá: {message}"
+        text = f"{verb}: {message}"
         assert CommandAcceptanceGate().evaluate(text).accept
         intent = classify_household_intent(text)
         assert intent.family is HouseholdFamily.INTERCOM
@@ -348,6 +350,26 @@ async def test_nested_same_delimiter_at_start_preserves_broadcast_literal(
 async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destination(
     empty, separator, destination, expected_zone, verb, message, expected_spans,
 ):
+    text = f"{verb}: {empty}{separator}en {destination}: {message}"
+    await _assert_directed_announcement(text, expected_zone, message, expected_spans)
+
+
+@pytest.mark.parametrize(("destination", "expected_zone"), [("la cocina", "zone_cocina"), ("el fogón", None)])
+@pytest.mark.parametrize(("prefix", "message"), [
+    ('Avisá: "" — ', 'Llegó Ana", dijo Luis."'),
+    ('Anunciá: ""—', 'palabra", otra"'),
+    ('Avisa: ""... —', 'Llegó Ana", dijo Luis."'),
+    ('Avisá: ""… —', 'Llegó Ana", dijo Luis."'),
+    ('Avisá: "   "… "" — ', 'Llegó Ana", dijo Luis."'),
+])
+async def test_empty_pairs_before_room_separator_preserve_destination_with_stray_quotes(
+    prefix, message, destination, expected_zone,
+):
+    text = f"{prefix}en {destination}: {message}"
+    await _assert_directed_announcement(text, expected_zone, message, [])
+
+
+async def _assert_directed_announcement(text, expected_zone, message, expected_spans):
     attempts = []
 
     async def speak(text, zone):
@@ -359,7 +381,6 @@ async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destinat
     intercom.register_zone("sala", "Sala")
     await intercom.start()
     try:
-        text = f"{verb}: {empty}{separator}en {destination}: {message}"
         assert CommandAcceptanceGate().evaluate(text).accept
         intent = classify_household_intent(text)
         assert intent.family is HouseholdFamily.INTERCOM
@@ -380,7 +401,8 @@ async def test_leading_empty_quote_cannot_override_an_explicit_intercom_destinat
 
 @pytest.mark.parametrize(("message", "expected_spans"), [
     ('"hola" "chau"', ['"hola"', '"chau"']),
-    ('"hola "" chau"', ['"hola "', '" chau"']),
+    ('"hola "" chau"', ['"hola "" chau"']),
+    ('"hola"""', ['"hola"']),
     ('"hola" ""', ['"hola"']),
     ('"?"', ['"?"']),
     ("'¡¿…?!' es la clave.", ["'¡¿…?!'"]),
