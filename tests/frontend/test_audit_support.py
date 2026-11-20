@@ -152,10 +152,8 @@ async def test_spacing_and_text_resize_report_new_clipping_and_restore_styles(pa
     assert await page.evaluate('[...document.querySelectorAll("p")].map(el=>el.getAttribute("style"))') == original
 
 
-@pytest.mark.parametrize(('overflow', 'loses_control'), [
-    ('clip', True), ('hidden', True), ('auto', False), ('scroll', False),
-])
-async def test_text_resize_checks_controls_below_initial_viewport(page: Page, overflow: str, loses_control: bool):
+@pytest.mark.parametrize('overflow', ('clip', 'hidden'))
+async def test_text_resize_checks_controls_below_initial_viewport(page: Page, overflow: str):
     await page.command('Emulation.setDeviceMetricsOverride', {
         'width': 640, 'height': 480, 'deviceScaleFactor': 1, 'mobile': False,
     })
@@ -175,8 +173,79 @@ async def test_text_resize_checks_controls_below_initial_viewport(page: Page, ov
     findings = await audit_wcag(page, key_controls=(('#resize-control', None),))
     usable_findings = [item for item in findings if item['criterion'] == '1.4.4'
                        and item['issue'] == 'key_control_no_longer_usable']
-    assert len(usable_findings) == int(loses_control)
+    assert len(usable_findings) == 1
     assert await page.evaluate('window.scrollY === 0 && document.querySelector("section").scrollTop === 0')
+
+
+@pytest.mark.parametrize('overflow', ('auto', 'scroll'))
+async def test_text_resize_measures_scrollable_control_and_restores_offsets(page: Page, overflow: str):
+    await page.command('Emulation.setDeviceMetricsOverride', {
+        'width': 640, 'height': 480, 'deviceScaleFactor': 1, 'mobile': False,
+    })
+    await load(page, f'''
+        <style>body {{margin:0;font:16px Arial}} html,body,section {{overflow-anchor:none}}</style>
+        <div style="height:800px"></div>
+        <section style="width:180px;height:120px;overflow:{overflow}">
+          <div id="spacer" style="height:4em"></div>
+          <button id="resize-control" style="display:block;width:44px;height:44px">Go</button>
+          <div style="height:180px"></div>
+        </section>
+        <div style="height:480px"></div>
+    ''')
+    initial = await page.evaluate('''(() => {
+        const button = document.querySelector('#resize-control'), pane = button.parentElement;
+        const spacer = document.querySelector('#spacer');
+        const offsets = () => [window.scrollY, pane.scrollTop];
+        window.scrollTo(0, 37);
+        pane.scrollTop = 13;
+        window.__resizeScrollSamples = [];
+        const scrollIntoView = button.scrollIntoView.bind(button);
+        button.scrollIntoView = options => {
+            const before = offsets();
+            scrollIntoView(options);
+            const rect = button.getBoundingClientRect();
+            const hit = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
+            window.__resizeScrollSamples.push({
+                before, after: offsets(), hit: button.contains(hit), font: getComputedStyle(spacer).fontSize,
+            });
+        };
+        return offsets();
+    })()''')
+    assert initial == [37, 13]
+    findings = await audit_wcag(page, key_controls=(('#resize-control', None),))
+    assert not any(item['issue'] == 'key_control_no_longer_usable' for item in findings)
+    samples = await page.evaluate('window.__resizeScrollSamples')
+    # The 32 px pass only probes controls accepted into the baseline sample.
+    assert {sample['font'] for sample in samples} == {'16px', '32px'}
+    assert all(sample['before'] == initial and sample['hit'] for sample in samples)
+    assert all(all(after != before for after, before in zip(sample['after'], initial))
+               for sample in samples if sample['font'] == '32px')
+    assert await page.evaluate('[window.scrollY, document.querySelector("section").scrollTop]') == initial
+
+
+@pytest.mark.parametrize('source', ('html', 'body'))
+@pytest.mark.parametrize('overflow', ('clip', 'hidden'))
+async def test_text_resize_respects_viewport_overflow(page: Page, source: str, overflow: str):
+    await page.command('Emulation.setDeviceMetricsOverride', {
+        'width': 640, 'height': 480, 'deviceScaleFactor': 1, 'mobile': False,
+    })
+    frame = (await page.command('Page.getFrameTree'))['frameTree']['frame']['id']
+    await page.command('Page.setDocumentContent', {'frameId': frame, 'html': f'''
+        <!doctype html>
+        <style>body {{margin:0;font:16px Arial}} {source} {{overflow:{overflow}}}</style>
+        <div style="height:16em"></div>
+        <button id="resize-control" tabindex="-1" style="display:block;width:44px;height:44px">Go</button>
+    '''})
+    assert await page.evaluate('''(() => {
+        const button = document.querySelector('#resize-control'), rect = button.getBoundingClientRect();
+        return innerHeight === 480 && rect.top === 256 && rect.height === 44
+            && document.elementFromPoint(rect.left + 22, rect.top + 22) === button;
+    })()''')
+    findings = await audit_wcag(page, key_controls=(('#resize-control', None),))
+    lost_controls = [item for item in findings if item['criterion'] == '1.4.4'
+                     and item['issue'] == 'key_control_no_longer_usable']
+    assert [item['element'] for item in lost_controls] == ['body > button:nth-of-type(1)']
+    assert await page.evaluate('[window.scrollX, window.scrollY]') == [0, 0]
 
 
 async def test_status_messages_check_live_semantics_without_recording_payload(page: Page, tmp_path: Path):

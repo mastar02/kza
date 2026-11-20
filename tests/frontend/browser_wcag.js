@@ -213,19 +213,40 @@
   };
   const usable = el => {
     if (!shown(el)) return false;
+    const root = document.documentElement, body = document.body;
+    const rootStyle = getComputedStyle(root), bodyStyle = body && getComputedStyle(body);
+    // CSS Overflow §3.3 applies the body overflow to the viewport when both
+    // root axes are visible. The element supplying it does not also clip locally.
+    const bodyPropagates = root === body?.parentElement && body.localName === 'body'
+      && rootStyle.overflowX === 'visible' && rootStyle.overflowY === 'visible'
+      && rootStyle.contain === 'none' && bodyStyle.contain === 'none' && bodyStyle.display !== 'none';
+    const scrollPosition = node => node ? [node.scrollLeft, node.scrollTop] : [window.scrollX, window.scrollY];
+    const snapshotScroll = (node, {overflowX, overflowY}) => {
+      const [x, y] = scrollPosition(node);
+      return {node, overflowX, overflowY, x, y};
+    };
     const ancestors = [];
     for (let parent = el.parentElement; parent; parent = parent.parentElement) {
-      const {overflowX, overflowY} = getComputedStyle(parent);
-      if (overflowX !== 'visible' || overflowY !== 'visible' || parent === document.scrollingElement) {
-        ancestors.push({parent, overflowX, overflowY, x: parent.scrollLeft, y: parent.scrollTop});
+      if (parent === root || (parent === body && bodyPropagates)) continue;
+      const style = getComputedStyle(parent);
+      if (style.overflowX !== 'visible' || style.overflowY !== 'visible') {
+        ancestors.push(snapshotScroll(parent, style));
       }
     }
+    const viewport = snapshotScroll(null, bodyPropagates ? bodyStyle : rootStyle);
+    const restoreScroll = blockedOnly => {
+      for (const {node, overflowX, overflowY, x, y} of [...ancestors, viewport]) {
+        const [currentX, currentY] = scrollPosition(node);
+        const left = !blockedOnly || ['hidden', 'clip'].includes(overflowX) ? x : currentX;
+        const top = !blockedOnly || ['hidden', 'clip'].includes(overflowY) ? y : currentY;
+        if (currentX !== left || currentY !== top) (node || window).scrollTo({left, top, behavior: 'instant'});
+      }
+    };
     const hitVisiblePart = () => {
       const rect = el.getBoundingClientRect();
-      let left = Math.max(0, rect.left), right = Math.min(document.documentElement.clientWidth, rect.right);
+      let left = Math.max(0, rect.left), right = Math.min(root.clientWidth, rect.right);
       let top = Math.max(0, rect.top), bottom = Math.min(innerHeight, rect.bottom);
-      for (const {parent, overflowX, overflowY} of ancestors) {
-        if (parent === document.scrollingElement) continue;
+      for (const {node: parent, overflowX, overflowY} of ancestors) {
         const box = parent.getBoundingClientRect();
         const x = box.left + parent.clientLeft, y = box.top + parent.clientTop;
         if (overflowX !== 'visible') {
@@ -244,22 +265,12 @@
     if (hitVisiblePart()) return true;
     try {
       el.scrollIntoView({block: 'center', inline: 'nearest', behavior: 'instant'});
-      // scrollIntoView can scroll overflow:hidden programmatically. Test only
-      // positions the user can reach by scrolling the page or an auto/scroll container.
-      for (const {parent, overflowX, overflowY, x, y} of ancestors) {
-        const left = overflowX === 'hidden' ? x : parent.scrollLeft;
-        const top = overflowY === 'hidden' ? y : parent.scrollTop;
-        if (parent.scrollLeft !== left || parent.scrollTop !== top) {
-          parent.scrollTo({left, top, behavior: 'instant'});
-        }
-      }
+      // The viewport treats clip like hidden: the browser can scroll it by
+      // script. Undo movement on blocked axes before testing the visible area.
+      restoreScroll(true);
       return hitVisiblePart();
     } finally {
-      for (const {parent, x, y} of ancestors) {
-        if (parent.scrollLeft !== x || parent.scrollTop !== y) {
-          parent.scrollTo({left: x, top: y, behavior: 'instant'});
-        }
-      }
+      restoreScroll(false);
     }
   };
   const measureText = (root, criterion, keyControls) => {
