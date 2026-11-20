@@ -1469,7 +1469,7 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "cd517505eb94b170568b6f0f138db438ce94bc4f",
         "14727f583abe2e3af46af804d033b98cba0e79d1",
@@ -1478,16 +1478,19 @@
         "4a3499ba62079d71554447ea78a2371401161468",
         "5f539af2a267755b746fa32eb6dd49a5591da707",
         "43a7d001d0de53994367962bb1b8fe4483f2f721",
-        "50f626be258f085a1e1cce6827ec5c0990e8243d"
+        "50f626be258f085a1e1cce6827ec5c0990e8243d",
+        "0d1cd706f7647b2bbe714ebec09bd7d3ab96673f"
       ],
       "evidence": [
         "tests/integration/test_routine_voice_creation.py",
         "tests/integration/test_home_control_policy.py",
         "tests/unit/routines/test_voice_routines_read.py",
         "tests/integration/test_routine_voice_factory.py",
-        "tests/integration/test_routine_voice_proposals.py"
+        "tests/integration/test_routine_voice_proposals.py",
+        "tests/integration/test_routine_contract_matrix.py",
+        "docs/research/2026-11-20-autonomous-t033-validation.json"
       ],
-      "next_action": "Completar T033-U5."
+      "next_action": null
     },
     {
       "id": "T034",
@@ -1522,19 +1525,23 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "2662eff7a7e914de67538afdbc24cfe072492175",
         "bdd7cdf0807b8dd2087471db001e4c8ea4c89df6",
-        "5202e7c5c6f6ccb40e33ce08843217978743eb8c"
+        "5202e7c5c6f6ccb40e33ce08843217978743eb8c",
+        "50825885ddd879c88da6ba4a1be71892e87b5467"
       ],
       "evidence": [
         "tests/unit/dashboard/test_authority.py",
         "tests/unit/reminders/test_reminder_store.py",
         "tests/integration/test_lists_reminders_e2e.py",
-        "tests/integration/test_scope_visitor_matrix.py"
+        "tests/integration/test_scope_visitor_matrix.py",
+        "tests/frontend/test_nexo_tasks_owner.cjs",
+        "tests/frontend/browser_nexo_tasks.py",
+        "tests/frontend/browser_nexo_access.py"
       ],
-      "next_action": "Completar T035-U2 (vista NEXO Mis tareas / visitante)."
+      "next_action": null
     },
     {
       "id": "T036",
@@ -1753,10 +1760,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "in_progress",
+      "implementation_commits": [
+        "ef46fe37913236e46921daf85c936bcda97a51fc",
+        "58f2b880a200435da851e9d2ffc2ef001b6c9226"
+      ],
+      "evidence": [
+        "tests/frontend/test_obs_panel.cjs",
+        "tests/frontend/browser_obs_panel.py"
+      ],
+      "next_action": "Completar T045-U3."
     },
     {
       "id": "T046",
@@ -2290,7 +2303,10 @@
       "inclusion": "required",
       "status": "in_progress",
       "implementation_commits": [
-        "81a46b671b88f16938d81d5ad80a7d9823813df8"
+        "81a46b671b88f16938d81d5ad80a7d9823813df8",
+        "6369a0976c4b2b81e7fa01b508f6e38686e536ac",
+        "2394acb1b5b1f85b5877451349d1f68b13e03806",
+        "c587c13dc1a87da4ea205fa63641138dae59ca3b"
       ],
       "evidence": [
         "docs/plans/2026-11-20-test-suite-acceleration.md",
@@ -2299,7 +2315,7 @@
         "tests/unit/tools/test_run_test_suite.py",
         "tests/unit/tools/test_runtime_artifact_cache.py"
       ],
-      "next_action": "Ejecutar T090-U3..U5 tras promover Batch R."
+      "next_action": "Ejecutar T090-U3 y T090-U4."
     }
   ],
   "finding_trace": [
@@ -2697,7 +2713,7 @@
       },
       {
         "id": "T090-U5",
-        "status": "planned",
+        "status": "verified_local",
         "summary": "Wire Tiers 0/1/2 into runbooks, multi-console orchestrator workflow, and ci.yml"
       }
     ]
