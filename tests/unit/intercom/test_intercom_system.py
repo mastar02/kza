@@ -1,6 +1,7 @@
 """Intercom routing, playback receipts and optional audio zone metadata."""
 
 import asyncio
+from itertools import permutations
 from unittest.mock import MagicMock
 
 import pytest
@@ -245,8 +246,40 @@ def test_contiguous_mixed_quote_openings_keep_all_three_layers(
     assert intercom._parse_announcement_command(intent.complement) == (message, ["zone_cocina", "zone_sala"])
 
 
+@pytest.mark.parametrize("quotes", list(permutations([('"', '"'), ("'", "'"), ("«", "»")])))
+@pytest.mark.parametrize("outer_gap", ["", "\n", "... ", "… ", "...\n", "…\n"])
+@pytest.mark.parametrize("inner_gap", ["", "\n", "... ", "… ", "...\n", "…\n"])
+async def test_ellipsis_between_mixed_quote_openings_keeps_full_broadcast(quotes, outer_gap, inner_gap):
+    (outer_open, outer_close), (middle_open, middle_close), (inner_open, inner_close) = quotes
+    inner = f"{inner_open}En la cocina: esperen{inner_close}"
+    middle = f"{middle_open}{inner_gap}{inner}{middle_close}"
+    message = f"{outer_open}{outer_gap}{middle}, por favor.{outer_close}"
+    attempts = []
+
+    async def speak(text, zone):
+        attempts.append((text, zone))
+        return ResponseResult(text, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    intercom = IntercomSystem(speak, room_catalog={"zone_cocina": ("Cocina",), "zone_sala": ("Sala",)})
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("sala", "Sala")
+    await intercom.start()
+    try:
+        text = f"Anuncia: {message}"
+        assert CommandAcceptanceGate().evaluate(text).accept
+        intent = classify_household_intent(text)
+        assert intent.family is HouseholdFamily.INTERCOM
+        outcome, _, announcement = await intercom.announce_from_voice(intent.complement)
+        assert outcome.task_completed
+        assert announcement.receipt()["zones"] == {"zone_cocina": "confirmed", "zone_sala": "confirmed"}
+        assert attempts == [(message, "zone_cocina"), (message, "zone_sala")]
+        assert [message[start:end] for start, end in _quote_spans(message)] == [message, middle, inner]
+    finally:
+        await intercom.stop()
+
+
 @pytest.mark.parametrize("empty", ['""', "''"])
-@pytest.mark.parametrize("suffix", ["", " ", ", ", "...", "…", "»"])
+@pytest.mark.parametrize("suffix", ["", " ", ", ", "...", "…", "»", "... («", "… —-"])
 def test_empty_straight_quotes_are_not_treated_as_nested_openers(empty, suffix):
     assert _quote_spans(empty + suffix) == []
 

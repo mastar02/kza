@@ -312,7 +312,7 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
             return False
         if nested_openers and after in ",.;:?!…":
             # Punctuation alone after an empty pair does not start nested content.
-            return re.match(r"[,.;:?!…\s¡¿]*[^\W_]", text[start:]) is not None
+            return re.match(r"[,.;:?!…\s¡¿«\"'([{—-]*[^\W_]", text[start:]) is not None
         following = text[start + 1:start + 2]
         return (
             after not in ",.;:?!"
