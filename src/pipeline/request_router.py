@@ -2032,29 +2032,22 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
-        if is_unclaimed_routine_creation(text) or (
+        refuse_routine = is_unclaimed_routine_creation(text) or (
             household is not None and household.family is HouseholdFamily.ROUTINE
             and (household.operation is not HouseholdOperation.QUERY or self.voice_routines is None)
-        ):
-            response = (ROUTINE_CREATE_REFUSAL if household is None or household.reason == "new_routine"
-                        else "Todavía no manejo rutinas por voz. Podés verlas desde la web.")
-            result.update(intent="routine", response=response, success=False, _task_outcome=TaskOutcome(
-                TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
-                dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED,
-            ))
-            await self._speak_response(response)
-            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            return result
+        )
+        # Hold possible routine refusals here until the reader has had a chance
+        # to answer, without passing the request to a home action producer.
+        if not refuse_routine:
+            if await self._try_memory_proposal(text, result):
+                result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
+                return result
 
-        if await self._try_memory_proposal(text, result):
-            result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
-            return result
-
-        if await self._try_home_command(
-            text, result, room_id=room_id, pipeline_start=pipeline_start,
-            extra_gate=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
-        ):
-            return result
+            if await self._try_home_command(
+                text, result, room_id=room_id, pipeline_start=pipeline_start,
+                extra_gate=textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE,
+            ):
+                return result
 
         user = None
         emotion = cmd.emotion
@@ -2111,6 +2104,16 @@ class RequestRouter:
                 )
 
         if await self._try_routine_read(text, result, pipeline_start=pipeline_start):
+            return result
+        if refuse_routine:
+            response = (ROUTINE_CREATE_REFUSAL if household is None or household.reason == "new_routine"
+                        else "Todavía no manejo rutinas por voz. Podés verlas desde la web.")
+            result.update(intent="routine", response=response, success=False, _task_outcome=TaskOutcome(
+                TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
+                dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED,
+            ))
+            await self._speak_response(response)
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
         # 1b. Confidence gate — si confidence baja y combo sensible, pide

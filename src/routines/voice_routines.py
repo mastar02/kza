@@ -50,6 +50,7 @@ ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desd
 _UNCLAIMED_CREATION = re.compile(
     r"\b(?:(?:crea|crear) (?:una )?(?:rutina|automatizacion)|nueva (?:rutina|automatizacion)|automatiza)\b"
 )
+_ROUTINE_CONFIGURATION = re.compile(r"\b(?:programa que|quiero que cuando|haz que cuando|configura que|cada vez que)\b")
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
 _PLURAL_NOUNS = frozenset({"rutinas", "automatizaciones"})
@@ -243,8 +244,14 @@ def _words(text: str) -> list[str]:
 
 
 def is_unclaimed_routine_creation(text: str) -> bool:
-    """Recognize explicit creation phrases for a local refusal outside the request grammar."""
-    return _UNCLAIMED_CREATION.search(" ".join(_words(text))) is not None
+    """Recognize creation or configuration of routines outside the request grammar."""
+    words = _words(text)
+    phrase = " ".join(words)
+    if _UNCLAIMED_CREATION.search(phrase):
+        return True
+    # General conditional language is only a routine request when it names one.
+    return (not (_SINGULAR_NOUNS | _PLURAL_NOUNS).isdisjoint(words)
+            and _ROUTINE_CONFIGURATION.search(phrase) is not None)
 
 
 def name_key(name: str) -> str:

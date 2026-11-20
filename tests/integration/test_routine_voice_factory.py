@@ -100,14 +100,15 @@ async def test_spoken_listing_matches_the_web_catalog(leaves, tmp_path, dashboar
             assert [(e.routine_id, e.name, e.enabled, e.revision, e.latest_run_status) for e in entries] == web
             assert [row[1] for row in web] == ["Buenos días", "Buenas noches", "Riego"]
 
-            graph.models.stt.text = "qué rutinas hay"
-            result = await graph.pipeline.process_command(event())
-            assert result["intent"] == "routine" and result["handled"]
-            assert result["response"] == "Hay 3 rutinas: Buenos días, Buenas noches (desactivada) y Riego."
-            assert result["task_completed"] and result["outcome"]["status"] == "completed"
-            assert result["outcome"]["persistence"] == "not_required"
-            if orchestrated:
-                assert result["path"] == "fast_routine"
+            for text in ("qué rutinas hay", "Nexa, qué rutinas tengo y cuál automatiza el riego"):
+                graph.models.stt.text = text
+                result = await graph.pipeline.process_command(captured(**OWN_WAKE))
+                assert result["intent"] == "routine" and result["handled"]
+                assert result["response"] == "Hay 3 rutinas: Buenos días, Buenas noches (desactivada) y Riego."
+                assert result["task_completed"] and result["outcome"]["status"] == "completed"
+                assert result["outcome"]["persistence"] == "not_required"
+                if orchestrated:
+                    assert result["path"] == "fast_routine"
 
             graph.models.stt.text = "¿cómo salió la rutina riego?"
             consult = await graph.pipeline.process_command(event())

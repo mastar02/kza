@@ -504,6 +504,7 @@ _OBJECT_NOUNS: dict[str, HouseholdFamily] = {
     "rutina": HouseholdFamily.ROUTINE, "rutinas": HouseholdFamily.ROUTINE,
     "lista": HouseholdFamily.LIST, "listas": HouseholdFamily.LIST,
 }
+_AUTOMATION_NOUNS = frozenset({"automatizacion", "automatizaciones"})
 # "alarma"/"despertador" as the object of a timer command (T030-U1 R3): an alarm with a duration is a
 # timer (R3a, user answer Q4), so cancel/stop/pause/resume/query of "la alarma" reach the timers. Claimed in
 # R1 only; creation stays in R3a. The security alarm verbs (activá/desactivá/armá/desarmá la alarma) are never
@@ -681,8 +682,8 @@ def _r1_intent(utt: _Utterance, k: int, family: HouseholdFamily, operation: Hous
 
 
 def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False,
-                     alarms: bool = False) -> tuple[HouseholdFamily, int] | None:
-    """The object noun right after the verb and its determiners, if any (``alarms``: alarm nouns too)."""
+                     alarms: bool = False, routine_cancel: bool = False) -> tuple[HouseholdFamily, int] | None:
+    """The object noun after the verb and determiners, including aliases enabled by the rule."""
     k = j
     if utt.at(k) == "me":
         k += 1
@@ -691,6 +692,8 @@ def _governed_object(utt: _Utterance, j: int, *, allow_adjective: bool = False,
             k += 1
     if allow_adjective and utt.at(k) in _ADJECTIVES:
         k += 1
+    if routine_cancel and utt.at(k) in _AUTOMATION_NOUNS:
+        return HouseholdFamily.ROUTINE, k
     family = _r1_object_at(utt, k) if alarms else _object_at(utt, k)
     return (family, k) if family is not None else None
 
@@ -762,7 +765,8 @@ _R1_OPERATIONS = (
 
 
 def _r1_object(utt: _Utterance, verb: _Verb) -> tuple[HouseholdFamily, HouseholdOperation, int] | None:
-    governed = _governed_object(utt, verb.end, alarms=True)
+    # Recognize legacy automation deletion requests so they get the routine refusal.
+    governed = _governed_object(utt, verb.end, alarms=True, routine_cancel=_CANCEL in verb.classes)
     if governed is None:
         return None
     family, k = governed
@@ -899,7 +903,7 @@ def _r4(utt: _Utterance) -> HouseholdIntent | None:
 # routine claims the turn as a routine PROPOSE with reason "new_routine", so the
 # routine's content ("que apague las luces") never reaches the grammar, the
 # extended home command or the 7B service_filter.
-_ROUTINE_NOUNS = frozenset({"rutina", "rutinas", "automatizacion", "automatizaciones", "regla", "reglas"})
+_ROUTINE_NOUNS = _AUTOMATION_NOUNS | {"rutina", "rutinas", "regla", "reglas"}
 _INDEFINITE = frozenset({"un", "una", "unos", "unas", "otro", "otra"})
 # Fillers before the request ("dale, creá ...", "bueno, quiero ...", "a ver, armame ..."), also the
 # hesitations and the leading 'y' speech recognition keeps ("eh, creá ...", "y creá ..."). No 'pues':
