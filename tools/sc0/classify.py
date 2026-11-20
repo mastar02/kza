@@ -434,6 +434,9 @@ RULES: list[Rule] = [
          ("UPDATE routine_run_actions", "UPDATE routine_runs",), "boot_repair",
          "RoutineScheduler.start (routine_scheduler.py:227) from Application._start_services "
          "(application.py:318), before READY"),
+    Rule("src/routines/routine_store.py", "RoutineStore.brake.commit",
+         ("UPDATE routine_runs", "UPDATE routines", "INSERT INTO routine_runs",), "user",
+         "voice routine brake (STOP/DISABLE via RoutineScheduler.voice_brake, T033-U2)"),
     # src/training/collector_erasure.py
     Rule("src/training/collector_erasure.py", "CollectorEraser._page", ("DELETE FROM wake_clips_v1",), "recurring",
          "collector eraser (build_collector_erasure from build_wake_clip_store, clip_store.py:461-462): "

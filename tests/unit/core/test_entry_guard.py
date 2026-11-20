@@ -443,6 +443,12 @@ NO_SRC_ENTRIES = {
     "tools/sc0/compaction_timing.py": "times stage_runtime (listed above) on a synthetic scratch root through the test rehearsal harness",
     # T046-U1 web timing probe (2026-11-17): measures NEXO against tools/web_timing_fixture.py (guarded in main()).
     "tools/web_timing_probe.py": "drives Chrome over CDP against web_timing_fixture (listed above); opens no KZA store itself",
+    # Multi-console developer workflow scripts (PR #18, 2026-11-19): local orchestration/hooks only.
+    "scripts/kza_precompact.py": "developer session PreCompact hook; reads/writes workflow state only, opens no KZA store",
+    "scripts/kza_quota.py": "developer multi-console quota snapshot CLI; reads local provider usage only, opens no KZA store",
+    "scripts/kza_router.py": "developer multi-console model router CLI; calls Decisions API and writes router state only, opens no KZA store",
+    "scripts/kza_safety_guard.py": "developer session PreToolUse safety hook; inspects stdin tool payload only, opens no KZA store",
+    "scripts/kza_seat.py": "developer multi-console herdr/worktree launcher CLI; manages local dev seats only, opens no KZA store",
 }
 
 
