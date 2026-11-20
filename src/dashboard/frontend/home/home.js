@@ -118,7 +118,7 @@
       options.signal?.addEventListener('abort', abort, { once: true });
       const timeout = setTimeout(abort, timeoutMs);
       try {
-        const { body, ...rest } = options;
+        const { body, decode, ...rest } = options;
         const response = await fetcher(path, { ...rest, credentials: 'same-origin', signal: controller.signal, cache: 'no-store', headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
         if (response.headers?.get('X-KZA-Demo')?.toLowerCase() === 'true') onDemo();
         if (!response.ok) {
@@ -127,7 +127,7 @@
           if (response.status === 401 && requestGeneration === sessionGeneration && !controller.signal.aborted) onUnauthorized();
           throw Object.assign(new Error(response.status === 401 ? 'La sesión no está autorizada.' : response.status === 403 ? 'La sesión no tiene permiso para esta operación.' : `El servicio no respondió correctamente (${response.status}).`), { status: response.status, detail });
         }
-        return response.status === 204 ? null : await response.json();
+        return decode ? await decode(response) : response.status === 204 ? null : await response.json();
       } finally {
         clearTimeout(timeout);
         options.signal?.removeEventListener('abort', abort);

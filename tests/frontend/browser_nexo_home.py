@@ -1,4 +1,4 @@
-"""Real Chromium, individual HTTP logins and synthetic HA for the NEXO shell."""
+"""Real Chromium, individual HTTP logins, synthetic HA and shared notices for NEXO."""
 
 import asyncio
 import base64
@@ -19,10 +19,13 @@ from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import (
     DashboardAuthority, DashboardRole, EvaluationModality, EvaluationSample,
 )
+from src.reminders.reminder_scheduler import ReminderScheduler, notice_body, notice_request_id
+from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
 from src.rooms.room_context import RoomConfig
 from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_support import (
-    Page, audit_view, browser_binary, browser_profile_root, evidence_directory, reduced_motion_house,
+    Page, audit_view, browser_binary, browser_profile_root, evidence_directory, press_enter,
+    reduced_motion_house,
 )
 from tests.integration.test_typed_home_operations import typed_graph
 
@@ -35,7 +38,11 @@ INSTRUMENT = """(() => {
     if(path==='/api/admin/auth/logout'&&window.__qaFailLogout)throw new TypeError('Synthetic offline logout');
     if(path==='/api/admin/auth/logout'&&window.__qaHoldLogout)await new Promise(resolve=>window.__qaReleaseLogout=resolve);
     if(path==='/api/home/catalog'&&window.__qaHoldCatalog){window.__qaHoldCatalog=false;await new Promise(resolve=>window.__qaReleaseCatalog=resolve);}
+    if(path==='/api/reminders/notices'&&window.__qaHoldNotices){window.__qaHoldNotices=false;await new Promise(resolve=>window.__qaReleaseNotices=resolve);}
+    if(path==='/api/reminders/notices'&&window.__qaFailNotices)throw new TypeError('Synthetic offline notices');
     const response=await fetcher(input,options);
+    if(path==='/api/reminders/notices'&&window.__qaHoldNoticeResponse){window.__qaHoldNoticeResponse=false;await new Promise(resolve=>window.__qaReleaseNoticeResponse=resolve);}
+    if(path==='/api/reminders/notices/dismiss'&&window.__qaDropNoticeDismiss){window.__qaDropNoticeDismiss=false;await response.text();throw new TypeError('Synthetic lost notice receipt');}
     if(path==='/api/admin/users'&&(!options.method||options.method==='GET')&&window.__qaHoldPeople){window.__qaHoldPeople=false;await new Promise(resolve=>window.__qaReleasePeople=resolve);}
     if(path==='/api/admin/users'&&options.method==='POST'&&window.__qaHoldPeopleMutation){window.__qaHoldPeopleMutation=false;await new Promise(resolve=>window.__qaReleasePeopleMutation=resolve);}
     if(path.startsWith('/api/admin/users/')&&options.method==='PUT'&&window.__qaDropPeopleMutation){window.__qaDropPeopleMutation=false;await response.text();throw new TypeError('Synthetic lost account receipt');}
@@ -78,6 +85,13 @@ STALE_MONITOR = ("(()=>{window.__qaStale=[];new MutationObserver(records=>{for(c
 ACTION_CONTROLS = (('#app-nav [data-view=home]', None), ('#action-list button', None), ('#refresh', None), ('#logout', None))
 PEOPLE_CONTROLS = (('#app-nav [data-view=people]', None), ('#add-person', None), ('#refresh-people', None),
                    ('#people-grid [data-person]', None), ('#logout', None))
+NOTICE_LIST = '/api/reminders/notices'
+NOTICE_DISMISS = NOTICE_LIST + '/dismiss'
+NOTICES_READY = "document.querySelector('#home-notices')?.dataset.noticeState==='ready'"
+NOTICES_EMPTY = "document.querySelector('#home-notices')?.dataset.noticeState==='empty'"
+PENDING_DISMISS = "#home-notices [data-notice-status=pending] [data-notice-dismiss]"
+UNCERTAIN_DISMISS = "#home-notices [data-notice-status=uncertain] [data-notice-dismiss]"
+PRIVATE_NOTICE = 'AVISO_PRIVADO_SINTETICO'
 
 
 async def screenshot(page: Page, path: Path, *, full: bool = True, scroll_top: bool = True) -> None:
@@ -89,6 +103,70 @@ async def screenshot(page: Page, path: Path, *, full: bool = True, scroll_top: b
     result = await page.command("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": full})
     path.write_bytes(base64.b64decode(result["data"]))
     path.chmod(0o600)
+
+
+async def check_notices(page: Page, evidence: Path, store: ReminderStore, requests: list[dict]) -> dict:
+    """Exercise real shared HTTP reads, committed dismissals and degraded states at 390px."""
+    await page.wait_for(NOTICES_EMPTY)
+    now = time.time()
+    long_notice = 'Aviso compartido <img src=x> ' + 'reflow' * 24
+    pending = await store.create('synthetic-owner', long_notice, now - 10, scope=ReminderScope.SHARED)
+    uncertain = await store.create('synthetic-owner', 'Entrega cortada de prueba', now - 8, scope=ReminderScope.SHARED)
+    await store.create('synthetic-owner', PRIVATE_NOTICE, now - 4, scope=ReminderScope.PRIVATE)
+    key = notice_request_id(uncertain.id, uncertain.trigger_at, 1)
+    assert await store.claim_home_action(key, notice_body(uncertain.id, uncertain.trigger_at, 1, now - 4, 'living'))
+    await store.finish_home_action(key, 'uncertain', 'delivery_cancelled')
+    assert await store.mark_fired(uncertain.id)
+
+    await page.evaluate("document.querySelector('#home-notices button').click()")
+    await page.wait_for(f"{NOTICES_READY} && document.querySelectorAll('#home-notices .notice-row').length===2")
+    assert await page.evaluate(
+        "(()=>{const panel=document.querySelector('#home-notices');"
+        "return panel.textContent.includes(" + json.dumps(long_notice) + ")&&!panel.querySelector('img')"
+        "&&!panel.textContent.includes(" + json.dumps(PRIVATE_NOTICE) + ")"
+        "&&panel.querySelectorAll('time[datetime]').length===2"
+        "&&Math.abs(Date.parse(panel.querySelector('[data-notice-status=pending] time').dateTime)-"
+        + json.dumps(pending.trigger_at * 1000) + ")<1"
+        "&&panel.textContent.includes('Ambiente no informado')&&panel.textContent.includes('Entrega incierta · Cortado')})()"
+    )
+    audit = await audit_view(page, evidence, 'avisos', (
+        ('#home-notices button', 'Actualizar avisos'), (PENDING_DISMISS, 'Descartar'), (UNCERTAIN_DISMISS, 'Descartar'),
+    ), screenshot, widths=(390,), restore=(390, 844, True), fresh=NOTICES_READY)
+
+    def post_count() -> int:
+        return sum(item['method'] == 'POST' and item['path'] == NOTICE_DISMISS for item in requests)
+
+    control = 'document.querySelector(' + json.dumps(PENDING_DISMISS) + ')'
+    before = post_count()
+    await page.evaluate(
+        f"window.__qaHoldNotices=true;document.querySelector('#home-notices button').click();{control}.focus()"
+    )
+    await page.wait_for("typeof window.__qaReleaseNotices==='function'")
+    await page.wait_for("document.querySelector('#home-notices').dataset.noticeState==='stale'")
+    assert await page.evaluate(f"document.activeElement==={control} && {control}.getAttribute('aria-disabled')==='true'")
+    await press_enter(page)
+    assert post_count() == before
+    await page.evaluate("window.__qaFailNotices=true;window.__qaReleaseNotices()")
+    await page.wait_for("document.querySelector('#home-notices .notice-status').textContent.includes('contactar')")
+    assert await page.evaluate("document.querySelector('#home-notices .notice-status').textContent.includes('desactualizada')")
+    await page.evaluate("window.__qaFailNotices=false;document.querySelector('#home-notices button').click()")
+    await page.wait_for(f"{NOTICES_READY} && {control}.getAttribute('aria-disabled')==='false'")
+    assert await page.evaluate(f"document.activeElement==={control}")
+    await press_enter(page)
+    await page.wait_for("document.querySelector('#home-notices .notice-feedback').textContent==='Aviso descartado.'")
+    assert await page.evaluate(f"!{control} && document.activeElement===document.querySelector('#home-notices button')")
+    assert (await store.get_by_id(pending.id)).state is ReminderState.FIRED
+    assert post_count() == before + 1
+
+    uncertain_control = 'document.querySelector(' + json.dumps(UNCERTAIN_DISMISS) + ')'
+    await page.wait_for(f"{NOTICES_READY} && {uncertain_control}.getAttribute('aria-disabled')==='false'")
+    await page.evaluate(f"window.__qaDropNoticeDismiss=true;{uncertain_control}.focus()")
+    await press_enter(page)
+    await page.wait_for(f"{NOTICES_EMPTY} && document.querySelector('#home-notices .notice-feedback').dataset.kind==='uncertain'")
+    assert await page.evaluate("document.querySelector('#home-notices .notice-feedback').textContent.includes('No se pudo confirmar')")
+    assert await store.get_home_action_receipt(key) is None
+    assert post_count() == before + 2
+    return audit
 
 
 async def main() -> None:
@@ -134,7 +212,11 @@ async def main() -> None:
             "living": RoomConfig("living", "Sala de estar", "la sala", default_light="light.test_lamp", default_cover="cover.test_blind"),
             "kitchen": RoomConfig("kitchen", "Cocina", "la cocina", default_climate="climate.test_ac"),
         }
-        dashboard = DashboardAPI(authority=authority, ha_client=ha, home_actions=actions, home_rooms=rooms, user_manager=users)
+        notice_store = ReminderStore(str(directory / 'reminders.db'))
+        await notice_store.initialize()
+        reminder_scheduler = ReminderScheduler(notice_store, None, None, ha, home_actions=actions)
+        dashboard = DashboardAPI(authority=authority, ha_client=ha, home_actions=actions, home_rooms=rooms,
+                                 user_manager=users, reminder_scheduler=reminder_scheduler)
 
         async def unavailable_live_channel(websocket):
             # This fixture has household services only; private live services are exercised separately.
@@ -198,6 +280,7 @@ async def main() -> None:
                     await login(page, home.token, "Acceso de hogar")
                     await asyncio.sleep(0.1)
                     assert not any(request['path'] == '/api/home/catalog' for request in requests[marker:])
+                    assert not any(request['path'] == NOTICE_LIST for request in requests[marker:])
                     await page.evaluate("delete document.hidden;document.dispatchEvent(new Event('visibilitychange'))")
                     await page.wait_for("document.querySelector('#room-list [data-room-id=living]') && document.querySelector('#room-controls [data-operation=turn_on]')")
                     await page.wait_for("document.querySelector('#map-loading').hidden")
@@ -260,6 +343,7 @@ async def main() -> None:
                     await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
                     await page.wait_for("!document.querySelector('#actions-view').hidden")
                     assert await page.evaluate("!document.querySelector('#house-canvas canvas') && window.__qaFrames.size===0")
+                    assert await page.evaluate("!document.querySelector('#home-notices')")
                     assert await page.evaluate(STALE_MONITOR)
                     audits = {'acciones': await audit_view(page, evidence, 'acciones', ACTION_CONTROLS, screenshot, fresh=HOME_FRESH)}
                     await page.evaluate("history.back()")
@@ -282,13 +366,23 @@ async def main() -> None:
                     assert await page.evaluate("document.documentElement.scrollWidth<=window.innerWidth")
                     assert await page.evaluate("getComputedStyle(document.querySelector('#session-label')).display!=='none'")
                     await screenshot(page, evidence / "home-mobile.png", full=False)
+                    prior_ha_effects = len(ha.sends)
+                    audits['avisos'] = await check_notices(page, evidence, notice_store, requests)
+                    assert len(ha.sends) == prior_ha_effects
                     await page.command("Emulation.setDeviceMetricsOverride", {"width": 320, "height": 760, "deviceScaleFactor": 1, "mobile": True})
                     await asyncio.sleep(0.1)
                     assert await page.evaluate("document.documentElement.scrollWidth<=window.innerWidth")
 
+                    await notice_store.create('synthetic-owner', 'Aviso antes de cerrar sesión', time.time() - 2,
+                                              scope=ReminderScope.SHARED)
+                    await page.evaluate("document.querySelector('#home-notices button').click()")
+                    await page.wait_for(f"{NOTICES_READY} && document.querySelector('#home-notices').textContent.includes('Aviso antes de cerrar sesión')")
+                    await page.evaluate("window.__qaHoldNoticeResponse=true;document.querySelector('#home-notices button').click()")
+                    await page.wait_for("typeof window.__qaReleaseNoticeResponse==='function'")
                     await page.evaluate("window.__qaHoldLogout=true;document.querySelector('#logout').click()")
                     await page.wait_for("!!window.__qaReleaseLogout")
                     assert await page.evaluate("document.querySelector('#nexo-workspace').hidden && !document.querySelector('#room-controls').children.length && !document.querySelector('#house-canvas canvas') && window.__qaFrames.size===0")
+                    assert await page.evaluate("!document.querySelector('#home-notices') && !document.body.textContent.includes('Aviso antes de cerrar sesión')")
                     logins = sum(request['path'] == '/api/admin/auth/login' for request in requests)
                     await page.evaluate("document.querySelector('#token').value=" + json.dumps(operator.token) + ";document.querySelector('#login-form').requestSubmit()")
                     await asyncio.sleep(0.1)
@@ -302,6 +396,9 @@ async def main() -> None:
                     await login(page, evaluator.token, "Evaluación temporal")
                     await page.wait_for("!document.querySelector('#evaluation-view').hidden && !!document.querySelector('#app-nav [data-view=evaluation]')")
                     assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].every(node=>node.dataset.view==='evaluation') && !document.querySelector('#house-canvas canvas')")
+                    await page.evaluate("window.__qaReleaseNoticeResponse()")
+                    assert await page.evaluate("!document.querySelector('#home-notices') && !document.body.textContent.includes('Aviso antes de cerrar sesión')")
+                    assert not any(item['path'] in {NOTICE_LIST, NOTICE_DISMISS} for item in requests[marker:])
                     assert not any(request["path"].startswith('/api/home/') or request["path"] in {"/api/users", "/api/voices", "/api/conversations"} for request in requests[marker:])
                     await page.evaluate("document.querySelector('#logout').click()")
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
@@ -309,6 +406,7 @@ async def main() -> None:
                     await page.evaluate("delete document.hidden")
                     await login(page, operator.token, "Administración")
                     await page.wait_for("document.querySelector('#app-nav [data-view=voices]') && document.querySelector('#room-list').children.length>0")
+                    await page.wait_for(f"{NOTICES_READY} && !!document.querySelector('{PENDING_DISMISS}')")
                     assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions,routines,memory,access'")
                     assert not any(request['path'] == '/api/admin/users' for request in requests)
                     # D1: the technical panel stays reachable only by direct URL, never linked from NEXO.
@@ -417,6 +515,9 @@ async def main() -> None:
                               "webgl_illustration": webgl, "individual_sessions": True,
                               "checks": ["bootstrap no private prefetch", "hidden bootstrap sends no catalog", "role permissions before requests", "independent light/climate typed effects", "focused drafts preserve current observed labels", "lost POST and in_progress receipt reconcile by poll without repost", "camera visual and ARIA agree", "visible model between renders", "navigation releases renderer/RAF", "320px and 390px no horizontal overflow", "operator session has no /obs link", "logout clears before pending HTTP and blocks crossed login", "failed logout stays hidden across reload", "session expires before fresh catalog", "held catalog past expiry disables and marks entity controls, fresh data restores focus and draft", "no entity observation lapses between refreshes during audits"],
                               "staleness": {**staleness_check, "stale_episodes_during_audits": len(stale_episodes)},
+                              "notice_checks": ["real shared-only list and dismiss", "initial and post-dismiss empty state", "pending and uncertain delivery labels",
+                                                "no markup in notice text", "stale and offline states block writes", "keyboard focus holds through refresh and returns after removal",
+                                                "lost committed receipt stays uncertain", "no hidden or evaluator prefetch", "logout clears before late response"],
                               "people_checks": ['real CRUD once per gesture', 'mutation stays pending across leave/reentry without repost', 'crossed GET keeps latest result', 'lost mutation receipt requires GET without repost', 'account level does not select dashboard role', 'cancelled confirmation has no effect', 'deletion retires every personal session', 'last admin conflict', '503 is not empty catalog', 'open dialog reports failed refresh and disables submit while preserving draft', 'names are DOM text', '320/390 reflow', 'logout clears dialog/draft/accounts before late GET under another login'],
                               "screenshots": ["home-desktop.png", "climate-desktop.png", "home-mobile.png", "people-desktop.png", "people-mobile.png"],
                               "reflow_widths": {view: sorted(audit['widths'], key=int) for view, audit in audits.items()},
@@ -435,6 +536,7 @@ async def main() -> None:
             await dashboard.stop()
             await serving
             await authority.aclose()
+            await notice_store.close()
 
 
 if __name__ == "__main__":
