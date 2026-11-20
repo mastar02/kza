@@ -299,8 +299,11 @@ def test_empty_quote_pairs_do_not_create_spans_between_or_around_them(text):
 @pytest.mark.parametrize("location", ["la cocina", "el fogón"])
 @pytest.mark.parametrize("depth", [2, 3])
 @pytest.mark.parametrize("ending", [".", ", por favor."])
-async def test_nested_same_delimiter_at_start_preserves_broadcast_literal(quote, gap, location, depth, ending):
-    inner = f"{quote}En {location}: esperen{quote}"
+@pytest.mark.parametrize("inner_prefix", ["", "... ", "… ", " ", "\n"])
+async def test_nested_same_delimiter_at_start_preserves_broadcast_literal(
+    quote, gap, location, depth, ending, inner_prefix,
+):
+    inner = f"{quote}{inner_prefix}En {location}: esperen{quote}"
     message = f"{quote}{gap}{inner}, dijo Ana{ending}{quote}"
     spans = [message, inner]
     if depth == 3:

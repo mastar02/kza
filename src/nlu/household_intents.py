@@ -323,9 +323,10 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
             return re.match(r"[,.;:?!…\s¡¿«\"'([{—-]*[^\W_]", text[start:]) is not None
         following = text[start + 1:start + 2]
         return (
-            after not in ",.;:?!"
+            after not in ",.;:?!…"
             or text.startswith("...", start)
-            or bool(following) and not following.isspace() and following not in ",.;:?!)]}»\"'"
+            or text.startswith("…", start)
+            or bool(following) and not following.isspace() and following not in ",.;:?!…)]}»\"'"
         )
 
     markers: list[tuple[int, str, bool, bool]] = []
@@ -344,33 +345,18 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
     if not markers:
         return []
 
+    word_after_space = re.compile(r"\s+[^\W_]")
+    weak_closers = {
+        index for index, (offset, char, _, _) in enumerate(markers)
+        if char in "\"'" and text[offset - 1:offset].isalnum() and word_after_space.match(text, offset + 1)
+    }
     empty_pairs: set[int] = set()
-    unambiguous_empty_pairs: set[int] = set()
-    for index in range(len(markers) - 2, -1, -1):
+    for index in range(len(markers) - 1):
         start, opener, _, _ = markers[index]
-        end, closer, second_can_open, _ = markers[index + 1]
-        if _QUOTE_CLOSERS.get(opener) != closer or text[start + 1:end].strip():
-            continue
-        if not opening_boundary(text[max(0, start - 1):start]):
-            continue
-        empty_pairs.add(index)
-        after_second = text[end + 1:end + 2]
-        if not second_can_open or not after_second or after_second in ",.;:?!…—-)]}":
-            unambiguous_empty_pairs.add(index)
-            continue
-        # Whitespace may separate consecutive openings. A following
-        # definite empty pair cannot be part of that opening sequence.
-        next_index = index + 2
-        if next_index < len(markers):
-            next_offset, _, next_can_open, _ = markers[next_index]
-            if not text[end + 1:next_offset].strip():
-                if next_index in unambiguous_empty_pairs:
-                    unambiguous_empty_pairs.add(index)
-                    continue
-                if next_can_open:
-                    continue
-        if after_second.isspace():
-            unambiguous_empty_pairs.add(index)
+        end, closer, _, _ = markers[index + 1]
+        if (_QUOTE_CLOSERS.get(opener) == closer and not text[start + 1:end].strip()
+                and opening_boundary(text[max(0, start - 1):start])):
+            empty_pairs.add(index)
 
     sibling_connector = re.compile(
         r"(?:\.{3}|…)\s*(?:[,;]\s*)?(?:(?:y|e|o|u|pero|(?:y\s+)?(?:luego|despu[eé]s))\s*)?",
@@ -379,22 +365,24 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
 
     def continuations(index: int, stack: str) -> tuple[tuple[int, str], ...]:
         offset, char, can_open, can_close = markers[index]
-        # A definite empty pair cannot lend a delimiter to a later quote.
         empty = ((index + 2, stack),) if index in empty_pairs else ()
-        can_push = can_open and index not in unambiguous_empty_pairs and len(stack) < _MAX_QUOTE_DEPTH
+        can_push = can_open and len(stack) < _MAX_QUOTE_DEPTH
         if not stack or stack[-1] != char:
-            if index in unambiguous_empty_pairs:
-                return empty
             following = stack + _QUOTE_CLOSERS[char] if can_push else stack
             return (*empty, (index + 1, following))
         closed = (index + 1, stack[:-1])
+        separated_empty = (
+            bool(empty) and text[offset - 1:offset].isspace() and text[offset + 1:markers[index + 1][0]].isspace()
+        )
         if not can_push:
-            return (closed, *empty)
+            return (*empty, closed) if separated_empty else (closed, *empty)
         opened = (index + 1, stack + _QUOTE_CLOSERS[char])
         if not can_close:
             return (*empty, opened)
-        if empty or text[offset + 1].isspace():
-            return (closed, *empty, opened)
+        if empty:
+            return (*empty, closed, opened) if separated_empty else (closed, *empty, opened)
+        if text[offset + 1:offset + 2].isspace():
+            return closed, opened
         if index + 1 < len(markers):
             next_offset, _, next_can_open, _ = markers[index + 1]
             if next_can_open and sibling_connector.fullmatch(text, offset + 1, next_offset):
@@ -402,8 +390,7 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         return opened, closed
 
     # A state only needs the expected closers, not their source offsets.
-    # Prefer a fully balanced continuation. For malformed speech, retain
-    # the spans along the path with the fewest skipped or unclosed marks.
+    # Score unmatched marks and weak closures across same-delimiter nesting.
     choices: dict[tuple[int, str], tuple[int, tuple[int, str]]] = {}
     pending = [(0, "")]
     while pending:
@@ -412,7 +399,7 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
         if index == len(markers):
             choices[state] = (len(stack), state)
         else:
-            best = (len(markers) + 1, state)
+            best = (2 * len(markers) + 1, state)
             for successor in continuations(index, stack):
                 if successor not in choices:
                     pending.append(successor)
@@ -420,6 +407,11 @@ def _quote_spans(text: str) -> list[tuple[int, int]]:
                 cost, _ = choices[successor]
                 # An ignored mark is unmatched. A consumed pair costs zero.
                 cost += successor == (index + 1, stack)
+                if (index in weak_closers and len(successor[1]) < len(stack)
+                        and len(stack) > 1 and stack[-2] == stack[-1]):
+                    # Bare marks between words give less evidence of nesting
+                    # than a matched pair with a clause boundary at its close.
+                    cost += 2
                 if cost < best[0]:
                     best = (cost, successor)
                 if cost == 0:
