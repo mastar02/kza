@@ -21,7 +21,7 @@ FROZEN = datetime(2026, 8, 5, 2, 30, tzinfo=UTC)
 
 def make_dispatcher(**kwargs) -> RequestDispatcher:
     return RequestDispatcher(
-        chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(), router=None, llm=None,
+        chroma_sync=MagicMock(), ha_client=AsyncMock(), router=None, llm=None,
         context_manager=ContextManager(), priority_queue=PriorityRequestQueue(), **kwargs,
     )
 
@@ -69,7 +69,7 @@ async def test_without_a_catalog_no_room_is_an_origin():
 
 async def test_orchestrator_injects_the_same_clock_and_namespace_and_forwards_the_origin():
     clock = HouseholdClock()
-    orchestrator = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(),
+    orchestrator = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock(),
                                          household_clock=clock, room_namespace=ROOMS)
     assert orchestrator.dispatcher.household_clock is clock
     assert orchestrator.context_manager.household_clock is clock
@@ -133,9 +133,9 @@ def test_slow_path_prompt_time_is_the_household_wall_time(foreign_process_tz):
 
 
 def test_one_clock_is_shared_when_none_is_injected():
-    orchestrator = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock())
+    orchestrator = MultiUserOrchestrator(chroma_sync=MagicMock(), ha_client=AsyncMock())
     assert isinstance(orchestrator.dispatcher.household_clock, HouseholdClock)
     assert orchestrator.context_manager.household_clock is orchestrator.dispatcher.household_clock
-    dispatcher = RequestDispatcher(chroma_sync=MagicMock(), ha_client=AsyncMock(), routine_manager=MagicMock(),
+    dispatcher = RequestDispatcher(chroma_sync=MagicMock(), ha_client=AsyncMock(),
                                    router=None, llm=None, priority_queue=PriorityRequestQueue())
     assert dispatcher.context_manager.household_clock is dispatcher.household_clock

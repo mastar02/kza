@@ -138,13 +138,12 @@ async def stage(tmp_path, monkeypatch, *, enabled=True, wait=2.0, orchestrated=F
         voices.register_encoder(encoder)
         processor = Processor(voices, encoder)
         gate = Gate()
-        orchestrator = (MultiUserOrchestrator(None, None, None, llm=handler.llm, response_handler=handler,
+        orchestrator = (MultiUserOrchestrator(None, None, llm=handler.llm, response_handler=handler,
                                               memory_manager=services.manager) if orchestrated else None)
         options = {"voice_attributor": attributor} if router_class is RequestRouter else {}
         router = router_class(processor, handler, MagicMock(), orchestrator=orchestrator, orchestrator_enabled=orchestrated,
                               memory_manager=services.manager, privacy=privacy, command_gate=gate,
                               chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None),
-                              routine_manager=SimpleNamespace(handle=AsyncMock(return_value={"handled": False})),
                               **options)
         stack.push_async_callback(router.aclose)
         spoken = []

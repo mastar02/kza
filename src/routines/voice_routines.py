@@ -42,10 +42,14 @@ from src.routines.voice_proposal_extractor import ProposalIssue, VoiceProposalEr
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "RoutineCatalogEntry", "RoutineProposalResult", "RoutineReadKind", "RoutineReadQuery", "RoutineReadResult",
-    "VoiceRoutineService",
-    "legacy_routine_outcome",
+    "ROUTINE_CREATE_REFUSAL", "RoutineCatalogEntry", "RoutineProposalResult", "RoutineReadKind", "RoutineReadQuery",
+    "RoutineReadResult", "VoiceRoutineService", "is_unclaimed_routine_creation",
 ]
+
+ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
+_UNCLAIMED_CREATION = re.compile(
+    r"\b(?:(?:crea|crear) (?:una )?(?:rutina|automatizacion)|nueva (?:rutina|automatizacion)|automatiza)\b"
+)
 
 _SINGULAR_NOUNS = frozenset({"rutina", "automatizacion"})
 _PLURAL_NOUNS = frozenset({"rutinas", "automatizaciones"})
@@ -229,22 +233,6 @@ class RoutineProposalResult:
     outcome: TaskOutcome
 
 
-def legacy_routine_outcome(success: bool) -> TaskOutcome:
-    """Outcome of a turn the legacy routine handlers answered (until T033-U4 retires them).
-
-    Those handlers return no evidence of a stored or executed change, so a
-    reply they mark successful is UNCERTAIN, never COMPLETED; a refusal is
-    FAILED with nothing written, sent or observed.
-
-    Args:
-        success: The legacy handler's own ``success`` flag.
-    """
-    if success:
-        return TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN)
-    return TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN,
-                       dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED)
-
-
 def _fold(text: str) -> str:
     decomposed = unicodedata.normalize("NFD", text.lower())
     return "".join(c for c in decomposed if unicodedata.category(c) != "Mn")
@@ -252,6 +240,11 @@ def _fold(text: str) -> str:
 
 def _words(text: str) -> list[str]:
     return re.sub(r"[^a-z0-9]+", " ", _fold(text)).split()
+
+
+def is_unclaimed_routine_creation(text: str) -> bool:
+    """Recognize explicit creation phrases for a local refusal outside the request grammar."""
+    return _UNCLAIMED_CREATION.search(" ".join(_words(text))) is not None
 
 
 def name_key(name: str) -> str:

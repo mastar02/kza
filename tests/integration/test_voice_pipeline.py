@@ -29,7 +29,7 @@ class TestVoicePipelineIntegration:
     """Integration tests for the voice pipeline"""
 
     @pytest.fixture
-    def pipeline(self, mock_stt, mock_tts, mock_chroma, mock_routine_manager, mock_ha_client, mock_llm):
+    def pipeline(self, mock_stt, mock_tts, mock_chroma, mock_ha_client, mock_llm):
         """Create a slim pipeline with pre-built mocked components."""
         from src.pipeline.voice_pipeline import VoicePipeline
         from src.pipeline.command_processor import CommandProcessor
@@ -60,7 +60,6 @@ class TestVoicePipelineIntegration:
             ha_client=mock_ha_client,
             home_actions=selected_actions(mock_ha_client, ("light.living_room",)),
             llm_reasoner=mock_llm,
-            routine_manager=mock_routine_manager,
             vector_search_threshold=0.65,
             latency_target_ms=300,
         )
@@ -196,25 +195,22 @@ class TestVoicePipelineIntegration:
 
     @pytest.mark.asyncio
     async def test_process_routine_command(self, pipeline, sample_audio):
-        """Test processing a routine command"""
+        """Without proposal review, an explicit creation request is refused locally."""
         pipeline.command_processor.process_command = AsyncMock(return_value=ProcessedCommand(
             text="nexa crea una rutina para las 7am",
             timings={"stt": 45.0},
             success=True,
         ))
-        pipeline.request_router.routines.handle = AsyncMock(return_value={
-            "handled": True,
-            "response": "Rutina creada",
-            "success": True
-        })
 
         result = await pipeline.process_command(sample_audio)
 
         assert result["intent"] == "routine"
         assert result["handled"] is True
         assert result["task_completed"] is False
-        # T033-U1: the legacy handler's success carries no evidence of a stored change: UNCERTAIN.
-        assert result["outcome"]["status"] == "uncertain"
+        assert result["response"] == "Todavía no creo rutinas por voz. Podés crearlas desde la web."
+        assert result["outcome"]["status"] == "unsupported"
+        assert result["outcome"]["persistence"] == "not_written"
+        assert pipeline.request_router.ha.get_services_called() == []
         assert result["success"] is False
 
     @pytest.mark.asyncio
@@ -277,7 +273,6 @@ class TestVoicePipelineCache:
             command_processor=MagicMock(),
             response_handler=response_handler_mock(),
             audio_manager=MagicMock(),
-            routine_manager=MagicMock(),
             cache_max_size=100,
         )
 
@@ -300,7 +295,6 @@ class TestSyncCommandDetection:
             command_processor=MagicMock(),
             response_handler=response_handler_mock(),
             audio_manager=MagicMock(),
-            routine_manager=MagicMock(),
         )
 
     @pytest.mark.parametrize("command", [

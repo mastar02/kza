@@ -202,7 +202,7 @@ async def test_real_voice_result_cannot_postprocess_after_consumed_capture_revoc
             handler, _, _, _, _ = voice_graph(monkeypatch)
             handler.zone_manager.add_zone(Zone('synthetic-a', 'Synthetic room', 2, 3))
             stack.push_async_callback(handler.aclose)
-            owner = MultiUserOrchestrator(None, None, None, llm=handler.llm, memory_manager=manager,
+            owner = MultiUserOrchestrator(None, None, llm=handler.llm, memory_manager=manager,
                 response_handler=handler, privacy=g.privacy)
             stack.push_async_callback(owner.stop)
             owner._running = True

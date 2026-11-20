@@ -23,6 +23,7 @@ from src.nlu.command_gate import CommandAcceptanceGate, contains_wake_word
 from src.pipeline.command_event import CommandEvent
 from src.pipeline.multi_room_audio_loop import CHUNK_SIZE, MultiRoomAudioLoop, RoomStream
 from src.pipeline.request_router import RequestRouter
+from src.routines.voice_routines import VoiceRoutineService
 from src.pipeline.wake_verification import (
     STATUS_SCHEMA, WakeCheckCode, WakeVerificationConfig, WakeVerificationMode, WakeVerifier,
 )
@@ -143,14 +144,11 @@ def _router(verifier, text, orchestrated=True):
     orch.process = AsyncMock(return_value=MagicMock(
         intent="domotics", response="ok", success=True, action=None, path=None, timings={},
         was_queued=False, queue_position=None))
-    # Legacy path: a routine manager that takes the accepted command.
-    routines = MagicMock()
-    routines.handle = AsyncMock(return_value={"handled": True, "response": "ok", "success": True})
     router = RequestRouter(
         command_processor=processor, orchestrator=orch, orchestrator_enabled=orchestrated,
         response_handler=response_handler_mock(), audio_manager=MagicMock(), wake_words=("nexa",),
         command_gate=CommandAcceptanceGate(), wake_acoustically_confirmed=True, wake_verifier=verifier,
-        routine_manager=routines)
+        voice_routines=VoiceRoutineService())
     return router, orch
 
 
@@ -188,13 +186,13 @@ async def test_router_enforce_rejects_as_missing_wake():
 async def test_legacy_path_shadow_never_rejects_and_enforce_does():
     """Same rule on the non-orchestrated path (orchestrator.enabled: false)."""
     verifier = _verifier()
-    router, _orch = _router(verifier, "prendé la luz", orchestrated=False)
+    router, _orch = _router(verifier, "qué rutinas hay", orchestrated=False)
     shadow_result = await router.process_command(_event())
     assert verifier.snapshot()["totals"] == {"would_reject": 1}
-    baseline_router, _baseline_orch = _router(None, "prendé la luz", orchestrated=False)
+    baseline_router, _baseline_orch = _router(None, "qué rutinas hay", orchestrated=False)
     baseline = await baseline_router.process_command(_event())
     assert shadow_result["intent"] == baseline["intent"] == "routine"
-    enforce_router, _enforce_orch = _router(_verifier("enforce"), "prendé la luz", orchestrated=False)
+    enforce_router, _enforce_orch = _router(_verifier("enforce"), "qué rutinas hay", orchestrated=False)
     enforced = await enforce_router.process_command(_event())
     assert enforced["intent"] == "gate_rejected:missing_wake:'nexa'" and enforced["success"] is False
 

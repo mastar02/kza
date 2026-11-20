@@ -224,7 +224,7 @@ class Household:
         self.classifier = HouseholdIntentClassifier(settings or HouseholdIntentSettings(wake_words=("nexa",)))
         self.handler = response_handler_mock()
         self.orchestrator = MultiUserOrchestrator(
-            chroma_sync=leaves.chroma, ha_client=leaves.ha, routine_manager=leaves.routines, router=leaves.router,
+            chroma_sync=leaves.chroma, ha_client=leaves.ha, router=leaves.router,
             music_dispatcher=leaves.music, list_manager=leaves.list_manager,
             reminder_manager=leaves.reminder_manager, response_handler=self.handler,
             household_intents=self.classifier, timer_manager=leaves.timers,

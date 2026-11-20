@@ -44,7 +44,9 @@ from src.orchestrator.priority_queue import Priority
 from src.pipeline.earcon_gate import should_play_earcon
 from src.pipeline.post_wake_endpoint import CaptureTrigger
 from src.pipeline.wake_verification import WakeVerifier
-from src.routines.voice_routines import VoiceRoutineService, legacy_routine_outcome
+from src.routines.voice_routines import (
+    ROUTINE_CREATE_REFUSAL, VoiceRoutineService, is_unclaimed_routine_creation,
+)
 from src.analytics.asr_quality import alog_asr_outcome
 from src.memory.transient import TransientCache
 from src.memory.voice_phrase import VERIFICATION_REPLY
@@ -297,8 +299,6 @@ class RequestRouter:
         suggestion_engine=None,
         latency_monitor=None,
         features=None,
-        voice_routine_handler=None,
-        routine_manager=None,
         vector_search_threshold: float = 0.65,
         latency_target_ms: int = 300,
         suggestion_interval: int = 50,
@@ -348,8 +348,6 @@ class RequestRouter:
             suggestion_engine: For automation suggestions.
             latency_monitor: For latency tracking.
             features: FeatureManager for timer/intercom/notification commands.
-            voice_routine_handler: VoiceRoutineHandler for routine commands.
-            routine_manager: RoutineManager (legacy fallback).
             vector_search_threshold: Minimum similarity for vector search.
             latency_target_ms: Target latency in milliseconds.
             suggestion_interval: Commands between suggestion prompts.
@@ -401,8 +399,6 @@ class RequestRouter:
         self.suggestion_engine = suggestion_engine
         self.latency_monitor = latency_monitor
         self.features = features
-        self.voice_routine_handler = voice_routine_handler
-        self.routines = routine_manager
         self.voice_routines = voice_routines
         self._routine_capture_allowed: AuthorityGuard | None = None
 
@@ -632,11 +628,10 @@ class RequestRouter:
     async def _try_routine_read(self, text: str, result: dict, *, pipeline_start: float) -> bool:
         """Legacy path: answer a routine question from the scheduler store (T033-U1).
 
-        Read-only and never from the legacy Chroma index; detection reads only
-        the words of the turn. It runs before the legacy stages (feedback,
-        learning, the legacy routine handlers, the vector search), so a
-        question such as "¿está activa la rutina riego?" never reaches a
-        producer that could act on 'activa' (T033-U1-RV1).
+        Detection reads only the words of the turn. It runs before feedback,
+        learning and the vector search, so a question such as "¿está activa
+        la rutina riego?" never reaches a producer that could act on 'activa'
+        (T033-U1-RV1).
 
         Returns:
             True when the turn was a routine question and has been answered;
@@ -2037,6 +2032,20 @@ class RequestRouter:
             result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
             return result
 
+        if is_unclaimed_routine_creation(text) or (
+            household is not None and household.family is HouseholdFamily.ROUTINE
+            and (household.operation is not HouseholdOperation.QUERY or self.voice_routines is None)
+        ):
+            response = (ROUTINE_CREATE_REFUSAL if household is None or household.reason == "new_routine"
+                        else "Todavía no manejo rutinas por voz. Podés verlas desde la web.")
+            result.update(intent="routine", response=response, success=False, _task_outcome=TaskOutcome(
+                TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
+                dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED,
+            ))
+            await self._speak_response(response)
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
+
         if await self._try_memory_proposal(text, result):
             result["latency_ms"] = (time.perf_counter()-pipeline_start)*1000
             return result
@@ -2101,8 +2110,6 @@ class RequestRouter:
                     exc_info=True,
                 )
 
-        # T033-U1-RV1: a routine question is read from the scheduler store before
-        # the confidence gate, feedback, learning and the legacy routine handlers.
         if await self._try_routine_read(text, result, pipeline_start=pipeline_start):
             return result
 
@@ -2231,38 +2238,7 @@ class RequestRouter:
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
                 return result
 
-        # 7. Check routine (new system with VoiceRoutineHandler)
-        t_routine = time.perf_counter()
-
-        # Try the new voice handler first (more complete)
-        if self.voice_routine_handler:
-            user_id = user.user_id if user else None
-            routine_result = await self.voice_routine_handler.handle(text, user_id)
-
-            if routine_result["handled"]:
-                result["timings"]["routine_check"] = (time.perf_counter() - t_routine) * 1000
-                result["intent"] = "routine"
-                result["response"] = routine_result["response"]
-                result["success"] = routine_result["success"]
-                result["_task_outcome"] = legacy_routine_outcome(bool(routine_result["success"]))
-                await self._speak_response(result["response"])
-                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-                return result
-
-        # Fallback to original RoutineManager (compatibility)
-        routine_result = await self.routines.handle(text)
-        result["timings"]["routine_check"] = (time.perf_counter() - t_routine) * 1000
-
-        if routine_result["handled"]:
-            result["intent"] = "routine"
-            result["response"] = routine_result["response"]
-            result["success"] = routine_result["success"]
-            result["_task_outcome"] = legacy_routine_outcome(bool(routine_result["success"]))
-            await self._speak_response(result["response"])
-            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
-            return result
-
-        # 7b. Guard de intents que requieren dominio HA específico ausente.
+        # 7. Guard de intents que requieren dominio HA específico ausente.
         # Sin esto, el probe ambiguo de luces más abajo puede mapear (por
         # similitud de embedding) un `set_temperature` a `light.balcon` o un
         # `set_volume` a una luz random — visto en logs 2026-05-02 06:57:02:

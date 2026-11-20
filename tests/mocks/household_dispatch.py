@@ -19,6 +19,7 @@ from src.core.household_clock import HouseholdClock
 from src.core.task_outcome import PersistenceState, TaskOutcome, TaskStatus
 from src.lists.list_manager import ListManager
 from src.lists.list_store import ListStore
+from src.nlu.household_intents import HouseholdOperation
 from src.orchestrator.context_manager import ContextManager
 from src.orchestrator.dispatcher import DispatchResult, PathType, Priority, RequestDispatcher
 from src.orchestrator.priority_queue import PriorityRequestQueue
@@ -51,8 +52,8 @@ class CountedLeaves:
         self.router = MagicMock()
         self.router.complete = AsyncMock(return_value="hola")
         self.router.generate = MagicMock(return_value=["hola"])
-        self.routines = MagicMock()
-        self.routines.handle = AsyncMock(return_value={"handled": True, "success": True, "response": "ok"})
+        self.routine_control: AsyncMock | None = None
+        self.routine_propose: AsyncMock | None = None
         self.responses = MagicMock()
         self.responses.aspeak = AsyncMock()
         self.home = AsyncMock(return_value=SimpleNamespace(
@@ -82,7 +83,7 @@ class CountedLeaves:
         """A RequestDispatcher over these leaves with counting boundaries."""
         queue = PriorityRequestQueue()
         dispatcher = RequestDispatcher(
-            chroma_sync=self.chroma, ha_client=self.ha, routine_manager=self.routines, router=self.router,
+            chroma_sync=self.chroma, ha_client=self.ha, router=self.router,
             llm=None, context_manager=ContextManager(), priority_queue=queue, music_dispatcher=self.music,
             list_manager=self.list_manager, reminder_manager=self.reminder_manager,
             response_handler=self.responses,
@@ -94,6 +95,9 @@ class CountedLeaves:
         """Replace the effect boundaries of ``dispatcher`` with the counting stubs."""
         dispatcher._dispatch_home_action = self.home
         dispatcher._slow_path = self.cloud
+        if (routines := dispatcher.voice_routines) is not None:
+            self.routine_control = routines.control = AsyncMock(wraps=routines.control)
+            self.routine_propose = routines.propose = AsyncMock(wraps=routines.propose)
         self.queue = dispatcher.queue
         original = dispatcher.queue.cancel_user_request
 
@@ -208,6 +212,9 @@ class CountedLeaves:
         lists1, items1, reminders1, timers1 = self.snapshot()
         list_mutations = (len(lists0.keys() ^ lists1.keys()) + len(items0.keys() ^ items1.keys())
                           + sum(1 for key in items0.keys() & items1.keys() if items0[key] != items1[key]))
+        controls = self.routine_control.await_args_list if self.routine_control is not None else ()
+        routine_runs = sum(call.args[0] is HouseholdOperation.EXECUTE for call in controls)
+        proposals = self.routine_propose.await_count if self.routine_propose is not None else 0
         return effects(
             ha_service_calls=self.home.await_count + sum(1 for call in self.ha.mock_calls if "call_service" in call[0]),
             vector_searches=self.chroma.asearch_command.await_count + self.chroma.search_command.call_count,
@@ -219,8 +226,8 @@ class CountedLeaves:
             timer_delta=len(timers1) - len(timers0),
             timer_transitions=sum(1 for key in timers0.keys() & timers1.keys() if timers0[key] != timers1[key]),
             queue_cancels=sum(self.cancels),
-            routine_runs=self.routines.handle.await_count,
-            routine_changes=sum(1 for call in self.routines.method_calls if call[0] != "handle"),
+            routine_runs=routine_runs,
+            routine_changes=len(controls) - routine_runs + proposals,
             llm_8101_calls=self.router.complete.await_count + self.router.generate.call_count + llm_8101_calls,
             cloud_calls=self.cloud.await_count,
             spoken_utterances=self.responses.aspeak.await_count if spoken is None else spoken,

@@ -1,4 +1,4 @@
-"""Installed Chroma SDK ownership through HA lookup, routine writes and close."""
+"""Installed Chroma SDK ownership through HA command index access and close."""
 
 import asyncio
 from contextlib import AsyncExitStack
@@ -159,7 +159,6 @@ async def test_cancelled_async_search_retains_real_query_before_sdk_close(graph)
 
 @pytest.mark.parametrize('view_name,method,kwargs', [
     ('commands', 'count', {}),
-    ('routines', 'add', {'ids':['late'], 'embeddings':[[.1,.2,.3]]}),
     ('embedder', 'encode', {'text':'Synthetic query'}),
 ])
 async def test_previously_saved_views_cannot_reopen_or_use_retired_sdk(graph, view_name, method, kwargs):
@@ -173,7 +172,7 @@ async def test_previously_saved_views_cannot_reopen_or_use_retired_sdk(graph, vi
     assert owner._client is owner._embedder is owner._commands_collection is None
 
 
-async def test_cancelled_sync_routine_write_keeps_encoder_and_client_until_actual_exit(graph, monkeypatch):
+async def test_cancelled_sync_search_keeps_encoder_and_client_until_actual_exit(graph, monkeypatch):
     owner, clients, _ = graph
     await seed(owner)
     entered, release = threading.Event(), threading.Event()
@@ -182,8 +181,7 @@ async def test_cancelled_sync_routine_write_keeps_encoder_and_client_until_actua
         assert release.wait(5)
         return np.array([.1,.2,.3])
     monkeypatch.setattr(owner._embedder, 'encode', encode)
-    caller = asyncio.create_task(asyncio.to_thread(owner.save_routine,
-        {'id':'synthetic-routine', 'name':'Synthetic', 'description':'Synthetic routine'}))
+    caller = asyncio.create_task(asyncio.to_thread(owner.search_command, 'Synthetic light command'))
     try:
         await until(entered.is_set)
         caller.cancel()
@@ -194,7 +192,7 @@ async def test_cancelled_sync_routine_write_keeps_encoder_and_client_until_actua
     finally:
         release.set()
     await closing
-    assert clients[0].named('home_assistant_routines').sdk is not None and clients[0].sdk._closed
+    assert clients[0].named('home_assistant_commands').queried and clients[0].sdk._closed
 
 
 async def test_encoder_initialization_failure_closes_partial_client_once_with_safe_error(graph, monkeypatch):

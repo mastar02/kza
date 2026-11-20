@@ -41,7 +41,7 @@ async def test_valid_proposal_uses_current_reviewed_selection_and_no_external_pr
 ):
     async with application(tmp_path, leaves, orchestrated=orchestrated) as home:
         router = home.graph.pipeline.request_router
-        assert router.llm is None and router.routines.llm is None
+        assert router.llm is None
         veto = AsyncMock(side_effect=AssertionError("proposal reached the model veto"))
         monkeypatch.setattr(router, "_household_veto_passes", veto)
         list_entities = AsyncMock(wraps=router.ha.get_domotics_entities)
@@ -92,7 +92,6 @@ async def test_voice_affirmations_leave_proposal_and_saved_routines_intact(home,
         assert await home.scheduler.get_all_routines() == [saved]
         assert list(tray._entries) == [entry.proposal_id]
         assert asdict(tray._entries[entry.proposal_id]) == proposal_before
-        assert router.routines.pending_routine is None and not router.routines.awaiting_confirmation
         assert home.transport.sends == []
 
     async with AsyncClient(transport=ASGITransport(app=home.graph.dashboard.app), base_url="http://test") as client:

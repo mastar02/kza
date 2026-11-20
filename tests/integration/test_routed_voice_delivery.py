@@ -23,7 +23,7 @@ async def test_real_router_delivers_each_reply_or_generation_error_once(monkeypa
     # Exceed the filler delay: a quiet owner must remain quiet in either router.
     parts = [.15, event(text), event(finish='length' if failure else 'stop')]
     handler, engine, backend, endpoint, amplifier = voice_graph(monkeypatch, parts=parts)
-    orchestrator = MultiUserOrchestrator(None, None, None, llm=handler.llm, response_handler=handler) if orchestrated else None
+    orchestrator = MultiUserOrchestrator(None, None, llm=handler.llm, response_handler=handler) if orchestrated else None
     processor = MagicMock()
     processor.process_command = AsyncMock(return_value=SimpleNamespace(
         text='Nexa explicame el cielo', user=None, emotion=None, timings={}, stt_confidence=None,
@@ -36,8 +36,7 @@ async def test_real_router_delivers_each_reply_or_generation_error_once(monkeypa
     chroma.search_command.return_value = None
     router = RequestRouter(processor, handler, audio_manager, orchestrator=orchestrator,
         orchestrator_enabled=orchestrated, llm_reasoner=handler.llm, memory_manager=memory,
-        chroma_sync=chroma,
-        routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
+        chroma_sync=chroma)
     worker = None
     if orchestrator:
         orchestrator._running = True

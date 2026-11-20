@@ -24,7 +24,6 @@ def dispatcher_with_hooks():
     dispatcher = RequestDispatcher(
         chroma_sync=MagicMock(),
         ha_client=ha_client,
-        routine_manager=MagicMock(),
         response_handler=response_handler,
         hooks=hooks,
         home_actions=selected_actions(ha_client, ("light.x", "light.cocina")),

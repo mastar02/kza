@@ -81,12 +81,9 @@ def _dispatcher(queue):
     chroma = MagicMock()
     chroma.asearch_command = AsyncMock(return_value=None)
     ha = MagicMock()
-    routine = MagicMock()
-    routine.handle = AsyncMock(return_value={"handled": False, "response": "", "success": False})
     d = RequestDispatcher(
         chroma_sync=chroma,
         ha_client=ha,
-        routine_manager=routine,
         router=None,
         llm=None,
         context_manager=ContextManager(),

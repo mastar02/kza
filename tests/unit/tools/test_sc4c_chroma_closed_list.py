@@ -4,7 +4,7 @@ mechanism.start.chroma_allowlist (PRIV-3, PA-8, V4R2-C1): the policy memory
 collection is rebuilt from the allowlist of facts get() would return at
 t_clone whose owner is not retired (ledger and tombstones as a second
 gate); the command-index collections are copied whole; home_assistant_routines
-of data/chroma_db is not copied (a named drop, K's boot recreates it empty;
+of data/chroma_db is not copied (a named drop, absent after K boots;
 SC4C-Q6: by exact name in that store only), nor is the legacy 'user_memories'
 of data/memory_db (SC4C-Q2b: a named drop by exact name in that store only);
 any other collection, a look-alike or a dropped name in another store
@@ -127,25 +127,20 @@ def test_the_legacy_drop_names_the_runtime_s_memory_store_and_collection():
     assert oc.collection_kind(name + oc.CHROMA_POLICY_SUFFIX, policy=True, store=store) == "rebuilt"
 
 
-def test_the_routines_drop_names_the_runtime_s_command_store_and_collection():
-    """SC4C-Q6: the dropped routines pair is where the runtime makes that collection: ChromaSync at settings
-    vectordb.path (main's default the same) under its routines_collection, which main leaves at ChromaSync's
-    default and settings names the same. Together with the legacy pair, those are the only named drops."""
-    import inspect
+def test_the_routines_drop_names_the_historical_collection_in_the_command_store():
+    """SC4C-Q6: the two legacy drops are limited to their exact stores."""
     import yaml
-    from src.vectordb.chroma_sync import ChromaSync
     config = yaml.safe_load((REPO / "config" / "settings.yaml").read_text(encoding="utf-8"))
     vectordb, memory = config["vectordb"], config["memory"]
-    [(store, name)] = [pair for pair in oc.CHROMA_DROPPED_IN_STORE if pair[1] != "user_memories"]
-    assert Path(vectordb["path"]).as_posix() == store
-    assert vectordb["routines_collection"] == name
-    assert inspect.signature(ChromaSync).parameters["routines_collection"].default == name
     main = (REPO / "src" / "main.py").read_text(encoding="utf-8")
-    assert main.count("ChromaSync)(") == 1 and "routines_collection" not in main
+    assert "routines_collection" not in vectordb and "routines_collection" not in main
+    assert main.count("ChromaSync)(") == 1
     assert 'chroma_path=vectordb_config.get("path", "./data/chroma_db")' in main
-    assert Path("./data/chroma_db").as_posix() == store
-    assert oc.CHROMA_DROPPED_IN_STORE == {(Path(vectordb["path"]).as_posix(), vectordb["routines_collection"]),
-                                          (Path(memory["chroma_path"]).as_posix(), memory["long_term_collection"])}
+    assert Path(vectordb["path"]).as_posix() == "data/chroma_db"
+    assert oc.CHROMA_DROPPED_IN_STORE == {
+        ("data/chroma_db", "home_assistant_routines"),
+        (Path(memory["chroma_path"]).as_posix(), memory["long_term_collection"]),
+    }
     assert compaction.CHROMA_DROPPED_IN_STORE == oc.CHROMA_DROPPED_IN_STORE
 
 
@@ -358,8 +353,7 @@ def test_the_first_post_r1_transition_rebuilds_chroma_from_the_closed_list(x4, x
     for path in [*stage.compaction_log_path(root, compaction_id).rglob("*"), k_state / ".kza-payload-preparation.json"]:
         if path.is_file():
             assert sc.CANARY not in path.read_text(), path
-    # K's boot (ChromaSync._construct, with a stub embedder) recreates the routines collection empty and
-    # resolves the command index through the copied pointer.
+    # K's boot resolves the command index through the copied pointer, leaving the retired collection absent.
     from src.vectordb import chroma_sync
     boot = tmp_path / "k-boot"
     shutil.copytree(k_state / "data" / "chroma_db", boot)
@@ -367,7 +361,7 @@ def test_the_first_post_r1_transition_rebuilds_chroma_from_the_closed_list(x4, x
     sync = chroma_sync.ChromaSync(str(boot), "stub", "cpu")
     sync._construct()
     try:
-        assert sync._routines_collection.count() == 0
+        assert "home_assistant_routines" not in {collection.name for collection in sync._client.list_collections()}
         assert sync._commands_collection.name == sc.STAGING and sync._index_degraded is None
     finally:
         sync._client.close()

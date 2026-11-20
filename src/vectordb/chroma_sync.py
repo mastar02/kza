@@ -114,7 +114,6 @@ class ChromaSync:
         embedder_model: str,
         embedder_device: str,
         commands_collection: str = "home_assistant_commands",
-        routines_collection: str = "home_assistant_routines",
         excluded_entities: list[str] | None = None,
         excluded_patterns: list[str] | None = None,
     ):
@@ -122,7 +121,6 @@ class ChromaSync:
         self.embedder_model = embedder_model
         self.embedder_device = embedder_device
         self.commands_collection_name = commands_collection
-        self.routines_collection_name = routines_collection
 
         # Entidades excluidas del vector search. Default: light.hogar (grupo
         # global que prendería TODA la casa con "la luz" sin room). Configurable
@@ -143,7 +141,6 @@ class ChromaSync:
         self._client = None
         self._commands_collection = None
         self._pointer_collection = None
-        self._routines_collection = None
         self._embedder = None
         self._ready = False
         # Command sync (S1/S2): single flight, abort on close, cancellable LLM call.
@@ -169,7 +166,6 @@ class ChromaSync:
         self._phase = ClosePhase.IDLE
         self._async_work = OwnedBlockingWork()
         self._commands_view = _CollectionView(self, '_commands_collection')
-        self._routines_view = _CollectionView(self, '_routines_collection')
         self._embedder_view = _EmbedderView(self)
 
     def _is_excluded(self, entity_id: str) -> bool:
@@ -231,8 +227,6 @@ class ChromaSync:
         self._commands_collection, active = open_active_commands(self._client, self.commands_collection_name)
         self._index_degraded = active.degraded
         self._pointer_collection = self._client.get_or_create_collection(name=self._pointer_name)
-        self._routines_collection = self._client.get_or_create_collection(
-            name=self.routines_collection_name, metadata={"hnsw:space": "cosine"})
         self._embedder = SentenceTransformer(self.embedder_model, device=self.embedder_device)
 
     @property
@@ -248,11 +242,6 @@ class ChromaSync:
     def commands(self):
         """Command operations retained through actual native completion."""
         return self._commands_view
-
-    @property
-    def routines(self):
-        """Routine operations retained through actual native completion."""
-        return self._routines_view
 
     @property
     def embedder(self):
@@ -271,7 +260,7 @@ class ChromaSync:
             if failed:
                 raise RuntimeError('chroma_sync_sdk_close_failed') from None
             self._client_closed = True
-        self._client = self._commands_collection = self._routines_collection = self._embedder = None
+        self._client = self._commands_collection = self._embedder = None
         self._pointer_collection = None
         self._ready = False
 
@@ -836,116 +825,14 @@ Solo JSON, sin explicaciones:"""
             prefer_area=prefer_area,
         )
 
-    # ==================== Rutinas ====================
-    
-    @_owned_operation
-    def save_routine(self, routine: dict):
-        """Guardar rutina en ChromaDB"""
-        routine_id = routine["id"]
-        
-        # Crear frases para buscar la rutina
-        phrases = [
-            routine["name"],
-            routine["description"],
-            f"rutina {routine['name']}",
-            f"automatización {routine['name']}"
-        ]
-        
-        # Agregar frases de triggers
-        for trigger in routine.get("triggers", []):
-            phrases.append(f"rutina de {trigger.get('description', '')}")
-        
-        for i, phrase in enumerate(phrases):
-            if not phrase.strip():
-                continue
-                
-            embedding = self.embedder.encode(phrase).tolist()
-            
-            self.routines.add(
-                ids=[f"{routine_id}_{i}"],
-                embeddings=[embedding],
-                documents=[phrase],
-                metadatas=[{
-                    "routine_id": routine_id,
-                    "name": routine["name"],
-                    "description": routine["description"],
-                    "created_at": routine.get("created_at", ""),
-                    "full_config": json.dumps(routine)
-                }]
-            )
-    
-    @_owned_operation
-    def search_routine(
-        self,
-        query: str,
-        threshold: float = 0.5
-    ) -> dict | None:
-        """Buscar rutina por descripción"""
-        query_embedding = self.embedder.encode(query).tolist()
-        
-        results = self.routines.query(
-            query_embeddings=[query_embedding],
-            n_results=1,
-            include=["metadatas", "distances"]
-        )
-        
-        if not results["ids"][0]:
-            return None
-        
-        distance = results["distances"][0][0]
-        similarity = 1 - (distance / 2)
-        
-        if similarity >= threshold:
-            metadata = results["metadatas"][0][0]
-            return {
-                "routine_id": metadata["routine_id"],
-                "name": metadata["name"],
-                "description": metadata["description"],
-                "similarity": similarity,
-                "full_config": json.loads(metadata["full_config"])
-            }
-        
-        return None
-    
-    @_owned_operation
-    def delete_routine(self, routine_id: str):
-        """Eliminar rutina de ChromaDB"""
-        existing = self.routines.get(where={"routine_id": routine_id})
-        if existing["ids"]:
-            self.routines.delete(ids=existing["ids"])
-            logger.info(f"Rutina eliminada de ChromaDB: {routine_id}")
-    
-    @_owned_operation
-    def list_routines(self) -> list[dict]:
-        """Listar todas las rutinas"""
-        all_data = self.routines.get(include=["metadatas"])
-        
-        # Deduplicar por routine_id
-        seen = set()
-        routines = []
-        
-        for metadata in all_data["metadatas"]:
-            routine_id = metadata["routine_id"]
-            if routine_id not in seen:
-                seen.add(routine_id)
-                routines.append({
-                    "id": routine_id,
-                    "name": metadata["name"],
-                    "description": metadata["description"]
-                })
-        
-        return routines
-    
     # ==================== Estadísticas ====================
     
     @_owned_operation
     def get_stats(self) -> dict:
         """Obtener estadísticas de la base de datos"""
         commands_count = self.commands.count()
-        routines_count = self.routines.count()
         
         return {
             "commands_phrases": commands_count,
-            "routines_phrases": routines_count,
             "chroma_path": self.chroma_path
         }

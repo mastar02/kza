@@ -84,7 +84,7 @@ class Graph:
         self.timers = NamedTimerManager(tts_callback=AsyncMock())
         self.handler = response_handler_mock()
         self.orchestrator = MultiUserOrchestrator(
-            self.chroma, self.ha, MagicMock(), home_actions=self.actions, music_dispatcher=self.music,
+            self.chroma, self.ha, home_actions=self.actions, music_dispatcher=self.music,
             response_handler=self.handler, household_intents=self.classifier, timer_manager=self.timers,
             timer_fallback_zone="zone_escritorio", room_namespace=RoomNamespace(tuple(configs)))
         self.orchestrator.process = AsyncMock(side_effect=self.orchestrator.process)

@@ -391,8 +391,7 @@ async def test_a_sync_switches_the_persisted_pointer_and_retires_old_collections
     assert await owner.sync_commands(_Home(count=2), _SlowLLM(verb="nuevo", delay=0)) == 4
     names = await asyncio.to_thread(_collections, owner)
     active = owner._commands_collection.name
-    assert names == sorted(["home_assistant_commands", "home_assistant_commands__pointer",
-                            "home_assistant_routines", active])
+    assert names == sorted(["home_assistant_commands", "home_assistant_commands__pointer", active])
     assert owner._pointer_collection.metadata == {"active": active}
     await owner.aclose()
     reopened = ChromaSync(str(tmp_path / "index"), "synthetic", "cpu")

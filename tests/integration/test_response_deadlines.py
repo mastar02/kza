@@ -40,7 +40,7 @@ async def until(predicate):
 
 def routed(monkeypatch, parts, *, timeout=.3, orchestrated=True, **voice_options):
     handler, engine, backend, endpoint, _ = voice_graph(monkeypatch, parts=parts, **voice_options)
-    orchestrator = MultiUserOrchestrator(None, None, None, llm=handler.llm,
+    orchestrator = MultiUserOrchestrator(None, None, llm=handler.llm,
         response_handler=handler, response_timeout_s=timeout) if orchestrated else None
     processor = SimpleNamespace(process_command=AsyncMock(return_value=SimpleNamespace(
         text='Nexa explicame el cielo', user=None, emotion=None, timings={}, stt_confidence=None)))
@@ -48,8 +48,7 @@ def routed(monkeypatch, parts, *, timeout=.3, orchestrated=True, **voice_options
     audio_manager.detect_source_zone.return_value = 'zone_origin'
     router = RequestRouter(processor, handler, audio_manager, orchestrator=orchestrator,
         orchestrator_enabled=orchestrated, llm_reasoner=handler.llm,
-        chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None),
-        routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
+        chroma_sync=SimpleNamespace(search_command=lambda *a, **kw: None))
     worker = None
     if orchestrator is not None:
         orchestrator._running = True
@@ -503,7 +502,7 @@ async def test_application_factory_respects_filler_selection(monkeypatch, enable
 @pytest.mark.parametrize('cancel', [False, True])
 async def test_queue_announcement_shares_request_deadline_and_cancellation(monkeypatch, cancel):
     owner, _, backend, endpoint, _ = voice_graph(monkeypatch)
-    orchestrator = MultiUserOrchestrator(None, None, None, llm=owner.llm, response_handler=owner)
+    orchestrator = MultiUserOrchestrator(None, None, llm=owner.llm, response_handler=owner)
     orchestrator.queue.enqueue(user_id='other', text='first', priority=Priority.LOW)
     backend.release_tail.clear()
 

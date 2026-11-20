@@ -14,7 +14,6 @@ def _make_orchestrator(persister=None):
     return MultiUserOrchestrator(
         chroma_sync=MagicMock(),
         ha_client=MagicMock(),
-        routine_manager=MagicMock(),
         persister=persister,
     )
 

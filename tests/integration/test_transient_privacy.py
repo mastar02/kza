@@ -89,7 +89,7 @@ async def test_active_generation_cancels_and_scrubs_its_receipt_after_source_inv
         hold = asyncio.Event()
         handler, _, _, endpoint, _ = voice_graph(monkeypatch, parts=[sse_event(''), hold])
         stack.push_async_callback(handler.aclose)
-        owner = MultiUserOrchestrator(None, None, None, llm=handler.llm, response_handler=handler, memory_manager=manager)
+        owner = MultiUserOrchestrator(None, None, llm=handler.llm, response_handler=handler, memory_manager=manager)
         stack.push_async_callback(owner.stop)
         owner.context_manager.get_or_create('household')
         source = memory_source(now=clock.now, ttl=60)
@@ -225,7 +225,7 @@ async def test_classifier_timeout_retains_actual_worker_and_close_waits_for_it(t
 async def test_idle_router_maintenance_prunes_cache_history_and_receipts_without_reads(tmp_path):
     async with graph(tmp_path) as (manager, memory, clock, stack):
         classifier = LLMCommandRouter(Classifier(), source_policy=memory.ledger)
-        orchestrator = MultiUserOrchestrator(None, None, None, memory_manager=manager)
+        orchestrator = MultiUserOrchestrator(None, None, memory_manager=manager)
         router = RequestRouter(None, None, None, memory_manager=manager,
             orchestrator=orchestrator, llm_command_router=classifier)
         stack.push_async_callback(router.aclose)
@@ -256,7 +256,7 @@ async def test_successful_typed_control_records_its_actual_capture_once_in_eithe
         rooms = {'test_room': RoomConfig('test_room', 'Test room', 'salón', default_climate='climate.test_ac')}
         processor = SimpleNamespace(process_command=AsyncMock(return_value=SimpleNamespace(
             text='Nexa poné el aire a 22 grados', user=None, emotion=None, timings={}, stt_confidence=None)))
-        owner = MultiUserOrchestrator(None, ha, None, memory_manager=manager, home_actions=actions)
+        owner = MultiUserOrchestrator(None, ha, memory_manager=manager, home_actions=actions)
         router = RequestRouter(processor, response_handler_mock(), MagicMock(),
             memory_manager=manager, llm_command_router=classifier, orchestrator=owner,
             orchestrator_enabled=orchestrated, ha_client=ha, home_actions=actions,
@@ -286,8 +286,7 @@ async def test_late_vector_lookup_cannot_refill_cache_or_issue_an_action(tmp_pat
         ha = MagicMock()
         router = RequestRouter(processor, owner, audio, orchestrator_enabled=False,
             memory_manager=manager, chroma_sync=index, ha_client=ha,
-            home_actions=selected_actions(ha, ('light.synthetic',)),
-            routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
+            home_actions=selected_actions(ha, ('light.synthetic',)))
         stack.push_async_callback(router.aclose)
         source = memory_source(now=clock.now)
         event = CommandEvent(np.zeros(16000, dtype=np.float32), None, timestamp=clock.now,

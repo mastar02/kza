@@ -38,7 +38,6 @@ def _dispatcher(ha_client, response_handler=None):
     return RequestDispatcher(
         chroma_sync=MagicMock(),
         ha_client=ha_client,
-        routine_manager=MagicMock(),
         response_handler=response_handler,
         home_actions=selected_actions(ha_client, ("light.x", "light.grupo_cocina", "light.grupo_escritorio")),
     )
@@ -147,7 +146,6 @@ class TestOrchestratorWiresResponseHandler:
         orch = MultiUserOrchestrator(
             chroma_sync=MagicMock(),
             ha_client=MagicMock(),
-            routine_manager=MagicMock(),
             response_handler=response_handler,
         )
 
@@ -158,7 +156,6 @@ class TestOrchestratorWiresResponseHandler:
         orch = MultiUserOrchestrator(
             chroma_sync=MagicMock(),
             ha_client=MagicMock(),
-            routine_manager=MagicMock(),
         )
 
         assert orch.dispatcher.response_handler is None

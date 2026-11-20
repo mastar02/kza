@@ -2266,8 +2266,8 @@
       "tasks": [
         "T033"
       ],
-      "status": "open",
-      "note": null
+      "status": "closed",
+      "note": "T033-U4 retiró ambos manejadores legados, su inyección y el índice Chroma de rutinas. Voz usa el scheduler persistente y la bandeja web para propuestas. tests/integration/test_home_control_policy.py protege la ausencia de callers a los escritores de automatizaciones HA; test_routine_voice_creation.py cubre el rechazo local en ambos modos de voz. Verificación estática con CPython 3.13; pytest pendiente por SOLO_WINDOW. T033-U5 sigue pendiente."
     },
     {
       "id": "CORE-05",

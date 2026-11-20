@@ -3,19 +3,10 @@ KZA Routines Module
 Sistema completo de rutinas y automatizaciones
 """
 
-from .routine_manager import RoutineManager, Routine, RoutineTrigger, RoutineAction, TriggerType
-from .routine_scheduler import RoutineScheduler, ScheduledRoutine, TriggerType as SchedulerTriggerType
-from .routine_executor import RoutineExecutor, ActionResult, ActionType
-from .voice_routine_handler import VoiceRoutineHandler, VoiceRoutineIntent
+from src.routines.routine_scheduler import RoutineScheduler, ScheduledRoutine, TriggerType as SchedulerTriggerType
+from src.routines.routine_executor import RoutineExecutor, ActionResult, ActionType
 
 __all__ = [
-    # Routine Manager (original)
-    'RoutineManager',
-    'Routine',
-    'RoutineTrigger',
-    'RoutineAction',
-    'TriggerType',
-
     # Scheduler
     'RoutineScheduler',
     'ScheduledRoutine',
@@ -25,8 +16,4 @@ __all__ = [
     'RoutineExecutor',
     'ActionResult',
     'ActionType',
-
-    # Voice Handler
-    'VoiceRoutineHandler',
-    'VoiceRoutineIntent',
 ]

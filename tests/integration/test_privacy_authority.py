@@ -166,7 +166,7 @@ async def test_disabled_memory_still_revokes_queue_context_and_snapshot(tmp_path
         handler, _, _, endpoint, _ = voice_graph(monkeypatch, parts=[event(''), asyncio.Event()])
         stack.push_async_callback(handler.aclose)
         persister = ContextPersister(tmp_path/'contexts', source_policy=privacy.ledger, clock=clock)
-        owner = MultiUserOrchestrator(None, None, None, llm=handler.llm, privacy=privacy, persister=persister)
+        owner = MultiUserOrchestrator(None, None, llm=handler.llm, privacy=privacy, persister=persister)
         stack.push_async_callback(owner.stop)
         ctx = await owner.context_manager.aget_or_create('household')
         source = privacy.source_for_capture(str(uuid4()), clock.now, 'origin')
@@ -196,7 +196,7 @@ async def test_disabled_memory_voice_routes_reject_revoked_capture_before_proces
         privacy = await build_privacy_services(configuration(tmp_path), shutdown=stack, clock=clock)
         handler, engine, _, _, _ = voice_graph(monkeypatch)
         stack.push_async_callback(handler.aclose)
-        owner = MultiUserOrchestrator(None, None, None, privacy=privacy) if orchestrated else None
+        owner = MultiUserOrchestrator(None, None, privacy=privacy) if orchestrated else None
         if owner:
             stack.push_async_callback(owner.stop)
         router = request_router(None, handler, owner=owner, privacy=privacy)
@@ -460,7 +460,7 @@ async def test_disabling_semantic_recall_keeps_fresh_conversation_and_single_voi
         assert await build_memory_services(config, shutdown=stack, privacy=privacy) is None
         handler, engine, _, _, _ = voice_graph(monkeypatch)
         stack.push_async_callback(handler.aclose)
-        owner = MultiUserOrchestrator(None, None, None, llm=handler.llm,
+        owner = MultiUserOrchestrator(None, None, llm=handler.llm,
             response_handler=handler, privacy=privacy) if orchestrated else None
         if owner is not None:
             stack.push_async_callback(owner.stop)
@@ -495,7 +495,7 @@ async def test_disabling_semantic_recall_keeps_authorized_local_control(tmp_path
         rooms = {'origin': RoomConfig('origin', 'Origin', 'salón', default_climate='climate.test_ac')}
         processor = SimpleNamespace(process_command=AsyncMock(return_value=SimpleNamespace(
             text='Nexa poné el aire a 22 grados', user=None, emotion=None, timings={}, stt_confidence=None)))
-        owner = MultiUserOrchestrator(None, ha, None, privacy=privacy, home_actions=actions) if orchestrated else None
+        owner = MultiUserOrchestrator(None, ha, privacy=privacy, home_actions=actions) if orchestrated else None
         if owner is not None:
             stack.push_async_callback(owner.stop)
         router = RequestRouter(processor, response_handler_mock(), MagicMock(), privacy=privacy,

@@ -52,7 +52,6 @@ from src.tts.piper_tts import create_tts
 from src.vectordb.chroma_sync import ChromaSync
 from src.home_assistant.ha_client import HomeAssistantClient
 from src.llm.reasoner import LLMReasoner, FastRouter
-from src.routines.routine_manager import RoutineManager
 from src.routines.factory import build_routine_scheduler
 from src.routines.proposals import RoutineProposalTray
 from src.routines.routine_scheduler import RoutineScheduler
@@ -881,9 +880,6 @@ async def build_application(
             )
             llm.load()
             logger.info("LLM 72B cargado en proceso (mode=local)")
-
-    # Legacy reads/refusals never get a reasoner for routine creation.
-    routine_manager = RoutineManager(ha_client, chroma, llm_reasoner=None)
 
     # Fast Router (GPU 2) - para clasificación rápida con KV-Cache
     router_config = config.get("router", {})
@@ -1868,7 +1864,6 @@ async def build_application(
         orchestrator = MultiUserOrchestrator(
             chroma_sync=chroma,
             ha_client=ha_client,
-            routine_manager=routine_manager,
             router=llm_router or fast_router,
             llm=llm,
             tts=tts,
@@ -1991,7 +1986,6 @@ async def build_application(
         event_logger=event_logger,
         suggestion_engine=suggestion_engine,
         latency_monitor=latency_monitor,
-        routine_manager=routine_manager,
         vector_search_threshold=vectordb_config.get("search_threshold", 0.65),
         latency_target_ms=latency_config.get("total", 300),
         suggestion_interval=analytics_config.get("suggestion_interval", 20),

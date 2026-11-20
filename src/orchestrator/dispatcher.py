@@ -83,10 +83,11 @@ from src.orchestrator.priority_queue import (
 from src.reminders.reminder_manager import CancelMatch, CancelResolution
 from src.reminders.reminder_store import ReminderScope
 from src.routines.voice_routines import (
+    ROUTINE_CREATE_REFUSAL,
     RoutineReadKind,
     RoutineReadQuery,
     VoiceRoutineService,
-    legacy_routine_outcome,
+    is_unclaimed_routine_creation,
 )
 from src.timers.named_timers import NamedTimerManager
 from src.timers.voice_commands import TimerVoiceCommands
@@ -153,8 +154,6 @@ _BOUNDARY_RE = {
 # or the pending confirmation (design F11, C02-CAN-0007).
 _OBJECT_NOUN_RE = re.compile(r"\b(?:recordatorios?|t[ií]mers?|temporizador(?:es)?|listas?|rutinas?)\b")
 
-# P3F2-R1-Q4: a request to create a routine is refused honestly until T033.
-_ROUTINE_CREATE_REFUSAL = "Todavía no creo rutinas por voz. Podés crearlas desde la web."
 # T037-U6: a compound part on a lock, door or the alarm panel (voice never controls them, Q9b).
 _SECURITY_REFUSAL = "Las cerraduras, las puertas y la alarma no las manejo por voz."
 # T037-U6: a compound part whose device the vector search cannot find (no 7B or LLM fallback).
@@ -914,7 +913,6 @@ class RequestDispatcher:
         self,
         chroma_sync,
         ha_client,
-        routine_manager,
         router=None,
         llm=None,
         tts=None,
@@ -946,7 +944,6 @@ class RequestDispatcher:
         Args:
             chroma_sync: Sincronizador de ChromaDB
             ha_client: Cliente de Home Assistant
-            routine_manager: Gestor de rutinas
             router: Router 7B (opcional, para respuestas simples)
             llm: LLM grande para razonamiento
             tts: Motor TTS
@@ -997,7 +994,6 @@ class RequestDispatcher:
         self.chroma = chroma_sync
         self.ha = ha_client
         self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
-        self.routines = routine_manager
         self.router = router
         self.llm = llm
         self.tts = tts
@@ -1317,6 +1313,11 @@ class RequestDispatcher:
         if self.voice_routines is not None and self.voice_routines.detect(text_lower) is not None:
             return PathType.FAST_ROUTINE, Priority.MEDIUM
 
+        # Requests the household grammar did not claim still cannot be extracted
+        # by the reasoner or treated as an immediate HA action.
+        if is_unclaimed_routine_creation(text_lower):
+            return PathType.FAST_ROUTINE, Priority.MEDIUM
+
         if service_filter in ("turn_on", "turn_off"):
             return PathType.FAST_DOMOTICS, Priority.HIGH
 
@@ -1409,11 +1410,6 @@ class RequestDispatcher:
         for keyword in self.DOMOTICS_KEYWORDS:
             if _kw_match(keyword, text_lower):
                 return PathType.FAST_DOMOTICS, Priority.HIGH
-
-        # Detectar rutinas. Sin "cuando" suelto (T033-U1/P3-F2): "cuándo
-        # juega Peñarol" es una pregunta, no una rutina.
-        if any(word in text_lower for word in ["rutina", "automatiza"]):
-            return PathType.FAST_ROUTINE, Priority.MEDIUM
 
         # Si tenemos router, preguntas simples van por fast path
         if self.router and self.use_router:
@@ -1685,7 +1681,7 @@ class RequestDispatcher:
             if operation in (HouseholdOperation.STOP, HouseholdOperation.DISABLE, HouseholdOperation.CANCEL):
                 response = "Todavía no controlo rutinas por voz. Podés detenerla o cambiarla desde la web."
             elif household.reason == "new_routine":
-                response = _ROUTINE_CREATE_REFUSAL
+                response = ROUTINE_CREATE_REFUSAL
             else:
                 response = "Todavía no manejo rutinas por voz. Podés verlas desde la web."
             return self._household_refusal(PathType.FAST_ROUTINE, "routine", response, TaskStatus.UNSUPPORTED)
@@ -2037,37 +2033,10 @@ class RequestDispatcher:
                 read = await self._routine_read(query, timings, unclaimed=True)
                 if read is not None:
                     return read
-                # T033-U1-RV2: no saved routine by that name and no state, run or
-                # schedule cue ("¿qué rutina de skincare me recomendás?"): a general
-                # question that mentions "rutina" goes to the conversation path,
-                # never to the legacy routine handlers or a domotics producer.
-                return await self._slow_path(
-                    text=text, user_id=user_id, user_name="Hogar", zone_id=zone_id, priority=Priority.LOW,
-                    on_response=None, timeout=self.response_timeout_s, context_key=context_key)
-            # P3-F2 review F5 (user answer Q15: routine proposals are extracted
-            # only locally): an unclaimed creation phrase never reaches
-            # RoutineManager._handle_create, which sends the request and the
-            # HA entity list to the cloud reasoner.
-            detected = self.routines.detect_intent(text)
-            if isinstance(detected, dict) and detected.get("intent") == "create":
-                return self._household_refusal(PathType.FAST_ROUTINE, "routine", _ROUTINE_CREATE_REFUSAL,
+                # An uncued consult without a matching saved routine goes to conversation.
+            elif is_unclaimed_routine_creation(text):
+                return self._household_refusal(PathType.FAST_ROUTINE, "routine", ROUTINE_CREATE_REFUSAL,
                                                TaskStatus.UNSUPPORTED)
-            # Procesar rutina
-            t0 = time.perf_counter()
-            routine_result = await self.routines.handle(text)
-            timings["routine"] = (time.perf_counter() - t0) * 1000
-
-            if routine_result["handled"]:
-                return DispatchResult(
-                    path=path,
-                    priority=Priority.MEDIUM,
-                    success=routine_result["success"],
-                    response=routine_result["response"],
-                    intent="routine",
-                    timings=timings,
-                    # T033-U1: routine results carry a TaskOutcome; the legacy handler has no evidence.
-                    outcome=legacy_routine_outcome(bool(routine_result["success"])),
-                )
 
         # Fallback a slow path
         return await self._slow_path(
@@ -3110,7 +3079,6 @@ class MultiUserOrchestrator:
         orchestrator = MultiUserOrchestrator(
             chroma_sync=chroma,
             ha_client=ha,
-            routine_manager=routines,
             router=router_7b,
             llm=llm_32b,
             tts=tts
@@ -3139,7 +3107,6 @@ class MultiUserOrchestrator:
         self,
         chroma_sync,
         ha_client,
-        routine_manager,
         router=None,
         llm=None,
         tts=None,
@@ -3211,7 +3178,6 @@ class MultiUserOrchestrator:
         self.ha = ha_client
         self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self.home_capabilities = home_capabilities
-        self.routines = routine_manager
         self.router = router
         self.llm = llm
         self.tts = tts
@@ -3264,7 +3230,6 @@ class MultiUserOrchestrator:
         self.dispatcher = RequestDispatcher(
             chroma_sync=chroma_sync,
             ha_client=ha_client,
-            routine_manager=routine_manager,
             router=router,
             llm=llm,
             tts=tts,

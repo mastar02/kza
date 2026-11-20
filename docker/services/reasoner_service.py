@@ -11,7 +11,7 @@ PARITY_GAPS vs canonical runtime:
   - No conversation history tracking (canonical: ContextManager per user)
   - No streaming token output (canonical: ResponseHandler streams TTS as tokens arrive)
   - LoRA hot-load via API but no nightly auto-training (canonical: NightlyTrainer + QLoRA)
-  - No routine creation/management integration (canonical: RoutineManager)
+  - No routine creation/management integration (the canonical runtime uses the persistent KZA scheduler)
   - No user-specific response adaptation (canonical: UserManager preferences)
   - Missing: latency tracking, event logging for LLM calls
 """

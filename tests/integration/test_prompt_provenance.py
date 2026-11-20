@@ -29,7 +29,7 @@ async def owner_graph(tmp_path, monkeypatch, *, parts=None, spoken=False):
     async with graph(tmp_path) as (manager, memory, clock, stack):
         handler, engine, backend, endpoint, _ = voice_graph(monkeypatch, parts=parts)
         stack.push_async_callback(handler.aclose)
-        owner = MultiUserOrchestrator(None, None, None, llm=handler.llm, memory_manager=manager,
+        owner = MultiUserOrchestrator(None, None, llm=handler.llm, memory_manager=manager,
                                      response_handler=handler if spoken else None)
         stack.push_async_callback(owner.stop)
         owner._running = True
@@ -357,8 +357,7 @@ def request_router(manager, handler, *, owner=None, fast=None, privacy=None):
     return RequestRouter(processor, handler, audio, memory_manager=manager,
         orchestrator=owner, orchestrator_enabled=owner is not None, ha_client=ha,
         chroma_sync=SimpleNamespace(search_command=lambda *args, **kwargs: None),
-        fast_router=fast, privacy=privacy, wake_acoustically_confirmed=True,
-        routine_manager=SimpleNamespace(handle=AsyncMock(return_value={'handled': False})))
+        fast_router=fast, privacy=privacy, wake_acoustically_confirmed=True)
 
 
 @pytest.mark.parametrize('orchestrated', [False, True])

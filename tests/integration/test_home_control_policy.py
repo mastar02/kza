@@ -1,8 +1,10 @@
 """Real producer/action/policy graphs with synthetic private selection and HA."""
 
+import ast
 import asyncio
 from dataclasses import replace
 import json
+from pathlib import Path
 import hashlib
 import shutil
 import time
@@ -29,7 +31,6 @@ from src.reminders.reminder_store import ReminderStore, ReminderScope
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import parse_routine_spec, RoutineValidationError
 from src.routines.routine_executor import RoutineExecutor
-from src.routines.routine_manager import RoutineManager, Routine
 from src.training.command_learner import CommandLearner, CustomCommand
 
 
@@ -221,7 +222,7 @@ async def test_selected_target_still_requires_safe_parameters_and_observed_effec
 ])
 async def test_dispatcher_cannot_bypass_policy_even_without_hooks(graph, command, hooks_enabled):
     ha, actions, _ = graph
-    dispatcher = RequestDispatcher(MagicMock(), ha, MagicMock(), home_actions=actions, hooks=HookRegistry() if hooks_enabled else None)
+    dispatcher = RequestDispatcher(MagicMock(), ha, home_actions=actions, hooks=HookRegistry() if hooks_enabled else None)
     assert await dispatcher._fire_and_reconcile_ha(command) is False
     assert ha.sends == []
 
@@ -242,14 +243,14 @@ async def test_hook_rewrite_is_checked_on_final_target_and_parameters(graph, rew
         return RewriteResult(modified=modified, rule_name="test_rewrite")
 
     hooks.register_before("before_ha_action", change, priority=10)
-    dispatcher = RequestDispatcher(MagicMock(), ha, MagicMock(), home_actions=actions, hooks=hooks)
+    dispatcher = RequestDispatcher(MagicMock(), ha, home_actions=actions, hooks=hooks)
     assert not await dispatcher._fire_and_reconcile_ha({"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp", "user_id": "dashboard-admin"})
     assert ha.sends == []
 
 
 async def test_orchestrator_preserves_shared_service_and_household_actor(graph):
     ha, actions, _ = graph
-    orchestrator = MultiUserOrchestrator(MagicMock(), ha, MagicMock(), home_actions=actions)
+    orchestrator = MultiUserOrchestrator(MagicMock(), ha, home_actions=actions)
     assert orchestrator.dispatcher.home_actions is actions
     assert await orchestrator.dispatcher._fire_and_reconcile_ha({"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp", "user_id": "unverified-profile"})
     assert len(ha.sends) == 1
@@ -267,11 +268,9 @@ async def test_legacy_router_uses_policy_and_confirmed_receipt(graph, selected, 
     processor.process_command = AsyncMock(return_value=ProcessedCommand(text="nexa prende la luz", user=user, emotion=None, timings={}, success=True))
     chroma = MagicMock()
     chroma.search_command.return_value = {"domain": "light", "service": "turn_on", "entity_id": "light.test_lamp", "description": "luz de prueba", "similarity": 0.95}
-    routines = MagicMock()
-    routines.handle = AsyncMock(return_value={"handled": False})
     manager = MagicMock()
     manager.check_entity_permission.side_effect = AssertionError("Voice profile cannot authorize or deny household controls")
-    router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator_enabled=False, chroma_sync=chroma, ha_client=ha, home_actions=actions, routine_manager=routines, user_manager=manager)
+    router = RequestRouter(processor, response_handler_mock(), MagicMock(), orchestrator_enabled=False, chroma_sync=chroma, ha_client=ha, home_actions=actions, user_manager=manager)
     result = await router.process_command(np.zeros(16000, dtype=np.float32))
     assert result["success"] is selected
     assert len(ha.sends) == int(selected)
@@ -326,16 +325,28 @@ async def test_legacy_routine_executor_rejects_hidden_macro(graph):
     assert ha.sends == []
 
 
-async def test_legacy_routine_manager_cannot_install_ha_owned_automation():
-    ha = MagicMock()
-    chroma = MagicMock()
-    manager = RoutineManager(ha, chroma, MagicMock())
-    routine = MagicMock(spec=Routine)
-    assert manager._create_in_ha(routine)[0] is False
-    assert (await manager._handle_delete("test", {}))["success"] is False
-    ha.create_automation.assert_not_called()
-    ha.delete_automation.assert_not_called()
-    chroma.delete_routine.assert_not_called()
+def test_voice_and_all_other_producers_cannot_reach_ha_automation_writers():
+    """The HA configuration methods have no callers or aliases in application code."""
+    root = Path(__file__).resolve().parents[2]
+    writer_names = {"create_automation", "delete_automation"}
+    retired_modules = {"routine_manager", "voice_routine_handler"}
+    src = root / "src"
+    for path in src.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute):
+                assert node.attr not in writer_names, (path, node.lineno)
+            elif isinstance(node, ast.Name):
+                assert node.id not in writer_names, (path, node.lineno)
+            elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                  and path != src / "home_assistant" / "ha_client.py"):
+                assert node.value not in writer_names, (path, node.lineno)
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                names = [alias.name for alias in node.names]
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    names.append(node.module)
+                assert retired_modules.isdisjoint(part for name in names for part in name.split(".")), path
+    assert all(not (src / "routines" / f"{name}.py").exists() for name in retired_modules)
 
 
 async def test_learned_command_cannot_dispatch_an_unselected_effect(graph, tmp_path):
