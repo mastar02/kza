@@ -101,7 +101,7 @@ async def main() -> None:
         assert root is not None
         expires = time.time() + 900
         operator = await authority.issue_credential(root, subject='synthetic-operator', role=DashboardRole.OPERATOR, expires_at=expires)
-        operator_b = await authority.issue_credential(root, subject='synthetic-operator-b', role=DashboardRole.OPERATOR, expires_at=expires)
+        operator_b = await authority.issue_credential(root, subject='synthetic-operator', role=DashboardRole.OPERATOR, expires_at=expires)
         household = await authority.issue_credential(root, subject='synthetic-home', role=DashboardRole.HOME, expires_at=expires)
         selection = EvaluationSample('vf_' + 'a' * 64, frozenset({'b' * 64}), frozenset({EvaluationModality.AUDIO_PREVIEW}), expires)
         evaluator = await authority.issue_credential(root, subject='synthetic-evaluator', role=DashboardRole.EVALUATOR, expires_at=expires, samples=(selection,))
@@ -281,7 +281,7 @@ async def main() -> None:
                     await press(f'[data-key="{main_id}:execute"]')
                     await page.wait_for(f"document.querySelector({card(main_id, '[data-routine-notice]')})?.textContent.startsWith('Resultado pendiente de consulta')")
                     stored = await page.evaluate(f"JSON.parse(sessionStorage.getItem('kza:routine-attempt:{main_id}'))")
-                    assert stored['subject'] == 'synthetic-operator' and stored['state'] == 'unresolved'
+                    assert stored['actor'] == operator.principal.routine_actor and stored['state'] == 'unresolved'
                     runs_before_switch = run_count(database, main_id)
                     await install_login_session(page, f'http://127.0.0.1:{port}', operator_b.token)
                     marker = len(requests)
@@ -300,7 +300,7 @@ async def main() -> None:
                     await press(f'[data-key="{main_id}:execute"]')
                     await page.wait_for(f"document.querySelector({card(main_id, '[data-routine-notice]')})?.textContent.startsWith('Resultado pendiente de consulta')")
                     stored = await page.evaluate(f"JSON.parse(sessionStorage.getItem('kza:routine-attempt:{main_id}'))")
-                    assert stored['subject'] == 'synthetic-operator-b' and stored['state'] == 'unresolved'
+                    assert stored['actor'] == operator_b.principal.routine_actor and stored['state'] == 'unresolved'
                     runs_before_takeover = run_count(database, main_id)
                     await page.evaluate("""(()=>{window.__qaHidden=true;
                       Object.defineProperty(document,'hidden',{configurable:true,get:()=>window.__qaHidden});
@@ -457,7 +457,7 @@ async def main() -> None:
                     dashboard.scheduler = saved_scheduler
                     checks.append('503 shows unavailability and keeps the last observation')
 
-                    # Logout wipes pending identities; a household session sees routines read-only.
+                    # Logout wipes pending identities. Household can run and consult its own results.
                     assert await page.evaluate("Object.keys(sessionStorage).some(k=>k.startsWith('kza:routine-attempt:'))")
                     await click('#logout')
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
@@ -465,21 +465,36 @@ async def main() -> None:
                     checks.append('logout wipes routine attempt keys')
                     before = [(item.routine_id, item.revision) for item in await scheduler.get_all_routines()]
                     runs_before = run_count(database)
+                    operator_run = await scheduler.get_latest_run(main_id)
+                    assert operator_run is not None
                     await login(page, household.token, 'Acceso de hogar')
                     assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,actions,routines'")
                     await click('#app-nav [data-view=routines]')
                     await page.wait_for("document.querySelectorAll('#routines-list .routine-card').length===2")
-                    assert await page.evaluate("document.querySelectorAll('[data-routine-write]').length===0 && document.querySelector('#routines-create').hidden && !document.querySelector('#routine-dialog').open")
-                    assert await page.evaluate("document.querySelector('.routines-permission').textContent.includes('requiere un acceso de administración')")
+                    assert await page.evaluate("document.querySelector('[data-routine-write=execute]') && !document.querySelector('[data-routine-write]:not([data-routine-write=execute])') && document.querySelector('#routines-create').hidden && !document.querySelector('#routine-dialog').open")
+                    assert await page.evaluate("document.querySelector('.routines-permission').textContent.includes('consultar tus resultados')")
+                    assert await page.evaluate(f"!document.querySelector('[data-run-id=\"{operator_run.run_id}\"]')")
                     denied = await page.evaluate(f"""Promise.all([
                       fetch('/api/routines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({json.dumps(definition('Intento del hogar'))})}}).then(r=>r.status),
-                      fetch('/api/routines/{main_id}/execute',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{request_id:'household'}})}}).then(r=>r.status),
-                      fetch('/api/routines/{main_id}/disable',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{expected_revision:1}})}}).then(r=>r.status)])""")
-                    assert denied == [403, 403, 403], denied
-                    assert [(item.routine_id, item.revision) for item in await scheduler.get_all_routines()] == before and run_count(database) == runs_before
+                      fetch('/api/routines/{main_id}/disable',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{expected_revision:1}})}}).then(r=>r.status),
+                      fetch('/api/routines/{main_id}/runs/{operator_run.run_id}').then(r=>r.status)])""")
+                    assert denied == [403, 403, 404], denied
+                    await press(f'[data-key="{main_id}:execute"]')
+                    await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Resultado de tu intento') && document.querySelector({card(main_id, '[data-run-status=succeeded]')})")
+                    stored = await page.evaluate(f"JSON.parse(sessionStorage.getItem('kza:routine-attempt:{main_id}'))")
+                    assert stored['actor'] == household.principal.routine_actor and stored['state'] == 'terminal'
+                    assert stored['run_id'] != operator_run.run_id
+                    marker = len(requests)
+                    await press(f'[data-key="{main_id}:consult"]')
+                    await page.wait_for(f"!document.querySelector('[data-key=\"{main_id}:consult\"]').disabled")
+                    assert any(item['method'] == 'GET' and item['path'] == f"/api/routines/{main_id}/runs/{stored['run_id']}"
+                               for item in requests[marker:])
+                    assert [(item.routine_id, item.revision) for item in await scheduler.get_all_routines()] == before
+                    assert run_count(database) == runs_before + 1
                     audits['rutinas-hogar'] = await audit_view(page, evidence, 'rutinas-hogar', (
-                        ('#app-nav [data-view=routines]', None), ('#routines-refresh', None)), screenshot, widths=WIDTHS)
-                    checks.append('household: read-only view, zero write controls, server 403 for create/execute/disable, store unchanged')
+                        ('#app-nav [data-view=routines]', None), ('#routines-refresh', None),
+                        (f'[data-key="{main_id}:execute"]', None), (f'[data-key="{main_id}:consult"]', None)), screenshot, widths=WIDTHS)
+                    checks.append('household: execute and consult own run, create/disable return 403, operator run returns 404, one new run without definition changes')
                     await click('#logout')
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
 

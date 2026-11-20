@@ -11,8 +11,9 @@
       if (value?.ok !== true || !['operator', 'home', 'evaluator'].includes(value.role)
           || !Array.isArray(value.permissions) || value.permissions.some(permission => typeof permission !== 'string')
           || !Number.isFinite(expires) || expires <= wall()) return false;
-      // The subject only scopes this tab's pending routine identities; it never grants anything.
-      identity = { role: value.role, permissions: new Set(value.permissions), expires, subject: typeof value.subject === 'string' && value.subject ? value.subject : null };
+      identity = { role: value.role, permissions: new Set(value.permissions), expires,
+        subject: typeof value.subject === 'string' && value.subject ? value.subject : null,
+        routineActor: typeof value.routine_actor === 'string' && value.routine_actor ? value.routine_actor : null };
       deadline = monotonic() + Math.max(0, expires - wall());
       return true;
     }
@@ -22,6 +23,7 @@
     return { accept, clear, active, can, remaining, generation: () => generation,
       role: () => active() ? identity.role : null,
       subject: () => active() ? identity.subject : null,
+      routineActor: () => active() ? identity.routineActor : null,
       views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)
         && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')
         // 'Mis recuerdos' is a person's own view: only household credentials bound to a person carry memory:own:read.
@@ -32,6 +34,9 @@
     return error?.status === 401 || error?.status === 403 &&
       ['dashboard_session_retired', 'dashboard_authority_retired'].includes(code);
   }
+  const canReadRoutineRuns = can => can('routines:execute') || can('routines:manage');
+  const canExecuteRoutine = can => can('home:control') && canReadRoutineRuns(can);
+
   // Mirrors the effective server requirement: auth.py route permission plus the handler's own set.
   function routinePermission(pathname, method) {
     const item = /^\/api\/routines\/([^/]+)(?:\/(.+))?$/.exec(pathname);
@@ -41,8 +46,8 @@
     if (id === 'preview') return rest === undefined && method === 'POST' ? 'routines:manage' : null;
     if (rest === undefined) return method === 'GET' ? 'home:read' : ['PUT', 'DELETE'].includes(method) ? 'routines:manage' : null;
     if (['enable', 'disable'].includes(rest) && method === 'POST') return 'routines:manage';
-    if (rest === 'execute' && method === 'POST') return ['routines:manage', 'home:control'];
-    if ((rest === 'attempts' || /^runs\/[^/]+$/.test(rest)) && method === 'GET') return 'routines:manage';
+    if (rest === 'execute' && method === 'POST') return canExecuteRoutine;
+    if ((rest === 'attempts' || /^runs\/[^/]+$/.test(rest)) && method === 'GET') return canReadRoutineRuns;
     return null;
   }
   // Only the routes the Memoria and Mis recuerdos views use, each with the effective server requirement:
@@ -90,7 +95,8 @@
         /^\/api\/admin\/users\/[^/]+\/permissions$/.test(pathname) && method === 'PUT' ? 'admin:manage' :
         /^\/api\/admin\/users\/[^/]+$/.test(pathname) && method === 'DELETE' ? ['admin:manage', 'auth:manage'] :
         routinePermission(pathname, method) || memoryPermission(pathname, method);
-      const permitted = () => Boolean(permission) && (Array.isArray(permission) ? permission : [permission]).every(session.can);
+      const permitted = () => typeof permission === 'function' ? permission(session.can) :
+        Boolean(permission) && (Array.isArray(permission) ? permission : [permission]).every(session.can);
       if (!publicAuth && !permitted()) {
         throw Object.assign(new Error('Este acceso no permite la operación.'), { status: 403, sent: false });
       }
@@ -120,7 +126,7 @@
     if (entity.domain === 'climate') return `Modo ${MODE_LABELS[entity.state] || entity.state}`;
     return ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando' })[entity.state] || entity.state || 'Estado desconocido';
   }
-  const exported = { createSession, createScopedApi, sessionRetired, memoryPermission, voicePermission, roomEntities, entityState };
+  const exported = { createSession, createScopedApi, sessionRetired, canReadRoutineRuns, canExecuteRoutine, memoryPermission, voicePermission, roomEntities, entityState };
   root.NexoState = exported;
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
 })(typeof window !== 'undefined' ? window : globalThis);

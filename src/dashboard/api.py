@@ -11,7 +11,7 @@ import json
 import logging
 import math
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Set
 from datetime import UTC, datetime
 from typing import Literal, Self
 
@@ -27,7 +27,10 @@ from src.core.observation import Observation, ObservationReason, ObservationSour
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
-from src.dashboard.auth import COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session, session_guard
+from src.dashboard.auth import (
+    COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session,
+    routine_access_permissions, session_guard,
+)
 from src.dashboard.authority import DashboardAuthority, DashboardPermission
 from src.home_assistant.control_policy import HomeActor
 from src.lists.list_store import OwnerType
@@ -506,7 +509,7 @@ class DashboardAPI:
             routines = await scheduler.get_all_routines()
             if enabled is not None:
                 routines = [routine for routine in routines if routine.spec.enabled == enabled]
-            return [await self._routine_to_response(routine) for routine in routines]
+            return [await self._routine_to_response(routine, principal) for routine in routines]
 
         # Keep preview ahead of routes containing a dynamic routine identifier.
         @self.app.post("/api/routines/preview")
@@ -528,7 +531,7 @@ class DashboardAPI:
             routine = await scheduler.get_routine(routine_id)
             if routine is None:
                 raise RoutineNotFound(routine_id)
-            return await self._routine_to_response(routine)
+            return await self._routine_to_response(routine, principal)
 
         @self.app.post("/api/routines")
         async def create_routine(
@@ -542,7 +545,7 @@ class DashboardAPI:
                     guard=session_guard(request, frozenset({'routines:manage'}), principal))
             except PermissionError as error:
                 raise HTTPException(status_code=403, detail="routine_write_denied") from error
-            response = await self._routine_to_response(created)
+            response = await self._routine_to_response(created, principal)
             await self._broadcast_ws({"type": "routine_created", "routine": response})
             return response
 
@@ -560,7 +563,7 @@ class DashboardAPI:
                     guard=session_guard(request, frozenset({'routines:manage'}), principal))
             except PermissionError as error:
                 raise HTTPException(status_code=403, detail="routine_write_denied") from error
-            response = await self._routine_to_response(updated)
+            response = await self._routine_to_response(updated, principal)
             await self._broadcast_ws({"type": "routine_updated", "routine": response})
             return response
 
@@ -586,11 +589,13 @@ class DashboardAPI:
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
             """Return the durable claim while its scheduler-owned worker proceeds."""
-            scheduler = self._require_routines(principal, {"routines:manage", "home:control"})
+            permissions = routine_access_permissions(principal, execute=True)
+            scheduler = self._require_routines(principal, permissions)
+            actor = self._require_routine_actor(principal)
             try:
                 run = await scheduler.execute_by_id(
-                    routine_id, actor=principal.subject, request_id=body.request_id,
-                    guard=session_guard(request, frozenset({'routines:manage', 'home:control'}), principal))
+                    routine_id, actor=actor, request_id=body.request_id,
+                    guard=session_guard(request, permissions, principal))
             except PermissionError as error:
                 raise HTTPException(status_code=403, detail="routine_write_denied") from error
             return run_to_dict(run)
@@ -601,8 +606,11 @@ class DashboardAPI:
             principal: DashboardPrincipal = Depends(require_dashboard_session),
         ):
             """Read the receipt and ordered per-action outcomes for this routine."""
-            scheduler = self._require_routines(principal, {"routines:manage"})
-            return run_to_dict(await scheduler.get_run(routine_id, run_id))
+            scheduler = self._require_routines(principal, routine_access_permissions(principal))
+            run = await scheduler.get_run(routine_id, run_id)
+            if not self._can_read_routine_run(principal, actor=run.actor, source=run.source):
+                raise RoutineNotFound(run_id)
+            return run_to_dict(run)
 
         @self.app.get("/api/routines/{routine_id}/attempts")
         async def get_manual_attempt(
@@ -615,9 +623,9 @@ class DashboardAPI:
             request_id is required query text of length 1..128, preserved exactly
             through browser URL normalization, including dot-only IDs.
             """
-            scheduler = self._require_routines(principal, {"routines:manage"})
+            scheduler = self._require_routines(principal, routine_access_permissions(principal))
             run = await scheduler.get_manual_attempt(
-                routine_id, actor=principal.subject, request_id=request_id,
+                routine_id, actor=self._require_routine_actor(principal), request_id=request_id,
             )
             return run_to_dict(run)
 
@@ -634,7 +642,7 @@ class DashboardAPI:
                     guard=session_guard(request, frozenset({'routines:manage'}), principal))
             except PermissionError as error:
                 raise HTTPException(status_code=403, detail="routine_write_denied") from error
-            return await self._routine_to_response(routine)
+            return await self._routine_to_response(routine, principal)
 
         @self.app.post("/api/routines/{routine_id}/disable")
         async def disable_routine(
@@ -649,7 +657,7 @@ class DashboardAPI:
                     guard=session_guard(request, frozenset({'routines:manage'}), principal))
             except PermissionError as error:
                 raise HTTPException(status_code=403, detail="routine_write_denied") from error
-            return await self._routine_to_response(routine)
+            return await self._routine_to_response(routine, principal)
 
         # ==================== Presencia ====================
 
@@ -1375,17 +1383,32 @@ class DashboardAPI:
                 raise error
             return JSONResponse(status_code=503, content={"detail": "routines unavailable"})
 
-    def _require_routines(self, principal: DashboardPrincipal, permissions: set[str]):
+    def _require_routines(self, principal: DashboardPrincipal, permissions: Set[str]):
         """Check server permissions and require an initialized routines facade."""
-        if not permissions.issubset(principal.permissions):
+        if not permissions <= principal.permissions:
             raise HTTPException(status_code=403, detail="permission denied")
         if self.scheduler is None:
             raise HTTPException(status_code=503, detail="routines unavailable")
         return self.scheduler
 
-    async def _routine_to_response(self, routine: ScheduledRoutine) -> dict:
+    @staticmethod
+    def _require_routine_actor(principal: DashboardPrincipal) -> str:
+        if principal.routine_actor is None:
+            raise HTTPException(status_code=403, detail="dashboard_permission_denied")
+        return principal.routine_actor
+
+    @staticmethod
+    def _can_read_routine_run(principal: DashboardPrincipal, *, actor: str, source: str) -> bool:
+        return (DashboardPermission.ROUTINES_MANAGE in principal.permissions
+                or (source == "manual" and actor == principal.routine_actor))
+
+    async def _routine_to_response(self, routine: ScheduledRoutine, principal: DashboardPrincipal) -> dict:
         """Project execution and voice brake receipts independently."""
         latest_run = await self.scheduler.get_latest_run(routine.routine_id)
+        if latest_run is not None and not self._can_read_routine_run(
+            principal, actor=latest_run.actor, source=latest_run.source,
+        ):
+            latest_run = None
         brake = await self.scheduler.get_latest_brake(routine.routine_id)
         return {
             **routine_to_dict(routine),
@@ -1396,8 +1419,8 @@ class DashboardAPI:
             } if brake else None),
         }
 
-    async def _broadcast_ws(self, message: dict):
-        """Enviar mensaje a todos los WebSocket clients"""
+    async def _broadcast_ws(self, message: dict) -> None:
+        """Send routine events through each subscriber's current authority."""
         if not self._ws_clients:
             return
 
@@ -1405,10 +1428,18 @@ class DashboardAPI:
             try:
                 # A long-lived subscription cannot retain access after the
                 # configured credential is removed or rotated.
-                await require_dashboard_session(
+                principal = await require_dashboard_session(
                     client, client.headers.get("authorization"), client.cookies.get(COOKIE_NAME),
                 )
-                await client.send_json(message)
+                response = message
+                if message["type"] in {"routine_created", "routine_updated"}:
+                    routine = message["routine"]
+                    latest_run = routine["latest_run"]
+                    if latest_run is not None and not self._can_read_routine_run(
+                        principal, actor=latest_run["actor"], source=latest_run["source"],
+                    ):
+                        response = {**message, "routine": {**routine, "latest_run": None}}
+                await client.send_json(response)
             except WebSocketException:
                 if client in self._ws_clients:
                     self._ws_clients.remove(client)

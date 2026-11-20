@@ -145,7 +145,19 @@ def voice_person_scope_requested(request: HTTPConnection) -> bool:
     return False
 
 
-def _route_permissions(request: HTTPConnection) -> frozenset[str]:
+def routine_access_permissions(
+    principal: DashboardPrincipal | None, *, execute: bool = False,
+) -> frozenset[str]:
+    """Select a routine grant from the original principal for admission and guards."""
+    manage = DashboardPermission.ROUTINES_MANAGE
+    grant = (DashboardPermission.ROUTINES_EXECUTE
+             if principal is not None and manage not in principal.permissions else manage)
+    return frozenset({grant, DashboardPermission.HOME_CONTROL} if execute else {grant})
+
+
+def _route_permissions(
+    request: HTTPConnection, principal: DashboardPrincipal | None = None,
+) -> frozenset[str]:
     path, method = request.url.path, request.scope.get("method", "GET")
     if path in {"/api/admin/auth/whoami", "/api/admin/auth/logout"}:
         return frozenset()
@@ -167,6 +179,11 @@ def _route_permissions(request: HTTPConnection) -> frozenset[str]:
     if not read and path.startswith("/api/entities/") and path.endswith("/call") and path.count("/") == 4:
         return frozenset({DashboardPermission.HOME_CONTROL})
     if path == "/api/routines" or path.startswith("/api/routines/"):
+        tail = path.split("/")[4:]
+        if method == "POST" and tail == ["execute"]:
+            return routine_access_permissions(principal, execute=True)
+        if read and (tail == ["attempts"] or len(tail) == 2 and tail[0] == "runs"):
+            return routine_access_permissions(principal)
         if read and ("/runs/" in path or path.endswith("/attempts")):
             return frozenset({DashboardPermission.ROUTINES_MANAGE})
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.ROUTINES_MANAGE})
@@ -253,7 +270,7 @@ async def require_dashboard_session(
     if lease._authority is not authority or not lease.current():
         _deny_session(request, 401, "auth required", {"WWW-Authenticate": "Bearer"})
     await require_dashboard_origin(request, kza_dashboard_token)
-    permissions = _route_permissions(request)
+    permissions = _route_permissions(request, lease.principal)
     if not lease.current(permissions):
         _deny_session(request, 403, "dashboard_permission_denied")
     request.scope["kza.dashboard_delivery_guard"] = lambda: lease.current(permissions)

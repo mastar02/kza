@@ -213,6 +213,7 @@ def register_admin_routes(
             "subject": principal.subject, "role": principal.role.value,
             "permissions": sorted(principal.permissions), "expires_at": principal.expires_at,
             "personal_scope": principal.user_id is not None,
+            "routine_actor": principal.routine_actor,
             # Opaque per-grant tag (home + person only) that lets a tab tell another credential or
             # person behind the same subject apart. Never the person id or the credential id.
             "account_binding": principal.account_binding},

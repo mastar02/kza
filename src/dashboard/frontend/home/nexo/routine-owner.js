@@ -5,8 +5,8 @@
   const isNode = typeof module !== 'undefined' && module.exports;
   const home = isNode ? require('../home.js') : root.HomeUI;
   const { newRequestId } = isNode ? require('../request-id.js') : root.HomeRequestIdentity;
-  // The retired legacy page used this prefix without a subject; such records (still possible
-  // in a tab of the installed release) are treated as foreign below, never restored.
+  const { canReadRoutineRuns, canExecuteRoutine } = isNode ? require('./state.js') : root.NexoState;
+  // Markers from older pages without an opaque actor cannot be attributed safely.
   const PREFIX = 'kza:routine-attempt:';
   const WRITE_PREFIX = PREFIX + '~write:';
   // Outside the attempt prefix so a session-end wipe can leave a content-free reminder.
@@ -137,8 +137,8 @@
         catalogStatus: { loading: false, observedAt: null, error: null }, attempts: {}, writes: {}, notices: {}, draft: null, announcement: null };
     }
     function capabilities() {
-      const manage = session.can('routines:manage');
-      return { read: session.can('home:read'), manage, execute: manage && session.can('home:control') };
+      return { read: session.can('home:read'), manage: session.can('routines:manage'),
+        consult: canReadRoutineRuns(session.can), execute: canExecuteRoutine(session.can) };
     }
     function emit() { for (const listener of [...listeners]) listener(); }
     function announce(text) { state.announcement = { serial: ++serial, text }; }
@@ -161,19 +161,19 @@
       return keys;
     }
     function remove(key) { try { storage?.removeItem(key); } catch (_) { /* Storage is best effort when removing. */ } }
-    // Attempts are actor-scoped on the server: every stored record names the account that made it.
-    function subject() { return typeof session.subject === 'function' ? session.subject() : null; }
+    // The server-issued actor stays stable across logins of one credential.
+    function routineActor() { return session.routineActor?.() ?? null; }
     /**
      * Asks the server which account the shared cookie names now. Another tab may have switched
-     * accounts while this one was hidden; the cached session subject cannot tell.
+     * accounts while this one was hidden; different accounts can share a display name.
      * Resolves 'same', 'changed' (another, no or an unidentified account) or 'unknown' (not asked).
      */
     async function confirmAccount() {
-      const expected = subject();
+      const expected = routineActor();
       if (!expected) return 'changed';
       try {
         const identity = await read('/api/admin/auth/whoami');
-        return identity?.ok === true && typeof identity.subject === 'string' && identity.subject === expected ? 'same' : 'changed';
+        return identity?.ok === true && identity.routine_actor === expected ? 'same' : 'changed';
       } catch (error) {
         return [401, 403].includes(error?.status) ? 'changed' : 'unknown';
       }
@@ -188,26 +188,26 @@
     const ACCOUNT_UNKNOWN = 'No se pudo confirmar la cuenta de esta sesión; no se envió nada. Probá de nuevo en un momento.';
     function persistAttempt(id, attempt) {
       if (!storage) throw Error('storage_unavailable');
-      if (!attempt.subject) throw Error('subject_unavailable');
-      storage.setItem(PREFIX + id, JSON.stringify({ request_id: attempt.request_id, run_id: attempt.run_id, state: attempt.state, subject: attempt.subject }));
+      if (!attempt.actor) throw Error('actor_unavailable');
+      storage.setItem(PREFIX + id, JSON.stringify({ request_id: attempt.request_id, run_id: attempt.run_id, state: attempt.state, actor: attempt.actor }));
     }
     function dropAttempt(id) { delete state.attempts[id]; remove(PREFIX + id); }
     function persistWrite(target, marker) {
       if (!storage) throw Error('storage_unavailable');
-      if (!marker.subject) throw Error('subject_unavailable');
+      if (!marker.actor) throw Error('actor_unavailable');
       storage.setItem(WRITE_PREFIX + target, JSON.stringify(marker));
     }
     function dropWrite(target) { delete state.writes[target]; remove(WRITE_PREFIX + target); }
     function restore() {
       let keys;
       try { keys = storageKeys(); } catch (_) { return; }
-      const current = subject();
+      const current = routineActor();
       let foreignPending = false;
       for (const key of keys) {
         try {
           const value = JSON.parse(storage.getItem(key));
           // Another account's (or a legacy, unbound) record is never restored, consulted or retried.
-          if (!current || !value || value.subject !== current) {
+          if (!current || !value || value.actor !== current) {
             if (key.startsWith(WRITE_PREFIX) || value?.state !== 'terminal') foreignPending = true;
             throw Error('foreign');
           }
@@ -222,7 +222,7 @@
             if (state.attempts[id]) continue;
             if (!value || !string(value.request_id) || !value.request_id || (value.run_id !== null && !string(value.run_id))) throw Error('invalid');
             // A stored terminal flag is not a fresh receipt; only 'active' survives as is.
-            state.attempts[id] = { request_id: value.request_id, run_id: value.run_id, state: value.state === 'active' ? 'active' : 'unresolved', run: null, first: false, subject: value.subject };
+            state.attempts[id] = { request_id: value.request_id, run_id: value.run_id, state: value.state === 'active' ? 'active' : 'unresolved', run: null, first: false, actor: value.actor };
           }
         } catch (_) { remove(key); }
       }
@@ -311,7 +311,7 @@
       timer = schedule(async () => {
         timer = undefined;
         if (!opened || ticket !== epoch) return;
-        if (capabilities().manage) {
+        if (capabilities().consult) {
           for (const item of [...state.routines]) {
             if (state.attempts[item.routine_id]?.state === 'active' || item.latest_run?.status === 'running') await consult(item.routine_id, true);
           }
@@ -378,9 +378,9 @@
       if (!routine || !capabilities().execute || locked(id) || (attempt && attempt.state !== 'terminal')) return { sent: false };
       const risky = riskyActions(id);
       if (risky && !confirmed) return { sent: false, needsConfirmation: risky };
-      const next = { request_id: makeId(), run_id: null, state: 'unresolved', run: null, first: true, subject: subject() };
+      const next = { request_id: makeId(), run_id: null, state: 'unresolved', run: null, first: true, actor: routineActor() };
       try { persistAttempt(id, next); } catch (error) {
-        const text = error?.message === 'subject_unavailable' ? 'No se pudo identificar la cuenta de esta sesión; no se envió.' : 'El navegador no permite guardar el intento; no se envió.';
+        const text = error?.message === 'actor_unavailable' ? 'No se pudo identificar la cuenta de esta sesión; no se envió.' : 'El navegador no permite guardar el intento; no se envió.';
         notice(id, text); announce(text); emit(); return { sent: false };
       }
       state.attempts[id] = next;
@@ -389,7 +389,7 @@
     async function retryAttempt(id) {
       const attempt = state.attempts[id];
       if (!capabilities().execute || busy.has(id) || !attempt?.request_id || attempt.state !== 'unresolved') return { sent: false };
-      if (!attempt.subject || attempt.subject !== subject()) {
+      if (!attempt.actor || attempt.actor !== routineActor()) {
         // Never resend another account's identity: the server would treat it as a new run.
         dropAttempt(id); notice(id, 'Este intento pertenece a otra cuenta y se descartó. Revisá el último resultado antes de ejecutar.'); emit();
         return { sent: false };
@@ -407,7 +407,7 @@
     /** Polls are quiet (no disabled controls); a user consult marks the routine busy. */
     async function consult(id, polling = false) {
       if (!opened || consulting.has(id) || busy.has(id) || !find(id)) return;
-      if (!capabilities().manage) return refresh();
+      if (!capabilities().consult) return refresh();
       const attempt = state.attempts[id], latest = find(id).latest_run;
       // A poll follows an active own attempt, otherwise the running latest receipt.
       const followAttempt = Boolean(attempt) && (!polling || attempt.state === 'active');
@@ -419,6 +419,7 @@
       try {
         if (followAttempt) {
           // An own attempt is only consulted under the account that made it.
+          if (attempt.actor !== routineActor()) { accountChanged(); return; }
           const account = await confirmAccount();
           if (ticket !== epoch) return;
           if (account === 'changed') { accountChanged(); return; }
@@ -449,9 +450,9 @@
     }
 
     async function write(kind, target, path, options, input) {
-      const ticket = epoch, marker = { ...input, subject: subject() };
+      const ticket = epoch, marker = { ...input, actor: routineActor() };
       try { persistWrite(target, marker); } catch (error) {
-        const text = error?.message === 'subject_unavailable' ? 'No se pudo identificar la cuenta de esta sesión; no se envió.' : 'El navegador no permite guardar el estado del cambio; no se envió.';
+        const text = error?.message === 'actor_unavailable' ? 'No se pudo identificar la cuenta de esta sesión; no se envió.' : 'El navegador no permite guardar el estado del cambio; no se envió.';
         notice(target, text); announce(text); emit(); return { ok: false, sent: false };
       }
       state.writes[target] = { ...marker, state: 'pending', inFlight: true };
@@ -600,8 +601,8 @@
         if (storage?.getItem(ENDED_KEY)) { remove(ENDED_KEY); notice('session', 'Una ejecución o un cambio de rutina quedó sin confirmar al terminar la sesión anterior. Revisá el último resultado de tus rutinas antes de repetirlo.'); }
       } catch (_) { /* Reminder is best effort. */ }
       emit();
-      // Without a cached subject nothing can be sent or restored: no check, and no re-bootstrap loop.
-      if (subject()) {
+      // Without a cached actor, skip the account check to avoid a re-bootstrap loop.
+      if (routineActor()) {
         const ticket = epoch, account = await confirmAccount();
         if (ticket !== epoch || !opened) return true;
         if (account === 'changed') { accountChanged(); return true; }

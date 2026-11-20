@@ -163,6 +163,7 @@ class DashboardPrincipal:
     # Opaque tag of the grant and its person binding, only for personal (home + user_id)
     # credentials. Metadata for whoami: no route accepts it and it authorizes nothing.
     account_binding: str | None = field(default=None, repr=False, compare=False)
+    routine_actor: str | None = field(default=None, repr=False)
 
 
 def account_binding(identity: str, role: DashboardRole, user_id: str | None) -> str | None:
@@ -291,7 +292,8 @@ def legacy_lease(authorization: str | None, *, expected: Callable[[], str | None
             value = expected()
             retired = retired or not (value and secrets.compare_digest(_hash(value), digest))
             return not retired
-    return DashboardLease(DashboardPrincipal("dashboard-admin", _permissions(DashboardRole.OPERATOR, None)),
+    return DashboardLease(DashboardPrincipal("dashboard-admin", _permissions(DashboardRole.OPERATOR, None),
+                                             routine_actor="dashboard-admin"),
                           "legacy:" + digest, False, current)
 
 
@@ -435,7 +437,8 @@ class DashboardAuthority:
             if legacy is not None:
                 with self._state_lock:
                     epoch, digest = self._observed_epoch, self._observed_digest
-                principal = DashboardPrincipal("dashboard-admin", legacy.principal.permissions, revision=epoch)
+                principal = DashboardPrincipal("dashboard-admin", legacy.principal.permissions, revision=epoch,
+                                               routine_actor=legacy.principal.routine_actor)
                 lease = DashboardLease(principal, f"legacy:{epoch}:{digest}", False,
                                        lambda: self._legacy_current(epoch, digest), self._now, self)
                 return lease if lease.current() else None
@@ -449,12 +452,17 @@ class DashboardAuthority:
                 credential = next((c for c in self._credentials.values() if c.identity == session.credential), None)
             if session is not None and session.legacy_digest is not None:
                 principal = DashboardPrincipal("dashboard-admin", _permissions(DashboardRole.OPERATOR, None),
-                                               expires_at=session.expires_at, revision=session.revision)
+                                               expires_at=session.expires_at, revision=session.revision,
+                                               routine_actor="dashboard-admin")
             elif credential is not None:
                 expiry = min(credential.expires_at, session.expires_at) if session else credential.expires_at
-                principal = DashboardPrincipal(credential.subject, _permissions(credential.role, credential.user_id),
-                                               credential.role, credential.user_id, expiry, credential.revision, credential.samples,
-                                               account_binding(credential.identity, credential.role, credential.user_id))
+                # The prefix is outside the subject alphabet, so old name-keyed runs cannot be adopted.
+                principal = DashboardPrincipal(
+                    credential.subject, _permissions(credential.role, credential.user_id), credential.role,
+                    credential.user_id, expiry, credential.revision, credential.samples,
+                    account_binding(credential.identity, credential.role, credential.user_id),
+                    routine_actor="\x1froutine:" + _hash(credential.identity),
+                )
             else:
                 return None
         lease = DashboardLease(principal, ("session:" if session else "credential:") + digest, session is not None,

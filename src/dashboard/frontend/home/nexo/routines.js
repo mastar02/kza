@@ -115,7 +115,7 @@
           retry.disabled = state.busy.includes(id); retry.dataset.routineWrite = 'retry'; controls.append(retry);
         }
       }
-      if (caps.manage && (attempt || routine.latest_run)) {
+      if (caps.consult && (attempt || routine.latest_run)) {
         const consult = button('Consultar resultado', id + ':consult', () => owner.consult(id)); consult.disabled = state.busy.includes(id); controls.append(consult);
       }
       if (caps.manage) {
@@ -125,7 +125,7 @@
         controls.append(editControl, toggle, removal);
       }
       if (controls.childElementCount) card.append(controls);
-      if (!routine.enabled && caps.execute) card.append(node('p', 'routine-footnote', 'Activá la rutina para poder ejecutarla.'));
+      if (!routine.enabled && caps.execute) card.append(node('p', 'routine-footnote', 'La rutina debe estar activa para iniciar una ejecución.'));
     }
     function renderCards(state) {
       const key = focusKey(), seen = new Set();
@@ -358,7 +358,8 @@
       create.hidden = !caps.manage; create.disabled = Boolean(state.draft?.saving) || Boolean(state.writes.new);
       refresh.setAttribute('aria-disabled', String(state.list.loading));
       permission.textContent = caps.manage ? (caps.execute ? '' : 'Tu acceso permite editar rutinas pero no ejecutarlas.') :
-        'Tu acceso permite ver las rutinas y su último resultado. Crearlas, cambiarlas o ejecutarlas requiere un acceso de administración.';
+        caps.execute ? 'Podés ejecutar rutinas y consultar tus resultados. Para crear o editar rutinas se requiere acceso de administración.' :
+        caps.consult ? 'Podés ver las rutinas y consultar tus resultados.' : 'Podés ver las rutinas del hogar.';
       permission.hidden = !permission.textContent;
       const observed = state.list.observedAt ? 'Consultadas a las ' + new Date(state.list.observedAt).toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' }) : 'Sin consulta confirmada';
       freshness.textContent = state.list.error ? `${state.list.error.message} ${state.list.observedAt ? 'Se muestran los últimos datos. ' + observed + '.' : ''}`.trim()
