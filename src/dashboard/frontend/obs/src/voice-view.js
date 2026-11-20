@@ -120,7 +120,11 @@
         tr.append(node('td',`Grupo ${groupId.slice(0,8)} · ${row.suggested_profile ? `Sugerencia · similitud ${row.similarity.toFixed(2)}` : 'Sin asociación revisada'}`));
         body.append(tr);
       }
-      table.append(body); captures.append(table,count,
+      const scroll = node('div','','table-scroll');
+      scroll.setAttribute('role','region');
+      scroll.setAttribute('aria-label','Tabla de muestras de voz');
+      scroll.tabIndex = 0;
+      table.append(body); scroll.append(table); captures.append(scroll,count,
         node('p','Unir incluye todas las muestras de los grupos elegidos, aunque algunas estén en otra página. Separar forma otro grupo con las muestras seleccionadas; dejar como desconocido las separa individualmente.','mute'),
         merge,split,unknown,input,confirm); update();
       updateListeningButtons();
@@ -150,6 +154,7 @@
         const audioDetails = root.KzaVoicePrivacy.metadataDetails('audio',row.audio_metadata);
         const transcriptDetails = root.KzaVoicePrivacy.metadataDetails('transcript',row.transcript_metadata);
         const audio = doc.createElement('audio'); audio.controls = true; audio.preload = 'auto'; audio.src = row.audio_url;
+        audio.setAttribute('aria-label','Audio de la muestra');
         review.append(node('p',row.room_id ? `Habitación: ${row.room_id}` : 'Habitación sin registrar'),audio,
           node('p',row.clip_truncated ? `Primeros ${row.clip_duration_s} segundos de un segmento de ${row.duration_s} segundos.` : `Fragmento de ${row.clip_duration_s} segundos.`, 'mute'),
           ...audioDetails.map(text => node('p',text,'mute')),

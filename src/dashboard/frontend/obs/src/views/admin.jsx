@@ -57,21 +57,15 @@ function LoginModal({ onLogin }) {
     else { setErr("Token inválido"); }
   };
   return (
-    <div style={{
-      position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
-      display: "grid", placeItems: "center", zIndex: 100,
-    }}>
-      <form onSubmit={submit} className="card" style={{ width: 380, padding: 0 }}>
-        <div className="card-h"><h3>Acceso admin</h3></div>
+    <div className="admin-overlay" style={{ zIndex: 100 }}>
+      <form onSubmit={submit} className="card" aria-labelledby="obs-login-title" style={{ maxWidth: 380 }}>
+        <div className="card-h"><h3 id="obs-login-title">Acceso admin</h3></div>
         <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <p className="dim" style={{ fontSize: 12, margin: 0 }}>
             Token configurado en <span className="mono">KZA_DASHBOARD_TOKEN</span>.
           </p>
           <input type="password" value={token} onChange={e => setToken(e.target.value)}
-                 autoFocus placeholder="paste token"
-                 style={{ background: "var(--bg-elev-2)", border: "1px solid var(--line)",
-                          color: "var(--ink)", borderRadius: 5, padding: "8px 10px",
-                          fontFamily: "var(--mono)", fontSize: 12 }} />
+                 autoFocus placeholder="paste token" aria-label="Token de administración" />
           {err && <div className="pill err">{err}</div>}
           <button type="submit" className="btn primary">Entrar</button>
         </div>
@@ -152,49 +146,49 @@ function UsersPanel({ users, loadError, onChanged }) {
         <span className="h-meta"><span>{loadError ? "no disponible" : `${users.length} usuarios`}</span></span>
       </div>
       <div className="card-b">
-        <form onSubmit={create} style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <form onSubmit={create} className="user-form" aria-label="Crear usuario">
           <input value={name} onChange={e => setName(e.target.value)}
-                 placeholder="nombre" required
-                 style={{ flex: 1, background: "var(--bg-elev-2)", border: "1px solid var(--line)",
-                          color: "var(--ink)", borderRadius: 5, padding: "6px 10px",
-                          fontFamily: "var(--mono)", fontSize: 12 }} />
+                 placeholder="nombre" aria-label="Nombre del usuario" required />
           <select value={level} onChange={e => setLevel(e.target.value)}
-                  style={{ background: "var(--bg-elev-2)", border: "1px solid var(--line)",
-                           color: "var(--ink)", borderRadius: 5, padding: "6px 10px",
-                           fontFamily: "var(--mono)", fontSize: 12 }}>
+                  aria-label="Nivel de permiso">
             {PERMISSION_LEVELS.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
           <button className="btn primary" type="submit">+ crear</button>
         </form>
         {err && <div className="pill err" style={{ marginBottom: 8 }}>{err}</div>}
-        <table className="k">
-          <thead><tr><th>id</th><th>nombre</th><th>permiso</th><th>voz</th><th></th></tr></thead>
-          <tbody>
-            {users.map(u => (
-              <tr key={u.id}>
-                <td className="mono">{u.id}</td>
-                <td>{u.name}</td>
-                <td>{u.permissions && Object.values(u.permissions).some(Boolean) ? Object.entries(u.permissions).filter(([,v]) => v).map(([k]) => k).join(", ") : <span className="mute">no observado</span>}</td>
-                <td>{typeof u.samples !== "number" ? <span className="mute">no observado</span> : u.samples > 0 ? <Pill kind="ok">enrolado</Pill> : <Pill>sin voz</Pill>}</td>
-                <td style={{ display: "flex", gap: 6 }}>
-                  <EnrollButton userId={u.id} onDone={onChanged} />
-                  <button className="btn danger" onClick={() => del(u.id)}>×</button>
-                </td>
-              </tr>
-            ))}
-            {users.length === 0 && (
-              <tr><td colSpan={5} className="mute" style={{ textAlign: "center", padding: 24 }}>
-                {loadError ? `Usuarios no disponibles: ${loadError}` : "Sin usuarios — creá uno arriba"}
-              </td></tr>
-            )}
-          </tbody>
-        </table>
+        <div className="table-scroll" role="region" aria-label="Usuarios administrados" tabIndex={0}>
+          <table className="k">
+            <thead><tr><th>id</th><th>nombre</th><th>permiso</th><th>voz</th><th></th></tr></thead>
+            <tbody>
+              {users.map(u => (
+                <tr key={u.id}>
+                  <td className="mono">{u.id}</td>
+                  <td>{u.name}</td>
+                  <td>{u.permissions && Object.values(u.permissions).some(Boolean) ? Object.entries(u.permissions).filter(([,v]) => v).map(([k]) => k).join(", ") : <span className="mute">no observado</span>}</td>
+                  <td>{typeof u.samples !== "number" ? <span className="mute">no observado</span> : u.samples > 0 ? <Pill kind="ok">enrolado</Pill> : <Pill>sin voz</Pill>}</td>
+                  <td>
+                    <div className="user-actions">
+                      <EnrollButton userId={u.id} userName={u.name} onDone={onChanged} />
+                      <button className="btn danger" aria-label={`Eliminar usuario ${u.name}`} onClick={() => del(u.id)}>×</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {users.length === 0 && (
+                <tr><td colSpan={5} className="mute" style={{ textAlign: "center", padding: 24 }}>
+                  {loadError ? `Usuarios no disponibles: ${loadError}` : "Sin usuarios — creá uno arriba"}
+                </td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
   );
 }
 
-function EnrollButton({ userId, onDone }) {
+function EnrollButton({ userId, userName, onDone }) {
+  const titleId = React.useId();
   const [open, setOpen] = React.useState(false);
   const [step, setStep] = React.useState(0);  // 0..ENROLL_SAMPLES
   const [recording, setRecording] = React.useState(false);
@@ -277,17 +271,14 @@ function EnrollButton({ userId, onDone }) {
   };
 
   if (!open) {
-    return <button className="btn" onClick={begin}>🎙 enrolar</button>;
+    return <button className="btn" aria-label={`Enrolar voz de ${userName}`} onClick={begin}>🎙 enrolar</button>;
   }
   return (
-    <div style={{
-      position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
-      display: "grid", placeItems: "center", zIndex: 90,
-    }}>
-      <div className="card" style={{ width: 480 }}>
+    <div className="admin-overlay" style={{ zIndex: 90 }}>
+      <div className="card" role="dialog" aria-labelledby={titleId} style={{ maxWidth: 480 }}>
         <div className="card-h">
-          <h3>Enrolar voz · {userId}</h3>
-          <button className="btn" onClick={close}>×</button>
+          <h3 id={titleId}>Enrolar voz · {userId}</h3>
+          <button className="btn" aria-label="Cerrar enrolamiento" onClick={close}>×</button>
         </div>
         <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           <div className="mute mono" style={{ fontSize: 11 }}>
@@ -326,7 +317,7 @@ function ServicesPanel() {
       <div className="card-h"><h3>Acciones de servicio</h3></div>
       <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {window.KzaObsData.RESTARTABLE_SERVICES.map(svc => (
-          <div key={svc} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <div key={svc} className="row admin-service-row">
             <span className="mono">{svc}</span>
             <OperationButton kind="restartService" target={svc} label="↻ Reiniciar" confirmLabel={`Confirmar reinicio de ${svc}`} />
           </div>
