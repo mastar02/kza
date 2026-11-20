@@ -96,7 +96,7 @@ jobs:
 
       - name: Run unit tests
         run: |
-          pytest tests/unit/ -v --cov=src --cov-report=xml --cov-report=term
+          pytest tests/unit/ -n auto --dist=worksteal -v --cov=src --cov-report=xml --cov-report=term
 
       - name: Upload coverage
         uses: codecov/codecov-action@v3
@@ -133,7 +133,7 @@ jobs:
 
       - name: Run safety tests
         run: |
-          pytest tests/safety/ -v --tb=long
+          pytest tests/safety/ -n auto --dist=worksteal -v --tb=long
         # Safety tests MUST pass - no continue-on-error
 
   # ============================================================
@@ -171,12 +171,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-test.txt
 
-      - name: Collect tests
-        run: python -m pytest tests/ --collect-only -q
-
+      # Los cinco módulos de systemd de usuario real se ejecutan en Tier 2 en kza-yo.
       - name: Run integration tests
-        run: |
-          pytest tests/integration/ -v --tb=short
+        run: >-
+          pytest tests/integration/ -n auto --dist=worksteal -v --tb=short
+          --ignore=tests/integration/test_linux_compaction_units.py
+          --ignore=tests/integration/test_linux_owner_compaction.py
+          --ignore=tests/integration/test_linux_adoption_window.py
+          --ignore=tests/integration/test_linux_managed_launcher.py
+          --ignore=tests/integration/test_linux_sc6b_release_rehearsal.py
 
   # ============================================================
   # SECURITY SCAN
