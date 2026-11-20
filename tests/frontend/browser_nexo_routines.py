@@ -80,7 +80,7 @@ async def main() -> None:
                     await asyncio.sleep(0.05)
                 raise AssertionError('Browser condition timed out: ' + expression)
             except Exception:
-                diagnostic = await self.evaluate("({text:document.body.innerText.slice(0,4000),dialog:document.querySelector('dialog[open]')?.innerText||null})")
+                diagnostic = await self.evaluate("({text:document.body?.innerText?.slice(0,4000)||'',dialog:document.querySelector('dialog[open]')?.innerText||null})")
                 (evidence / 'browser-failure.json').write_text(json.dumps({'condition': expression, 'document': diagnostic, 'errors': self.errors,
                                                                           'requests': requests[-40:]}, indent=2, ensure_ascii=False) + '\n')
                 await screenshot(self, evidence / 'browser-failure.png')
@@ -255,7 +255,7 @@ async def main() -> None:
                     assert stored['state'] == 'unresolved' and stored['request_id']
                     assert run_count(database, main_id) == 2, ('the server committed the lost send', run_count(database, main_id), requests[-6:])
                     await page.command('Page.reload')
-                    await page.wait_for(f"!document.querySelector('#routines-view').hidden && document.querySelector({card(main_id)})?.textContent.includes('Resultado pendiente de consulta')")
+                    await page.wait_for(f"document.querySelector('#routines-view')?.hidden === false && document.querySelector({card(main_id)})?.textContent.includes('Resultado pendiente de consulta')")
                     assert await page.evaluate(f"!document.querySelector('[data-key=\"{main_id}:execute\"]')"), 'no fresh one-click execute while unresolved'
                     await press(f'[data-key="{main_id}:consult"]')
                     await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Resultado de tu intento') && !document.querySelector({card(main_id)}).textContent.includes('Resultado pendiente')")
