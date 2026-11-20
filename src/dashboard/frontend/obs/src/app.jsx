@@ -73,7 +73,7 @@ function Topbar({ activeNav, onRefresh, refreshing }) {
   const obs = useObs();
   const item = NAV.find(n => n.id === activeNav);
   const summary = obs.summary();
-  const healthy = summary.degraded.length === 0 && summary.pending.length === 0;
+  const healthy = !summary.degraded.length && !summary.forbidden.length && !summary.pending.length;
   const ws = obs.channel('ws');
   return (
     <header className="topbar">
@@ -92,32 +92,36 @@ function SourceBanner() {
   const obs = useObs();
   const summary = obs.summary();
   const label = key => window.KzaObsData.COLLECTIONS.find(([name]) => name === key)?.[2] || key;
-  if (summary.demo.length) {
-    return (
-      <section role="status" className="source-banner warn">
+  const degraded = summary.degraded.map(key => {
+    const { reason } = obs.entry(key);
+    return reason ? `${label(key)} (${reason})` : label(key);
+  });
+  return (
+    <>
+      {!!summary.demo.length && <section role="status" className="source-banner warn">
         <strong>Modo demostración</strong>
         <div>El servidor está configurado con datos de ejemplo (dashboard.observability_use_mocks). No describen el sistema real: {summary.demo.map(label).join(', ')}.</div>
-      </section>
-    );
-  }
-  if (summary.degraded.length) {
-    return (
-      <section role="status" className="source-banner warn">
+      </section>}
+      {!!degraded.length && <section role="status" className="source-banner warn">
         <strong>Fuentes no disponibles</strong>
-        <div>No se pudieron leer: {summary.degraded.map(label).join(', ')}. Esas secciones se muestran como no disponibles, sin datos de reemplazo.</div>
-      </section>
-    );
-  }
-  return null;
+        <div>No se pudieron leer: {degraded.join(', ')}. Esas secciones se muestran como no disponibles, sin datos de reemplazo.</div>
+      </section>}
+      {!!summary.forbidden.length && <section role="status" className="source-banner warn">
+        <strong>Fuentes sin permiso</strong>
+        <div>{summary.forbidden.map(label).join(', ')}.</div>
+      </section>}
+    </>
+  );
 }
 
-function App() {
+function App({ afterLogin, sessionSignal }) {
   const nav = window.KzaObsNav;
   const [active, setActive] = useState(() => nav.viewFromHash(window.location.hash, NAV_IDS, DEFAULT_VIEW));
   const [announcement, setAnnouncement] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const activeRef = useRef(active);
   const mainRef = useRef(null);
+  const refreshRequest = useRef(null);
   const menuButtonRef = useRef(null);
   const focusView = useRef(false);
 
@@ -181,14 +185,28 @@ function App() {
     mainRef.current?.focus();
   }, [active]);
   const [refreshing, setRefreshing] = useState(false);
+  React.useLayoutEffect(() => {
+    if (afterLogin) mainRef.current?.focus();
+    return () => refreshRequest.current?.abort();
+  }, [afterLogin]);
   async function refresh() {
+    if (refreshRequest.current) return;
+    const controller = new AbortController();
+    refreshRequest.current = controller;
     setRefreshing(true);
     try {
-      await window.KzaObsData.hydrate({ fetch: window.fetch.bind(window), store: window.__kzaObs });
-    } catch (error) {
-      if (error instanceof window.KzaObsData.AuthRequired) window.dispatchEvent(new CustomEvent('kza:auth-required'));
+      await window.KzaObsData.hydrate({
+        fetch: window.fetch.bind(window), store: window.__kzaObs,
+        signal: AbortSignal.any([sessionSignal, controller.signal]),
+      });
+    } catch (failure) {
+      if (!sessionSignal.aborted && !controller.signal.aborted) {
+        controller.abort();
+        session.fail(failure);
+      }
     } finally {
-      setRefreshing(false);
+      refreshRequest.current = null;
+      if (!controller.signal.aborted) setRefreshing(false);
     }
   }
 
@@ -233,23 +251,19 @@ window.__kzaConversationState = window.KzaConversationPrivacy.createConversation
 window.__kzaVoiceState = window.KzaVoicePrivacy.createVoiceState();
 
 function clearPrivateData() {
+  window.KzaCaptureRecorder.stopAll();
   window.__kzaLiveState?.clear();
   window.__kzaConversationState.clear();
   window.__kzaVoiceState.clear();
   window.__kzaObs.clear();
 }
 
-async function hydrateObservations({ signal }) {
-  try {
-    await window.KzaObsData.hydrate({ fetch: window.fetch.bind(window), store: window.__kzaObs, signal });
-  } catch (error) {
-    if (error instanceof window.KzaObsData.AuthRequired) throw new window.KzaDashboardSession.SessionRequired();
-    throw error;
-  }
+function hydrateObservations({ signal }) {
+  return window.KzaObsData.hydrate({ fetch: window.fetch.bind(window), store: window.__kzaObs, signal });
 }
 
 function mountWsLiveBridge() {
-  let retired = false, retry = null, socket = null;
+  let retired = false, retry = null, socket = null, closeCheck = null;
   function emitAck(message) {
     if (!socket || socket.readyState !== 1) return false;
     socket.send(JSON.stringify(message)); return true;
@@ -307,20 +321,23 @@ function mountWsLiveBridge() {
       } catch {}
     };
     ws.onclose = async (event) => {
-      if (socket !== ws) return;
-      window.__kzaObs.setChannel('ws', retired ? 'cerrado' : 'desconectado');
+      if (socket !== ws || retired) return;
+      window.__kzaObs.setChannel('ws', 'desconectado');
       live.clear();
       conversations.reset();
       voices.reset();
-      if (retired) return;
-      let needsLogin = event.code === 1008;
-      try {
-        const response = await fetch('/api/admin/auth/whoami', { credentials: 'same-origin' });
-        needsLogin = needsLogin || response.status === 401 || response.status === 503;
-      } catch {}
-      if (retired) return;
-      if (needsLogin) window.dispatchEvent(new CustomEvent('kza:auth-required'));
-      else retry = setTimeout(connect, 3000);
+      closeCheck = new AbortController();
+      const { failure, message, retry: shouldRetry } = await window.KzaDashboardSession.liveCloseStatus(
+        window.fetch.bind(window), event.code, closeCheck.signal,
+      );
+      if (retired || socket !== ws) return;
+      closeCheck = null;
+      if (failure) {
+        session.fail(failure);
+        return;
+      }
+      window.__kzaObs.setChannel('ws', message);
+      if (shouldRetry) retry = setTimeout(connect, 3000);
     };
     window.__kzaLiveWs = ws;
   } catch (e) {
@@ -330,6 +347,7 @@ function mountWsLiveBridge() {
   connect();
   return () => {
     retired = true; clearTimeout(retry);
+    closeCheck?.abort();
     window.removeEventListener('focus', checkExpiry);
     document.removeEventListener('visibilitychange', checkExpiry);
     live.dispose();
@@ -342,16 +360,28 @@ function mountWsLiveBridge() {
 }
 
 const appRoot = ReactDOM.createRoot(document.getElementById('root'));
+let afterLogin = false;
 const session = window.KzaDashboardSession.createSession({
   fetch: window.fetch.bind(window), hydrate: hydrateObservations,
   connect: mountWsLiveBridge, clear: clearPrivateData,
-  onState(state) {
-    if (state === 'ready') appRoot.render(<App />);
-    else if (state === 'login') appRoot.render(<LoginModal onLogin={() => session.start()} />);
-    else if (state === 'unavailable') appRoot.render(<div className="content" role="alert">El acceso no está disponible. <button className="btn" onClick={() => session.start()}>Reintentar</button></div>);
-    else appRoot.render(<div className="content">Cargando…</div>);
+  onState(state, failure, sessionSignal) {
+    if (state === 'ready') {
+      appRoot.render(<App afterLogin={afterLogin} sessionSignal={sessionSignal} />);
+      afterLogin = false;
+    } else if (state === 'login') {
+      afterLogin = false;
+      appRoot.render(<LoginGate key={failure?.kind ?? 'signed-out'} failure={failure} onLogin={() => {
+        afterLogin = true;
+        return session.start();
+      }} />);
+    } else if (state === 'unavailable' || state === 'forbidden') {
+      appRoot.render(<AccessNotice failure={failure} onRetry={() => session.start()} />);
+    } else appRoot.render(<div className="content">Cargando…</div>);
   },
 });
-window.addEventListener('kza:auth-required', () => session.expire());
+window.addEventListener('kza:auth-required', event => {
+  if (event.detail) session.fail(event.detail);
+  else session.expire();
+});
 window.addEventListener('pagehide', () => session.stop());
 session.start();

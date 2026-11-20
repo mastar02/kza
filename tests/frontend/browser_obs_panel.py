@@ -8,7 +8,8 @@ Keyboard navigation (WEB-03, WEB-05 /obs/) is driven with real key events: Tab
 order over the nine entries, Enter and Space, a visible focus ring, the hash
 written per view, Back/Forward and reload restoring it, focus moved to the view
 region and the active view announced. The responsive audit adds the mobile
-disclosure, populated tables, forms and media at five widths. Synthetic fixtures only.
+disclosure, populated tables, forms and media at five widths. The login audit
+checks the native modal, focus return and error announcement. Synthetic fixtures only.
 """
 
 import asyncio
@@ -24,6 +25,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import aiohttp
+from starlette.responses import JSONResponse
 import uvicorn
 from websockets.asyncio.client import connect
 
@@ -47,7 +49,7 @@ NAV = (('live', 'Live', "!!document.querySelector('#view-live')"),
        ('llm', 'LLM Router', "!!document.querySelector('#view-llm')"),
        ('users', 'Voces', "!!document.querySelector('#view-users h1')"),
        ('system', 'Sistema', "!!document.querySelector('#view-system')"),
-       ('admin', 'Admin', "document.body.innerText.includes('Acciones de servicio')"))
+       ('admin', 'Admin', "document.body?.innerText.includes('Acciones de servicio')"))
 # The focused element, its focus ring and the ring's contrast against the
 # background it is drawn on (WCAG 1.4.11 asks for at least 3:1).
 FOCUS_PROBE = r"""(()=>{
@@ -66,7 +68,7 @@ FOCUS_PROBE = r"""(()=>{
 NAV_STATE = ("(()=>{const main=document.querySelector('main.main');return {hash:location.hash,"
              "current:[...document.querySelectorAll('.nav-item[aria-current=page]')].map(n=>n.children[1].textContent),"
              "crumbs:document.querySelector('.crumbs b')?.textContent,focusMain:document.activeElement===main,"
-             "mainLabel:main.getAttribute('aria-label'),announced:document.querySelector('.sr-only[role=status]')?.textContent}})()")
+             "mainLabel:main?.getAttribute('aria-label'),announced:document.querySelector('.sr-only[role=status]')?.textContent}})()")
 WIDTHS = (320, 390, 768, 1280, 1440)
 TABLES = {
     'admin': {'Usuarios administrados'},
@@ -98,7 +100,7 @@ LAYOUT_PROBE = r"""(() => {
               tabindex: region.tabIndex, overflow: getComputedStyle(region).overflowX};
     }),
     audio: visible('audio').map(el => [el.getAttribute('aria-label'), bounds(el).width, el.parentElement.clientWidth]),
-    overlays: visible('.admin-overlay > .card').map(el => [bounds(el).left, bounds(el).right]),
+    overlays: visible('.admin-overlay > .card, dialog.login-dialog:modal').map(el => [bounds(el).left, bounds(el).right]),
   };
 })()"""
 
@@ -209,12 +211,58 @@ async def check_layout(page: Page, width: int, view: str, *, names=(), overlay: 
     tree = (await page.command('Accessibility.getFullAXTree'))['nodes']
     exposed = {(item.get('role', {}).get('value'), item.get('name', {}).get('value'))
                for item in tree if not item.get('ignored')}
+    if view == 'login':
+        assert ('dialog', 'Acceso admin') in exposed, (width, exposed)
+        assert ('button', 'Abrir acceso admin') not in exposed, (width, exposed)
     for name in regions:
         assert ('region', name) in exposed, (width, view, name)
     exposed_names = {name for _, name in exposed}
     for name in names:
         assert name in exposed_names, (width, view, name)
     return probe
+
+
+async def set_login_token(page: Page, token: str) -> None:
+    """Fill the controlled field via its native setter and React input event."""
+    await page.evaluate(
+        "(()=>{const input=document.querySelector('dialog:modal input[type=password]');"
+        "Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,"
+        + json.dumps(token) + ");input.dispatchEvent(new Event('input',{bubbles:true}));})()"
+    )
+
+
+async def login_keyboard(page: Page, login_release: asyncio.Event, requests: list[dict]) -> None:
+    """Verify the modal's key loop, return focus and single pending POST."""
+    password_focused = "document.activeElement.matches('dialog:modal input[type=password]')"
+    assert await page.evaluate(password_focused)
+    assert await page.evaluate(
+        "(()=>{const dialog=document.querySelector('dialog:modal'), field=dialog.querySelector('input');"
+        "return dialog.getAttribute('aria-modal')==='true' && field.labels.length===1 && "
+        "field.labels[0].textContent==='Token de administración' && "
+        "document.getElementById(dialog.getAttribute('aria-describedby')).textContent.trim()==="
+        "'Token configurado en KZA_DASHBOARD_TOKEN.';})()"
+    )
+    await press_shift_tab(page)
+    assert await page.evaluate("document.activeElement.textContent==='Cerrar'")
+    await _press_tab(page)
+    assert await page.evaluate(password_focused)
+    await _press_tab(page)
+    assert await page.evaluate("document.activeElement.textContent==='Entrar'")
+    await _press(page, 'Escape', 'Escape', 27)
+    await page.wait_for("!document.querySelector('dialog:modal') && document.activeElement.textContent==='Abrir acceso admin'")
+    await press_enter(page)
+    await page.wait_for(password_focused)
+
+    await set_login_token(page, 'synthetic-invalid')
+    await page.evaluate("(()=>{const form=document.querySelector('dialog:modal form');"
+                        "form.requestSubmit();form.requestSubmit();})()")
+    await page.wait_for("document.querySelector('dialog:modal [role=status]')?.textContent==='Enviando…'")
+    assert await page.evaluate("document.querySelector('dialog:modal button[type=submit]').disabled")
+    login_release.set()
+    await page.wait_for("document.querySelector('dialog:modal [role=alert]')?.textContent==="
+                        "'La credencial es inválida o la sesión venció.'")
+    assert not await page.evaluate("document.querySelector('dialog:modal button[type=submit]').disabled")
+    assert [entry['status'] for entry in requests if entry['path'] == '/api/admin/auth/login'] == [401]
 
 
 async def mobile_keyboard(page: Page) -> None:
@@ -366,6 +414,8 @@ async def main() -> None:
     EVIDENCE.mkdir(mode=0o700, parents=True, exist_ok=True)
     os.environ['KZA_DASHBOARD_TOKEN'] = TOKEN
     requests, checks = [], []
+    faults = {}
+    login_release = asyncio.Event()
     alerts = SyntheticAlerts()
     binary = browser_binary()
     with tempfile.TemporaryDirectory(prefix='kza-obs-panel-', dir=browser_profile_root()) as temporary:
@@ -378,7 +428,10 @@ async def main() -> None:
 
         @dashboard.app.middleware('http')
         async def record(request, call_next):
-            response = await call_next(request)
+            if request.url.path == '/api/admin/auth/login':
+                await login_release.wait()
+            status = faults.get(request.url.path)
+            response = JSONResponse({}, status_code=status) if status else await call_next(request)
             requests.append({'method': request.method, 'path': request.url.path, 'status': response.status_code})
             return response
 
@@ -410,18 +463,22 @@ async def main() -> None:
                     await page.command('Emulation.setDeviceMetricsOverride',
                                        {'width': 1440, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False})
                     await page.command('Page.navigate', {'url': f'http://127.0.0.1:{port}/obs/'})
-                    await page.wait_for("!!document.querySelector('input[type=password]')")
+                    await page.wait_for("!!document.querySelector('dialog:modal input[type=password]')")
                     login = {}
                     for width in WIDTHS:
                         await resize(page, width)
                         login[width] = await check_layout(page, width, 'login', overlay=True,
-                                                          names=('Acceso admin', 'Token de administración', 'Entrar'))
-                    await page.evaluate(
-                        "(()=>{const input=document.querySelector('input[type=password]');"
-                        "Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,"
-                        + json.dumps(TOKEN) + ");input.dispatchEvent(new Event('input',{bubbles:true}));"
-                        "input.form.requestSubmit();})()")
+                                                          names=('Acceso admin', 'Token de administración', 'Entrar', 'Cerrar'))
+                    try:
+                        await login_keyboard(page, login_release, requests)
+                    finally:
+                        login_release.set()
+                    checks.append('login is named and modal, wraps Tab, restores focus on Escape and sends one invalid POST')
+                    await set_login_token(page, TOKEN)
+                    await press_enter(page)
                     await page.wait_for("!!document.querySelector('#view-live')")
+                    assert await page.evaluate("document.activeElement===document.querySelector('main.main')")
+                    assert [entry['status'] for entry in requests if entry['path'] == '/api/admin/auth/login'] == [401, 200]
                     assert await page.evaluate("typeof window.MOCKS === 'undefined'")
                     checks.append('login reaches Live without example data globals')
 
@@ -502,6 +559,22 @@ async def main() -> None:
                     responsive = await responsive_layout(page)
                     checks.append('responsive layout, accessible names and populated table regions at 320/390/768/1280/1440 px')
                     checks.append('mobile keyboard disclosure, Escape, focus return, hash history and keyboard table scrolling')
+                    faults['/api/zones'] = 403
+                    await page.evaluate("document.querySelector('.topbar button').click()")
+                    await page.wait_for("document.body.innerText.includes('Fuentes sin permiso')")
+                    assert await page.evaluate("!document.querySelector('dialog:modal') && "
+                                               "window.__kzaObs.status('ZONES')==='sin permiso' && "
+                                               "window.__kzaObs.can('admin:manage')")
+                    checks.append('403 on zones marks the collection without expiring the technical session')
+
+                    await page.evaluate("location.hash='live'")
+                    await page.wait_for(NAV[0][2])
+                    faults['/api/admin/auth/whoami'] = 503
+                    await page.evaluate("location.hash='admin'")
+                    await page.wait_for("document.querySelector('main [role=alert]')?.textContent==="
+                                        "'La autoridad de acceso no está disponible.'")
+                    assert not await page.evaluate("!!document.querySelector('dialog:modal')")
+                    checks.append('503 on the Admin session check reports unavailable without opening login')
                     assert not page.errors, page.errors
                     checks.append('no runtime exceptions')
         finally:
@@ -551,11 +624,12 @@ async def keyboard_navigation(page: Page, port: int, checks: list) -> dict:
     checks.append('Back/Forward to another view clears the previous operation notice')
 
     # Reload keeps the view named by the hash; nothing is focused on load.
+    await page.evaluate("window.__obsBeforeReload=true")
     await page.command('Page.reload')
-    await page.wait_for(ready['admin'])
+    await page.wait_for(f"!window.__obsBeforeReload && ({ready['admin']})")
     assert await page.evaluate("location.hash==='#admin'&&document.activeElement===document.body")
     assert await page.evaluate("[...document.querySelectorAll('.nav-item[aria-current=page]')].map(n=>n.children[1].textContent).join()") == 'Admin'
-    assert await page.evaluate("document.querySelector('.sr-only[role=status]').textContent") == ''
+    assert await page.evaluate("document.querySelector('.sr-only[role=status]')?.textContent") == ''
     checks.append('reload with #admin reopens Admin without moving focus or announcing')
 
     # Real Tab from the start of the document: the nine entries in order, each with a visible ring.

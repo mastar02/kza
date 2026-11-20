@@ -25,52 +25,124 @@ async function authedFetch(path, opts = {}) {
 }
 
 function useAuth() {
-  const [authed, setAuthed] = React.useState(null);
+  const [auth, setAuth] = React.useState({ state: "checking" });
+  const pending = React.useRef(null);
   const check = React.useCallback(async () => {
+    pending.current?.abort();
+    const controller = new AbortController();
+    pending.current = controller;
+    setAuth({ state: "checking" });
     try {
-      const r = await fetch("/api/admin/auth/whoami", { credentials: "same-origin" });
-      setAuthed(r.ok);
-    } catch {
-      setAuthed(false);
+      await window.KzaDashboardSession.checkAccess(fetch, controller.signal);
+      if (!controller.signal.aborted) setAuth({ state: "ready" });
+    } catch (failure) {
+      if (controller.signal.aborted) return;
+      if (failure.kind === "login") {
+        setAuth({ state: "login" });
+        window.dispatchEvent(new CustomEvent("kza:auth-required", { detail: failure }));
+      } else {
+        setAuth({ state: failure.kind === "forbidden" ? "forbidden" : "unavailable", failure });
+      }
     }
   }, []);
-  React.useEffect(() => { check(); }, [check]);
   React.useEffect(() => {
-    const onReq = () => setAuthed(false);
-    window.addEventListener("kza:auth-required", onReq);
-    return () => window.removeEventListener("kza:auth-required", onReq);
-  }, []);
-  return { authed, refresh: check };
+    check();
+    return () => pending.current?.abort();
+  }, [check]);
+  return { ...auth, refresh: check };
 }
 
-function LoginModal({ onLogin }) {
+function AccessNotice({ failure, onRetry }) {
+  return (
+    <div className="content">
+      <p role="alert">{failure.message}</p>
+      <button className="btn" onClick={onRetry}>Reintentar</button>
+    </div>
+  );
+}
+
+function LoginGate({ onLogin, failure }) {
+  const [open, setOpen] = React.useState(true);
+  const opener = React.useRef(null);
+  return (
+    <div className="content">
+      <button type="button" className="btn" ref={opener} onClick={() => setOpen(true)}>Abrir acceso admin</button>
+      {open && <LoginModal onLogin={onLogin} onClose={() => setOpen(false)} opener={opener} failure={failure} />}
+    </div>
+  );
+}
+
+function LoginModal({ onLogin, onClose, opener, failure }) {
   const [token, setToken] = React.useState("");
-  const [err, setErr] = React.useState(null);
+  const [err, setErr] = React.useState(failure?.message ?? null);
+  const [sending, setSending] = React.useState(false);
+  const dialog = React.useRef(null);
+  const field = React.useRef(null);
+  const pending = React.useRef(null);
+  const id = React.useId();
+
+  React.useLayoutEffect(() => {
+    const modal = dialog.current;
+    const focused = document.activeElement;
+    const returnTo = focused === document.body ? opener.current : focused;
+    modal.showModal();
+    field.current.focus();
+    return () => {
+      pending.current?.abort();
+      modal.close();
+      if (returnTo?.isConnected) returnTo.focus();
+      else opener.current?.focus();
+    };
+  }, [opener]);
+
+  function wrapTab(event) {
+    if (event.key !== "Tab") return;
+    const controls = dialog.current.querySelectorAll("input:not(:disabled), button:not(:disabled)");
+    const first = controls[0], last = controls[controls.length - 1];
+    const from = event.shiftKey ? first : last;
+    if (document.activeElement !== from) return;
+    event.preventDefault();
+    (event.shiftKey ? last : first).focus();
+  }
+
   const submit = async (e) => {
     e.preventDefault();
-    const r = await fetch("/api/admin/auth/login", {
-      method: "POST", credentials: "same-origin",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token }),
-    });
-    if (r.ok) { onLogin(); }
-    else { setErr("Token inválido"); }
+    if (pending.current) return;
+    const controller = new AbortController();
+    pending.current = controller;
+    setSending(true);
+    setErr(null);
+    try {
+      await window.KzaDashboardSession.loginAccess(fetch, token, controller.signal);
+      if (!controller.signal.aborted) await onLogin();
+    } catch (failure) {
+      if (!controller.signal.aborted) setErr(failure.message);
+    } finally {
+      pending.current = null;
+      if (!controller.signal.aborted) setSending(false);
+    }
   };
   return (
-    <div className="admin-overlay" style={{ zIndex: 100 }}>
-      <form onSubmit={submit} className="card" aria-labelledby="obs-login-title" style={{ maxWidth: 380 }}>
-        <div className="card-h"><h3 id="obs-login-title">Acceso admin</h3></div>
+    <dialog ref={dialog} className="card login-dialog" aria-modal="true" aria-labelledby={`${id}-title`}
+            aria-describedby={`${id}-help`} onKeyDown={wrapTab}
+            onCancel={event => { event.preventDefault(); onClose(); }}>
+      <form onSubmit={submit}>
+        <div className="card-h"><h3 id={`${id}-title`}>Acceso admin</h3></div>
         <div className="card-b" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <p className="dim" style={{ fontSize: 12, margin: 0 }}>
+          <p id={`${id}-help`} className="dim" style={{ fontSize: 12, margin: 0 }}>
             Token configurado en <span className="mono">KZA_DASHBOARD_TOKEN</span>.
           </p>
-          <input type="password" value={token} onChange={e => setToken(e.target.value)}
-                 autoFocus placeholder="paste token" aria-label="Token de administración" />
-          {err && <div className="pill err">{err}</div>}
-          <button type="submit" className="btn primary">Entrar</button>
+          <label htmlFor={`${id}-token`}>Token de administración</label>
+          <input id={`${id}-token`} ref={field} type="password" value={token}
+                 onChange={e => { setToken(e.target.value); setErr(null); }}
+                 readOnly={sending} required />
+          {err && <div className="pill err" role="alert">{err}</div>}
+          {sending && <span role="status">Enviando…</span>}
+          <button type="submit" className="btn primary" disabled={sending}>Entrar</button>
+          <button type="button" className="btn" onClick={onClose}>Cerrar</button>
         </div>
       </form>
-    </div>
+    </dialog>
   );
 }
 
@@ -330,12 +402,12 @@ function ServicesPanel() {
 // ---------------- AdminView (entry point) ----------------
 
 function AdminView() {
-  const { authed, refresh } = useAuth();
+  const { state, failure, refresh } = useAuth();
   const [users, setUsers] = React.useState([]);
   const [loadError, setLoadError] = React.useState(null);
   const loadUsers = React.useCallback(async () => {
     try {
-      const r = await fetch("/api/users", { credentials: "same-origin", cache: "no-store" });
+      const r = await authedFetch("/api/users", { cache: "no-store" });
       const source = (r.headers.get("x-kza-source") || "").toLowerCase();
       if (r.ok && (source === "real" || source === "mock")) { setUsers(await r.json()); setLoadError(null); }
       else { setUsers([]); setLoadError(r.ok ? "la fuente no está disponible" : `HTTP ${r.status}`); }
@@ -343,10 +415,12 @@ function AdminView() {
       setUsers([]); setLoadError("sin respuesta del servidor");
     }
   }, []);
-  React.useEffect(() => { if (authed) loadUsers(); }, [authed, loadUsers]);
+  React.useEffect(() => { if (state === "ready") loadUsers(); }, [state, loadUsers]);
 
-  if (authed === null) return <div className="content mute">cargando…</div>;
-  if (authed === false) return <LoginModal onLogin={refresh} />;
+  if (state === "unavailable" || state === "forbidden") {
+    return <AccessNotice failure={failure} onRetry={refresh} />;
+  }
+  if (state !== "ready") return <div className="content mute">cargando…</div>;
 
   return (
     <div className="view">
@@ -358,7 +432,6 @@ function AdminView() {
         <button className="btn" onClick={async () => {
           await fetch("/api/admin/auth/logout", { method: "POST", credentials: "same-origin" });
           window.dispatchEvent(new CustomEvent("kza:auth-required"));
-          refresh();
         }}>cerrar sesión</button>
       </div>
       <div className="grid grid-2">
