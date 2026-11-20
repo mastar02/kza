@@ -35,6 +35,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+from hashlib import sha256
 
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID,
@@ -165,6 +166,8 @@ class CompoundPartReport:
         retried: The report comes from an earlier run of the same turn.
         intercom_receipt: Per-zone playback evidence for an intercom part.
         reply_label: Content-free spoken name for a part with a literal message.
+        intercom_fingerprint: Digest of the original complement, preserving
+            literal delimiters for idempotency checks.
     """
 
     index: int
@@ -178,6 +181,7 @@ class CompoundPartReport:
     retried: bool = False
     intercom_receipt: dict | None = field(default=None, repr=False)
     reply_label: str | None = None
+    intercom_fingerprint: bytes | None = field(default=None, repr=False)
 
     def summary(self) -> dict:
         """Content-free description for turn results and logs."""
@@ -381,8 +385,9 @@ class CompoundRunner:
                                                   _skipped_outcome(PartVerdict.INTERRUPTED), reply_label=reply_label))
                 continue
             earlier = self._ledger.get(request_id)
+            fingerprint = sha256(intent.complement.encode("utf-8")).digest() if reply_label is not None else None
             if earlier is not None:
-                if earlier.segment == segment:
+                if earlier.segment == segment and earlier.intercom_fingerprint == fingerprint:
                     report = replace(earlier, retried=True)
                 else:
                     report = CompoundPartReport(index, request_id, segment, PartVerdict.NOT_DONE,
@@ -411,10 +416,18 @@ class CompoundRunner:
             finally:
                 CURRENT_REQUEST_ID.reset(token)
             report = self._report(context, result, segment)
+            remember = True
             if reply_label is not None:
-                report = replace(report, reply_label=reply_label)
+                in_flight = report.intercom_receipt is not None and report.intercom_receipt.get("in_flight") is True
+                report = replace(report, reply_label=reply_label, intercom_fingerprint=fingerprint, retried=in_flight)
+                # Intercom owns live progress and refuses reuse of an active ID
+                # with a different payload. Neither reply can replace its result.
+                conflict = (report.outcome.status is TaskStatus.FAILED
+                            and report.outcome.persistence is PersistenceState.NOT_WRITTEN)
+                remember = not (in_flight or conflict)
             reports.append(report)
-            self._remember(report)
+            if remember:
+                self._remember(report)
             if context.skipped is not None:
                 continue  # sent nothing: the target is as the earlier parts left it
             action = getattr(result, "action", None)

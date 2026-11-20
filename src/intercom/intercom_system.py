@@ -5,20 +5,23 @@ import logging
 import re
 import unicodedata
 import uuid
+from collections import OrderedDict
 from collections.abc import Callable, Hashable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import Any
 
 from src.core.household_clock import ZONE_PREFIX
-from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
+from src.core.task_outcome import CURRENT_REQUEST_ID, DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.core.voice_delivery import ResponseResult, VoiceDeliveryError, invoke_voice_callback
 from src.nlu.household_intents import INTERCOM_BROADCAST_TARGETS, intercom_slots
 
 logger = logging.getLogger(__name__)
 
 _ARTICLE = re.compile(r"^(?:el|la|los|las)\s+")
+_VOICE_RECEIPT_LIMIT = 256
 
 
 def _room_name(text: str) -> str:
@@ -83,10 +86,26 @@ class Announcement:
 
     def receipt(self) -> dict:
         """Project the delivery evidence without retaining the message."""
-        return {
+        receipt = {
             "announcement_id": self.announcement_id,
             "zones": {zone: state.value for zone, state in self.zone_receipts.items()},
         }
+        if not self._settled.is_set():
+            receipt["in_flight"] = True
+        return receipt
+
+    def _receipt_copy(self) -> "Announcement":
+        """Keep a settled receipt without copying the spoken message into the ledger."""
+        receipt = replace(self, message="", target_zones=self.target_zones.copy(),
+                          failed_zones=self.failed_zones.copy(), zone_receipts=self.zone_receipts.copy())
+        receipt._settled.set()
+        return receipt
+
+
+@dataclass(frozen=True)
+class _VoiceAttempt:
+    fingerprint: bytes
+    announcement: Announcement
 
 
 class IntercomSystem:
@@ -114,6 +133,8 @@ class IntercomSystem:
 
         self._announcement_queue: asyncio.Queue[Announcement] = asyncio.Queue()
         self._announcement_history: list[Announcement] = []
+        self._voice_in_flight: dict[str, _VoiceAttempt] = {}
+        self._voice_receipts: OrderedDict[str, _VoiceAttempt] = OrderedDict()
         self._running = False
         self._process_task: asyncio.Task | None = None
         self._zones: dict[str, dict] = {}
@@ -176,6 +197,19 @@ class IntercomSystem:
 
     async def announce_from_voice(self, complement: str) -> tuple[TaskOutcome, str, Announcement | None]:
         """Deliver an admitted P3-F2 request at the ordinary configured volume."""
+        request_id = CURRENT_REQUEST_ID.get()
+        fingerprint = sha256(complement.encode("utf-8")).digest() if request_id is not None else b""
+        if request_id is not None:
+            pending = self._voice_in_flight.get(request_id)
+            previous = pending or self._voice_receipts.get(request_id)
+            if previous is not None:
+                if previous.fingerprint != fingerprint:
+                    return TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.NOT_WRITTEN,
+                                       dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED), (
+                        "Esa solicitud ya corresponde a otro anuncio."
+                    ), None
+                receipt = previous.announcement if pending else previous.announcement._receipt_copy()
+                return self._voice_result(receipt)
         if not self._running or not self._room_names or self.tts is None:
             return TaskOutcome(TaskStatus.UNSUPPORTED, persistence=PersistenceState.NOT_WRITTEN,
                                dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED), (
@@ -194,7 +228,21 @@ class IntercomSystem:
             ), None
 
         announcement = Announcement(f"ann_{uuid.uuid4().hex[:8]}", message, zones)
-        await self._deliver_announcement(announcement)
+        if request_id is not None:
+            self._voice_in_flight[request_id] = _VoiceAttempt(fingerprint, announcement)
+        try:
+            await self._deliver_announcement(announcement)
+        finally:
+            if request_id is not None:
+                self._voice_receipts[request_id] = _VoiceAttempt(fingerprint, announcement._receipt_copy())
+                self._voice_in_flight.pop(request_id)
+                if len(self._voice_receipts) > _VOICE_RECEIPT_LIMIT:
+                    self._voice_receipts.popitem(last=False)
+        return self._voice_result(announcement)
+
+    @staticmethod
+    def _voice_result(announcement: Announcement) -> tuple[TaskOutcome, str, Announcement]:
+        zones = announcement.target_zones
         confirmed = sum(state is ZoneDelivery.CONFIRMED for state in announcement.zone_receipts.values())
         if announcement.delivery_confirmed:
             return TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.VOLATILE,
@@ -205,7 +253,7 @@ class IntercomSystem:
                                dispatch=DispatchState.PARTIAL, effect=EffectState.PARTIAL), (
                 f"El anuncio se reprodujo en {confirmed} de {len(zones)} salas."
             ), announcement
-        if ZoneDelivery.UNCERTAIN in announcement.zone_receipts.values():
+        if not announcement._settled.is_set() or ZoneDelivery.UNCERTAIN in announcement.zone_receipts.values():
             return TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.VOLATILE,
                                dispatch=DispatchState.UNCERTAIN, effect=EffectState.UNCERTAIN), (
                 "No pude confirmar la reproducción del anuncio."
@@ -247,19 +295,17 @@ class IntercomSystem:
                 if index:
                     await asyncio.sleep(announcement.delay_between_repeats)
                 for zones in outputs.values():
-                    try:
-                        delivery = await self._announce_to_zone(zones[0], announcement.message)
-                    except asyncio.CancelledError:
-                        for zone in zones:
-                            if announcement.zone_receipts[zone] is not ZoneDelivery.CONFIRMED:
-                                announcement.zone_receipts[zone] = ZoneDelivery.UNCERTAIN
-                        raise
-                    for zone in zones:
-                        previous = announcement.zone_receipts[zone]
-                        if previous is not ZoneDelivery.CONFIRMED and (
-                            previous is not ZoneDelivery.UNCERTAIN or delivery is ZoneDelivery.CONFIRMED
-                        ):
-                            announcement.zone_receipts[zone] = delivery
+                    previous = announcement.zone_receipts[zones[0]]
+                    # Until the output returns, cancellation or a replay can only
+                    # confirm earlier zones. Later zones remain not_sent.
+                    if previous is not ZoneDelivery.CONFIRMED:
+                        announcement.zone_receipts.update(dict.fromkeys(zones, ZoneDelivery.UNCERTAIN))
+                    delivery = await self._announce_to_zone(zones[0], announcement.message)
+                    if previous is ZoneDelivery.CONFIRMED or (
+                        previous is ZoneDelivery.UNCERTAIN and delivery is not ZoneDelivery.CONFIRMED
+                    ):
+                        delivery = previous
+                    announcement.zone_receipts.update(dict.fromkeys(zones, delivery))
         finally:
             # Preserve the legacy summary fields alongside the individual receipts.
             announcement.failed_zones = [zone for zone, state in announcement.zone_receipts.items()

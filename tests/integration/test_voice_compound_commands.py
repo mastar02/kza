@@ -215,6 +215,104 @@ async def test_compound_summary_does_not_speak_intercom_payload_in_origin(graph,
         await intercom.stop()
 
 
+@pytest.mark.parametrize("cancel", [True, False])
+async def test_compound_intercom_replay_during_delivery_and_after_settlement(graph, cancel):
+    attempts = []
+    second_started = asyncio.Event()
+    release_second = asyncio.Event()
+
+    async def speak(message, zone):
+        attempts.append((message, zone))
+        if zone == "zone_escritorio" and not second_started.is_set():
+            second_started.set()
+            await release_second.wait()
+        return ResponseResult(message, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    intercom = IntercomSystem(speak, room_catalog={
+        "zone_cocina": ("Cocina",), "zone_escritorio": ("Escritorio",),
+    })
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("escritorio", "Escritorio")
+    graph.orchestrator.dispatcher.intercom = intercom
+    await intercom.start()
+    body = "El pedido está listo."
+    text = f"Poné un timer de 5 minutos y anunciá en toda la casa: {body}"
+    request_id = "voice:compound-intercom-concurrent"
+    original = asyncio.create_task(graph.turn(text, request_id=request_id))
+    started = asyncio.create_task(second_started.wait())
+    try:
+        await asyncio.wait((original, started), return_when=asyncio.FIRST_COMPLETED)
+        assert started.done() and not original.done()
+        concurrent = await graph.turn(text, request_id=request_id)
+        during = concurrent["compound_parts"][1]
+        assert during["task_status"] == "uncertain" and during["retried"]
+        receipt = during["intercom_receipt"]
+        assert receipt["in_flight"] is True
+        assert receipt["zones"] == {"zone_cocina": "confirmed", "zone_escritorio": "uncertain"}
+
+        if cancel:
+            original.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await original
+        else:
+            release_second.set()
+            assert (await original)["task_completed"]
+
+        settled = (await graph.turn(text, request_id=request_id))["compound_parts"][1]
+        assert settled["task_status"] == ("uncertain" if cancel else "completed")
+        assert settled["intercom_receipt"] == intercom.get_history()[-1].receipt()
+        assert settled["intercom_receipt"]["announcement_id"] == receipt["announcement_id"]
+        assert settled["intercom_receipt"]["zones"] == {
+            "zone_cocina": "confirmed", "zone_escritorio": "uncertain" if cancel else "confirmed",
+        }
+        assert attempts == [(body, "zone_cocina"), (body, "zone_escritorio")]
+        assert len(graph.timers.get_all_timers()) == 1
+        assert len(intercom.get_history()) == 1
+    finally:
+        for task in (original, started):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(original, started, return_exceptions=True)
+        await intercom.stop()
+
+
+async def test_compound_replay_distinguishes_quoted_message_from_directed_destination(graph):
+    attempts = []
+
+    async def speak(message, zone):
+        attempts.append((message, zone))
+        return ResponseResult(message, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+
+    intercom = IntercomSystem(speak, room_catalog={
+        "zone_cocina": ("Cocina",), "zone_escritorio": ("Escritorio",),
+    })
+    intercom.register_zone("cocina", "Cocina")
+    intercom.register_zone("escritorio", "Escritorio")
+    graph.orchestrator.dispatcher.intercom = intercom
+    await intercom.start()
+    try:
+        head = "Poné un timer de 5 minutos y anuncia: "
+        body = "En la cocina: se corto el agua."
+        directed, quoted = f"{head}{body}", f"{head}«{body}»"
+        request_id = "voice:compound-intercom-quoted"
+        first = await graph.turn(directed, request_id=request_id)
+        assert first["compound_parts"][1]["intercom_receipt"]["zones"] == {"zone_cocina": "confirmed"}
+        conflict = (await graph.turn(quoted, request_id=request_id))["compound_parts"][1]
+        assert (conflict["reason"], conflict["dispatch"], conflict["retried"]) == (
+            "request_id_conflict", "not_sent", False,
+        )
+        assert "intercom_receipt" not in conflict
+        assert attempts == [("se corto el agua.", "zone_cocina")]
+
+        fresh = await graph.turn(quoted, request_id="voice:compound-intercom-fresh-quote")
+        assert fresh["compound_parts"][1]["intercom_receipt"]["zones"] == {
+            "zone_cocina": "confirmed", "zone_escritorio": "confirmed",
+        }
+        assert attempts[1:] == [(f"«{body}»", "zone_cocina"), (f"«{body}»", "zone_escritorio")]
+    finally:
+        await intercom.stop()
+
+
 async def test_cmp_0001_both_parts_done_each_with_its_own_receipt(graph):
     """C02-CMP-0001: 'apagá la luz y pausá la música' runs both parts; one reply names both as done."""
     result = await graph.turn("apagá la luz y pausá la música", request_id="voice:cmp1")

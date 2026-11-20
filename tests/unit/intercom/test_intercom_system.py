@@ -74,6 +74,7 @@ def test_zone_defaults_intercom_fields_to_none():
     ("Anunciá que Ana está en la cocina", "Ana está en la cocina", ["zone_cocina", "zone_sala"]),
     ("Anunciá: Vení, y apagá la luz", "Vení, y apagá la luz", ["zone_cocina", "zone_sala"]),
     ("Anuncia: El pedido esta listo.", "El pedido esta listo.", ["zone_cocina", "zone_sala"]),
+    ("Anunciá: «Esperen, por favor.», por favor", "«Esperen, por favor.»", ["zone_cocina", "zone_sala"]),
     ("Avisá en kitchen que Llegó Ana", "Llegó Ana", []),
     ("Avisá en otra sala que Llegó Ana", "Llegó Ana", []),
     ("Anunciá en patio que Llegó Ana", "Llegó Ana", []),
@@ -88,7 +89,12 @@ def test_voice_resolves_only_configured_room_labels(text, message, zones):
 
 
 @pytest.mark.parametrize(("opening", "closing"), [("«", "»"), ('"', '"'), ("'", "'")])
-@pytest.mark.parametrize("body", ["En la cocina: se corto el agua.", "En la cocina se corto el agua."])
+@pytest.mark.parametrize("body", [
+    "En la cocina: se corto el agua.",
+    "En la cocina se corto el agua.",
+    "En la cocina: esperen, por favor.",
+    "En la cocina esperen, por favor.",
+])
 async def test_explicit_quote_preserves_literal_text_and_broadcasts(opening, closing, body):
     attempts = []
 

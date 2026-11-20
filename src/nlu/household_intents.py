@@ -235,6 +235,7 @@ class HouseholdIntentClassifier:
 
 # A one-digit decimal ("1,5 horas") stays one token, as in src.timers.voice_request.
 _WORD_RE = re.compile(r"\d+(?:[:.]\d{2}|[.,]\d(?!\d))?|[^\W\d_]+")
+_EXPLICIT_QUOTE = re.compile(r"""«[^»]*»|"[^"]*"|(?<!\w)'[^\n]*?'(?!\w)""")
 _LEAD_WORDS = frozenset({"che", "ey", "oye", "hola", "porfa", "podes", "podrias", "puedes", "podras", "bueno",
                          "bue", "dale"})
 # Fillers dropped at the end of a turn ("..., por favor", "... porfa"); "por favor" is matched as a pair
@@ -301,33 +302,44 @@ def _filler_bounds(utt: _Utterance, text: str, wake_words: Iterable[str], extra_
 
     A word of ``paused_trails`` is a trailing filler only after a pause
     (",", ";", "." or "!" before it: "..., dale"); a colon is not one
-    ("decirle a Juan: dale" keeps it).
+    ("decirle a Juan: dale" keeps it). Words inside explicit quotes stay.
     """
     lowered = (text or "").lower()
     spans = [m.span() for m in _WORD_RE.finditer(lowered)]
+    quotes = [match.span() for match in _EXPLICIT_QUOTE.finditer(lowered)]
+
+    def crosses_quote(first: int, last: int) -> bool:
+        return any(left < spans[last][1] and spans[first][0] < right for left, right in quotes)
+
     leads = WAKE_TERMS | {_fold(w) for w in wake_words} | _LEAD_WORDS | extra_leads
     trails = _TRAIL_WORDS | extra_trails
     start, end = 0, len(utt)
     for _ in range(_MAX_LEADS):
         word = utt.at(start)
         if word in leads:
-            start += 1
+            next_start = start + 1
         elif word == "por" and utt.at(start + 1) == "favor":
-            start += 2
+            next_start = start + 2
         elif word == "no" and _PAUSE_AFTER.match(lowered, spans[start][1]):
-            start += 1
+            next_start = start + 1
         else:
             break
+        if crosses_quote(start, next_start - 1):
+            break
+        start = next_start
     while end > start:
         if end - start >= 2 and utt.folded[end - 2:end] == ("por", "favor"):
-            end -= 2
+            next_end = end - 2
         elif utt.folded[end - 1] in trails:
-            end -= 1
+            next_end = end - 1
         elif utt.folded[end - 1] in paused_trails and end - start >= 2 \
                 and _PAUSE_BEFORE_TRAIL.match(lowered, spans[end - 2][1]):
-            end -= 1
+            next_end = end - 1
         else:
             break
+        if crosses_quote(next_end, end - 1):
+            break
+        end = next_end
     return start, end
 
 
@@ -573,7 +585,6 @@ INTERCOM_BROADCAST_TARGETS = frozenset({
     "todos los parlantes",
 })
 _INTERCOM_PUNCTUATION = re.compile(r"[^\w]*")
-_INTERCOM_QUOTES = {"«": "»", '"': '"', "'": "'"}
 _INTERCOM_DIRECTION = re.compile(
     r"(?:" + "|".join(sorted(_INTERCOM_DESTINATION_HEADS)) + r")\b\s*", re.IGNORECASE,
 )
@@ -1044,10 +1055,9 @@ def intercom_slots(complement: str) -> tuple[str | None, int]:
     room syntax is considered. Ordinary punctuation can precede a destination.
     """
     start = _INTERCOM_PUNCTUATION.match(complement).end()
-    for offset, char in enumerate(complement[:start]):
-        closing = _INTERCOM_QUOTES.get(char)
-        if closing is not None and complement.find(closing, start) != -1:
-            return None, offset
+    quote = _EXPLICIT_QUOTE.search(complement)
+    if quote is not None and quote.start() < start:
+        return None, quote.start()
     direction = _INTERCOM_DIRECTION.match(complement, start)
     marker = _INTERCOM_MESSAGE_MARKER.search(complement, start)
     target_start = direction.end() if direction else start
