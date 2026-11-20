@@ -77,7 +77,8 @@ def default_workers(platform: str | None = None, cpu_count: int | None = None) -
     cpus = cpu_count or (os.cpu_count() or 4)
     if plat == "darwin":
         return max(1, min(8, cpus))
-    return max(1, min(12, cpus // 2 if cpus >= 16 else cpus))
+    # Cap Linux workers at 8 so RSS stays comfortably inside user@ MemoryHigh=32 GiB.
+    return max(1, min(8, cpus // 2 if cpus >= 16 else cpus))
 
 
 def _shm_has_capacity(shm_root: Path = Path("/dev/shm"), min_shm_bytes: int = MIN_SHM_FREE_BYTES) -> bool:
@@ -94,12 +95,16 @@ def choose_basetemp_root(
     explicit: Path | None,
     out_dir: Path,
     *,
+    tier: int = 0,
     platform: str | None = None,
     shm_root: Path = Path("/dev/shm"),
     min_shm_bytes: int = MIN_SHM_FREE_BYTES,
 ) -> tuple[Path, bool]:
-    """Select basetemp root; prefer /dev/shm on Linux when enough RAM is free.
+    """Select basetemp root; use /dev/shm only for Tier 0 on Linux when free.
 
+    Tier 1 and Tier 2 retain tens of GiB across the full pytest session, which can
+    exhaust cgroup MemoryHigh/tmpfs RAM; those runs use disk under ``out_dir/basetemp``
+    and are still cleaned up on exit so only logs/XML/summary remain.
     Returns ``(root_path, cleanup_on_exit)``.
     """
     if explicit is not None:
@@ -108,13 +113,13 @@ def choose_basetemp_root(
         return resolved, False
 
     plat = platform or sys.platform
-    if plat.startswith("linux") and _shm_has_capacity(shm_root, min_shm_bytes):
+    if tier == 0 and plat.startswith("linux") and _shm_has_capacity(shm_root, min_shm_bytes):
         shm_tmp = Path(tempfile.mkdtemp(prefix=f"kza-pytest-{os.getpid()}-", dir=shm_root))
         return shm_tmp, True
 
     fallback = (out_dir / "basetemp").resolve()
     fallback.mkdir(parents=True, exist_ok=True)
-    return fallback, False
+    return fallback, True
 
 
 def choose_cache_dir(
@@ -125,12 +130,10 @@ def choose_cache_dir(
     min_shm_bytes: int = MIN_SHM_FREE_BYTES,
     home_dir: Path | None = None,
 ) -> Path:
-    """Select shared artifact cache directory using the same /dev/shm capacity guard."""
+    """Select persistent disk cache directory so artifacts stay off tmpfs RAM."""
+    del platform, shm_root, min_shm_bytes
     if explicit is not None:
         return Path(explicit).resolve()
-    plat = platform or sys.platform
-    if plat.startswith("linux") and _shm_has_capacity(shm_root, min_shm_bytes):
-        return (shm_root / "kza-artifact-cache").resolve()
     base_home = home_dir or Path.home()
     return (base_home / ".cache" / "kza-runtime-artifacts").resolve()
 
@@ -532,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         solo_guard = acquire_solo_window(tier=args.tier)
-        basetemp_root, cleanup_basetemp = choose_basetemp_root(args.basetemp, out_dir)
+        basetemp_root, cleanup_basetemp = choose_basetemp_root(args.basetemp, out_dir, tier=args.tier)
         before_nr = journald_nrestarts() if args.tier == 2 else None
 
         if should_prebuild(args.tier, prebuild=args.prebuild, no_prebuild=args.no_prebuild):

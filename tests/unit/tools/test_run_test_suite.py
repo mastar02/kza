@@ -12,7 +12,7 @@ from scripts import run_test_suite as runner
 
 def test_default_workers_caps_cleanly():
     assert runner.default_workers(platform="darwin", cpu_count=12) == 8
-    assert runner.default_workers(platform="linux", cpu_count=48) == 12
+    assert runner.default_workers(platform="linux", cpu_count=48) == 8
     assert runner.default_workers(platform="linux", cpu_count=4) == 4
 
 
@@ -40,15 +40,27 @@ def test_choose_basetemp_root_prefers_shm_on_linux_when_free(tmp_path, monkeypat
     monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=32 * 1024**3, f_frsize=1))
 
     bt, should_clean = runner.choose_basetemp_root(
-        None, tmp_path / "out", platform="linux", shm_root=shm
+        None, tmp_path / "out", tier=0, platform="linux", shm_root=shm
     )
     assert bt.parent == shm and bt.exists() and should_clean is True
 
+    for full_tier in (1, 2):
+        bt_tier, clean_tier = runner.choose_basetemp_root(
+            None, tmp_path / f"out-{full_tier}", tier=full_tier, platform="linux", shm_root=shm
+        )
+        assert bt_tier == (tmp_path / f"out-{full_tier}" / "basetemp").resolve()
+        assert bt_tier.exists() and clean_tier is True
+
     monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=1 * 1024**3, f_frsize=1))
     bt_fallback, should_clean_fb = runner.choose_basetemp_root(
-        None, tmp_path / "out", platform="linux", shm_root=shm
+        None, tmp_path / "out-low", tier=0, platform="linux", shm_root=shm
     )
-    assert bt_fallback == (tmp_path / "out" / "basetemp").resolve() and should_clean_fb is False
+    assert bt_fallback == (tmp_path / "out-low" / "basetemp").resolve() and should_clean_fb is True
+
+    explicit_bt, clean_explicit = runner.choose_basetemp_root(
+        tmp_path / "explicit-bt", tmp_path / "out-explicit", tier=2, platform="linux", shm_root=shm
+    )
+    assert explicit_bt == (tmp_path / "explicit-bt").resolve() and clean_explicit is False
 
 
 def test_safe_rmtree_removes_readonly_slot_directories(tmp_path):
@@ -113,14 +125,10 @@ def test_choose_cache_dir_follows_shm_capacity(tmp_path, monkeypatch):
     shm = tmp_path / "dev_shm"
     shm.mkdir()
     monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=32 * 1024**3, f_frsize=1))
-    assert runner.choose_cache_dir(None, platform="linux", shm_root=shm, home_dir=tmp_path) == (
-        shm / "kza-artifact-cache"
-    ).resolve()
-
-    monkeypatch.setattr(runner.os, "statvfs", lambda _p: SimpleNamespace(f_bavail=1 * 1024**3, f_frsize=1))
-    assert runner.choose_cache_dir(None, platform="linux", shm_root=shm, home_dir=tmp_path) == (
-        tmp_path / ".cache" / "kza-runtime-artifacts"
-    ).resolve()
+    expected_disk = (tmp_path / ".cache" / "kza-runtime-artifacts").resolve()
+    assert runner.choose_cache_dir(None, platform="linux", shm_root=shm, home_dir=tmp_path) == expected_disk
+    explicit = tmp_path / "custom-cache"
+    assert runner.choose_cache_dir(explicit, platform="linux", shm_root=shm, home_dir=tmp_path) == explicit.resolve()
 
 
 def test_sanitize_env_strips_inherited_overrides():
@@ -382,7 +390,7 @@ def test_main_cleans_shm_basetemp_when_prebuild_fails(tmp_path, monkeypatch):
     monkeypatch.setattr(
         runner,
         "choose_basetemp_root",
-        lambda explicit, od: (
+        lambda explicit, od, **_kw: (
             (shm / "reserved-bt").mkdir(parents=True, exist_ok=True) or (shm / "reserved-bt"),
             True,
         ),
