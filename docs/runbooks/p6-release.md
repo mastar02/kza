@@ -20,6 +20,10 @@ resuelto de runtime para la plataforma objetivo. Guardar el lock y sus
 artefactos de instalación fuera de Git y reproducir el entorno con sus
 versiones transitivas y hashes de distribución. `requirements.txt` declara
 rangos de versiones y `requirements-test.txt` describe el entorno de pruebas.
+Para generar o verificar el manifiesto, trabajar con los archivos
+versionados limpios y comprobar que `git rev-parse HEAD` devuelve
+`$COMMIT`. El revisor usa los validadores de archivo y el comando
+*schema-only* del checkout local.
 
 ```bash
 "$PY" scripts/build_runtime.py "$REVIEW/candidate.tar.gz" --revision "$COMMIT"
@@ -48,8 +52,9 @@ revisor ejecuta bytecode del artefacto sellado en un directorio temporal
 privado y elimina el scratch al salir. El ensayo valida `current` y los
 cinco enlaces del contenedor sintético con las comprobaciones de adopción
 y L4, y ejecuta la fase *schema-only* sobre una copia SQLite.
-Conserva las filas de recordatorios y de una acción HA ya enviada, crea las
-tablas de Epoch 2 vacías y compara byte a byte la base congelada.
+Conserva las filas de recordatorios y de una acción HA ya enviada, agrega
+`scope='private'` y `delivery_room=NULL`, crea las tablas de Epoch 2 vacías
+y compara byte a byte la base de recordatorios congelada.
 
 El hash del lock acredita su identidad. Adjuntar la evidencia de instalación
 reproducible y validación de la configuración efectiva de arranque de la
@@ -130,7 +135,8 @@ installed adoption-commit --confirm "$PREPARE_PLAN_SHA256"
    Ante un fallo de un comando, conservar salida, estado y registros para
    diagnosticar antes de seguir. El límite de W1 a READY es de 60 minutos.
 6. W9 exige un cierre limpio con recibo y sello. Registrar su `ended_at`
-   en UTC como DÍA 0 y registrar DÍA 0 + 1 209 600 s como fecha de Q5.
+   en UTC como DÍA 0 y registrar DÍA 0 + 1 209 600 s como fecha de
+   Q5 (retiro legado de P7).
    Reiniciar, comprobar READY y leer `installed completion-status` hasta
    que terminen las colas de privacidad. Registrar conteos pendientes y
    bloqueantes según W9. Ejecutar T074 dentro de la ventana acordada y
@@ -140,7 +146,7 @@ installed adoption-commit --confirm "$PREPARE_PLAN_SHA256"
 
 Desde W8 puede requerirse L4 aunque todavía no exista el primer cierre
 limpio. El plazo de 14 × 24 h se cuenta desde ese primer cierre y el guion
-limita L4 hasta su vencimiento, previo a Q5. La intención de retiro
+limita L4 hasta su vencimiento, previo al retiro legado. La intención de retiro
 invalida los destinos legados en el controlador. Volver a la imagen
 congelada puede volver a servir datos borrados y dejar fuera cambios hechos
 en el estado gestionado. El usuario autoriza esa consecuencia con una
@@ -148,7 +154,7 @@ decisión L4 registrada y la frase literal `revivir datos borrados`.
 
 1. Verificar el destino exacto y su integridad, que resuelvan todos sus
    enlaces y que no haya transición pendiente del modo release ni intención
-   Q5. Parar la unidad, comprobar que sigue inactiva y que no quedan
+   del retiro legado. Parar la unidad, comprobar que sigue inactiva y que no quedan
    escritores. Desde el controlador instalado ejecutar sólo L4. `UNIT_DIR`
    corresponde al directorio de drop-ins de `kza-voice.service`.
 
@@ -166,7 +172,7 @@ installed uninstall-launcher --unit-dir "$UNIT_DIR" \
    alguno de los controles, mantener la unidad detenida y escalar al
    operador. [Contrato de L4](../architecture/DEPLOYMENT.md#lanzador-gestionado-u3b-0d--desarrollado-no-instalado)
 
-## Q5 · Retiro al día 14
+## Q5 (retiro legado de P7) · Día 14
 
 El operador de P7 calcula la fecha exacta desde el sello W9. Sin sello,
 antes del vencimiento o con un `uninstall-*.json` de L4, el retiro queda
@@ -175,7 +181,7 @@ del usuario.
 
 El día acordado, revisar las referencias de unidades, enlaces,
 configuración y registros, y retirar la estrofa de logrotate de la consola
-legada según el [procedimiento Q5](2026-11-13-r1-adoption-window.md#día-14-retiro-q5-del-estado-de-b0866e8-y-sus-copias-del-2026-10-29).
+legada según el [procedimiento de retiro Q5 de P7](2026-11-13-r1-adoption-window.md#día-14-retiro-q5-del-estado-de-b0866e8-y-sus-copias-del-2026-10-29).
 Ejecutar un dry-run con la decisión P7 registrada y el contenedor e9669ec.
 Exigir `eligible: true` y revisar el censo del estado congelado, informes,
 dos conjuntos de copias SQLite y slots superados, con sus exclusiones.

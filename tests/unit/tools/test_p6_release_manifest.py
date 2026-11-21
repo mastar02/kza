@@ -1,10 +1,12 @@
 """T064 reviews real build_runtime archives without contacting a serving system."""
 
+from contextlib import closing
 from dataclasses import replace
 import hashlib
 import io
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import tarfile
 
@@ -126,6 +128,54 @@ def test_refuses_missing_or_empty_lock(candidate, tmp_path):
     lock.write_text("# no dependencies\n", encoding="utf-8")
     with pytest.raises(ValueError, match="lock is empty"):
         review.review_manifest(replace(candidate, runtime_lock=lock))
+
+
+def test_fixture_matches_frozen_reminders_schema():
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.executescript(review._LEGACY_SQL)
+        columns = [row[1] for row in db.execute("PRAGMA table_info(reminders)")]
+        indexes = db.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'reminders' "
+            "AND sql IS NOT NULL ORDER BY name"
+        ).fetchall()
+    assert columns == [
+        "id", "user_id", "text", "trigger_at", "created_at", "recurrence",
+        "recurrence_end", "ha_actions", "state", "last_fired_at", "fire_count",
+    ]
+    assert indexes == [("idx_reminders_trigger",), ("idx_reminders_user",)]
+
+
+@pytest.mark.parametrize("path", [Path("/home/kza"), Path("/home/kza/releases/candidate.tar.gz")])
+def test_review_path_refuses_production_path(path):
+    with pytest.raises(ValueError, match="outside the production tree"):
+        review._review_path(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("legacy_commit", "0" * 40, "disagrees with the Q4 legacy source or rollback target"),
+        ("frozen_state_slot", "unexpected-slot", "disagrees with the Q4 legacy source or rollback target"),
+        ("rollback_phrase", "wrong phrase", "disagrees with the Q4 legacy source or rollback target"),
+        ("controller_revision", 2, "disagrees with release.json: controller_revision"),
+    ],
+)
+def test_check_controller_refuses_discrepancy(field, value, error):
+    manifest = {"controller_epoch": 5, "controller_revision": 1, "launcher_contract": 3}
+    compiled = {
+        **manifest,
+        "schema_contract": review.SCHEMA_EPOCH,
+        "schema_contract_sha256": review.SCHEMA_DIGEST,
+        "legacy_commits": [review.LEGACY_COMMIT[:7]],
+        "legacy_commit": review.LEGACY_COMMIT,
+        "adoption_source_commit": review.LEGACY_COMMIT,
+        "frozen_state_slot": review.FROZEN_SLOT,
+        "legacy_links": 5,
+        "rollback_phrase": review.L4_PHRASE,
+    }
+    review._check_controller(compiled, manifest)
+    with pytest.raises(ValueError, match=error):
+        review._check_controller({**compiled, field: value}, manifest)
 
 
 def test_refuses_real_build_with_epoch_two_and_different_contract(candidate, tmp_path):

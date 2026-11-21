@@ -62,15 +62,16 @@ print(json.dumps({
 }))
 """
 
-# Pre-Epoch-2 reminders and an already-sent HA action. Schema-only preserves both.
+# The frozen b0866e8/e9669ec schema and an already-sent HA action.
 _LEGACY_SQL = """
 CREATE TABLE reminders (
     id TEXT PRIMARY KEY, user_id TEXT NOT NULL, text TEXT NOT NULL,
     trigger_at REAL NOT NULL, created_at REAL NOT NULL, recurrence TEXT,
     recurrence_end REAL, ha_actions TEXT, state TEXT NOT NULL DEFAULT 'active',
-    last_fired_at REAL, fire_count INTEGER NOT NULL DEFAULT 0,
-    scope TEXT NOT NULL DEFAULT 'private' CHECK (scope IN ('private', 'shared'))
+    last_fired_at REAL, fire_count INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX idx_reminders_trigger ON reminders (trigger_at) WHERE state = 'active';
+CREATE INDEX idx_reminders_user ON reminders (user_id, state);
 CREATE TABLE reminder_home_actions (
     request_id TEXT PRIMARY KEY, body TEXT NOT NULL, status TEXT NOT NULL, reason TEXT
 );
@@ -258,7 +259,8 @@ def _synthetic_preflight(scratch: Path, manifest: dict, files: dict[str, bytes],
         columns = [row[1] for row in db.execute("PRAGMA table_info(reminders)")]
         timers = db.execute("SELECT COUNT(*) FROM timers").fetchone()[0]
         preferences = db.execute("SELECT COUNT(*) FROM alert_preferences").fetchone()[0]
-    if (columns[-1:] != ["delivery_room"] or migrated_reminders != [row + (None,) for row in reminders]
+    if (columns[-2:] != ["scope", "delivery_room"]
+            or migrated_reminders != [row + ("private", None) for row in reminders]
             or migrated_actions != actions or timers or preferences):
         raise ValueError("Epoch 2 synthetic migration changed protected reminders or actions")
     if (container / "state/data/reminders.db").read_bytes() != frozen_bytes:
