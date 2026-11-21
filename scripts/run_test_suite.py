@@ -81,6 +81,27 @@ def default_workers(platform: str | None = None, cpu_count: int | None = None) -
     return max(1, min(8, cpus // 2 if cpus >= 16 else cpus))
 
 
+def resolve_solo_workers(
+    explicit: int | None,
+    *,
+    workers: int,
+    has_xdist: bool,
+) -> int:
+    """Resolve effective xdist workers for ``lane-c-compiled-solo``.
+
+    Defaults to ``2`` when pytest-xdist is available and ``--workers >= 2`` so
+    both workers run with dedicated CPU/disk after Lane A and Lane B complete,
+    staying safely inside the real 55s ``advance-N`` phase budget; otherwise ``1``.
+    """
+    if explicit is not None:
+        if explicit < 1:
+            raise ValueError("--solo-workers must be >= 1")
+        return explicit if has_xdist else 1
+    if has_xdist and workers >= 2:
+        return 2
+    return 1
+
+
 def _shm_has_capacity(shm_root: Path = Path("/dev/shm"), min_shm_bytes: int = MIN_SHM_FREE_BYTES) -> bool:
     if not shm_root.is_dir():
         return False
@@ -291,11 +312,12 @@ def build_pytest_command(
     deselects: tuple[str, ...] = (),
     k_expr: str | None = None,
     use_xdist: bool = True,
+    dist_mode: str = "worksteal",
     extra_args: tuple[str, ...] = (),
 ) -> list[str]:
     cmd = [str(python_exe), "-m", "pytest", "-p", "no:cacheprovider"]
     if use_xdist and workers > 1:
-        cmd.extend(["-n", str(workers), "--dist=worksteal"])
+        cmd.extend(["-n", str(workers), f"--dist={dist_mode}"])
     cmd.extend(["-o", "faulthandler_timeout=120", f"--basetemp={basetemp}"])
     if junit_xml is not None:
         cmd.append(f"--junitxml={junit_xml}")
@@ -403,9 +425,22 @@ def run_tier2_lanes(
     workers: int,
     has_xdist: bool,
     run_node: bool,
+    solo_workers: int | None = None,
 ) -> list[dict]:
-    """Run Node, Lane A (xdist core) and Lane B (serial real-systemd) concurrently, then Lane C strictly solo."""
+    """Run Node, Lane A (xdist core) and Lane B (serial real-systemd) concurrently, then Lane C quietly.
+
+    Lane B stays strictly serial (``use_xdist=False``) to preserve ``daemon-reload``
+    ordering and ``before_NRestarts == after_NRestarts`` on ``systemd-journald``.
+    Lane C runs only after both Lane A and Lane B exit, using ``--solo-workers``
+    (default 2 when xdist is available and ``workers >= 2``, else 1) with
+    ``--dist=load`` so compiled rehearsals retain quiet CPU/disk budgets.
+    """
     env_systemd = dict(env, KZA_REQUIRE_REAL_SYSTEMD="1")
+    effective_solo_workers = resolve_solo_workers(
+        solo_workers,
+        workers=workers,
+        has_xdist=has_xdist,
+    )
 
     def run_lane_a() -> dict:
         cmd_a = build_pytest_command(
@@ -475,10 +510,11 @@ def run_tier2_lanes(
     cmd_c = build_pytest_command(
         python_exe,
         targets=list(COMPILED_SOLO_TESTS),
-        workers=1,
+        workers=effective_solo_workers,
         basetemp=basetemp_root / "lane-c-compiled",
         junit_xml=out_dir / "tier2-compiled-solo.xml",
-        use_xdist=False,
+        use_xdist=has_xdist and effective_solo_workers > 1,
+        dist_mode="load",
         extra_args=("-q",),
     )
     res_c = _run_subprocess("lane-c-compiled-solo", cmd_c, cwd=repo, env=env, log_path=out_dir / "lane-c-compiled-solo.log")
@@ -490,6 +526,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tier", type=int, choices=(0, 1, 2), required=True, help="Execution tier: 0=targeted, 1=fast-non-systemd, 2=full-linux-gate")
     parser.add_argument("--workers", type=int, default=default_workers(), help="pytest-xdist worker count for core non-systemd lane")
+    parser.add_argument(
+        "--solo-workers",
+        type=int,
+        default=None,
+        help="pytest-xdist worker count for Tier 2 lane-c-compiled-solo (default: 2 when xdist is available and --workers >= 2, else 1)",
+    )
     parser.add_argument("--out-dir", type=Path, default=None, help="Directory for logs, XML reports, and summary.json")
     parser.add_argument("--cache-dir", type=Path, default=None, help="Shared runtime artifact cache directory")
     parser.add_argument("--basetemp", type=Path, default=None, help="Explicit pytest basetemp root")
@@ -502,6 +544,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     repo = REPO_ROOT
+    if args.workers < 1:
+        parser.error("--workers must be >= 1")
+    if args.solo_workers is not None and args.solo_workers < 1:
+        parser.error("--solo-workers must be >= 1")
     if args.tier == 0 and not args.targets:
         parser.error("--tier 0 requires at least one path in --targets")
     if args.tier == 2 and not sys.platform.startswith("linux"):
@@ -521,6 +567,9 @@ def main(argv: list[str] | None = None) -> int:
     has_xdist = _xdist_available(python_exe)
     if args.workers > 1 and not has_xdist:
         print("WARNING: pytest-xdist not installed; running single-worker", file=sys.stderr)
+    solo_workers = resolve_solo_workers(args.solo_workers, workers=args.workers, has_xdist=has_xdist)
+    if (args.solo_workers or 0) > 1 and not has_xdist:
+        print("WARNING: pytest-xdist not installed; running lane-c-compiled-solo single-worker", file=sys.stderr)
 
     env = sanitize_env()
     env["KZA_SUITE_ROOT"] = str(repo)
@@ -591,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
                     workers=args.workers,
                     has_xdist=has_xdist,
                     run_node=not args.no_node,
+                    solo_workers=solo_workers,
                 )
             )
             after_nr = journald_nrestarts()
@@ -611,6 +661,7 @@ def main(argv: list[str] | None = None) -> int:
         "tier": args.tier,
         "platform": sys.platform,
         "workers": args.workers if has_xdist else 1,
+        "solo_workers": solo_workers,
         "xdist_enabled": has_xdist and args.workers > 1,
         "prebuild_s": prebuild_s,
         "total_wall_s": round(time.monotonic() - t_total_start, 2),
