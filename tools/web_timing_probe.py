@@ -938,17 +938,16 @@ class RunFacts:
     setup_faults: list = field(default_factory=list)
     environment_faults: list = field(default_factory=list)
     product_failures: list = field(default_factory=list)
+    flush_timeout_visibility_fault: str | None = None
 
 
 def classify(facts: RunFacts) -> tuple:
-    """Return (Outcome, reason). First timeout wins; failures are never excluded.
+    """Return (Outcome, reason) under cdp_deadlines.rule and the R2-3 visibility rule.
 
-    Order: a crash or disconnect is invalid in any phase; a setup fault (before Page.navigate, so no product
-    outcome exists) is invalid; then cdp_deadlines.rule (a) a timed-window timeout is a failure and (b) a
-    leave-step timeout is a post_window_hang, neither turned invalid by anything observed later
-    (exclusion_rules.invalid_run: "A CDP timeout inside the timed window is a failure, not an invalid run,
-    unless one of the crash/disconnect checks shows the crash or disconnect"); then environment faults of the
-    timed phase (visibility, emulation, preview gap) are invalid; then rule (c); then product failures.
+    Crash, disconnect and pre-navigation setup faults take priority. The first timed
+    timeout is a failure except when the final flush expired with an observed visibility
+    fault (PS-5). Then check leave timeouts, timed environment faults, setup/collect
+    timeouts and product failures in that order.
     """
     if facts.crashed:
         return Outcome.INVALID, 'browser_crashed'
@@ -958,6 +957,8 @@ def classify(facts: RunFacts) -> tuple:
         return Outcome.INVALID, facts.setup_faults[0]
     timed = [item for item in facts.timeouts if item.phase == 'timed']
     if timed:
+        if timed[0].method == 'Runtime.evaluate' and facts.flush_timeout_visibility_fault:
+            return Outcome.INVALID, facts.flush_timeout_visibility_fault
         return Outcome.FAILURE, 'cdp_timeout:' + timed[0].method
     if any(item.phase == 'leave' for item in facts.timeouts):
         return Outcome.POST_WINDOW_HANG, 'leave_step_timeout'
@@ -1586,7 +1587,7 @@ def smoke_background_branch(record: SmokeRecord) -> str:
     return branch
 
 
-# R6-1 (smoke_gate.smoke_order): quiet_baseline; cold_focus and background_activity; fixture_pages; the 12 batches;
+# R6-1 (smoke_gate.smoke_order): quiet_baseline; cold_focus and background_activity; fixture_pages; the 13 batches;
 # instrumentation_overhead; frame_event. lock_read items may run at any point. An item refuses to start until every
 # item before it has a deciding entry (deciding_entry; a batch cell also counts when its last entry is complete or
 # discarded: it is recorded and never repeated automatically), and no item starts once a later stage has an entry
@@ -2684,7 +2685,7 @@ class Run:
         self.retryable_setup_timeout = False
         self.interaction_traced = False
         self.browser_version = None
-        self.flush_sent = None
+        self.flush_timeout_at: float | None = None
         self.play_click_wall = None
         self.play_click_frame = None
         # One page client serves a cold run and its warm run: each run reports only its own commands.
@@ -2773,6 +2774,7 @@ class Run:
                                                         klass='window_state', phase=phase)
                 entry['state'] = (result.get('bounds') or {}).get('windowState')
                 entry['window_id'] = result.get('windowId')
+                entry['received'] = time.monotonic()
             except (CdpTimeout, CdpError, CdpDisconnected) as error:
                 entry['error'] = type(error).__name__
             self.window_reads.append(entry)
@@ -3050,10 +3052,15 @@ class Run:
 
     async def _flush(self) -> None:
         expression = f'window[{json.dumps(self.config["flush"])}]()'
-        self.flush_sent = len(self.page.log)
-        await self.page.send('Runtime.evaluate', {'expression': expression, 'awaitPromise': True, 'returnByValue': True},
-                             klass='evaluate')
-        self.page.log[self.flush_sent]['flush'] = True
+        sent = len(self.page.log)
+        try:
+            await self.page.send('Runtime.evaluate',
+                                 {'expression': expression, 'awaitPromise': True, 'returnByValue': True},
+                                 klass='evaluate')
+        except CdpTimeout:
+            self.flush_timeout_at = self.page.log[sent]['deadline']
+            raise
+        self.page.log[sent]['flush'] = True
         self._sample_window('flush')
 
     async def _collect(self) -> None:
@@ -3130,6 +3137,19 @@ class Run:
         if self.facts.navigate_sent and document_start:
             faults = visibility_faults(document_start, timed_records(typed['focus'], flush_time),
                                        timed_records(typed['visibility_event'], flush_time), self.window_reads)
+            if self.flush_timeout_at is not None:
+                # PS-5: use only evidence received by the final flush deadline. An
+                # unanswered window read does not establish a loss of visibility.
+                cutoff = self.flush_timeout_at
+                observed = visibility_faults(
+                    document_start if document_start['_received'] <= cutoff else {},
+                    [record for record in typed['focus'] if record['_received'] <= cutoff],
+                    [record for record in typed['visibility_event'] if record['_received'] <= cutoff],
+                    [read for read in self.window_reads if read.get('received', INF) <= cutoff
+                     and read['state'] is not None],
+                )
+                self.facts.flush_timeout_visibility_fault = next(iter(observed), None)
+                faults.extend(fault for fault in observed if fault not in faults)
             viewport_faults, flags = viewport_check(spec.viewport, document_start, typed['viewport'])
             self.facts.environment_faults += [fault for fault in faults + viewport_faults
                                               if fault not in self.facts.environment_faults]
@@ -3563,7 +3583,7 @@ class BrowserSession:
             self.page = await self.browser.connect_page(self.target_id)
             self.previous_script, self.needs_new_target = None, False
 
-    async def _discard_setup_target(self, spec: RunSpec) -> None:
+    async def _discard_setup_target(self, spec: RunSpec, first_trace: list) -> None:
         client = self.browser.client
         try:
             reply = await client.send('Target.closeTarget', {'targetId': self.target_id}, klass='setup')
@@ -3577,16 +3597,22 @@ class BrowserSession:
             await self.page.close()
             self.page = self.target_id = self.previous_script = None
         if spec.role == 'warm':
-            await self._drain_setup_trace(client)
+            await self._drain_setup_trace(client, first_trace)
 
-    async def _drain_setup_trace(self, client: CdpClient) -> None:
-        """Wait for global tracing to finish before opening the replacement warm target."""
+    async def _drain_setup_trace(self, client: CdpClient, first_trace: list) -> None:
+        """Collect the first attempt's remaining events before opening the replacement target."""
         method = 'Tracing.tracingComplete'
+        data_method = 'Tracing.dataCollected'
         complete = asyncio.Event()
+
+        def collect(params: dict) -> None:
+            if not complete.is_set():
+                first_trace.extend(params.get('value', []))
 
         def finished(_params: dict) -> None:
             complete.set()
 
+        client.on(data_method, collect)
         client.on(method, finished)
         started = time.monotonic()
         deadline = started + DEADLINE_MS['collect'] / 1000
@@ -3598,15 +3624,17 @@ class BrowserSession:
                                'sent': started, 'deadline': deadline, 'connection': 'browser'})
             raise CdpTimeout(method, 'collect', 'setup') from None
         finally:
+            client.handlers[data_method].remove(collect)
             client.handlers[method].remove(finished)
         client.log.append({'method': method, 'class': 'collect', 'phase': 'setup',
                            'received': time.monotonic(), 'connection': 'browser'})
 
     async def _execute_attempt(self, spec: RunSpec, fixture: FixtureProcess | None, *,
-                               retry: bool = False) -> tuple[Run | None, dict]:
+                               first_trace: list | None = None) -> tuple[Run | None, dict]:
+        retry = first_trace is not None
         try:
-            if retry:
-                await self._discard_setup_target(spec)
+            if first_trace is not None:
+                await self._discard_setup_target(spec, first_trace)
             await self.prepare_target(spec, retry=retry)
         except Exception as error:  # noqa: BLE001 - a failed recovery invalidates the slot.
             if retry:
@@ -3624,11 +3652,8 @@ class BrowserSession:
         result['target_id'] = self.target_id
         result['needs_new_target'] = self.needs_new_target
         result['browser_argv'] = self.browser.argv
-        if run.trace_events:
-            stem = f'{spec.ordinal:05d}'
-            if not retry and self.setup_timeout_retry and run.retryable_setup_timeout:
-                stem += '-first'
-            write_gzip_json_atomic(self.out_dir / f'trace-{stem}.json.gz', run.trace_events)
+        if run.trace_events and (retry or not (self.setup_timeout_retry and run.retryable_setup_timeout)):
+            write_gzip_json_atomic(self.out_dir / f'trace-{spec.ordinal:05d}.json.gz', run.trace_events)
         return run, result
 
     async def execute(self, spec: RunSpec, fixture: FixtureProcess | None) -> dict:
@@ -3639,7 +3664,14 @@ class BrowserSession:
 
         client = self.browser.client
         start = len(client.log)
-        retry_run, result = await self._execute_attempt(spec, fixture, retry=True)
+        try:
+            retry_run, result = await self._execute_attempt(spec, fixture, first_trace=run.trace_events)
+        finally:
+            if run.trace_events:
+                first['trace_events'] = len(run.trace_events)
+                first['trace_candidates_present'] = sorted(
+                    name for name, values in frame_candidates(run.trace_events).items() if values)
+                write_gzip_json_atomic(self.out_dir / f'trace-{spec.ordinal:05d}-first.json.gz', run.trace_events)
         end = None
         if retry_run is not None and retry_run.browser.client is client:
             end = retry_run.browser_log_start
@@ -4674,16 +4706,33 @@ def smoke_frame_event(root: Path = SMOKE_ROOT, *, record: SmokeRecord | None = N
                       sha: str | None = None) -> dict:
     """smoke_gate.frame_event (V14f): the acceptance test over every smoke run whose interaction phase was traced
     (batches and overhead arm (a) and (b) runs alike); analysis only, no browser."""
+    partial_dirs: set[Path] = set()
     if record is None:
         paths = ((path, False) for path in root.rglob('*run-*.json'))
     else:
         overhead = deciding_entry(record, 'instrumentation_overhead')
+        # V14f counts traced runs even when their batch was discarded. F7's batch
+        # eligibility rules are specific to its playback check.
         entries = [entry for entry in record.data['runs'] if entry['item'].startswith('batch:')
-                   and entry['status'] == 'complete' and entry.get('machine_state') == MACHINE_STATE]
+                   and entry.get('machine_state') == MACHINE_STATE]
         if overhead is not None:
             entries.append(overhead)
-        paths = ((path, entry is overhead) for entry in entries if entry.get('reviewed_sha256') == sha
-                 for path in Path(entry['result']['directory']).glob('*run-*.json'))
+        linked_dirs = {}
+        for entry in entries:
+            if entry.get('reviewed_sha256') != sha:
+                continue
+            directory = (entry.get('result') or {}).get('directory')
+            if directory:
+                linked_dirs[Path(directory).resolve()] = entry is overhead
+            elif entry is not overhead and entry['status'] in ('started', 'aborted'):
+                # A stopped batch can have written run files without linking its directory.
+                _, viewport, view = entry['item'].split(':', 2)
+                pattern = f'????????T??????-{viewport}-{view.removeprefix("#")}-a[0-9]*'
+                partial_dirs.update(root.resolve().glob(pattern))
+        partial_dirs.difference_update(linked_dirs)
+        directories = linked_dirs | dict.fromkeys(partial_dirs, False)
+        paths = ((path, is_overhead) for directory, is_overhead in directories.items()
+                 for path in directory.glob('*run-*.json'))
     results = []
     for path, is_overhead in sorted(paths):
         # A legacy smoke scan must not pull in a revised campaign below its root.
@@ -4701,6 +4750,8 @@ def smoke_frame_event(root: Path = SMOKE_ROOT, *, record: SmokeRecord | None = N
         run_sha = identity.get('preregistration_sha256') or document.get('preregistration_sha256')
         # Legacy overhead files inherit the SHA of their deciding smoke-record entry.
         if sha is not None and run_sha != sha and not (is_overhead and run_sha is None):
+            if path.parent in partial_dirs:
+                continue
             raise SystemExit(f'frame_event_evidence_identity_mismatch:{path}')
         results.append(document)
     phases = frame_event_phases(results)
