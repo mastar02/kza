@@ -37,6 +37,7 @@ REPO = Path(__file__).resolve().parents[3]
 # is frozen.
 PINNED_CONTRACTS = {
     1: "691c2272c3e4f5b4e3119b008396f340de6ee8ef4006abba659103c694f1e8d8",
+    2: "6ff891ad85feb560277def05860d4d3985b0e8aa714566a9b7ae2136ef20ba95",
 }
 
 
@@ -45,7 +46,7 @@ def _digest() -> str:
 
 
 def test_the_contract_document_is_pinned_to_its_epoch():
-    assert stage.SCHEMA_CONTRACT_EPOCH == 1
+    assert stage.SCHEMA_CONTRACT_EPOCH == 2
     assert _digest() == PINNED_CONTRACTS[stage.SCHEMA_CONTRACT_EPOCH], (
         "the schema contract changed: bump SCHEMA_CONTRACT_EPOCH and pin the new digest (SC-D4)")
 
@@ -106,6 +107,7 @@ CHANGES = {
     "_CREDENTIAL_REASONS": _frozen_plus,
     "_RECORDER_STATES": _frozen_plus,
     "_REMINDER_STATES": _frozen_plus,
+    "_TIMER_STATES": _frozen_plus,
     "_REMINDER_SCOPES": _frozen_plus,
     "_REMINDER_ACTION_STATUSES": _frozen_plus,
     "_ROUTINE_RUN_STATUSES": _frozen_plus,
@@ -163,6 +165,7 @@ SRC_VOCABULARIES = {
     "recorder_states": ("_RECORDER_STATES", "src.memory.capture_recorders", "RecorderState",
                         "capture_browser_recorders.state"),
     "reminder_states": ("_REMINDER_STATES", "src.reminders.reminder_store", "ReminderState", "reminders.state"),
+    "timer_states": ("_TIMER_STATES", "src.reminders.reminder_store", "TimerState", "timers.state"),
     "reminder_scopes": ("_REMINDER_SCOPES", "src.reminders.reminder_store", "ReminderScope", "reminders.scope"),
     "reminder_action_statuses": ("_REMINDER_ACTION_STATUSES", "src.reminders.reminder_store",
                                  "ReminderActionStatus", "reminder_home_actions.status"),
@@ -239,6 +242,7 @@ def test_every_column_of_the_privacy_progress_tables_is_classified():
 # exclusions paragraph; "rule" is governed by a database rule of the document. _PROTECTED_OPEN_TEXT
 # holds identifiers, digests, timestamps, payload and JSON: not a closed set.
 PROTECTED_CLOSED_TEXT = {
+    "alert_preferences": {},
     "ambient_runtime_control": {},
     "audio_write_intents": {},
     "auth_meta": {"key": "excluded", "value": "rule"},
@@ -270,6 +274,7 @@ PROTECTED_CLOSED_TEXT = {
     "routines": {},
     "sessions": {},
     "staged": {},
+    "timers": {"state": ("timer_states",)},
     "voice_attribution_consents": {"state": ("voice_consent_states",)},
     "voice_attribution_control": {},
     "voice_attribution_events": {"kind": ("voice_attribution_event_kinds",)},
@@ -283,6 +288,7 @@ PROTECTED_CLOSED_TEXT = {
     "voice_verification_attempts": {"outcome": ("voice_verification_outcomes",)},
 }
 _PROTECTED_OPEN_TEXT = {
+    "alert_preferences": {"key", "value_json"},
     "ambient_runtime_control": set(),
     "audio_write_intents": {"path", "conversation_id"},
     "auth_meta": set(),
@@ -307,13 +313,14 @@ _PROTECTED_OPEN_TEXT = {
     "pending_audio_deletions": {"path", "conversation_id"},
     "quarantines": {"source", "destination"},
     "reminder_home_actions": {"request_id", "body"},
-    "reminders": {"id", "user_id", "text", "ha_actions"},
+    "reminders": {"id", "user_id", "text", "ha_actions", "delivery_room"},
     "retired_users": {"user_id"},
     "routine_run_actions": {"run_id", "entity_id"},
     "routine_runs": {"run_id", "routine_id", "occurrence_key", "actor", "snapshot_json", "scheduled_for"},
     "routines": {"routine_id", "created_by", "created_at", "definition_json"},
     "sessions": {"digest", "credential", "legacy_digest"},
     "staged": {"name"},
+    "timers": {"id", "label", "actor", "delivery_room"},
     "voice_attribution_consents": {"person_id", "verified_profile_id", "changed_by"},
     "voice_attribution_control": {"changed_by"},
     "voice_attribution_events": {"id", "profile_id"},
@@ -483,7 +490,7 @@ def test_the_default_pragmas_are_the_constants(tmp_path, monkeypatch, pragma):
 def test_build_runtime_declares_the_schema_contract_from_the_revision_text():
     assert build_runtime.RELEASE_INTEGERS["schema_contract"] == "SCHEMA_CONTRACT_EPOCH"
     declared = build_runtime.release_integers((REPO / "scripts" / "stage_runtime.py").read_bytes())
-    assert declared["schema_contract"] == stage.SCHEMA_CONTRACT_EPOCH == 1
+    assert declared["schema_contract"] == stage.SCHEMA_CONTRACT_EPOCH == 2
     assert declared["controller_epoch"] == stage.CONTROLLER_EPOCH == 5  # SC-1a (R1 stays epoch 4)
     # A revision before SC-2 declares no contract: release_integers reads it as 0.
     assert "schema_contract" not in build_runtime.release_integers(b"CONTROLLER_EPOCH = 3\n")
@@ -588,7 +595,8 @@ def test_the_reminder_routine_and_list_stores_create_only_contract_tables(tmp_pa
                 await store.close()
 
     asyncio.run(stores())
-    assert {"reminders", "reminder_home_actions"} <= _assert_contract(data / "reminders.db", "data/reminders.db")
+    assert {"reminders", "reminder_home_actions", "timers", "alert_preferences"} == _assert_contract(
+        data / "reminders.db", "data/reminders.db")
     assert {"routines", "routine_runs", "routine_run_actions"} <= _assert_contract(data / "routines.db",
                                                                                     "data/routines.db")
     assert {"lists", "list_items"} <= _assert_contract(data / "lists.db", "data/lists.db")

@@ -18,7 +18,7 @@ compiled CLI run as a subprocess:
   X5R3 (revision 3, the hotfix of (12)), X5C and X5R2C (one controller-closure
   comment: an equal pair with another digest) and the e9669ec legacy artifact
   (L4's slot in (8)); the schema-contract NEWs of (7) are X5/X5R2 with only
-  ``release.json``'s ``schema_contract`` rewritten to 2 (what the checks read);
+  ``release.json``'s ``schema_contract`` rewritten to the next epoch (what the checks read);
 - the stand-in for kza-voice is a real unit of this account's user manager
   (``kza-rehearsal-<token>-voice.service``, test_linux_managed_launcher.
   RealDeployment: compiled install-controller and install-launcher, the
@@ -138,7 +138,7 @@ def builds(tmp_path_factory):
         found[name] = {"archive": archive, "manifest": manifest, "seconds": round(time.monotonic() - started, 1)}
     for name, source in (("x5schema", "x5"), ("x5r2schema", "x5r2")):
         archive = base / (name + ".tar.gz")
-        _rewrite_release(found[source]["archive"], archive, schema_contract=2)
+        _rewrite_release(found[source]["archive"], archive, schema_contract=stage.SCHEMA_CONTRACT_EPOCH + 1)
         found[name] = {"archive": archive, "manifest": stage._read_archive(archive)[0], "seconds": 0.0}
     for name, value in found.items():
         value["sha256"] = _sha256(value["archive"])
@@ -150,7 +150,7 @@ def builds(tmp_path_factory):
     assert found["x5r2"]["triple"][:2] == [5, 2] and found["x5r3"]["triple"][:2] == [5, 3]
     assert found["x5c"]["triple"][:2] == [5, 1] and found["x5c"]["triple"][2] != found["x5"]["triple"][2]
     assert found["x5r2c"]["triple"][:2] == [5, 2] and found["x5r2c"]["triple"][2] != found["x5r2"]["triple"][2]
-    assert found["x5schema"]["manifest"]["schema_contract"] == 2
+    assert found["x5schema"]["manifest"]["schema_contract"] == stage.SCHEMA_CONTRACT_EPOCH + 1
     assert found["legacy"]["manifest"]["git_commit"].startswith(LEGACY)
     real_systemd.record("sc6b-builds", {name: {"commit": value["manifest"]["git_commit"], "sha256": value["sha256"],
                                                "controller_triple": value["triple"],
@@ -677,7 +677,7 @@ PA_TOMBSTONE = cw.sql(("INSERT INTO conversation_tombstones VALUES ('conv-pa', 2
 H_CREDENTIAL = "\n".join([
     "import sqlite3",
     "from contextlib import closing",
-    f"with closing(sqlite3.connect(state / 'data' / 'auth.db')) as db, db:",
+    "with closing(sqlite3.connect(state / 'data' / 'auth.db')) as db, db:",
     f"    db.execute({sc4b_states.ddl('credentials')!r})",
     "    db.execute('INSERT INTO credentials VALUES (?,?,?,?,?,?,?,?,?)', ('cred-sc6b', 'd' * 64, 'home', 'home',",
     "               'user-sc6b', 1800000000.0, 4102444800.0, 1, '[]'))",

@@ -280,8 +280,9 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   `controller/current`, y SC-6a (PS-13) lista y borra o renombra todo
   archivo, árbol extraído y checkout construido desde ese rango, bajo `yo` y
   en cada ubicación de transferencia, no sólo los R1 de época 3. El historial
-  de Git conserva esas versiones: para ellas la única barrera es esa regla de
-  operación.
+  de Git conserva esas versiones. El resultado de AUTHZ3-1 descrito arriba
+  corresponde al ensayo con el contrato de esquema 1. El ensayo con
+  SCHEMA-V2 se detalla en «SC-6a: ensayo ampliado y copias viejas retiradas».
 - Barrera estructural diferida a SC-1 (decisión técnica del 2026-11-15): una barrera de época 4
   que no dependa del código viejo. `install-controller` o `adoption-commit`
   congela el conjunto de capacidades de delegación existentes, y la
@@ -382,14 +383,17 @@ autocontenidas y la delegación a estados dueños se apaga. Desde SC-2
   época 3. El bloque del sha256 fijado del runbook de R1, corrido tal como está
   escrito, detiene el procedimiento con el R1 de época 3 y con una
   reconstrucción distinta del mismo commit.
-- AUTHZ3-1 ensayado: una copia construida desde b0c322d~1, sobre la raíz
-  adoptada de época 4 después de W9, prepara un slot, concede
-  (`admission/delegations/`) y lo activa: ese slot pasa a ser el head. La
-  primera copia con `require_forward_epoch` (b0c322d) se rechaza con
-  `runtime_admission_controller_downgrade`. El test fija ese residuo tal como
-  es. La barrera sigue siendo la regla de operación (sólo
-  `controller/current`), la limpieza de abajo y, más adelante, la guarda de
-  SC-1.
+- AUTHZ3-1 con SCHEMA-V2 (`SCHEMA_CONTRACT_EPOCH = 2`): sobre la raíz
+  adoptada después de W9, la copia b0c322d~1 completa `prepare` y deja el
+  slot `p` sin binding. En `delegate`, su validador de esquema rechaza el
+  contrato de `reminders.db` del head, que incluye `timers`,
+  `alert_preferences` y `reminders.delivery_room`. Devuelve
+  `runtime_admission_unknown_schema`, `admission/delegations/` queda vacío,
+  el head sigue cerrado en `r1` y `current` sigue en `slots/r1/runtime`.
+  El slot preparado queda intacto hasta la limpieza del ensayo. Desde
+  b0c322d, `require_forward_epoch` rechaza antes de tomar el lease con
+  `runtime_admission_controller_downgrade`. La regla de operación sigue
+  indicando que se use `controller/current`.
 - Inventario y retiro bajo `yo` (Mac y server; cada ubicación está en el
   handoff y en `t040-t041/sc6a-evidence.json`): se borraron los árboles
   temporales de pytest, las corridas del roadmap y los restos de
@@ -600,6 +604,28 @@ arrancar y conservarlas para siempre.
 - Límite: el olvido no detiene ninguna captura. Se apoya en la afirmación del
   administrador y en los monitores de cierre seguro de los clientes (el
   servidor ya no concedía nada a esos dueños).
+
+#### Contrato de esquema (época 2, SCHEMA-V2)
+
+SCHEMA-V2 declara `SCHEMA_CONTRACT_EPOCH = 2` en una sola subida. En
+`reminders.db`, `timers` guarda los temporizadores y sus estados `running`,
+`paused`, `completed` y `cancelled`. La columna `reminders.delivery_room`
+queda en `NULL` en los recordatorios existentes y conserva el uso de
+`output_zone`. `alert_preferences` guarda las zonas de alertas elegidas en
+la web (Q3, T036-U3). Una preferencia ausente o restablecida usa las zonas
+de `config/settings.yaml`. Cada escritura conserva el orden de las zonas
+e incrementa la revisión, incluso al restablecer la preferencia.
+
+P7 adopta directamente la época 2 desde el contenedor activo `e9669ec`
+(Q4) y reemplaza el despliegue intermedio de R1 de época 1. La fase de sólo
+esquema migra la copia del estado de `b0866e8` y conserva las filas. El
+rollback L4 revierte al contenedor de `e9669ec` y a su estado congelado
+durante los 14 días contados desde el primer cierre limpio gestionado.
+La reversión se limita a esa imagen. Se aplican las condiciones del
+procedimiento L4 y el retiro Q5 al vencer el plazo.
+Producción sigue en `e9669ec` hasta el GO de P7.
+
+Ver el [roadmap de precedencia y pruebas](../plans/2026-11-21-precedence-roadmap-and-test-strategy.md).
 
 #### Contrato de esquema (época 1)
 
@@ -1656,6 +1682,9 @@ compuerta de compactación; la marca fuera del modo release) y
 `tests/unit/tools/test_sc5b_docs.py`.
 
 ### Sin transiciones gestionadas después de R1 hasta el modo release
+
+Este apartado registra el plan original para R1. Para la adopción directa
+de P7 rige [el contrato de esquema de época 2](#contrato-de-esquema-época-2-schema-v2).
 
 Después de R1 no se puede activar ningún arreglo de código (release, rollback
 o roll-forward gestionados) hasta que el modo release (SC-0, SC-1, SC-3a,

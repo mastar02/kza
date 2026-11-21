@@ -1,9 +1,10 @@
 """SQLite persistence layer for reminders."""
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextvars import Context
 import json
 import logging
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
@@ -28,6 +29,15 @@ class ReminderScope(StrEnum):
 class ReminderState(StrEnum):
     ACTIVE = "active"
     FIRED = "fired"
+    CANCELLED = "cancelled"
+
+
+class TimerState(StrEnum):
+    """Durable lifecycle of a timer."""
+
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
     CANCELLED = "cancelled"
 
 
@@ -92,14 +102,30 @@ class Reminder:
     last_fired_at: float | None = None
     fire_count: int = 0
     scope: ReminderScope = ReminderScope.PRIVATE
+    delivery_room: str | None = None
 
 
-def reminder_schema(db) -> None:
+@dataclass(frozen=True)
+class AlertZonesPreference:
+    """A revision of the alert-zone override. None uses the configured zones."""
+
+    zones: tuple[str, ...] | None
+    updated_at: float
+    revision: int
+
+
+class AlertZonesConflict(RuntimeError):
+    """The stored alert-zone revision changed before the write."""
+
+
+_ALERT_ZONES_KEY = "alert_zones"
+
+
+def reminder_schema(db: sqlite3.Connection) -> None:
     """Create or migrate the reminder tables: DDL only, no row changes (U3b-0e2 S1).
 
     ReminderStore.initialize runs it before its interrupted-send recovery; the
-    adoption's schema-only child runs it alone on the adoption copy. The SQL
-    text is kept byte-identical: sqlite_master stores it verbatim.
+    adoption's schema-only child runs it alone on the adoption copy.
     """
     db.execute("""
                     CREATE TABLE IF NOT EXISTS reminders (
@@ -108,13 +134,16 @@ def reminder_schema(db) -> None:
                         recurrence TEXT, recurrence_end REAL, ha_actions TEXT,
                         state TEXT NOT NULL DEFAULT 'active', last_fired_at REAL,
                         fire_count INTEGER NOT NULL DEFAULT 0,
-                        scope TEXT NOT NULL DEFAULT 'private' CHECK (scope IN ('private', 'shared'))
+                        scope TEXT NOT NULL DEFAULT 'private' CHECK (scope IN ('private', 'shared')),
+                        delivery_room TEXT
                     )
                 """)
     columns = {row[1] for row in db.execute("PRAGMA table_info(reminders)").fetchall()}
     if "scope" not in columns:
         db.execute("ALTER TABLE reminders ADD COLUMN scope TEXT NOT NULL DEFAULT 'private' "
                    "CHECK (scope IN ('private', 'shared'))")
+    if "delivery_room" not in columns:
+        db.execute("ALTER TABLE reminders ADD COLUMN delivery_room TEXT")
     db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_trigger "
                "ON reminders (trigger_at) WHERE state = 'active'")
     db.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user ON reminders (user_id, state)")
@@ -124,6 +153,30 @@ def reminder_schema(db) -> None:
                         status TEXT NOT NULL, reason TEXT
                     )
                 """)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS timers (
+            id TEXT PRIMARY KEY,
+            label TEXT NOT NULL,
+            actor TEXT NOT NULL,
+            delivery_room TEXT,
+            state TEXT NOT NULL CHECK (state IN ('running', 'paused', 'completed', 'cancelled')),
+            duration_s REAL NOT NULL,
+            ends_at REAL,
+            remaining_s REAL,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1
+        )
+    """)
+    db.execute("CREATE INDEX IF NOT EXISTS idx_timers_state_ends_at ON timers (state, ends_at)")
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS alert_preferences (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL,
+            updated_at REAL NOT NULL,
+            revision INTEGER NOT NULL DEFAULT 1
+        )
+    """)
 
 
 class ReminderStore:
@@ -183,6 +236,59 @@ class ReminderStore:
             await store_open_returned(self)
             self._initialized = True
             logger.info("ReminderStore initialized at %s", self._db_path)
+
+    async def get_alert_zones(self, *, guard: AuthorityGuard | None = None) -> AlertZonesPreference | None:
+        """Read the stored override, or None when no preference has been saved."""
+        def operation(db: sqlite3.Connection) -> AlertZonesPreference | None:
+            row = db.execute(
+                "SELECT value_json, updated_at, revision FROM alert_preferences WHERE key = ?",
+                (_ALERT_ZONES_KEY,),
+            ).fetchone()
+            if row is None:
+                return None
+            zones = json.loads(row["value_json"])
+            return AlertZonesPreference(None if zones is None else tuple(zones), row["updated_at"], row["revision"])
+
+        return await self._work.read(operation, guard=guard)
+
+    async def set_alert_zones(self, zones: Sequence[str] | None, *, expected_revision: int | None = None,
+                              guard: AuthorityGuard | None = None) -> AlertZonesPreference:
+        """Save an override or reset it to use the configured zones.
+
+        Args:
+            zones: Zone IDs in delivery order. Pass None to reset the override,
+                or an empty sequence for an explicit selection of zero zones.
+            expected_revision: Use 0 to require an absent row. Omit to write
+                regardless of the current revision.
+            guard: Optional authority check for the native write.
+
+        Raises:
+            AlertZonesConflict: The stored revision differs from the expected one.
+            ValueError: A zone ID is not a non-blank string.
+        """
+        if isinstance(zones, (str, bytes)):
+            raise ValueError("invalid_alert_zones")
+        selected = None if zones is None else tuple(zones)
+        if selected is not None and any(not isinstance(zone, str) or not zone.strip() for zone in selected):
+            raise ValueError("invalid_alert_zones")
+        encoded = json.dumps(selected, ensure_ascii=False, separators=(",", ":"))
+
+        def operation(db: sqlite3.Connection) -> AlertZonesPreference:
+            row = db.execute("SELECT revision FROM alert_preferences WHERE key = ?", (_ALERT_ZONES_KEY,)).fetchone()
+            revision = 0 if row is None else row["revision"]
+            if expected_revision is not None and expected_revision != revision:
+                raise AlertZonesConflict("alert_zones_revision_conflict")
+            # Keep a reset's revision so an older write cannot match a reused revision.
+            saved = AlertZonesPreference(selected, time.time(), revision + 1)
+            db.execute(
+                "INSERT INTO alert_preferences (key, value_json, updated_at, revision) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, "
+                "updated_at = excluded.updated_at, revision = excluded.revision",
+                (_ALERT_ZONES_KEY, encoded, saved.updated_at, saved.revision),
+            )
+            return saved
+
+        return await self._work.write(operation, guard=guard)
 
     async def claim_home_action(self, request_id: str, action: dict, *,
                                 guard: AuthorityGuard | None = None) -> bool:
@@ -345,11 +451,13 @@ class ReminderStore:
         self, user_id: str, text: str, trigger_at: float, recurrence: str | None = None,
         recurrence_end: float | None = None, ha_actions: list[dict] | None = None, *,
         guard: AuthorityGuard | None = None, scope: ReminderScope = ReminderScope.PRIVATE,
+        delivery_room: str | None = None,
     ) -> Reminder:
         """Own the native insert and publish its wake after commit, even without its observer."""
         reminder = Reminder(id=uuid.uuid4().hex[:12], user_id=user_id, text=text,
             trigger_at=trigger_at, created_at=time.time(), recurrence=recurrence,
-            recurrence_end=recurrence_end, ha_actions=ha_actions, scope=ReminderScope(scope))
+            recurrence_end=recurrence_end, ha_actions=ha_actions, scope=ReminderScope(scope),
+            delivery_room=delivery_room)
         ha_json = json.dumps(ha_actions) if ha_actions else None
         def operation(db):
             if reminder.scope is ReminderScope.PRIVATE and not self._person_current(user_id):
@@ -357,11 +465,12 @@ class ReminderStore:
             db.execute("""
                 INSERT INTO reminders
                     (id, user_id, text, trigger_at, created_at, recurrence,
-                     recurrence_end, ha_actions, state, last_fired_at, fire_count, scope)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     recurrence_end, ha_actions, state, last_fired_at, fire_count, scope, delivery_room)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (reminder.id, reminder.user_id, reminder.text, reminder.trigger_at,
                   reminder.created_at, reminder.recurrence, reminder.recurrence_end, ha_json,
-                  reminder.state.value, reminder.last_fired_at, reminder.fire_count, reminder.scope.value))
+                  reminder.state.value, reminder.last_fired_at, reminder.fire_count, reminder.scope.value,
+                  reminder.delivery_room))
             return reminder
         def publish(_reminder):
             if self._on_created is not None:
@@ -390,6 +499,7 @@ class ReminderStore:
             last_fired_at=row["last_fired_at"],
             fire_count=row["fire_count"],
             scope=ReminderScope(row["scope"]),
+            delivery_room=row["delivery_room"],
         )
 
     async def get_by_id(self, reminder_id: str, *, guard: AuthorityGuard | None = None,

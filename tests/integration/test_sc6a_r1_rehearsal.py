@@ -21,20 +21,18 @@ R1 archive built from this working tree at controller epoch 4, R1's epoch, since
   defines ``$ST`` only when the extracted ``release.json`` names the pinned
   commit (review SC6A-R2).
 
-AUTHZ3-1 (SC-2 review round 3): a ``stage_runtime`` copy from
-69a79e6..b0c322d~1 (built here from b0c322d~1) does not check the epoch. On
-the adopted epoch-4 root it still grants and activates another slot, which
-becomes the head. That residual is pinned as found, not weakened: DEPLOYMENT
-keeps the operating rule (run only ``controller/current``), SC-6a removes those
-copies and SC-1 owns the structural guard (SC-1a: from epoch 5 every reader
-refuses the record, test_sc1a_controller_install rows DL and DO). The first copy with
-``require_forward_epoch`` (b0c322d) is refused, which pins the range's end.
+AUTHZ3-1: b0c322d~1 predates the controller epoch check. On the adopted
+root with schema contract 2, it prepares an unbound copy. Delegation
+refuses on the source schema and leaves the closed head unchanged.
+The first copy with ``require_forward_epoch`` (b0c322d) still refuses
+before taking the lease, which pins the range's end.
 
 The same additions run compiled under real systemd in
 test_linux_adoption_window.py.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 import hashlib
 import json
 import os
@@ -306,34 +304,60 @@ def _assert_extraction_of(r1: Path, extracted: Path, st: str) -> None:
                   + " --root /home/kza/releases --offline")
 
 
-# --- AUTHZ3-1: an early stage_runtime copy on the adopted epoch-4 root (residual pinned as found) ----------
+# --- AUTHZ3-1: early stage_runtime on the adopted root with schema contract 2 --------------------
 
-def test_a_copy_without_the_epoch_check_still_grants_and_activates_on_the_epoch4_root(world, old_builds):
-    """The documented residual: the old code does not read the epoch, so it grants and moves the head.
+def assert_authz3_1_schema_refusal(
+    root: Path, state: Path, archive: Path, command: Callable[..., subprocess.CompletedProcess[str]],
+) -> dict:
+    """Pin the historical controller's refusal and the unbound copy it leaves."""
+    head = stage.read_admission_head(root)
+    assert head["status"] == "closed"
+    binding = stage.read_binding(root, head["binding_id"])
+    assert binding["slot"] == "r1" and Path(binding["state_root"]) == state
+    assert stage.release_integers(binding)["schema_contract"] == 2
+    tables = binding["authority"]["projection"]["tables"]["data/reminders.db"]["schema_contract_v1"]["columns"]
+    assert {"timers", "alert_preferences"} <= tables.keys()
+    assert tables["reminders"]["delivery_room"] == "TEXT"
 
-    Only the operating rule (run only controller/current) and SC-6a's removal
-    of every copy from 69a79e6..b0c322d~1 stand between it and R1; SC-1 owns
-    the structural guard. If this ever refuses, the residual changed: update
-    DEPLOYMENT and this pin together."""
+    slot = root / "slots" / "p"
+    prepared_state = slot / "state"
+    slots_before = set(slot.parent.iterdir())
+    assert slot not in slots_before
+    prepared = command("prepare", str(archive), "p", "--state-source", str(state))
+    assert prepared.returncode == 0, prepared.stderr[-3000:]
+    assert set(slot.parent.iterdir()) == slots_before | {slot}
+    assert {path.name for path in slot.iterdir()} == {"runtime", "state"}
+    [record_path] = stage.prepared_directory(root).glob("p.*.json")
+    record = json.loads(record_path.read_text())
+    assert record["kind"] == "prepared" and record["slot"] == "p"
+    assert Path(record["state_root"]) == prepared_state
+    assert Path(record["runtime_root"]) == slot / "runtime"
+    assert not os.path.lexists(prepared_state / stage._MARKER)
+    assert not os.path.lexists(prepared_state / ".kza-target-ownership.json")
+
+    before = _witness(root, state, prepared_state)
+    prepared_tree = cw.tree(slot)
+    delegated = command("delegate", "p")
+    refusal = "runtime_admission_unknown_schema"
+    assert delegated.returncode != 0 and delegated.stderr.strip().endswith("ValueError: " + refusal), (
+        delegated.stderr[-3000:])
+    delegations = root / "admission" / "delegations"
+    assert not os.path.lexists(delegations) or not list(delegations.iterdir())
+    assert stage.read_admission_head(root) == head
+    assert os.readlink(root / "current") == "slots/r1/runtime"
+    assert _witness(root, state, prepared_state) == before
+    assert set(slot.parent.iterdir()) == slots_before | {slot} and cw.tree(slot) == prepared_tree
+    return {"copy": EARLY_COPY, "prepare_exit": prepared.returncode, "delegate_exit": delegated.returncode,
+            "delegate_refusal": refusal, "head_slot_after": binding["slot"], "prepared_slot_after": slot.name}
+
+
+def test_a_copy_without_the_epoch_check_refuses_to_delegate_on_schema_epoch_2(world, old_builds):
+    """The pre-lockout copy reaches the schema guard and leaves r1 selected."""
     _after_w9(world)
     root, early = world.root, old_builds["early"]
     old_pyc = early["tree"] / "scripts" / "stage_runtime.pyc"
-    r1_state = root / "slots" / "r1" / "state"
-    head = world.head()
-    prepared = _cli(old_pyc, root, "prepare", str(early["archive"]), "p", "--state-source", str(r1_state))
-    assert prepared.returncode == 0, prepared.stderr[-3000:]
-    delegated = _cli(old_pyc, root, "delegate", "p")
-    assert delegated.returncode == 0, delegated.stderr[-3000:]
-    grant = json.loads(delegated.stdout.splitlines()[-1])
-    assert grant["slot"] == "p" and grant["source_binding"] == head["binding_id"]
-    assert list((root / "admission" / "delegations").iterdir())  # a capability the epoch-4 code never writes
-    activated = _cli(old_pyc, root, "activate", "p")
-    assert activated.returncode == 0, activated.stderr[-3000:]
-    moved = world.head()
-    assert moved["generation"] > head["generation"]
-    assert stage.read_binding(root, moved["binding_id"])["slot"] == "p"
-    assert os.readlink(root / "current") == "slots/p/runtime"
-    assert json.loads((root / "admission" / "controller.json").read_text())["controller_epoch"] == 4
+    assert_authz3_1_schema_refusal(root, root / "slots" / "r1" / "state", early["archive"],
+                                  lambda *args: _cli(old_pyc, root, *args))
 
 
 def test_the_first_copy_with_the_epoch_check_is_locked_out_of_the_epoch4_root(world, old_builds):
