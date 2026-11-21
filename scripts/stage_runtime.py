@@ -89,7 +89,8 @@ _PROTECTED_TABLES = frozenset({
     "credential_attempts",
     "capture_runtime_control", "ambient_runtime_control", "capture_browser_recorders",
     "live_deliveries", "live_delivery_sources", "live_delivery_lineage",
-    "reminders", "reminder_home_actions", "routines", "routine_runs", "routine_run_actions",
+    "reminders", "reminder_home_actions", "timers", "alert_preferences",
+    "routines", "routine_runs", "routine_run_actions",
     "lists", "list_items", "quarantines", "staged",
     "legacy_quarantine_batches_v1", "legacy_quarantine_records_v1",
     "pending_audio_deletions", "audio_write_intents",
@@ -188,8 +189,10 @@ _TABLE_COLUMNS = {
     "lineage": "record_id:TEXT conversation_id:TEXT",
     "state": "key:TEXT value:INTEGER", "quarantines": "source:TEXT destination:TEXT moved:INTEGER",
     "staged": "name:TEXT",
-    "reminders": "id:TEXT user_id:TEXT text:TEXT trigger_at:REAL created_at:REAL recurrence:TEXT recurrence_end:REAL ha_actions:TEXT state:TEXT last_fired_at:REAL fire_count:INTEGER scope:TEXT",
+    "reminders": "id:TEXT user_id:TEXT text:TEXT trigger_at:REAL created_at:REAL recurrence:TEXT recurrence_end:REAL ha_actions:TEXT state:TEXT last_fired_at:REAL fire_count:INTEGER scope:TEXT delivery_room:TEXT",
     "reminder_home_actions": "request_id:TEXT body:TEXT status:TEXT reason:TEXT",
+    "timers": "id:TEXT label:TEXT actor:TEXT delivery_room:TEXT state:TEXT duration_s:REAL ends_at:REAL remaining_s:REAL created_at:REAL updated_at:REAL revision:INTEGER",
+    "alert_preferences": "key:TEXT value_json:TEXT updated_at:REAL revision:INTEGER",
     "routines": "routine_id:TEXT revision:INTEGER created_by:TEXT created_at:TEXT definition_json:TEXT",
     "routine_runs": "run_id:TEXT routine_id:TEXT occurrence_key:TEXT actor:TEXT source:TEXT status:TEXT reason:TEXT snapshot_json:TEXT scheduled_for:TEXT",
     "routine_run_actions": "run_id:TEXT action_index:INTEGER entity_id:TEXT status:TEXT reason:TEXT",
@@ -248,6 +251,7 @@ _CREDENTIAL_REASONS = frozenset({"applied", "actor_retired", "scope_unavailable"
                                  "capacity"})
 _RECORDER_STATES = frozenset({"reserved", "active", "unknown"})
 _REMINDER_STATES = frozenset({"active", "fired", "cancelled"})
+_TIMER_STATES = frozenset({"running", "paused", "completed", "cancelled"})
 _REMINDER_SCOPES = frozenset({"private", "shared"})
 _REMINDER_ACTION_STATUSES = frozenset({"sending", "confirmed", "failed", "uncertain"})
 _ROUTINE_RUN_STATUSES = frozenset({"running", "succeeded", "failed", "uncertain", "skipped", "interrupted"})
@@ -327,7 +331,7 @@ FORMAT_EPOCH = 1
 RECEIPT_STATE_SCHEMA = 2
 CONTROLLER_EPOCH = 5
 CONTROLLER_REVISION = 1
-SCHEMA_CONTRACT_EPOCH = 1
+SCHEMA_CONTRACT_EPOCH = 2
 MIN_FORMAT_EPOCH = 1
 _RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "controller_epoch",
                          "schema_contract", "controller_revision")
@@ -1586,6 +1590,7 @@ def _contract_vocabularies() -> dict[str, frozenset]:
         "credential_reasons": _CREDENTIAL_REASONS,
         "recorder_states": _RECORDER_STATES,
         "reminder_states": _REMINDER_STATES,
+        "timer_states": _TIMER_STATES,
         "reminder_scopes": _REMINDER_SCOPES,
         "reminder_action_statuses": _REMINDER_ACTION_STATUSES,
         "routine_run_statuses": _ROUTINE_RUN_STATUSES,

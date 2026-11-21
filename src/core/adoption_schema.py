@@ -8,10 +8,11 @@ JSON summary; ids stay in memory.
 
 Phases (adoption design v3 sections 3 and 4):
 
-* ``schema`` (S1): the R1 open-time DDL of every carried store whose b0866e8
-  schema differs from R1's contract: the privacy ledger (FactLedger.initialize
-  plus the live-receipt owner migration) and the reminders store. No other
-  store changes between b0866e8 and R1 (the build-time diff test pins this).
+* ``schema`` (S1): the open-time DDL of every carried store whose b0866e8
+  schema differs from the destination contract: the privacy ledger (FactLedger.initialize
+  plus the live-receipt owner migration) and the reminders store (including
+  Epoch 2's timers, delivery room and alert preferences). The build-time
+  diff test pins the changes from b0866e8.
 * ``seed``: :func:`src.memory.deletion_ledger.seed_adoption_baseline` on the
   empty, saltless ledger of each authority, from the deletion marks the copy
   already holds.
@@ -97,7 +98,7 @@ def initialize_privacy_schema(state: Path) -> None:
 
 
 def initialize_reminder_schema(state: Path) -> None:
-    """The reminders DDL (adds reminders.scope) without the store's send recovery."""
+    """Apply the reminder store's Epoch 2 DDL without running send recovery."""
     from src.reminders.reminder_store import reminder_schema
 
     path = state_path(state, (settings(state).get("reminders") or {}).get("db_path"), DEFAULT_REMINDERS)

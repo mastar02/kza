@@ -4,7 +4,7 @@ Adoption design v3 (data/autonomous-roadmap-20261102/t040-t041/u3b-0e-adoption-d
 sections 1-5, with the user's final answers P1-P8 (user-decisions-20261110.json).
 This module is the controller side: stdlib only (plus PyYAML for the 2a
 editor) and it never imports ``src``, so a G1-guarded root cannot refuse it.
-Everything R1's own code must do on the copy (schema-only migration, ledger
+Everything the destination runtime must do on the copy (schema-only migration, ledger
 seed, residue re-queue, first-start target set) runs in the schema-only child
 (:mod:`src.core.schema_only`, phases of :mod:`src.core.adoption_schema`).
 The operator commands that drive this library are U3b-0e3.
@@ -92,11 +92,12 @@ LEGACY_EVENTS_COLUMNS = ("id", "timestamp", "event_type", "entity_id", "action",
 # reaches the destination only through VACUUM INTO (review v2 N2).
 DROP_LIST = {"data/events.db": {"events": LEGACY_EVENTS_COLUMNS}}
 
-# --- S3 (N11): the hand-written b0866e8 -> R1 schema table, checked against the generated diff -----
+# --- S3 (N11): the hand-written b0866e8 -> Epoch 2 schema table, checked against the generated diff --
 
 # (database, table, column, default as SQLite would store it in each existing row)
 COLUMN_ADDITIONS = (
     ("data/reminders.db", "reminders", "scope", "private"),
+    ("data/reminders.db", "reminders", "delivery_room", None),
     ("data/memory_privacy.db", "live_deliveries", "owner_namespace", "legacy-unbound"),
     ("data/memory_privacy.db", "voice_capture_reviews", "audio_metadata_json", None),
     ("data/memory_privacy.db", "voice_capture_reviews", "transcript_metadata_json", None),
@@ -107,8 +108,9 @@ REBUILT_LEASES = (
     ("data/memory_privacy.db", "live_connections", ("owner_namespace",)),
     ("data/memory_privacy.db", "live_resets", ("owner_namespace",)),
 )
-# Tables R1's schema-only open adds to an existing database: kind of content.
+# Tables the schema-only open adds to an existing database: kind of content.
 ADDITIVE_TABLES = {
+    "data/reminders.db": {"timers": "empty", "alert_preferences": "empty"},
     "data/memory_privacy.db": {
         "deletion_ledger_v1": "ledger", "deletion_ledger_salt_v1": "salt",
         "fact_owners": "empty", "fact_owner_revisions": "empty", "fact_owner_schema": "marker",
@@ -639,7 +641,7 @@ def _is_chroma(names: set[str]) -> bool:
 
 
 def contract_census(state: Path, *, refuse: bool = True) -> dict:
-    """Tables outside the R1 contracts, per database (census); refuses by default.
+    """Tables outside the destination contract, per database (census); refuses by default.
 
     An 'events' table in any carried database refuses
     (runtime_admission_adoption_legacy_table): the audit-shaped one is not
@@ -668,7 +670,7 @@ def contract_census(state: Path, *, refuse: bool = True) -> dict:
 
 
 def verify_contracts(state: Path) -> int:
-    """Every database of the adopted copy passes R1's admission contract (stage_runtime._schema_contract)."""
+    """Every database of the adopted copy passes the destination's admission contract."""
     state = Path(state)
     checked = 0
     for path in sqlite_files(state):
@@ -1490,7 +1492,7 @@ def verify_s3(before: dict, after: dict, *, adoption_time: float, plan_sha256: s
         additions = [item for item in COLUMN_ADDITIONS if item[0] == relative]
         leases = {item[1]: item[2] for item in REBUILT_LEASES if item[0] == relative}
         additive = ADDITIVE_TABLES.get(relative, {})
-        for table in sorted(set(old) | set(new)):
+        for table in sorted(set(old) | set(new) | additive.keys()):
             code = "runtime_admission_adoption_s3:" + relative + ":" + table
             if table not in new:
                 _refuse(code)
@@ -1650,7 +1652,7 @@ def schema_only_command(python: str, runtime_root: Path, *arguments: str) -> lis
 
 def run_child(python: str, runtime_root: Path, state: Path, phase: str, *, at: float | None = None,
               state_root: Path | None = None, timeout: float = 600.0) -> dict:
-    """Run one phase of R1's schema-only child on the copy; its refusal becomes ours.
+    """Run one phase of the destination's schema-only child on the copy.
 
     The child gets an allow-listed environment (never the controller's
     secrets) with only the capability added, and its working directory is
