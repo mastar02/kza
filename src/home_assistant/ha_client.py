@@ -188,6 +188,7 @@ STATE_SYNC_ATTEMPT_TIMEOUT_S = 20.0
 STATE_SYNC_BACKOFF_INITIAL_S = 5.0
 STATE_SYNC_BACKOFF_MAX_S = 30.0
 STATE_CLOSE_OBSERVATION_TIMEOUT_S = 5.0
+STATE_CLOSE_ABORT_JOIN_TIMEOUT_S = 5.0
 TRANSPORT_OBSERVATION_TTL_S = 60.0
 STATE_STREAM_MAX_MESSAGE_BYTES = MAX_FRAME_BYTES
 STATE_REST_ADMISSION_CAPACITY = MAX_EFFECTS * 4 + 1
@@ -240,6 +241,9 @@ class HAHealthStatus:
         avg_latency_ms: Exponential moving average of REST call latency.
         ws_connected: Whether the WebSocket transport is connected.
         last_error_message: Human-readable description of the most recent error.
+        retirements_pending: Number of SDK closes still running, including isolated closes.
+        retirements_quarantined: Number of isolated SDK closes still running.
+        retirements_quarantined_total: Number of SDK closes isolated since creation.
     """
     state: HAConnectionState = HAConnectionState.UNKNOWN
     last_success_ts: float = 0.0
@@ -253,6 +257,9 @@ class HAHealthStatus:
     calls: HAChannelObservation | None = None
     events: HAChannelObservation | None = None
     registry: HAChannelObservation | None = None
+    retirements_pending: int = 0
+    retirements_quarantined: int = 0
+    retirements_quarantined_total: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +311,8 @@ class HomeAssistantClient:
         self._owned_sockets: dict[int, tuple[object, str]] = {}
         self._socket_close_tasks: dict[int, asyncio.Task] = {}
         self._sdk_retirements = {}
+        self._quarantined_retirements: set[asyncio.Task] = set()
+        self._quarantined_retirements_total = 0
         self._ws_registry = None
         self._channel_observations = {
             name: HAChannelObservation(source='ha_rest' if name == 'rest' else 'ha_ws_' + name,
@@ -680,6 +689,38 @@ class HomeAssistantClient:
         task.add_done_callback(finished, context=Context())
         return task
 
+    def _observe_pending_socket(self, ws: aiohttp.ClientWebSocketResponse, purpose: str) -> None:
+        current = getattr(self, '_ws_' + purpose)
+        if current is None or current is ws:
+            self._observe_channel(purpose, 'retiring', HAConnectionState.UNKNOWN,
+                                  'ha_socket_close_pending')
+
+    def _quarantine_socket(
+        self, ws: aiohttp.ClientWebSocketResponse, purpose: str, owner: asyncio.Task,
+    ) -> None:
+        """Remove the fenced socket from active ownership and track its exit separately."""
+        key = id(ws)
+        attr = '_ws_' + purpose
+        current = getattr(self, attr)
+        if current is ws:
+            setattr(self, attr, None)
+            if purpose == 'calls':
+                self._ws_connected = False
+            elif purpose == 'events':
+                self._entity_stream_generation += 1
+        if current is None or current is ws:
+            self._observe_channel(purpose, 'quarantined', HAConnectionState.UNKNOWN,
+                                  'ha_socket_close_quarantined')
+        self._owned_sockets.pop(key, None)
+        self._sdk_retirements.pop(key, None)
+        self._transport_tasks.pop(owner, None)
+        self._quarantined_retirements.add(owner)
+        self._quarantined_retirements_total += 1
+        owner.add_done_callback(self._quarantined_retirements.discard, context=Context())
+        logger.warning('HA socket close isolated after abort [%s]', purpose)
+        if purpose == 'calls':
+            self._kick_required_calls_recovery()
+
     async def _close_socket(self, ws, purpose: str) -> None:
         if ws is None:
             return
@@ -687,20 +728,14 @@ class HomeAssistantClient:
         task = self._socket_close_tasks.get(key)
         retirement = self._sdk_retirements.get(key)
         # aiohttp sets closed before its close coroutine has actually finished.
-        if ws.closed is True and task is None and not is_native_websocket(ws):
+        if (ws.closed is True and task is None
+                and (not is_native_websocket(ws) or key not in self._owned_sockets)):
             self._owned_sockets.pop(key, None)
             return
         if task is None:
             async def finish():
                 if retirement is not None:
-                    try:
-                        async with asyncio.timeout(STATE_CLOSE_OBSERVATION_TIMEOUT_S):
-                            await retirement.close()
-                    except asyncio.TimeoutError:
-                        self._observe_channel(purpose, 'retiring', HAConnectionState.UNKNOWN,
-                                              'ha_socket_close_pending')
-                        retirement.request_abort()
-                        await retirement.close()
+                    await retirement.close()
                     self._owned_sockets.pop(key, None)
                     self._sdk_retirements.pop(key, None)
                     return
@@ -731,15 +766,17 @@ class HomeAssistantClient:
 
     async def _retire_socket(self, purpose: str, ws=None) -> None:
         attr = '_ws_' + purpose
+        current = getattr(self, attr)
         if ws is None:
-            ws = getattr(self, attr, None)
-        if getattr(self, attr, None) is ws:
+            ws = current
+        if current is ws:
             setattr(self, attr, None)
-        if purpose == 'calls':
-            self._ws_connected = False
+            if purpose == 'calls':
+                self._ws_connected = False
         if ws is not None:
-            self._observe_channel(purpose, 'retiring', HAConnectionState.UNKNOWN,
-                                  'ha_socket_retiring')
+            if current is ws or current is None and id(ws) in self._owned_sockets:
+                self._observe_channel(purpose, 'retiring', HAConnectionState.UNKNOWN,
+                                      'ha_socket_retiring')
             await self._close_socket(ws, purpose)
         else:
             for candidate, kind in tuple(self._owned_sockets.values()):
@@ -1634,7 +1671,13 @@ class HomeAssistantClient:
                         options['max_msg_size'] = STATE_STREAM_MAX_MESSAGE_BYTES
                     ws = await session.ws_connect(self.url.replace('http', 'ws') + '/api/websocket', **options)
                     self._owned_sockets[id(ws)] = (ws, purpose)
-                    retirement = capture_websocket_retirement(ws, self._retain_transport, purpose)
+                    retirement = capture_websocket_retirement(
+                        ws, self._retain_transport, purpose,
+                        observe_s=STATE_CLOSE_OBSERVATION_TIMEOUT_S,
+                        abort_join_s=STATE_CLOSE_ABORT_JOIN_TIMEOUT_S,
+                        pending=lambda: self._observe_pending_socket(ws, purpose),
+                        isolate=lambda owner: self._quarantine_socket(ws, purpose, owner),
+                    )
                     if retirement is not None:
                         self._sdk_retirements[id(ws)] = retirement
                     if not current():
@@ -1790,7 +1833,10 @@ class HomeAssistantClient:
                 logger.debug("WebSocket no disponible, usando REST")
                 return await self.call_service(domain, service, entity_id, data)
 
+            ws = self._ws_calls
             result = await self._send_ws_call(domain, service, entity_id, data)
+            if self._closed or self._ws_calls is not ws:
+                return False
 
             if result is True:
                 return result
@@ -1802,10 +1848,15 @@ class HomeAssistantClient:
                     f"conexión recién abierta — un reintento"
                 )
                 retry = await self._send_ws_call(domain, service, entity_id, data)
+                if self._closed or self._ws_calls is not ws:
+                    return False
                 if retry is not None:
                     return retry
 
             # result is None (o el retry también fue None) → WS inutilizable.
+            if ws is not None and is_native_websocket(ws) and ws.closed:
+                # This request may already have reached HA before retirement.
+                return False
             return await self.call_service(domain, service, entity_id, data)
 
     async def _receive_ws_result(
@@ -1883,6 +1934,8 @@ class HomeAssistantClient:
             })
 
             response = await self._receive_ws_result(ws, msg_id)
+            if self._closed or self._ws_calls is not ws:
+                return False
 
             elapsed = (time.perf_counter() - t_start) * 1000
             success = response.get("success", False)
@@ -1899,15 +1952,19 @@ class HomeAssistantClient:
             return success
 
         except asyncio.TimeoutError:
+            if self._closed or self._ws_calls is not ws:
+                return False
             elapsed = (time.perf_counter() - t_start) * 1000
             logger.warning(
                 f"WebSocket timeout for {domain}.{service} on {entity_id} "
-                f"after {elapsed:.0f}ms (limit {WS_CALL_TIMEOUT}s), fallback to REST"
+                f"after {elapsed:.0f}ms (limit {WS_CALL_TIMEOUT}s)"
             )
             self._record_error(asyncio.TimeoutError(), f"call_service_ws({domain}.{service})", channel="calls")
             return None
 
         except Exception as e:
+            if self._closed or self._ws_calls is not ws:
+                return False
             logger.error(f"Error WebSocket: {e}")
             self._ws_connected = False  # Marcar para reconexion
             self._record_error(e, f"call_service_ws({domain}.{service})", channel="calls")
@@ -2375,6 +2432,8 @@ class HomeAssistantClient:
             self._close_task = asyncio.create_task(self._close_owned(), context=Context())
             self._close_task.add_done_callback(lambda done: None if done.cancelled() else done.exception(), context=Context())
         await asyncio.shield(self._close_task)
+        if any(not task.done() for task in self._quarantined_retirements):
+            raise aiohttp.ClientConnectionError('ha_socket_quarantine_pending')
 
     async def _close_owned(self):
         await self.stop_state_sync()
@@ -2421,6 +2480,7 @@ class HomeAssistantClient:
         else:
             state = HAConnectionState.UNKNOWN
 
+        quarantined = sum(not task.done() for task in self._quarantined_retirements)
         return HAHealthStatus(
             state=state,
             last_success_ts=self._last_success_ts,
@@ -2434,6 +2494,9 @@ class HomeAssistantClient:
             calls=self._channel_status('calls'),
             events=self._channel_status('events'),
             registry=self._channel_status('registry'),
+            retirements_pending=quarantined + sum(item.pending for item in self._sdk_retirements.values()),
+            retirements_quarantined=quarantined,
+            retirements_quarantined_total=self._quarantined_retirements_total,
         )
 
     # ==================== Utilidades ====================
