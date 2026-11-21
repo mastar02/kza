@@ -1542,15 +1542,10 @@ _ELECTRICITY = r"(?:energia|electricidad|luz|luces|corriente)"
 _METER_SCOPE = r"(?:casas?|hogar(?:es)?|medidor(?:es)?|red(?:es)?|instalacion(?:es)?)"
 _ENERGY_UNITS = r"(?:kwh|kilowatts? hora|kilovatios? hora)"
 _ENERGY_TIME_UNIT = r"(?:mes(?:es)?|dias?|semanas?|anos?|bimestres?|periodos?|horas?)"
-_ENERGY_NOUN = (
-    rf"(?:{_ELECTRICITY}|{_METER_SCOPE}|{_ENERGY_TIME_UNIT}|kwh|(?:kilo)?(?:watts?|vatios?)|"
-    r"potencias?|tarifas?|facturas?|cuentas?|consumos?|gastos?|total(?:es)?|momentos?)"
+_ENERGY_READING_PERIOD = (
+    r"(?:tardes?|noches?|mananas?|madrugadas?|findes?|fin de semana|quincenas?|"
+    r"trimestres?|semestres?|veranos?|inviernos?|otonos?|primaveras?)"
 )
-_ENERGY_DETERMINER = r"(?:el|la|los|las|un|una|mis?|tus?|sus?|nuestr[oa]s?|del)"
-_ENERGY_NOMINAL = re.compile(
-    rf"\b{_ENERGY_DETERMINER} (?:(?:ultim[oa]s?|proxim[oa]s?) )?(?P<head>\w+)"
-)
-_ENERGY_NOMINAL_HEAD = re.compile(_ENERGY_NOUN)
 _ENERGY_TEMPORAL = (
     rf"(?:hoy|ayer|ahora|actualmente|est[ea] {_ENERGY_TIME_UNIT}|"
     rf"(?:por|al) {_ENERGY_TIME_UNIT}|en (?:total|standby))"
@@ -1559,26 +1554,27 @@ _ENERGY_PARTICIPLE = (
     r"(?:\w+(?:ad|id)|abiert|cubiert|dich|escrit|hech|impres|muert|puest|"
     r"resuelt|rot|(?:pre)?vist|vuelt)[oa]s?"
 )
-_ENERGY_ACCUMULATION_VERB = r"(?:llev\w*|tien\w*|ten(?:go|es|emos|eis|ia\w*)|tuv\w*)"
+_ENERGY_ACCUMULATION_VERB = r"(?:llev\w*|tien\w*|ten(?:go|es|emos|eis|ia\w*)|tuv\w*)\b(?!\s+que\b)"
 _ELECTRICITY_SUBJECT = re.compile(rf"\b(?:{_ELECTRICITY}|(?:consumos?|tarifas?|facturas?) electric[oa]s?)\b")
 _HOUSEHOLD_METER = re.compile(rf"\b{_METER_SCOPE}\b")
 _ENERGY_UNIT = re.compile(rf"\b{_ENERGY_UNITS}\b")
 _POWER_UNIT = re.compile(r"\b(?:potencia|watts?|vatios?|kilowatts?|kilovatios?)\b")
-_ELECTRIC_VEHICLE = re.compile(
-    r"\b(?:autos?|coches?|carros?|vehiculos?|motos?|bicis?|bicicletas?|monopatin(?:es)?) electric[oa]s?\b"
-)
-_ENERGY_OBJECT_LINK = re.compile(
-    rf"\b(?:consum[ei]\w*|usa\w*|gast\w*|tira\w*|necesit\w*|requier\w*|demand\w*|"
-    rf"{_ENERGY_ACCUMULATION_VERB})"
-    rf"\b(?: (?:{_ENERGY_PARTICIPLE}|{_ENERGY_TEMPORAL})\b)*(?: |$)"
-)
-_ENERGY_OBJECT_TAIL = re.compile(
-    rf"(?:{_ENERGY_DETERMINER}|{_ENERGY_NOUN}|pesos?|dinero|al|a|de|en|por|desde|durante)\b|$"
+# The meter reports household totals. Match the target noun itself so the
+# restriction also applies with possessives, demonstratives and bare nouns.
+_ENERGY_NON_HOUSEHOLD_TARGET = re.compile(
+    r"\b(?:heladeras?|refrigerador(?:es)?|neveras?|freezers?|teles?|televisor(?:es)?|tvs?|"
+    r"computadoras?|pcs?|notebooks?|laptops?|amplificador(?:es)?|electrodomesticos?|"
+    r"lavarropas|lavavajillas|secarropas|secadoras?|microondas|hornos?|estufas?|"
+    r"calefon(?:es)?|calefactor(?:es)?|calefaccion(?:es)?|aires?|ventilador(?:es)?|bombas?|"
+    r"autos?|coches?|carros?|vehiculos?|motos?|bicis?|bicicletas?|monopatin(?:es)?|"
+    r"consolas?|routers?|impresoras?|cafeteras?|licuadoras?|tostadoras?|planchas?|"
+    r"aspiradoras?|cargador(?:es)?|secados?|lavados?|teclados?|livings?|cocinas?|dormitorios?)\b"
 )
 _VIDEO_DOORBELL = re.compile(r"\bvideo ?porteros?\b")
 _METER_READING = re.compile(r"\b(?:consum\w*|gast\w*|usam\w*|medidor(?:es)?)\b")
 _ACCUMULATED_READING = re.compile(
-    rf"\b{_ENERGY_ACCUMULATION_VERB} (?:{_ENERGY_TEMPORAL} )*{_ENERGY_PARTICIPLE}\b"
+    rf"\b{_ENERGY_ACCUMULATION_VERB} "
+    rf"(?:(?:{_ENERGY_TEMPORAL}|est[ea] {_ENERGY_READING_PERIOD}) )*{_ENERGY_PARTICIPLE}\b"
 )
 _ENERGY_COST = re.compile(
     r"\b(?:cost\w*|cuest\w*|facturas?|tarifas?|pag\w*|pesos?|dinero|precios?|sale|val(?:e|en|er))\b"
@@ -1594,13 +1590,7 @@ _LIGHT_OR_COVER = re.compile(
 
 
 def _energy_measurement(text: str) -> str | None:
-    if not _ENERGY_QUERY.search(text) or _LIGHT_OR_COVER.search(text) or _ELECTRIC_VEHICLE.search(text):
-        return None
-    if any(not _ENERGY_NOMINAL_HEAD.fullmatch(noun["head"]) for noun in _ENERGY_NOMINAL.finditer(text)):
-        return None
-    # Known verbs also tell us where a bare noun can occur. A participle or
-    # a time qualifier before that position does not supply the object.
-    if any(not _ENERGY_OBJECT_TAIL.match(text, link.end()) for link in _ENERGY_OBJECT_LINK.finditer(text)):
+    if not _ENERGY_QUERY.search(text) or _LIGHT_OR_COVER.search(text) or _ENERGY_NON_HOUSEHOLD_TARGET.search(text):
         return None
     energy_unit = _ENERGY_UNIT.search(text)
     power_unit = _POWER_UNIT.search(text)
