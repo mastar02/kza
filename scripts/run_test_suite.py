@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import datetime as dt
 import fcntl
 import importlib.util
@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import TextIO
+from typing import Literal, TextIO
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIN_SHM_FREE_BYTES = 16 * 1024**3  # 16 GiB safety margin on /dev/shm
@@ -368,56 +368,99 @@ def journald_nrestarts() -> int | None:
     return int(raw)
 
 
-def check_host_interference(quiet_window_minutes: int) -> list[str]:
-    """Report ThermoUY work that overlaps the Linux preflight window."""
+@dataclass(frozen=True)
+class HostTimerCheck:
+    """Result of inspecting one ThermoUY unit."""
+
+    unit: str
+    scope: Literal["user", "system", "not-found", "unavailable"]
+    load_state: str | None
+    active_state: str | None
+    next_elapse_utc: str | None
+    unit_id: str | None
+    sub_state: str | None
+    error: str | None
+
+
+def _show_host_unit(unit: str, *, user: bool, env: dict[str, str]) -> tuple[dict[str, str], str | None]:
+    command = ["systemctl", "--user"] if user else ["systemctl"]
+    command.extend(["show", unit, "-p", "Id,LoadState,ActiveState,SubState,NextElapseUSecRealtime"])
+    manager = "user" if user else "system"
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=5, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {}, f"systemctl {manager} manager unavailable ({type(exc).__name__}: {exc})"
+
+    properties = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+    load_state = properties.get("LoadState")
+    if load_state == "not-found":
+        return properties, None
+    if result.returncode != 0:
+        detail = result.stderr.strip() or "no error output"
+        return properties, f"systemctl {manager} manager returned {result.returncode}: {detail}"
+    if not load_state:
+        return properties, f"systemctl {manager} manager did not report LoadState"
+    return properties, None
+
+
+def check_host_interference(quiet_window_minutes: int) -> tuple[list[str], list[HostTimerCheck]]:
+    """Return blocking reasons and the inspection result for each ThermoUY unit."""
     if not sys.platform.startswith("linux"):
-        return []
+        return [], []
 
     # systemctl formats this D-Bus property as a local wall-clock timestamp.
     env = dict(os.environ, LC_ALL="C", TZ="UTC")
     now = dt.datetime.now(dt.UTC)
     interference: list[str] = []
+    checked: list[HostTimerCheck] = []
     for unit in HOST_INTERFERENCE_UNITS:
-        try:
-            result = subprocess.run(
-                ["systemctl", "show", unit, "-p", "ActiveState,SubState,NextElapseUSecRealtime"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                env=env,
-            )
-        except OSError:
-            break
-        except subprocess.TimeoutExpired:
-            continue
-        if result.returncode != 0:
-            continue
+        scope: Literal["user", "system", "not-found", "unavailable"] = "user"
+        properties, error = _show_host_unit(unit, user=True, env=env)
+        if properties.get("LoadState") == "not-found":
+            scope = "system"
+            properties, error = _show_host_unit(unit, user=False, env=env)
 
-        properties = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-        active_state = properties.get("ActiveState", "")
-        if unit.endswith(".service"):
-            if active_state in {"active", "activating", "deactivating"}:
-                sub_state = properties.get("SubState", "unknown")
-                interference.append(f"{unit} is {active_state} ({sub_state})")
-            continue
-
+        load_state = properties.get("LoadState")
+        active_state = properties.get("ActiveState")
+        sub_state = properties.get("SubState")
         timestamp = properties.get("NextElapseUSecRealtime", "")
         try:
             next_elapse = dt.datetime.strptime(timestamp.partition(" ")[2], "%Y-%m-%d %H:%M:%S UTC").replace(
                 tzinfo=dt.UTC
             )
         except ValueError:
-            continue
-        if 0 <= (next_elapse - now).total_seconds() <= quiet_window_minutes * 60:
-            interference.append(f"{unit} is scheduled for {timestamp} within {quiet_window_minutes} minutes")
-    return interference
+            next_elapse = None
+
+        if error is not None:
+            scope = "unavailable"
+            interference.append(f"{unit}: {error}")
+        elif load_state == "not-found":
+            scope = "not-found"
+        elif unit.endswith(".service") and active_state in {"active", "activating", "deactivating"}:
+            interference.append(f"{unit} is {active_state} ({sub_state or 'unknown'})")
+        elif unit.endswith(".timer") and next_elapse is not None:
+            if 0 <= (next_elapse - now).total_seconds() <= quiet_window_minutes * 60:
+                interference.append(f"{unit} is scheduled for {timestamp} within {quiet_window_minutes} minutes")
+
+        checked.append(
+            HostTimerCheck(
+                unit=unit,
+                scope=scope,
+                load_state=load_state,
+                active_state=active_state,
+                next_elapse_utc=next_elapse.isoformat() if next_elapse is not None else None,
+                unit_id=properties.get("Id"),
+                sub_state=sub_state,
+                error=error,
+            )
+        )
+    return interference, checked
 
 
-def read_git_commit(repo: Path) -> str | None:
-    """Read the checked-out SHA for the run summary when Git is available."""
+def _read_git(repo: Path, *args: str) -> str | None:
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--verify", "HEAD"],
+            ["git", *args],
             cwd=repo,
             capture_output=True,
             text=True,
@@ -425,8 +468,19 @@ def read_git_commit(repo: Path) -> str | None:
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
-    sha = result.stdout.strip()
-    return sha if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def read_git_commit(repo: Path) -> str | None:
+    """Read the checked-out SHA for the run summary when Git is available."""
+    sha = _read_git(repo, "rev-parse", "--verify", "HEAD")
+    return sha if sha is not None and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
+def read_git_dirty(repo: Path) -> bool | None:
+    """Report whether the index or tracked files differ from HEAD."""
+    status = _read_git(repo, "status", "--porcelain", "--untracked-files=no")
+    return bool(status) if status is not None else None
 
 
 def _run_subprocess(
@@ -649,8 +703,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--lanes selection requires --tier 2")
     if args.tier == 0 and not args.targets:
         parser.error("--tier 0 requires at least one path in --targets")
-    if args.tier == 2 and not sys.platform.startswith("linux"):
-        parser.error("--tier 2 (Linux real systemd gate) must run on Linux (kza-yo)")
 
     lanes = set(TIER2_STEP_NAMES if "all" in lane_tokens else lane_tokens)
     if "b" in lanes:
@@ -659,11 +711,16 @@ def main(argv: list[str] | None = None) -> int:
         lanes.discard("node")
     selected_lanes = tuple(lane for lane in TIER2_STEP_NAMES if lane in lanes)
     if args.tier == 2:
+        if not selected_lanes:
+            parser.error("--lanes and --no-node leave no Tier 2 steps selected")
+        if not sys.platform.startswith("linux"):
+            parser.error("--tier 2 (Linux real systemd gate) must run on Linux (kza-yo)")
         selected_steps = [TIER2_STEP_NAMES[lane] for lane in selected_lanes]
     else:
         selected_steps = [] if args.no_node else ["frontend-node"]
         selected_steps.append("tier0-pytest" if args.tier == 0 else "tier1-core")
     git_commit = read_git_commit(repo)
+    git_dirty = read_git_dirty(repo)
 
     run_stamp = time.strftime("%Y%m%d-%H%M%S")
     if args.out_dir is not None:
@@ -696,15 +753,15 @@ def main(argv: list[str] | None = None) -> int:
     after_nr: int | None = None
     steps: list[dict] = []
     host_interference: list[str] = []
+    host_timers_checked: list[HostTimerCheck] = []
 
     try:
         solo_guard = acquire_solo_window(tier=args.tier)
         if args.tier == 2 and not args.ignore_host_timers and lanes.intersection((*TIER2_B_LANES, "c")):
-            host_interference = check_host_interference(args.quiet_window_minutes)
+            host_interference, host_timers_checked = check_host_interference(args.quiet_window_minutes)
         if host_interference:
             print(
-                "Tier 2 aborted before pytest due to ThermoUY host interference: "
-                + ", ".join(host_interference),
+                "Tier 2 aborted before pytest by the ThermoUY host preflight: " + ", ".join(host_interference),
                 file=sys.stderr,
             )
         else:
@@ -785,7 +842,10 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "tier": args.tier,
         "git_commit": git_commit,
+        "git_dirty": git_dirty,
         "selected_lanes": selected_steps,
+        "ignore_host_timers": args.ignore_host_timers,
+        "host_timers_checked": [asdict(check) for check in host_timers_checked],
         "host_interference": host_interference,
         "platform": sys.platform,
         "workers": args.workers if has_xdist else 1,

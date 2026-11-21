@@ -465,7 +465,6 @@ def tier2_cli(tmp_path, monkeypatch):
         ([], [], ["frontend-node", "lane-a-core", "lane-b-linux", "lane-b-sc6b1", "lane-b-sc6b2", "lane-c-compiled-solo"]),
         (["all"], ["--no-node"], ["lane-a-core", "lane-b-linux", "lane-b-sc6b1", "lane-b-sc6b2", "lane-c-compiled-solo"]),
         (["node"], [], ["frontend-node"]),
-        (["node"], ["--no-node"], []),
         (["c,a"], [], ["lane-a-core", "lane-c-compiled-solo"]),
         (["c b-sc6b2"], [], ["lane-b-sc6b2", "lane-c-compiled-solo"]),
         (["b-linux"], [], ["lane-b-linux"]),
@@ -497,7 +496,7 @@ def test_tier2_cli_runs_selected_steps_in_canonical_order(tier2_cli, monkeypatch
         assert solo.exists()
         assert not timeline
         checks.append(minutes)
-        return []
+        return [], []
 
     monkeypatch.setattr(runner, "_run_subprocess", fake_run)
     monkeypatch.setattr(runner, "check_host_interference", fake_check)
@@ -512,9 +511,15 @@ def test_tier2_cli_runs_selected_steps_in_canonical_order(tier2_cli, monkeypatch
     ).strip()
     assert summary["git_commit"] == git_commit
     assert len(git_commit) == 40
+    tracked_status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=no"], cwd=runner.REPO_ROOT, text=True
+    )
+    assert summary["git_dirty"] is bool(tracked_status)
     assert summary["before_NRestarts"] == summary["after_NRestarts"] == 42
     assert summary["nrestarts_ok"]
     assert summary["host_interference"] == []
+    assert summary["ignore_host_timers"] is ("--ignore-host-timers" in options)
+    assert summary["host_timers_checked"] == []
     assert not solo.exists()
     needs_check = any(name.startswith(("lane-b-", "lane-c-")) for name in expected)
     assert checks == ([45] if needs_check and "--ignore-host-timers" not in options else [])
@@ -541,6 +546,7 @@ def test_tier2_cli_runs_selected_steps_in_canonical_order(tier2_cli, monkeypatch
         (["--tier", "2", "--lanes", "a,unknown"], "unknown --lanes token(s): unknown"),
         (["--tier", "2", "--lanes", ", "], "--lanes requires at least one lane"),
         (["--tier", "2", "--lanes"], "expected at least one argument"),
+        (["--tier", "2", "--lanes", "node", "--no-node"], "leave no Tier 2 steps selected"),
         (["--tier", "0", "--lanes", "a", "--targets", "tests/a.py"], "--lanes selection requires --tier 2"),
         (["--tier", "1", "--lanes", "c"], "--lanes selection requires --tier 2"),
         (["--tier", "2", "--quiet-window-minutes", "-1"], "--quiet-window-minutes must be >= 0"),
@@ -553,9 +559,57 @@ def test_cli_rejects_invalid_lane_options(args, message, capsys):
     assert message in capsys.readouterr().err
 
 
-def test_read_git_commit_returns_none_outside_repository(tmp_path, monkeypatch):
+def test_git_metadata_returns_none_outside_repository(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
     assert runner.read_git_commit(tmp_path) is None
+    assert runner.read_git_dirty(tmp_path) is None
+
+
+@pytest.mark.parametrize(("tier", "pytest_step"), [(0, "tier0-pytest"), (1, "tier1-core")])
+@pytest.mark.parametrize("no_node", [False, True])
+def test_cli_summarizes_selected_lanes_for_lower_tiers(tmp_path, monkeypatch, tier, pytest_step, no_node):
+    out_dir = tmp_path / "out"
+    calls = []
+
+    def fake_run(name, cmd, *, cwd, env, log_path):
+        calls.append(name)
+        return {"name": name, "exit_code": 0, "duration_s": 0.01}
+
+    def unexpected_check(*_args):
+        pytest.fail("host timers are only inspected for Tier 2 lanes B and C")
+
+    monkeypatch.setattr(runner.sys, "platform", "darwin")
+    monkeypatch.setattr(runner, "_xdist_available", lambda _p: False)
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    monkeypatch.setattr(runner, "check_host_interference", unexpected_check)
+    args = [
+        "--tier", str(tier),
+        "--workers", "1",
+        "--lanes", "all",
+        "--no-prebuild",
+        "--out-dir", str(out_dir),
+        "--cache-dir", str(tmp_path / "cache"),
+    ]
+    if tier == 0:
+        args += ["--targets", "tests/a.py"]
+    if no_node:
+        args += ["--no-node"]
+    assert runner.main(args) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text())
+    expected = [pytest_step] if no_node else ["frontend-node", pytest_step]
+    assert summary["selected_lanes"] == calls == expected
+    assert not summary["ignore_host_timers"]
+    assert summary["host_timers_checked"] == []
+    assert summary["host_interference"] == []
+
+
+def test_read_git_dirty_ignores_untracked_files_and_reports_index_changes(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "sample.py").write_text("x = 1\n")
+    assert runner.read_git_dirty(tmp_path) is False
+    subprocess.run(["git", "add", "--", "sample.py"], cwd=tmp_path, check=True)
+    assert runner.read_git_dirty(tmp_path) is True
 
 
 def test_tier2_partial_run_fails_when_journald_restarts(tier2_cli, monkeypatch):
@@ -583,19 +637,34 @@ def test_tier2_partial_run_fails_when_journald_restarts(tier2_cli, monkeypatch):
 @pytest.fixture
 def fake_systemctl(monkeypatch):
     real_run = subprocess.run
-    responses = {}
+    responses = {
+        ("user", unit): f"Id={unit}\nLoadState=loaded\nActiveState=inactive\nSubState=dead\n"
+        for unit in runner.HOST_INTERFERENCE_UNITS
+    }
     queried = []
 
     def run(cmd, **kwargs):
         if cmd[0] != "systemctl":
             return real_run(cmd, **kwargs)
-        assert cmd == ["systemctl", "show", cmd[2], "-p", "ActiveState,SubState,NextElapseUSecRealtime"]
+        user = cmd[1] == "--user"
+        scope = "user" if user else "system"
+        prefix = ["systemctl", "--user"] if user else ["systemctl"]
+        unit = cmd[len(prefix) + 1]
+        assert cmd == [*prefix, "show", unit, "-p", "Id,LoadState,ActiveState,SubState,NextElapseUSecRealtime"]
+        assert unit in runner.HOST_INTERFERENCE_UNITS
         assert kwargs["env"]["TZ"] == "UTC"
         assert kwargs["env"]["LC_ALL"] == "C"
         assert kwargs["capture_output"] and kwargs["text"] and kwargs["timeout"] > 0
-        queried.append(cmd[2])
-        response = responses.get(cmd[2])
-        return subprocess.CompletedProcess(cmd, 0 if response is not None else 1, stdout=response or "")
+        queried.append((scope, unit))
+        response = responses.get((scope, unit))
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, subprocess.CompletedProcess):
+            return response
+        if response is None:
+            missing = f"Id={unit}\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+            return subprocess.CompletedProcess(cmd, 4, stdout=missing, stderr=f"Unit {unit} could not be found.")
+        return subprocess.CompletedProcess(cmd, 0, stdout=response, stderr="")
 
     monkeypatch.setattr(runner.sys, "platform", "linux")
     monkeypatch.setattr(runner.subprocess, "run", run)
@@ -606,14 +675,17 @@ def fake_systemctl(monkeypatch):
 def test_check_host_interference_reports_busy_service(fake_systemctl, state):
     responses, queried = fake_systemctl
     service = "thermouy-ci-prune.service"
-    responses[service] = f"ActiveState={state}\nSubState=running\n"
-    assert runner.check_host_interference(45) == [f"{service} is {state} (running)"]
+    responses["user", service] = f"Id={service}\nLoadState=loaded\nActiveState={state}\nSubState=running\n"
+    interference, checked = runner.check_host_interference(45)
+    assert interference == [f"{service} is {state} (running)"]
     assert queried == [
-        "thermouy-tier2-nightly.service",
-        "thermouy-tier2-nightly.timer",
-        "thermouy-ci-prune.service",
-        "thermouy-ci-prune.timer",
+        ("user", "thermouy-tier2-nightly.service"),
+        ("user", "thermouy-tier2-nightly.timer"),
+        ("user", "thermouy-ci-prune.service"),
+        ("user", "thermouy-ci-prune.timer"),
     ]
+    check = next(item for item in checked if item.unit == service)
+    assert (check.scope, check.load_state, check.active_state) == ("user", "loaded", state)
 
 
 @pytest.mark.parametrize(
@@ -624,35 +696,121 @@ def test_check_host_interference_compares_timer_to_utc(fake_systemctl, offset_mi
     responses, _ = fake_systemctl
     timer = "thermouy-tier2-nightly.timer"
     timestamp = "n/a"
+    next_elapse_utc = None
     if offset_minutes is not None:
-        trigger = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=offset_minutes)
+        trigger = dt.datetime.now(dt.UTC).replace(microsecond=0) + dt.timedelta(minutes=offset_minutes)
         timestamp = f"{trigger:%a %Y-%m-%d %H:%M:%S} UTC"
-    responses[timer] = f"NextElapseUSecRealtime={timestamp}\nActiveState=active\nSubState=waiting\n"
+        next_elapse_utc = trigger.isoformat()
+    responses["user", timer] = (
+        f"NextElapseUSecRealtime={timestamp}\nId={timer}\nLoadState=loaded\nActiveState=active\nSubState=waiting\n"
+    )
     expected = [f"{timer} is scheduled for {timestamp} within {quiet_window} minutes"] if interferes else []
-    assert runner.check_host_interference(quiet_window) == expected
+    interference, checked = runner.check_host_interference(quiet_window)
+    assert interference == expected
+    check = next(item for item in checked if item.unit == timer)
+    assert check.next_elapse_utc == next_elapse_utc
 
 
 def test_check_host_interference_allows_missing_units(fake_systemctl):
-    _, queried = fake_systemctl
-    assert runner.check_host_interference(45) == []
-    assert len(queried) == 4
+    responses, queried = fake_systemctl
+    responses.clear()
+    interference, checked = runner.check_host_interference(45)
+    assert interference == []
+    assert queried == [(scope, unit) for unit in runner.HOST_INTERFERENCE_UNITS for scope in ("user", "system")]
+    assert [(item.unit, item.scope, item.load_state) for item in checked] == [
+        (unit, "not-found", "not-found") for unit in runner.HOST_INTERFERENCE_UNITS
+    ]
 
 
-def test_check_host_interference_allows_missing_systemctl(monkeypatch):
+def test_check_host_interference_falls_back_to_system_for_user_unit_not_found(fake_systemctl):
+    responses, queried = fake_systemctl
+    service = "thermouy-tier2-nightly.service"
+    responses["user", service] = f"Id={service}\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+    responses["system", service] = f"Id={service}\nLoadState=loaded\nActiveState=active\nSubState=running\n"
+
+    interference, checked = runner.check_host_interference(45)
+
+    assert interference == [f"{service} is active (running)"]
+    assert queried == [("user", service), ("system", service)] + [
+        ("user", unit) for unit in runner.HOST_INTERFERENCE_UNITS[1:]
+    ]
+    assert [(item.scope, item.load_state) for item in checked] == [("system", "loaded")] + [("user", "loaded")] * 3
+    assert checked[0].active_state == "active"
+
+
+@pytest.mark.parametrize(
+    ("scope", "response", "detail"),
+    [
+        ("user", FileNotFoundError("systemctl"), "FileNotFoundError"),
+        ("system", subprocess.TimeoutExpired(["systemctl"], 5), "TimeoutExpired"),
+        (
+            "user",
+            subprocess.CompletedProcess(["systemctl"], 1, stdout="", stderr="Failed to connect to bus"),
+            "Failed to connect to bus",
+        ),
+    ],
+)
+def test_tier2_unavailable_preflight_blocks_unless_explicitly_ignored(
+    tier2_cli, fake_systemctl, monkeypatch, capsys, scope, response, detail
+):
+    args, out_dir, solo = tier2_cli
+    responses, queried = fake_systemctl
+    unit = "thermouy-tier2-nightly.service"
+    if scope == "system":
+        del responses["user", unit]
+    responses[scope, unit] = response
+    started = []
+
+    def fake_run(name, cmd, *, cwd, env, log_path):
+        started.append(name)
+        return {"name": name, "exit_code": 0, "duration_s": 0.01}
+
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    args += ["--lanes", "c"]
+    assert runner.main(args) == 2
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["exit_code"] == 2 and summary["steps"] == started == []
+    assert not summary["ignore_host_timers"]
+    assert len(summary["host_timers_checked"]) == 4
+    check = next(item for item in summary["host_timers_checked"] if item["unit"] == unit)
+    assert check["scope"] == "unavailable"
+    assert check["load_state"] is check["active_state"] is check["next_elapse_utc"] is None
+    assert scope in check["error"] and detail in check["error"]
+    reason = f"{unit}: {check['error']}"
+    assert summary["host_interference"] == [reason]
+    assert reason in capsys.readouterr().err
+    assert queried[:2] == [
+        ("user", unit), (scope, unit if scope == "system" else "thermouy-tier2-nightly.timer")
+    ]
+    assert not solo.exists()
+
+    queried.clear()
+    assert runner.main(args + ["--ignore-host-timers"]) == 0
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["ignore_host_timers"] is True
+    assert summary["host_timers_checked"] == summary["host_interference"] == queried == []
+    assert started == ["lane-c-compiled-solo"]
+    assert not solo.exists()
+
+
+def test_journald_nrestarts_allows_missing_systemctl(monkeypatch):
     def unavailable(*args, **kwargs):
         raise FileNotFoundError("systemctl")
 
     monkeypatch.setattr(runner.sys, "platform", "linux")
     monkeypatch.setattr(runner.subprocess, "run", unavailable)
-    assert runner.check_host_interference(45) == []
     assert runner.journald_nrestarts() is None
 
 
 def test_tier2_preflight_aborts_and_releases_solo_window(tier2_cli, fake_systemctl, monkeypatch, capsys):
     args, out_dir, solo = tier2_cli
     responses, queried = fake_systemctl
-    trigger = dt.datetime.now(dt.UTC) + dt.timedelta(minutes=5)
-    responses["thermouy-ci-prune.timer"] = f"NextElapseUSecRealtime={trigger:%a %Y-%m-%d %H:%M:%S} UTC\n"
+    timer = "thermouy-ci-prune.timer"
+    trigger = dt.datetime.now(dt.UTC).replace(microsecond=0) + dt.timedelta(minutes=5)
+    responses["user", timer] = (
+        f"NextElapseUSecRealtime={trigger:%a %Y-%m-%d %H:%M:%S} UTC\n"
+        f"Id={timer}\nLoadState=loaded\nActiveState=active\nSubState=waiting\n"
+    )
 
     original_check = runner.check_host_interference
 
@@ -674,6 +832,19 @@ def test_tier2_preflight_aborts_and_releases_solo_window(tier2_cli, fake_systemc
     assert summary["selected_lanes"] == ["lane-a-core", "lane-b-sc6b1", "lane-c-compiled-solo"]
     assert summary["steps"] == []
     assert not summary["nrestarts_ok"]
+    assert summary["ignore_host_timers"] is False
+    assert len(summary["host_timers_checked"]) == 4
+    check = next(item for item in summary["host_timers_checked"] if item["unit"] == timer)
+    assert check == {
+        "unit": timer,
+        "unit_id": timer,
+        "scope": "user",
+        "load_state": "loaded",
+        "active_state": "active",
+        "sub_state": "waiting",
+        "next_elapse_utc": trigger.isoformat(),
+        "error": None,
+    }
     (reason,) = summary["host_interference"]
     assert "thermouy-ci-prune.timer" in reason and "within 12 minutes" in reason
     assert reason in capsys.readouterr().err
