@@ -94,8 +94,18 @@ class Slot:
             (source / name).mkdir(parents=True)
 
         def configuration(root, home, model):
-            config = restore_configuration(Path(root), home, model)
+            root = Path(root)
+            config = restore_configuration(root, home, model)
             config["dashboard"].update(enabled=True, host="127.0.0.1", port=self.port)
+            if self.entry == "module":
+                # src.main registers the V4 audio destinations against the slot's data root.
+                data = root.parent
+                config["ambient"]["db_path"] = str(data / "ambient.db")
+                config["ambient"]["keep_audio"]["dir"] = str(data / "ambient_audio")
+                config["rooms"]["wake_word"]["capture_clips"]["dir"] = str(data / "wakeword_training/captured")
+                config["training"]["stt_corrections"]["data_dir"] = str(data / "stt_corrections")
+                config["training"]["conversations_dir"] = str(data / "conversations")
+                config["training"]["exports_dir"] = str(data / "conversation_exports")
             return config
 
         raw = canonical_template(self.root, configuration)
@@ -275,6 +285,7 @@ def test_sigterm_during_module_import_is_deferred(artifact, tmp_path):
     assert slot.phase("imported") is not None
     assert slot.phases().index(("imported", "")) > slot.phases().index(("importing", ""))
     assert "[Stop] construction finished after a stop; skipping warmup and voice" in outcome["log"]
+    assert "[Stop] start-up stopped before services" in outcome["log"]
 
 
 def test_receipt_then_exit_without_joining_an_in_flight_executor_job(artifact, tmp_path):
