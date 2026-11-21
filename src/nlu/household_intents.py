@@ -1555,6 +1555,37 @@ _ENERGY_PARTICIPLE = (
     r"resuelt|rot|(?:pre)?vist|vuelt)[oa]s?"
 )
 _ENERGY_ACCUMULATION_VERB = r"(?:llev\w*|tien\w*|ten(?:go|es|emos|eis|ia\w*)|tuv\w*)\b(?!\s+que\b)"
+_ENERGY_DETERMINER = (
+    r"(?:el|la|los|las|un|una|mis?|tus?|sus?|nuestr[oa]s?|est[ea]|est[oa]s|es[ea]|es[oa]s|aquel|aquell[oa]s?)"
+)
+_ENERGY_MONTH = (
+    r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|setiembre|septiembre|octubre|noviembre|diciembre)"
+)
+_ENERGY_PERIOD = (
+    rf"(?:lo que va del mes|(?:{_ENERGY_DETERMINER} )?(?:(?:ultim[oa]s?|proxim[oa]s?) )?"
+    rf"(?:\d{{1,2}} de {_ENERGY_MONTH}|(?:{_NUMBER} )?"
+    rf"(?:horario pico|hora punta|principio (?:de|del) mes|{_ENERGY_TIME_UNIT}|{_ENERGY_READING_PERIOD}|"
+    rf"{_ENERGY_MONTH}|lunes|martes|miercoles|jueves|viernes|sabado|domingo|momento|total|promedio|standby)"
+    r"(?: (?:pasad[oa]s?|anterior(?:es)?))?))"
+)
+_ENERGY_DOCUMENT = r"(?:boletas?|recibos?|facturas?|tarifas?|precios?|costos?|valores?|lecturas?|importes?|montos?)"
+_ENERGY_OBJECT_CONTEXT = re.compile(
+    rf"(?:hoy|ayer|anoche|ahora|actualmente|{_ENERGY_PERIOD}|"
+    rf"en (?:{_ENERGY_DETERMINER} )?(?:{_METER_SCOPE}|{_ELECTRICITY}|pesos?|dinero)|"
+    rf"(?:en|desde|durante|por|a|al|hasta|para) "
+    rf"(?:{_ENERGY_PERIOD}|(?:{_ENERGY_DETERMINER} )?{_ENERGY_DOCUMENT}|las? {_NUMBER}|\d+)|"
+    rf"(?:de|del) (?:{_ENERGY_PERIOD}|(?:{_ENERGY_DETERMINER} )?"
+    rf"(?:{_ELECTRICITY}|{_ENERGY_DOCUMENT}|consumos?)))(?: |$)"
+)
+_ENERGY_OBJECT_LINK = re.compile(
+    rf"\b(?:(?P<accumulation>{_ENERGY_ACCUMULATION_VERB})|"
+    r"(?:consum[ei]\w*|usa\w*|gast\w*|tira\w*|necesit\w*|requier\w*|demand\w*)\b)(?: |$)"
+)
+_ENERGY_OBJECT_PARTICIPLE = re.compile(rf"{_ENERGY_PARTICIPLE}(?: |$)")
+_ENERGY_OBJECT_TAIL = re.compile(
+    rf"$|(?:{_ENERGY_DETERMINER} )?(?:{_METER_SCOPE}|{_ELECTRICITY}|{_ENERGY_UNITS}|"
+    r"potencias?|(?:kilo)?(?:watts?|vatios?)|consumos?)\b"
+)
 _ELECTRICITY_SUBJECT = re.compile(rf"\b(?:{_ELECTRICITY}|(?:consumos?|tarifas?|facturas?) electric[oa]s?)\b")
 _HOUSEHOLD_METER = re.compile(rf"\b{_METER_SCOPE}\b")
 _ENERGY_UNIT = re.compile(rf"\b{_ENERGY_UNITS}\b")
@@ -1589,8 +1620,22 @@ _LIGHT_OR_COVER = re.compile(
 )
 
 
+def _energy_object_in_scope(text: str, link: re.Match[str]) -> bool:
+    """Skip measurement qualifiers and check the target after this verb."""
+    position = link.end()
+    while True:
+        modifier = _ENERGY_OBJECT_CONTEXT.match(text, position)
+        if modifier is None and link["accumulation"] is not None:
+            modifier = _ENERGY_OBJECT_PARTICIPLE.match(text, position)
+        if modifier is None:
+            return _ENERGY_OBJECT_TAIL.match(text, position) is not None
+        position = modifier.end()
+
+
 def _energy_measurement(text: str) -> str | None:
     if not _ENERGY_QUERY.search(text) or _LIGHT_OR_COVER.search(text) or _ENERGY_NON_HOUSEHOLD_TARGET.search(text):
+        return None
+    if any(not _energy_object_in_scope(text, link) for link in _ENERGY_OBJECT_LINK.finditer(text)):
         return None
     energy_unit = _ENERGY_UNIT.search(text)
     power_unit = _POWER_UNIT.search(text)

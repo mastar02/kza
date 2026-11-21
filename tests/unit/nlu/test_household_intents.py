@@ -118,6 +118,31 @@ def test_p5_integrations_leave_other_electrical_devices_and_doorbells_unclaimed(
     assert classify_household_intent(text) is None
 
 
+@pytest.mark.parametrize("text", [
+    "cuántos watts consume el termotanque",
+    "qué potencia usa el celular",
+    "cuántos kwh consume el baño",
+    "cuánta energía consume la caldera",
+    "qué potencia requiere la pileta",
+    "cuánta energía consume el país",
+    "cuánta energía consume bitcoin",
+    "cuántos kwh tiene la batería del tesla",
+    "cuántos kwh consume una ciudad",
+    "cuánta energía gasta un perro",
+    "cuánta energía él gasta por la noche en su celular",
+    "cuánto gasta de luz el vecino",
+    "cuánta energía gasta en luz el vecino",
+    "qué potencia necesita ahora el termotanque",
+    "cuánta energía consume en casa el celular",
+    "cuántos watts usa en total la caldera",
+    "cuántos kwh tiene registrados en el recibo la batería del tesla",
+    "cuántos watts consume en las últimas 24 horas el termotanque",
+    "qué potencia usa por la noche la pileta",
+])
+def test_p5_energy_rejects_unknown_targets_after_measurement_verbs(text):
+    assert classify_household_intent(text) is None
+
+
 @pytest.mark.parametrize("text", ["cómo está la cámara del patio", "estado de la cámara del timbre"])
 def test_p5_camera_keeps_home_camera_health_query(text):
     intent = classify_household_intent(text)
@@ -228,6 +253,14 @@ def test_p5_camera_keeps_home_camera_health_query(text):
     ("cuánto gastamos esta quincena de luz", "energy"),
     ("cuánta energía llevamos esta madrugada registrada", "energy"),
     ("cuánta energía tenemos este semestre registrada", "energy"),
+    ("cuánta potencia tenemos contratada en casa", "power"),
+    ("cuántos kwh tenemos en el recibo", "energy"),
+    ("cuánta energía consumimos durante los últimos siete días", "energy"),
+    ("cuántos kwh consumimos en las últimas veinticuatro horas", "energy"),
+    ("cuántos kwh consumimos hasta las 24 horas", "energy"),
+    ("cuántos kwh consumimos hasta las ocho", "energy"),
+    ("cuánta energía llevamos registrada para esta noche", "energy"),
+    ("cuántos kwh tenemos en el horario pico", "energy"),
 ])
 def test_p5_energy_requires_electrical_measurement_or_cost(text, kind):
     intent = classify_household_intent(text)
