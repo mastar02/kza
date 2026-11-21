@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import json
+import math
 import os
 from pathlib import Path
 import socket
@@ -25,7 +26,7 @@ from src.rooms.room_context import RoomConfig
 from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_support import (
     Page, audit_modal_focus, audit_modal_return, audit_status, audit_view, browser_binary,
-    browser_profile_root, evidence_directory, press_enter, reduced_motion_house,
+    browser_profile_root, dispatch_key, evidence_directory, press_enter, reduced_motion_house,
 )
 from tests.integration.test_typed_home_operations import typed_graph
 
@@ -191,6 +192,161 @@ async def check_notices(page: Page, evidence: Path, store: ReminderStore, reques
     return audit
 
 
+# T042-U5 Q24: computed text and field floors; neither text nor field values are serialized.
+Q24_WIDTHS = (320, 390, 1440)
+Q24_PROBE = """(()=>{
+  const shown=el=>el.getClientRects().length>0&&el.checkVisibility({visibilityProperty:true,opacityProperty:true});
+  const name=el=>el.localName+(el.id?'#'+el.id:'')+(typeof el.className==='string'&&el.className.trim()?'.'+el.className.trim().split(/\\s+/).join('.'):'');
+  const text=[],fields=[];let textNodes=0,fieldCount=0;
+  const walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  for(let node;node=walker.nextNode();){
+    const el=node.parentElement;
+    if(!el||!node.textContent.trim()||el.closest('script,style,noscript,svg,[aria-hidden=true]')||!shown(el))continue;
+    textNodes++;const size=parseFloat(getComputedStyle(el).fontSize);
+    if(size<11)text.push({element:name(el),size});
+  }
+  for(const el of document.querySelectorAll('input,select,textarea')){
+    if(el.matches('[type=hidden],[type=button],[type=submit],[type=file]')||!shown(el))continue;
+    fieldCount++;const size=parseFloat(getComputedStyle(el).fontSize);
+    if(size<16)fields.push({element:name(el),size});
+  }
+  return {textNodes,fieldCount,text:text.slice(0,15),fields:fields.slice(0,15)};
+})()"""
+
+
+async def audit_q24(page: Page, evidence: Path, label: str, *, restore: tuple[int, int, bool] = (1425, 1180, False)) -> dict:
+    """Assert no visible informative text is below 11 px and no phone field is below 16 px."""
+    report, problems = {}, []
+    for width in Q24_WIDTHS:
+        await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': width <= 390})
+        await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+        await asyncio.sleep(0.1)
+        found = await page.evaluate(Q24_PROBE)
+        report[str(width)] = found
+        assert found['textNodes'] > 0, f'Q24 {label} {width}px: the probe saw no text'
+        problems += [f'{width}px text {item["size"]}px: {item["element"]}' for item in found['text']]
+        if width <= 390:
+            problems += [f'{width}px field {item["size"]}px: {item["element"]}' for item in found['fields']]
+    await page.command('Emulation.setDeviceMetricsOverride', {'width': restore[0], 'height': restore[1], 'deviceScaleFactor': 1, 'mobile': restore[2]})
+    (evidence / f'q24-{label}.json').write_text(json.dumps({'view': label, 'widths': report, 'problems': problems}, indent=2) + '\n')
+    assert not problems, f'Q24 {label} floors violated: ' + '; '.join(problems[:10])
+    return report
+
+
+ROTATE_STEP = math.pi / 12
+HOUSE_YAW = "parseFloat(document.querySelector('#house-canvas').dataset.yaw)"
+
+
+async def _key(page: Page, key: str, code: str, key_code: int, text: str | None = None) -> None:
+    extra = {'text': text} if text else {}
+    await dispatch_key(page, 'keyDown' if text else 'rawKeyDown', key, code, key_code, **extra)
+    await dispatch_key(page, 'keyUp', key, code, key_code)
+
+
+async def audit_rotation(page: Page, evidence: Path, remount) -> dict:
+    """Q26 (WCAG 2.5.7): rotate buttons are a single-pointer alternative to dragging the 3D model."""
+    async def yaw() -> float:
+        return await page.evaluate(HOUSE_YAW)
+
+    async def press(selector: str, how: str) -> None:
+        assert await page.evaluate(f"(()=>{{const el=document.querySelector({json.dumps(selector)});el.focus();return document.activeElement===el}})()"), selector
+        if how == 'Enter':
+            await press_enter(page)
+        else:
+            await _key(page, ' ', 'Space', 32, text=' ')
+        await asyncio.sleep(0.15)
+
+    observed = {}
+    await page.evaluate("document.querySelector('#reset-view').click()")
+    await asyncio.sleep(0.15)
+    home_yaw = await yaw()
+    # Targets: named, enabled and at least 44 x 44 CSS px on phone and desktop.
+    for width, mobile in ((320, True), (1425, False)):
+        await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': mobile})
+        await asyncio.sleep(0.15)
+        for selector, label in (('#rotate-left', 'Rotar a la izquierda'), ('#rotate-right', 'Rotar a la derecha')):
+            box = await page.evaluate(f"(()=>{{const el=document.querySelector('{selector}'),r=el.getBoundingClientRect();return {{w:r.width,h:r.height,disabled:el.disabled,name:el.getAttribute('aria-label'),type:el.type,visible:el.checkVisibility()}}}})()")
+            assert box['w'] >= 44 and box['h'] >= 44 and box['visible'] and not box['disabled'], (width, selector, box)
+            assert box['name'] == label and box['type'] == 'button', box
+    await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
+    await asyncio.sleep(0.15)
+    # Tab order follows the visual order: zoom, rotate left, rotate right, reset.
+    await page.evaluate("document.querySelector('#zoom-out').focus()")
+    order = []
+    for _ in range(3):
+        await _key(page, 'Tab', 'Tab', 9)
+        order.append(await page.evaluate('document.activeElement.id'))
+    assert order == ['rotate-left', 'rotate-right', 'reset-view'], order
+    # Enter and Space turn the yaw by one fixed step each way.
+    for selector, how, steps in (('#rotate-left', 'Enter', 1), ('#rotate-left', 'Space', 2), ('#rotate-right', 'Enter', 1), ('#rotate-right', 'Space', 0)):
+        await press(selector, how)
+        got = await yaw()
+        assert abs(got - (home_yaw + steps * ROTATE_STEP)) < 1e-3, (selector, how, got, home_yaw, steps)
+    observed['keyboard'] = {'order': order, 'step_rad': ROTATE_STEP}
+    # Dragging still works and reset restores the default view.
+    center = await page.evaluate("(()=>{const r=document.querySelector('#house-canvas canvas').getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2}})()")
+    mouse = {'y': center['y'], 'button': 'left', 'clickCount': 1}
+    await page.command('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, 'x': center['x'], **mouse})
+    await page.command('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'buttons': 1, 'x': center['x'] + 50, **mouse})
+    await page.command('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, 'x': center['x'] + 50, **mouse})
+    await asyncio.sleep(0.15)
+    dragged = await yaw()
+    assert abs(dragged - (home_yaw - 50 * 0.006)) < 1e-3, ('drag', dragged, home_yaw)
+    await press('#reset-view', 'Enter')
+    assert abs(await yaw() - home_yaw) < 1e-3
+    observed['drag_yaw'] = dragged
+    # Reduced motion applies the step at once; default motion still eases it.
+    for preference in ('reduce', 'no-preference'):
+        await page.command('Emulation.setEmulatedMedia', {'features': [{'name': 'prefers-reduced-motion', 'value': preference}]})
+        await page.evaluate("document.querySelector('#reset-view').click()")
+        await asyncio.sleep(1.2)
+        await page.evaluate("window.__kzaFrame0=document.querySelector('#house-canvas canvas').toDataURL();document.querySelector('#rotate-left').click()")
+        await asyncio.sleep(0.15)
+        await page.evaluate("window.__kzaFrame1=document.querySelector('#house-canvas canvas').toDataURL()")
+        await asyncio.sleep(1.2)
+        result = await page.evaluate("({moved:window.__kzaFrame1!==window.__kzaFrame0,settledEarly:window.__kzaFrame1===document.querySelector('#house-canvas canvas').toDataURL()})")
+        observed[preference] = result
+        if preference == 'reduce':
+            assert result['moved'] and result['settledEarly'], f'Q26 reduced motion: the rotation must render at once, without easing {result}'
+        else:
+            assert not result['settledEarly'], f'Q26 default motion: the rotation is expected to ease {result}'
+    await page.command('Emulation.setEmulatedMedia', {'features': []})
+    await page.evaluate("document.querySelector('#reset-view').click()")
+    # Expanded map on short phones: all six tools keep a 44 px box inside the clipped stage and pass a real hit test.
+    observed['expanded_tools'] = {}
+    for width, height in ((320, 520), (390, 520), (390, 540)):
+        await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': height, 'deviceScaleFactor': 1, 'mobile': True})
+        await page.evaluate("document.querySelector('#expand-map').click()")
+        await asyncio.sleep(0.2)
+        tools = await page.evaluate("""(()=>{const stage=document.querySelector('#map-stage').getBoundingClientRect();
+          return ['zoom-in','zoom-out','rotate-left','rotate-right','reset-view','expand-map'].map(id=>{
+            const el=document.getElementById(id),r=el.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2,hit=document.elementFromPoint(x,y);
+            const w=Math.min(r.right,stage.right)-Math.max(r.left,stage.left),h=Math.min(r.bottom,stage.bottom)-Math.max(r.top,stage.top);
+            return {id,w:r.width,h:r.height,visibleW:w,visibleH:h,hit:!!hit&&(hit===el||el.contains(hit))}})})()""")
+        observed['expanded_tools'][f'{width}x{height}'] = tools
+        await page.evaluate("document.querySelector('#expand-map').click()")
+        for tool in tools:
+            assert tool['w'] >= 44 and tool['h'] >= 44 and tool['visibleW'] >= 44 and tool['visibleH'] >= 44 and tool['hit'], (width, height, tool)
+    await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
+    await asyncio.sleep(0.15)
+    # Without WebGL the tools are disabled, not left as dead controls.
+    await page.evaluate("window.__qaGetContext=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(){return null}")
+    await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
+    await page.wait_for("!document.querySelector('#actions-view').hidden && !document.querySelector('#house-canvas canvas')")
+    await page.evaluate("document.querySelector('#app-nav [data-view=home]').click()")
+    await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden && !!document.querySelector('#house-canvas .house-fallback')")
+    fallback = await page.evaluate("""(()=>{const state=Object.fromEntries(['rotate-left','rotate-right'].map(id=>{
+      const el=document.querySelector('#'+id);el.focus();el.click();return [id,{disabled:el.disabled,focused:document.activeElement===el}]}));
+      return {state,canvas:!!document.querySelector('#house-canvas canvas'),yaw:document.querySelector('#house-canvas').dataset.yaw??null}})()""")
+    assert fallback['canvas'] is False and fallback['yaw'] is None, fallback
+    assert all(item['disabled'] and not item['focused'] for item in fallback['state'].values()), fallback
+    observed['fallback'] = fallback
+    await page.evaluate("HTMLCanvasElement.prototype.getContext=window.__qaGetContext;delete window.__qaGetContext")
+    await remount()
+    (evidence / 'q26-rotation.json').write_text(json.dumps(observed, indent=2) + '\n')
+    return observed
+
+
 async def main() -> None:
     os.environ["KZA_DASHBOARD_TOKEN"] = "synthetic-nexo-bootstrap"
     evidence = evidence_directory("KZA_NEXO_HOME_EVIDENCE", "data/autonomous-roadmap-20261102/t047/people-browser-runs")
@@ -296,6 +452,7 @@ async def main() -> None:
                     assert [request["path"] for request in requests] == ["/api/admin/auth/whoami"]
                     assert await page.evaluate("document.querySelector('#token').getAttribute('aria-describedby')==='login-guidance' && document.querySelector('#login-guidance').textContent.includes('administrador del hogar') && document.querySelector('#login-guidance').textContent.includes('evaluación temporal') && document.querySelector('#login-guidance').textContent.includes('Home Assistant no funciona')")
                     await screenshot(page, evidence / 'login-guidance.png')
+                    await audit_q24(page, evidence, 'sesion')
 
                     # T045-U3: login error classification in real Chromium (401, 403, 503, timeout, network).
                     login_error_checks = {}
@@ -407,6 +564,13 @@ async def main() -> None:
                     stale_episodes = await page.evaluate("window.__qaStale")
                     (evidence / 'stale-episodes.json').write_text(json.dumps({'episodes': stale_episodes, 'staleness_check': staleness_check}, indent=2) + '\n')
                     assert stale_episodes == [], f'entity observations lapsed between catalog refreshes: {stale_episodes[:5]}'
+                    # Q26 takes several seconds without catalog refreshes, so it runs after the freshness monitor is closed.
+                    await audit_q24(page, evidence, 'hogar')
+                    rotation = await audit_rotation(page, evidence, remount_house)
+                    await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
+                    await page.wait_for("!document.querySelector('#actions-view').hidden && document.querySelector('#action-list button')")
+                    await audit_q24(page, evidence, 'acciones')
+                    await remount_house()
                     legacy_links = {'home-1425': await page.evaluate(LEGACY_LINKS)}
                     await page.command("Emulation.setDeviceMetricsOverride", {"width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True})
                     await asyncio.sleep(0.2)
@@ -530,6 +694,7 @@ async def main() -> None:
                     await page.evaluate("document.querySelector('#refresh-people').click()")
                     await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===3")
                     audits['personas'] = await audit_view(page, evidence, 'personas', PEOPLE_CONTROLS, screenshot)
+                    await audit_q24(page, evidence, 'personas')
                     await screenshot(page, evidence / 'people-desktop.png')
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 390, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False})
                     assert await page.evaluate('document.documentElement.scrollWidth<=window.innerWidth')
@@ -591,8 +756,11 @@ async def main() -> None:
                               "a11y_checks": ["no horizontal overflow per C08 width", "key controls visible, enabled and hit-testable",
                                               "accessible names from the browser accessibility tree", "Tab reaches every control in document order",
                                               ":focus-visible with a visible indicator, not obscured", "44x44 CSS px touch targets at 320/390",
-                                              "html lang es", "prefers-reduced-motion settles the 3D camera at once"],
+                                              "html lang es", "prefers-reduced-motion settles the 3D camera at once",
+                                              "Q24 text 11px and phone field 16px floors at 320/390/1440",
+                                              "Q26 rotate buttons: Tab, Enter, Space, drag, reset, reduced motion, no-WebGL fallback"],
                               "a11y_evidence": [f'a11y-{view}.json' for view in audits], "reduced_motion": motion,
+                              "rotation_q26": rotation,
                               "login_error_checks": login_error_checks,
                               "legacy_links": legacy_links}
                     (evidence / "browser-result.json").write_text(json.dumps(result, indent=2) + '\n')
