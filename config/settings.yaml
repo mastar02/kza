@@ -709,7 +709,9 @@ integrations:
     sensors: []  # Entradas con entity_id, kind (energy/power) y room/label opcionales.
     max_staleness_s: 300.0
   calendar:
-    ics_sources: []  # Entradas con path relativo a data_root, scope y owner_user_id si es personal.
+    # Entradas con path, scope y owner_user_id si es personal.
+    # En modo gestionado usar un nombre simple o una ruta absoluta dentro de data_root.
+    ics_sources: []
     ha_sources: []  # Entradas con entity_id, scope (shared/personal) y owner_user_id si es personal.
     data_root: "./data/calendars"
     ha_timeout_s: 5.0

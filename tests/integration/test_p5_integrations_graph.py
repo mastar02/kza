@@ -316,23 +316,23 @@ async def test_managed_calendar_root_stays_inside_state_data(tmp_path):
     calendar = state / "data" / "calendars"
     calendar.mkdir(parents=True)
     runtime.mkdir()
+    (runtime / "data").symlink_to(state / "data", target_is_directory=True)
     (state / "config").mkdir()
     settings = state / "config" / "settings.yaml"
     config = {"calendar": {"data_root": "./data/calendars",
-                           "ics_sources": [{"path": "sources/house.ics", "scope": "shared"}]}}
+                           "ics_sources": [{"path": "house.ics", "scope": "shared"}]}}
     settings.write_text(yaml.safe_dump({"integrations": config}))
     binding = {"runtime_root": str(runtime), "state_root": str(state)}
     assert path_preflight(binding, sys.executable) == []
 
     reader = build_integrations(config, None, HouseholdClock(), state_root=state).calendar_reader
-    (calendar / "sources").mkdir()
-    (calendar / "sources" / "house.ics").write_text("BEGIN:VCALENDAR\nEND:VCALENDAR\n")
+    (calendar / "house.ics").write_text("BEGIN:VCALENDAR\nEND:VCALENDAR\n")
     assert (await reader.get_day(access=CalendarAccess())).complete
     outside = tmp_path / "outside"
     calendar.rename(outside)
     calendar.symlink_to(outside, target_is_directory=True)
     assert not (await reader.get_day(access=CalendarAccess())).complete
-    assert "foreign_serving_store:integrations.calendar.data_root" in path_preflight(binding, sys.executable)
+    assert "relative_path:integrations.calendar.data_root" in path_preflight(binding, sys.executable)
     with pytest.raises(ValueError, match="calendar_data_root_outside_data_directory"):
         build_integrations(config, None, HouseholdClock(), state_root=state)
 
