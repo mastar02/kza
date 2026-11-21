@@ -677,7 +677,7 @@ PA_TOMBSTONE = cw.sql(("INSERT INTO conversation_tombstones VALUES ('conv-pa', 2
 H_CREDENTIAL = "\n".join([
     "import sqlite3",
     "from contextlib import closing",
-    f"with closing(sqlite3.connect(state / 'data' / 'auth.db')) as db, db:",
+    "with closing(sqlite3.connect(state / 'data' / 'auth.db')) as db, db:",
     f"    db.execute({sc4b_states.ddl('credentials')!r})",
     "    db.execute('INSERT INTO credentials VALUES (?,?,?,?,?,?,?,?,?)', ('cred-sc6b', 'd' * 64, 'home', 'home',",
     "               'user-sc6b', 1800000000.0, 4102444800.0, 1, '[]'))",

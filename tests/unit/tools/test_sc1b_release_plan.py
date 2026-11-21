@@ -214,7 +214,8 @@ def test_first_post_r1_plan_admits_new_and_start_runs_k_from_new(x4, x5, tmp_pat
     assert intent["mode"] == "release" and compaction.release_log(log)
     assert intent["retire_prepare_leftovers"] is True
     assert intent["archive"] == {"release_sha256": x5["release_sha256"], "git_commit": x5["manifest"]["git_commit"],
-                                 "schema_contract": 1, "controller_triple": list(x5["triple"])}
+                                 "schema_contract": stage.SCHEMA_CONTRACT_EPOCH,
+                                 "controller_triple": list(x5["triple"])}
     k_runtime = root / "slots" / "k" / "runtime"
     assert compaction._sha256_bytes((k_runtime / "release.json").read_bytes()) == x5["release_sha256"]
     head = stage.read_admission_head(root)
@@ -390,9 +391,10 @@ def test_new_manifest_integers_and_schema_contracts(x5, x5s, tmp_path, monkeypat
 
     # Review B3: an epoch above the installed one is (c)'s greater triple: t0_required naming both.
     epoch6 = compaction.T0_REQUIRED + _triples(x5["triple"], (6,) + tuple(x5s["triple"][1:]))
+    future_contract = stage.SCHEMA_CONTRACT_EPOCH + 1
     for values, code in (({"launcher_contract": 2}, "runtime_admission_launcher_contract_missing"),
                          ({"format_epoch": 0}, "runtime_admission_rollback_format_closed"),
-                         ({"schema_contract": 2}, "runtime_admission_compaction_schema_contract"),
+                         ({"schema_contract": future_contract}, "runtime_admission_compaction_schema_contract"),
                          ({"controller_epoch": 6}, epoch6)):
         with_values(**values)
         _row_p(root, tmp_path, "h-" + next(iter(values)), code, lambda: cw.plan(root, x5s["archive"]))
@@ -403,8 +405,10 @@ def test_new_manifest_integers_and_schema_contracts(x5, x5s, tmp_path, monkeypat
     installed = compaction._installed_manifest
     integers = stage.release_integers
     for target, name, patched in (
-            (compaction, "_installed_manifest", lambda root_path: {**installed(root_path), "schema_contract": 2}),
-            (stage, "release_integers", lambda binding: {**integers(binding), "schema_contract": 2})):
+            (compaction, "_installed_manifest",
+             lambda root_path: {**installed(root_path), "schema_contract": future_contract}),
+            (stage, "release_integers",
+             lambda binding: {**integers(binding), "schema_contract": future_contract})):
         witness = cw.witness(root)
         with pytest.MonkeyPatch.context() as patch:
             patch.setattr(target, name, patched)

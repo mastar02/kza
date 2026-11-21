@@ -147,7 +147,7 @@ def test_controller_epoch_5_is_declared():
     assert stage.CONTROLLER_EPOCH == 5 and stage.CONTROLLER_REVISION == 1
     assert stage.RELEASE_MODE_EPOCH == 5
     assert (stage.SCHEMA_CONTRACT_EPOCH, stage.FORMAT_EPOCH, stage.LAUNCHER_CONTRACT,
-            stage.RECEIPT_STATE_SCHEMA) == (1, 1, 3, 2)  # epochs.unchanged
+            stage.RECEIPT_STATE_SCHEMA) == (2, 1, 3, 2)
 
 
 def test_controller_epoch_5_and_revision_are_declared(builds):
@@ -370,7 +370,7 @@ def test_sr1_refuses_another_schema_contract(builds, tmp_path, monkeypatch):
 
     def read(archive):
         manifest, files = original(archive)
-        return dict(manifest, schema_contract=2), files
+        return dict(manifest, schema_contract=stage.SCHEMA_CONTRACT_EPOCH + 1), files
     monkeypatch.setattr(stage, "_read_archive", read)
     witness = cw.witness(root)
     _unchanged_t0(root, witness, lambda: _install(root, builds), launcher.SCHEMA_CONTRACT_CHANGED)
@@ -948,16 +948,17 @@ def test_sr1_recomputes_the_binding_with_the_staged_code(builds, tmp_path):
     assert _current(root) == builds["manifests"]["x5"]["git_commit"]
 
 
-def test_a_first_t0_over_an_r1_head_passes_sr1_and_serves_r1s_slot(builds, tmp_path):
-    """Review r1 F7 / r2 F6: the pinned R1 (357dcb5), not the x4 stand-in.
-
-    R1's own stage_runtime computes the head's binding byte-equal to this
-    code's; the first T0 of X5 then passes SR-1 and the R1 slot serves under
-    the epoch-5 controller.
-    """
+@pytest.mark.parametrize(("archive_name", "schema_contract"), [
+    pytest.param("r1", 1, id="historical-r1"),
+    pytest.param("x4", 2, id="adopted-epoch-2"),
+])
+def test_first_t0_respects_the_head_schema_contract(builds, tmp_path, archive_name, schema_contract):
+    """Q4: production adopts directly from e9669ec into schema contract 2."""
     assert builds["manifests"]["r1"]["git_commit"].startswith(R1_COMMIT)
+    assert builds["manifests"][archive_name]["schema_contract"] == schema_contract
+    assert builds["manifests"]["x5"]["schema_contract"] == stage.SCHEMA_CONTRACT_EPOCH == 2
     with epoch4_in_process():
-        world = cw.world(builds["archives"]["r1"], tmp_path, hops=())
+        world = cw.world(builds["archives"][archive_name], tmp_path, hops=())
     root = world["root"]
     head = stage.read_admission_head(root)
     stored = stage.read_binding(root, head["binding_id"])
@@ -967,12 +968,15 @@ def test_a_first_t0_over_an_r1_head_passes_sr1_and_serves_r1s_slot(builds, tmp_p
                             str(runtime / "scripts" / "stage_runtime.pyc"), str(root), "a"],
                            cwd=runtime, env=environment, capture_output=True, text=True, timeout=300)
     assert probe.returncode == 0, probe.stdout + probe.stderr
-    r1_binding = json.loads(probe.stdout)["binding"]
-    assert stage._canonical_json(r1_binding) == stage._canonical_json(stored)
+    slot_binding = json.loads(probe.stdout)["binding"]
+    assert stage._canonical_json(slot_binding) == stage._canonical_json(stored)
     assert stage._canonical_json(stage._binding_snapshot(root, "a")) == stage._canonical_json(stored)
+    if schema_contract != stage.SCHEMA_CONTRACT_EPOCH:
+        _unchanged_t0(root, cw.witness(root), lambda: _install(root, builds), launcher.SCHEMA_CONTRACT_CHANGED)
+        return
     _install(root, builds)
     assert _record(root)["controller_epoch"] == 5
-    assert _serve(root, tmp_path, "r1-under-epoch5").code == 0
+    assert _serve(root, tmp_path, "epoch-2-under-controller-5").code == 0
 
 
 def test_the_delegated_observation_reader_runs_the_guard_first(tmp_path):
