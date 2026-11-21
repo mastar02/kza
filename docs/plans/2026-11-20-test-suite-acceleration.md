@@ -19,7 +19,7 @@ Medición directa sobre los artefactos JUnit XML y metadatos de `/home/yo/projec
 3. **I/O en disco físico en vez de RAM (`/dev/shm`):** miles de extracciones de tarballs, `sqlite3` e inventarios `0555` se escribían en disco ext4/LVM con `63 GiB` libres en `/dev/shm`.
 4. **Sobrecarga evitable en fixtures (`T090-U3`):** recreación repetida de `TestClient` + `DashboardAPI` (~400 parametrizaciones en `tests/unit/dashboard/test_private_access.py`, `125.1 s`) y clonado/poblado repetido de mundos base.
 
-## Arquitectura de 5 Unidades (`T090-U1`..`T090-U5`)
+## Arquitectura de 6 Unidades (`T090-U1`..`T090-U6`)
 
 | Unidad | Descripción | Estado |
 |---|---|---|
@@ -28,6 +28,7 @@ Medición directa sobre los artefactos JUnit XML y metadatos de `/home/yo/projec
 | `T090-U3` | Optimización de fixtures lentos sin tocar oráculos (`test_private_access.py`, árboles base inmutables en `test_legacy_state_retirement.py` / `test_adoption_commands.py` / `compaction_world.py`) | En curso (asiento paralelo) |
 | `T090-U4` | Aceleración de `systemd` (`sc6b` + `test_linux_*`) y `compiled-solo` preservando `systemd-journald NRestarts` y presupuestos reales: memoización en proceso de `schema_compatible_revision` y `_table_columns`, precalentamiento de `schema_compatible_revision(repo, "HEAD")` y `epoch4` en `~/.cache/kza-runtime-artifacts`, y `--solo-workers` (`--dist=load`, default `2`) en `lane-c-compiled-solo` tras cerrar Carriles A y B | `verified_local` |
 | `T090-U5` | Integración de Tiers en el runbook de Mac, el workflow multi-asiento y `.github/workflows/ci.yml`, con tests de estructura del workflow | `verified_local` |
+| `T090-U6` | Selección de pasos en Tier 2, trazabilidad por SHA y preflight de interferencia de ThermoUY | `verified_local` |
 
 ## Niveles de ejecución (Tiers)
 
@@ -50,12 +51,15 @@ Ejecutar desde el checkout del SHA bajo prueba con el venv KZA de Python 3.13.
 
 **Tier 2**, gate completo (objetivo ~8–15 min), como `yo` en
 `/home/yo/projects/kza` de `kza-yo`. Ejecutar con seis workers y los límites
-indicados dentro de `MemoryHigh=32 GiB` y `MemorySwapMax=0` de `yo`.
+indicados dentro de `MemoryHigh=32 GiB` y `MemorySwapMax=0` de `yo`. El shell
+SSH de `yo` arranca en `NI=0`. `nice -n 5` deja el runner en `NI=5`, con
+prioridad menor que producción (`NI=0`) y afinidad a las CPU 24–47. Los
+valores `NI=10` y `NI=15` pueden provocar inanición de asyncio bajo carga.
 
 ```bash
 env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 \
   RAYON_NUM_THREADS=2 TOKIO_WORKER_THREADS=2 \
-  taskset -c 24-47 nice -n 10 .venv/bin/python scripts/run_test_suite.py --tier 2 --workers 6
+  taskset -c 24-47 nice -n 5 .venv/bin/python scripts/run_test_suite.py --tier 2 --workers 6
 ```
 
 Node, el carril A (suite sin systemd con xdist) y el carril B (cinco módulos
@@ -71,6 +75,40 @@ serial con `--solo-workers 1`. El runner toma ambas lecturas de
 `systemd-journald` bajo la misma exclusión por `SOLO_WINDOW` y `flock`.
 El gate requiere `exit_code == 0`, `nrestarts_ok == true` y dos lecturas
 válidas con `before_NRestarts == after_NRestarts` en `summary.json`.
+
+### Corridas parciales y preflight de Tier 2 (`T090-U6`)
+
+Usar `--lanes` para repetir pasos de Tier 2 sobre el mismo SHA. Acepta
+`all` (por defecto), `node`, `a`, `b`, `b-linux`, `b-sc6b1`, `b-sc6b2` y `c`,
+separados por comas o espacios. Por ejemplo, agregar `--lanes b-sc6b2,c`
+repite la segunda fase de SC-6b y luego los ensayos compilados. `b` selecciona
+los tres pasos seriales del carril, en orden `b-linux`, `b-sc6b1`, `b-sc6b2`.
+`--no-node` omite `frontend-node` aunque estuviera seleccionado. Si la
+selección efectiva queda vacía, el runner rechaza el comando.
+
+Cada corrida parcial conserva `SOLO_WINDOW`, el bloqueo exclusivo de
+`feature-pytest.lock` y la verificación de estabilidad de `NRestarts`. El
+carril C espera a que terminen los pasos seleccionados de Node, A y B.
+`summary.json` registra el `git_commit`, `git_dirty` (estado de cambios
+rastreados, con `null` cuando falla la consulta de Git correspondiente) y
+`selected_lanes` con los nombres de los pasos en orden canónico. Para
+validar resultados de corridas separadas, comprobar que todos los pasos
+requeridos estén cubiertos por resúmenes exitosos del mismo SHA con
+`git_dirty == false`.
+
+Al seleccionar cualquier paso de B o C en Linux, el runner consulta en modo
+de solo lectura las unidades `.service` y `.timer` de
+`thermouy-tier2-nightly` y `thermouy-ci-prune`. Consulta primero el manager
+de usuario (`systemctl --user show`) y consulta el manager del sistema
+solamente si la unidad figura como `not-found` en el de usuario. La ausencia
+confirmada en ambos permite continuar. Si un servicio está activo,
+activándose o desactivándose, si un timer vence en los próximos
+`--quiet-window-minutes` minutos (45 por defecto, comparados en UTC) o si
+falla una consulta, el runner termina con código 2 antes de pytest, libera
+`SOLO_WINDOW` y registra los motivos en `host_interference` y stderr.
+`host_timers_checked` registra el ámbito, estado y próximo vencimiento en
+UTC de cada unidad consultada. `--ignore-host-timers` omite explícitamente
+este preflight y queda registrado en `ignore_host_timers`.
 
 ### Detalle de optimizaciones `T090-U3` y `T090-U4`
 

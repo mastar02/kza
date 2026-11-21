@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import os
 from pathlib import Path
 import shlex
 import stat
+import subprocess
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -277,7 +281,6 @@ def test_run_tier2_lanes_waits_for_a_and_b_and_runs_exact_compiled_nodeids(tmp_p
     def fake_run(name: str, cmd: list[str], *, cwd: Path, env: dict[str, str], log_path: Path) -> dict:
         timeline.append(("start", name))
         if name == "lane-b-sc6b2":
-            import time
             time.sleep(0.05)
         recorded_cmds[name] = list(cmd)
         recorded_envs[name] = dict(env)
@@ -387,8 +390,6 @@ def test_run_tier2_lanes_respects_solo_workers_and_keeps_lane_b_serial(
 
 
 def test_cli_forwards_solo_workers_and_rejects_non_positive(tmp_path, monkeypatch):
-    import json
-
     solo = tmp_path / "runs" / "SOLO_WINDOW"
     solo.parent.mkdir(parents=True)
     out_dir = tmp_path / "out"
@@ -414,6 +415,7 @@ def test_cli_forwards_solo_workers_and_rejects_non_positive(tmp_path, monkeypatc
             "1",
             "--no-prebuild",
             "--no-node",
+            "--ignore-host-timers",
             "--out-dir",
             str(out_dir),
             "--cache-dir",
@@ -427,6 +429,428 @@ def test_cli_forwards_solo_workers_and_rejects_non_positive(tmp_path, monkeypatc
 
     with pytest.raises(SystemExit):
         runner.main(["--tier", "0", "--targets", "tests/a.py", "--solo-workers", "0"])
+
+
+@pytest.fixture
+def tier2_cli(tmp_path, monkeypatch):
+    solo = tmp_path / "runs" / "SOLO_WINDOW"
+    solo.parent.mkdir()
+    out_dir = tmp_path / "out"
+
+    def read_nrestarts():
+        assert solo.exists()
+        return 42
+
+    monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", solo)
+    monkeypatch.setattr(runner.sys, "platform", "linux")
+    monkeypatch.setattr(runner, "_xdist_available", lambda _p: True)
+    monkeypatch.setattr(runner, "journald_nrestarts", read_nrestarts)
+    args = [
+        "--tier",
+        "2",
+        "--workers",
+        "6",
+        "--no-prebuild",
+        "--out-dir",
+        str(out_dir),
+        "--cache-dir",
+        str(tmp_path / "cache"),
+    ]
+    return args, out_dir, solo
+
+
+@pytest.mark.parametrize(
+    ("lane_args", "options", "expected"),
+    [
+        ([], [], ["frontend-node", "lane-a-core", "lane-b-linux", "lane-b-sc6b1", "lane-b-sc6b2", "lane-c-compiled-solo"]),
+        (["all"], ["--no-node"], ["lane-a-core", "lane-b-linux", "lane-b-sc6b1", "lane-b-sc6b2", "lane-c-compiled-solo"]),
+        (["node"], [], ["frontend-node"]),
+        (["c,a"], [], ["lane-a-core", "lane-c-compiled-solo"]),
+        (["c b-sc6b2"], [], ["lane-b-sc6b2", "lane-c-compiled-solo"]),
+        (["b-linux"], [], ["lane-b-linux"]),
+        (["b-sc6b1"], [], ["lane-b-sc6b1"]),
+        (["c"], ["--ignore-host-timers"], ["lane-c-compiled-solo"]),
+        (
+            ["c,b-sc6b1", "b", "a", "node"],
+            ["--no-node"],
+            ["lane-a-core", "lane-b-linux", "lane-b-sc6b1", "lane-b-sc6b2", "lane-c-compiled-solo"],
+        ),
+    ],
+)
+def test_tier2_cli_runs_selected_steps_in_canonical_order(tier2_cli, monkeypatch, lane_args, options, expected):
+    args, out_dir, solo = tier2_cli
+    timeline = []
+    checks = []
+    recorded_commands = {}
+
+    def fake_run(name, cmd, *, cwd, env, log_path):
+        assert solo.exists()
+        timeline.append(("start", name))
+        if name != "lane-c-compiled-solo":
+            time.sleep(0.01)
+        recorded_commands[name] = cmd
+        timeline.append(("end", name))
+        return {"name": name, "exit_code": 0, "duration_s": 0.01}
+
+    def fake_check(minutes):
+        assert solo.exists()
+        assert not timeline
+        checks.append(minutes)
+        return [], []
+
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    monkeypatch.setattr(runner, "check_host_interference", fake_check)
+    if lane_args:
+        args += ["--lanes", *lane_args]
+    assert runner.main(args + options) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["selected_lanes"] == expected == [step["name"] for step in summary["steps"]]
+    git_commit = subprocess.check_output(
+        ["git", "rev-parse", "--verify", "HEAD"], cwd=runner.REPO_ROOT, text=True
+    ).strip()
+    assert summary["git_commit"] == git_commit
+    assert len(git_commit) == 40
+    tracked_status = subprocess.check_output(
+        ["git", "status", "--porcelain", "--untracked-files=no"], cwd=runner.REPO_ROOT, text=True
+    )
+    assert summary["git_dirty"] is bool(tracked_status)
+    assert summary["before_NRestarts"] == summary["after_NRestarts"] == 42
+    assert summary["nrestarts_ok"]
+    assert summary["host_interference"] == []
+    assert summary["ignore_host_timers"] is ("--ignore-host-timers" in options)
+    assert summary["host_timers_checked"] == []
+    assert not solo.exists()
+    needs_check = any(name.startswith(("lane-b-", "lane-c-")) for name in expected)
+    assert checks == ([45] if needs_check and "--ignore-host-timers" not in options else [])
+
+    if "lane-c-compiled-solo" in expected:
+        start_c = timeline.index(("start", "lane-c-compiled-solo"))
+        assert all(timeline.index(("end", name)) < start_c for name in expected[:-1])
+    lane_b = [name for name in expected if name.startswith("lane-b-")]
+    assert [name for event, name in timeline if event == "start" and name.startswith("lane-b-")] == lane_b
+    assert all(timeline.index(("end", a)) < timeline.index(("start", b)) for a, b in zip(lane_b, lane_b[1:]))
+    for name in lane_b:
+        cmd = recorded_commands[name]
+        assert "-n" not in cmd
+        if name.startswith("lane-b-sc6b"):
+            assert cmd[-1] == "tests/integration/test_linux_sc6b_release_rehearsal.py"
+            first_phase = "test_01 or test_02 or test_03 or test_04 or test_05 or test_06"
+            phase = first_phase if name == "lane-b-sc6b1" else f"not ({first_phase})"
+            assert cmd[cmd.index("-k") + 1] == phase
+
+
+@pytest.mark.parametrize(
+    ("args", "message"),
+    [
+        (["--tier", "2", "--lanes", "a,unknown"], "unknown --lanes token(s): unknown"),
+        (["--tier", "2", "--lanes", ", "], "--lanes requires at least one lane"),
+        (["--tier", "2", "--lanes"], "expected at least one argument"),
+        (["--tier", "2", "--lanes", "node", "--no-node"], "leave no Tier 2 steps selected"),
+        (["--tier", "0", "--lanes", "a", "--targets", "tests/a.py"], "--lanes selection requires --tier 2"),
+        (["--tier", "1", "--lanes", "c"], "--lanes selection requires --tier 2"),
+        (["--tier", "2", "--quiet-window-minutes", "-1"], "--quiet-window-minutes must be >= 0"),
+    ],
+)
+def test_cli_rejects_invalid_lane_options(args, message, capsys):
+    with pytest.raises(SystemExit) as exc:
+        runner.main(args)
+    assert exc.value.code == 2
+    assert message in capsys.readouterr().err
+
+
+def test_git_metadata_returns_none_outside_repository(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    assert runner.read_git_commit(tmp_path) is None
+    assert runner.read_git_dirty(tmp_path) is None
+
+
+@pytest.mark.parametrize(("tier", "pytest_step"), [(0, "tier0-pytest"), (1, "tier1-core")])
+@pytest.mark.parametrize("no_node", [False, True])
+def test_cli_summarizes_selected_lanes_for_lower_tiers(tmp_path, monkeypatch, tier, pytest_step, no_node):
+    out_dir = tmp_path / "out"
+    calls = []
+
+    def fake_run(name, cmd, *, cwd, env, log_path):
+        calls.append(name)
+        return {"name": name, "exit_code": 0, "duration_s": 0.01}
+
+    def unexpected_check(*_args):
+        pytest.fail("host timers are only inspected for Tier 2 lanes B and C")
+
+    monkeypatch.setattr(runner.sys, "platform", "darwin")
+    monkeypatch.setattr(runner, "_xdist_available", lambda _p: False)
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    monkeypatch.setattr(runner, "check_host_interference", unexpected_check)
+    args = [
+        "--tier", str(tier),
+        "--workers", "1",
+        "--lanes", "all",
+        "--no-prebuild",
+        "--out-dir", str(out_dir),
+        "--cache-dir", str(tmp_path / "cache"),
+    ]
+    if tier == 0:
+        args += ["--targets", "tests/a.py"]
+    if no_node:
+        args += ["--no-node"]
+    assert runner.main(args) == 0
+
+    summary = json.loads((out_dir / "summary.json").read_text())
+    expected = [pytest_step] if no_node else ["frontend-node", pytest_step]
+    assert summary["selected_lanes"] == calls == expected
+    assert not summary["ignore_host_timers"]
+    assert summary["host_timers_checked"] == []
+    assert summary["host_interference"] == []
+
+
+def test_read_git_dirty_ignores_untracked_files_and_reports_index_changes(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "sample.py").write_text("x = 1\n")
+    assert runner.read_git_dirty(tmp_path) is False
+    subprocess.run(["git", "add", "--", "sample.py"], cwd=tmp_path, check=True)
+    assert runner.read_git_dirty(tmp_path) is True
+
+
+def test_tier2_partial_run_fails_when_journald_restarts(tier2_cli, monkeypatch):
+    args, out_dir, solo = tier2_cli
+    readings = iter((42, 43))
+
+    def read_nrestarts():
+        assert solo.exists()
+        return next(readings)
+
+    def fake_run(name, cmd, *, cwd, env, log_path):
+        return {"name": name, "exit_code": 0, "duration_s": 0.01}
+
+    monkeypatch.setattr(runner, "journald_nrestarts", read_nrestarts)
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    assert runner.main(args + ["--lanes", "a"]) == 1
+
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["before_NRestarts"] == 42
+    assert summary["after_NRestarts"] == 43
+    assert not summary["nrestarts_ok"]
+    assert not solo.exists()
+
+
+@pytest.fixture
+def fake_systemctl(monkeypatch):
+    real_run = subprocess.run
+    responses = {
+        ("user", unit): f"Id={unit}\nLoadState=loaded\nActiveState=inactive\nSubState=dead\n"
+        for unit in runner.HOST_INTERFERENCE_UNITS
+    }
+    queried = []
+
+    def run(cmd, **kwargs):
+        if cmd[0] != "systemctl":
+            return real_run(cmd, **kwargs)
+        user = cmd[1] == "--user"
+        scope = "user" if user else "system"
+        prefix = ["systemctl", "--user"] if user else ["systemctl"]
+        unit = cmd[len(prefix) + 1]
+        assert cmd == [*prefix, "show", unit, "-p", "Id,LoadState,ActiveState,SubState,NextElapseUSecRealtime"]
+        assert unit in runner.HOST_INTERFERENCE_UNITS
+        assert kwargs["env"]["TZ"] == "UTC"
+        assert kwargs["env"]["LC_ALL"] == "C"
+        assert kwargs["capture_output"] and kwargs["text"] and kwargs["timeout"] > 0
+        queried.append((scope, unit))
+        response = responses.get((scope, unit))
+        if isinstance(response, Exception):
+            raise response
+        if isinstance(response, subprocess.CompletedProcess):
+            return response
+        if response is None:
+            missing = f"Id={unit}\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+            return subprocess.CompletedProcess(cmd, 4, stdout=missing, stderr=f"Unit {unit} could not be found.")
+        return subprocess.CompletedProcess(cmd, 0, stdout=response, stderr="")
+
+    monkeypatch.setattr(runner.sys, "platform", "linux")
+    monkeypatch.setattr(runner.subprocess, "run", run)
+    return responses, queried
+
+
+@pytest.mark.parametrize("state", ["active", "activating", "deactivating"])
+def test_check_host_interference_reports_busy_service(fake_systemctl, state):
+    responses, queried = fake_systemctl
+    service = "thermouy-ci-prune.service"
+    responses["user", service] = f"Id={service}\nLoadState=loaded\nActiveState={state}\nSubState=running\n"
+    interference, checked = runner.check_host_interference(45)
+    assert interference == [f"{service} is {state} (running)"]
+    assert queried == [
+        ("user", "thermouy-tier2-nightly.service"),
+        ("user", "thermouy-tier2-nightly.timer"),
+        ("user", "thermouy-ci-prune.service"),
+        ("user", "thermouy-ci-prune.timer"),
+    ]
+    check = next(item for item in checked if item.unit == service)
+    assert (check.scope, check.load_state, check.active_state) == ("user", "loaded", state)
+
+
+@pytest.mark.parametrize(
+    ("offset_minutes", "quiet_window", "interferes"),
+    [(20, 45, True), (20, 10, False), (90, 45, False), (-5, 45, False), (None, 45, False)],
+)
+def test_check_host_interference_compares_timer_to_utc(fake_systemctl, offset_minutes, quiet_window, interferes):
+    responses, _ = fake_systemctl
+    timer = "thermouy-tier2-nightly.timer"
+    timestamp = "n/a"
+    next_elapse_utc = None
+    if offset_minutes is not None:
+        trigger = dt.datetime.now(dt.UTC).replace(microsecond=0) + dt.timedelta(minutes=offset_minutes)
+        timestamp = f"{trigger:%a %Y-%m-%d %H:%M:%S} UTC"
+        next_elapse_utc = trigger.isoformat()
+    responses["user", timer] = (
+        f"NextElapseUSecRealtime={timestamp}\nId={timer}\nLoadState=loaded\nActiveState=active\nSubState=waiting\n"
+    )
+    expected = [f"{timer} is scheduled for {timestamp} within {quiet_window} minutes"] if interferes else []
+    interference, checked = runner.check_host_interference(quiet_window)
+    assert interference == expected
+    check = next(item for item in checked if item.unit == timer)
+    assert check.next_elapse_utc == next_elapse_utc
+
+
+def test_check_host_interference_allows_missing_units(fake_systemctl):
+    responses, queried = fake_systemctl
+    responses.clear()
+    interference, checked = runner.check_host_interference(45)
+    assert interference == []
+    assert queried == [(scope, unit) for unit in runner.HOST_INTERFERENCE_UNITS for scope in ("user", "system")]
+    assert [(item.unit, item.scope, item.load_state) for item in checked] == [
+        (unit, "not-found", "not-found") for unit in runner.HOST_INTERFERENCE_UNITS
+    ]
+
+
+def test_check_host_interference_falls_back_to_system_for_user_unit_not_found(fake_systemctl):
+    responses, queried = fake_systemctl
+    service = "thermouy-tier2-nightly.service"
+    responses["user", service] = f"Id={service}\nLoadState=not-found\nActiveState=inactive\nSubState=dead\n"
+    responses["system", service] = f"Id={service}\nLoadState=loaded\nActiveState=active\nSubState=running\n"
+
+    interference, checked = runner.check_host_interference(45)
+
+    assert interference == [f"{service} is active (running)"]
+    assert queried == [("user", service), ("system", service)] + [
+        ("user", unit) for unit in runner.HOST_INTERFERENCE_UNITS[1:]
+    ]
+    assert [(item.scope, item.load_state) for item in checked] == [("system", "loaded")] + [("user", "loaded")] * 3
+    assert checked[0].active_state == "active"
+
+
+@pytest.mark.parametrize(
+    ("scope", "response", "detail"),
+    [
+        ("user", FileNotFoundError("systemctl"), "FileNotFoundError"),
+        ("system", subprocess.TimeoutExpired(["systemctl"], 5), "TimeoutExpired"),
+        (
+            "user",
+            subprocess.CompletedProcess(["systemctl"], 1, stdout="", stderr="Failed to connect to bus"),
+            "Failed to connect to bus",
+        ),
+    ],
+)
+def test_tier2_unavailable_preflight_blocks_unless_explicitly_ignored(
+    tier2_cli, fake_systemctl, monkeypatch, capsys, scope, response, detail
+):
+    args, out_dir, solo = tier2_cli
+    responses, queried = fake_systemctl
+    unit = "thermouy-tier2-nightly.service"
+    if scope == "system":
+        del responses["user", unit]
+    responses[scope, unit] = response
+    started = []
+
+    def fake_run(name, cmd, *, cwd, env, log_path):
+        started.append(name)
+        return {"name": name, "exit_code": 0, "duration_s": 0.01}
+
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    args += ["--lanes", "c"]
+    assert runner.main(args) == 2
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["exit_code"] == 2 and summary["steps"] == started == []
+    assert not summary["ignore_host_timers"]
+    assert len(summary["host_timers_checked"]) == 4
+    check = next(item for item in summary["host_timers_checked"] if item["unit"] == unit)
+    assert check["scope"] == "unavailable"
+    assert check["load_state"] is check["active_state"] is check["next_elapse_utc"] is None
+    assert scope in check["error"] and detail in check["error"]
+    reason = f"{unit}: {check['error']}"
+    assert summary["host_interference"] == [reason]
+    assert reason in capsys.readouterr().err
+    assert queried[:2] == [
+        ("user", unit), (scope, unit if scope == "system" else "thermouy-tier2-nightly.timer")
+    ]
+    assert not solo.exists()
+
+    queried.clear()
+    assert runner.main(args + ["--ignore-host-timers"]) == 0
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["ignore_host_timers"] is True
+    assert summary["host_timers_checked"] == summary["host_interference"] == queried == []
+    assert started == ["lane-c-compiled-solo"]
+    assert not solo.exists()
+
+
+def test_journald_nrestarts_allows_missing_systemctl(monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise FileNotFoundError("systemctl")
+
+    monkeypatch.setattr(runner.sys, "platform", "linux")
+    monkeypatch.setattr(runner.subprocess, "run", unavailable)
+    assert runner.journald_nrestarts() is None
+
+
+def test_tier2_preflight_aborts_and_releases_solo_window(tier2_cli, fake_systemctl, monkeypatch, capsys):
+    args, out_dir, solo = tier2_cli
+    responses, queried = fake_systemctl
+    timer = "thermouy-ci-prune.timer"
+    trigger = dt.datetime.now(dt.UTC).replace(microsecond=0) + dt.timedelta(minutes=5)
+    responses["user", timer] = (
+        f"NextElapseUSecRealtime={trigger:%a %Y-%m-%d %H:%M:%S} UTC\n"
+        f"Id={timer}\nLoadState=loaded\nActiveState=active\nSubState=waiting\n"
+    )
+
+    original_check = runner.check_host_interference
+
+    def check_under_lock(minutes):
+        assert solo.exists()
+        with pytest.raises(RuntimeError, match="holds host lock"):
+            runner.acquire_solo_window(tier=1)
+        return original_check(minutes)
+
+    def unexpected_run(*args, **kwargs):
+        pytest.fail("preflight must abort before launching any lane")
+
+    monkeypatch.setattr(runner, "check_host_interference", check_under_lock)
+    monkeypatch.setattr(runner, "_run_subprocess", unexpected_run)
+    assert runner.main(args + ["--lanes", "a,b-sc6b1,c", "--quiet-window-minutes", "12"]) == 2
+
+    summary = json.loads((out_dir / "summary.json").read_text())
+    assert summary["exit_code"] == 2
+    assert summary["selected_lanes"] == ["lane-a-core", "lane-b-sc6b1", "lane-c-compiled-solo"]
+    assert summary["steps"] == []
+    assert not summary["nrestarts_ok"]
+    assert summary["ignore_host_timers"] is False
+    assert len(summary["host_timers_checked"]) == 4
+    check = next(item for item in summary["host_timers_checked"] if item["unit"] == timer)
+    assert check == {
+        "unit": timer,
+        "unit_id": timer,
+        "scope": "user",
+        "load_state": "loaded",
+        "active_state": "active",
+        "sub_state": "waiting",
+        "next_elapse_utc": trigger.isoformat(),
+        "error": None,
+    }
+    (reason,) = summary["host_interference"]
+    assert "thermouy-ci-prune.timer" in reason and "within 12 minutes" in reason
+    assert reason in capsys.readouterr().err
+    assert len(queried) == 4
+    assert not solo.exists()
+    runner.acquire_solo_window(tier=2).release()
 
 
 def test_safe_rmtree_ignores_symlinks_to_outside_files(tmp_path):
@@ -483,6 +907,7 @@ def test_main_reads_nrestarts_inside_solo_window_and_releases_on_rmtree_error(tm
                 "2",
                 "--no-prebuild",
                 "--no-node",
+                "--ignore-host-timers",
                 "--out-dir",
                 str(out_dir),
                 "--cache-dir",
