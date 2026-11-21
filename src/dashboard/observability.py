@@ -21,25 +21,37 @@ requiere use_mocks=True; ausencia o fallo en modo operativo nunca devuelve ejemp
 
 import asyncio
 import logging
+import sqlite3
 from functools import partial
 from datetime import UTC, datetime
+from dataclasses import replace
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, WebSocketException
+from pydantic import BaseModel, Field
 
+from src.alerts.alert_manager import AlertManager, AlertVoiceOutput
 from src.analytics.event_logger import EventLogger
 from src.dashboard import observability_mocks as mocks
 from src.dashboard.monitor_service import MonitorService
 from src.dashboard.observation_http import ObservationHeaders
-from src.core.observation import Observation, ObservationSource, ObservationReason
+from src.core.observation import Observation, ObservationSource, ObservationReason, ObservationState, combine_observations
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
-from src.dashboard.auth import COOKIE_NAME, current_lease, require_dashboard_session, session_guard, session_reader
-from src.dashboard.authority import DashboardRole
+from src.dashboard.auth import COOKIE_NAME, current_lease, require_admin, require_dashboard_session, session_guard, session_reader
+from src.dashboard.authority import DashboardPermission, DashboardRole
 from src.dashboard.live_retention_types import LiveSubscriptionMode
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.dashboard.native_work import NativeAuthorityRetired, ensure_admin_work, require_current, run_admin_work
 from src.dashboard.live_event_bus import LiveEventBus
+from src.reminders.reminder_store import AlertZonesConflict, AlertZonesPreference
 
 logger = logging.getLogger(__name__)
+
+
+class AlertZonesUpdate(BaseModel):
+    """Replace the selected zones, or use null to restore the config default."""
+
+    zones: list[str] | None
+    expected_revision: int | None = Field(default=None, ge=0)
 
 
 def _zones_adapter(zone_manager) -> list[dict]:
@@ -135,8 +147,11 @@ def _alert_instant(value) -> str | None:
     return (value if value.tzinfo is not None else value.replace(tzinfo=UTC)).isoformat()
 
 
-def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
+def _alerts_adapter(alert_manager: AlertManager, status: str | None) -> list[dict]:
     history = alert_manager.get_history(limit=100)
+    if status != "acked":
+        historical_ids = {alert.alert_id for alert in history}
+        history.extend(alert for alert in alert_manager.get_active_alerts() if alert.alert_id not in historical_ids)
     out = []
     for a in history:
         acked = a.processed
@@ -158,6 +173,46 @@ def _alerts_adapter(alert_manager, status: str | None) -> list[dict]:
             "acked": acked,
         })
     return out
+
+
+def _alert_producers(alert_manager: AlertManager | None, now: datetime) -> tuple[Observation, bool, list[dict]]:
+    """Use producer evidence for coverage; alert history may outlive that evidence."""
+    source = ObservationSource.ALERT_MANAGER
+    read_status = alert_manager.producer_status if alert_manager is not None else None
+    statuses = read_status() if read_status is not None else ()
+    if not statuses:
+        return Observation(source, ObservationState.UNAVAILABLE, reason=ObservationReason.UNCONFIGURED), False, []
+    observations = tuple(status.observation.as_of(now) for status in statuses)
+    available = all(value.state is ObservationState.FRESH for value in observations)
+    current = tuple(value for value in observations if value.current(now))
+    coverage = combine_observations(source, current or observations, now=now)
+    if current and not available:
+        coverage = replace(coverage, state=ObservationState.PARTIAL, unobserved_fields=("producer_coverage",))
+    producers = [{
+        **value.to_dict(now),
+        "id": status.name,
+        "available": value.state is ObservationState.FRESH,
+        "connected": status.connected,
+        "last_check_at": _alert_instant(value.attempted_at),
+        "known": status.known,
+        "unknown": status.unknown,
+        "overflow": status.overflow,
+        "uncertain": status.uncertain,
+    } for status, value in zip(statuses, observations, strict=True)]
+    return coverage, available, producers
+
+
+def _alert_zones(output: AlertVoiceOutput, preference: AlertZonesPreference | None) -> dict:
+    """Project only shared rooms and the current household output policy."""
+    return {
+        "available": True,
+        "writable": output.writable,
+        "configured_zones": output.configured_zones,
+        "zones": output.selected_zones(preference),
+        "using_default": preference is None or preference.zones is None,
+        "revision": preference.revision if preference is not None else 0,
+        "mute_reason": output.mute_reason(),
+    }
 
 
 def _ha_actions_adapter(event_logger, *, limit: int = 50) -> list[dict] | None:
@@ -426,13 +481,71 @@ def register_observability_routes(
             source=ObservationSource.USER_REGISTRY,
             unobserved_fields=("samples", "enrollment_time", "emotions", "pca", "effective_permissions", "top_commands"))
 
+    alert_output = alert_manager.voice_output if isinstance(alert_manager, AlertManager) else None
+
+    async def read_alert_zones(request: Request) -> dict:
+        if use_mocks or alert_output is None:
+            raise HTTPException(503, "alert_zones_unavailable")
+        current = session_guard(request, frozenset({DashboardPermission.HOME_READ}))
+        try:
+            preference = await alert_output.get_preference(guard=current)
+        except PermissionError as error:
+            raise HTTPException(403, "dashboard_authority_retired") from error
+        except (OSError, RuntimeError, sqlite3.Error) as error:
+            raise HTTPException(503, "alert_zones_unavailable") from error
+        if not current():
+            raise HTTPException(403, "dashboard_authority_retired")
+        return _alert_zones(alert_output, preference)
+
     @router.get("/api/alerts")
-    async def get_alerts(response: Response, status: str | None = None):
-        items = _adapt(lambda: _alerts_adapter(alert_manager, status) if alert_manager is not None else None,
-            mocks.ALERTS, response, component="alerts", source=ObservationSource.ALERT_MANAGER)
-        if use_mocks and status in {"active", "acked"}:
-            items = [value for value in items if value["acked"] == (status == "acked")]
-        return items
+    async def get_alerts(response: Response, request: Request, status: str | None = None):
+        source = ObservationSource.ALERT_MANAGER
+        if use_mocks:
+            _set_source(response, "alerts", source)
+            return [value for value in mocks.ALERTS
+                    if status not in {"active", "acked"} or value["acked"] == (status == "acked")]
+        try:
+            output = await read_alert_zones(request)
+        except HTTPException as error:
+            if error.status_code != 503:
+                raise
+            output = {"available": False}
+        now = datetime.now(UTC)
+        manager = alert_manager if isinstance(alert_manager, AlertManager) else None
+        coverage, available, producers = _alert_producers(manager, now)
+        items = _alerts_adapter(manager, status) if manager is not None else []
+        coverage = _set_source(response, "alerts", source, observation=coverage)
+        return {"alerts": items, "available": available and coverage.current(),
+                "observation": coverage.to_dict(), "producers": producers, "output": output}
+
+    @router.get("/api/alerts/zones")
+    async def get_alert_zones(request: Request, response: Response):
+        response.headers["Cache-Control"] = "no-store"
+        return await read_alert_zones(request)
+
+    @router.put("/api/alerts/zones", dependencies=[Depends(require_admin)])
+    async def set_alert_zones(update: AlertZonesUpdate, request: Request, response: Response):
+        if use_mocks:
+            raise HTTPException(409, "observability_demo_mode")
+        if alert_output is None or not alert_output.writable:
+            raise HTTPException(503, "alert_zones_unavailable")
+        current = session_guard(request, frozenset({DashboardPermission.ADMIN_MANAGE}))
+        try:
+            preference = await alert_output.set_preference(
+                update.zones, expected_revision=update.expected_revision, guard=current,
+            )
+        except PermissionError as error:
+            raise HTTPException(403, "dashboard_authority_retired") from error
+        except AlertZonesConflict as error:
+            raise HTTPException(409, "alert_zones_revision_conflict") from error
+        except ValueError as error:
+            raise HTTPException(422, "invalid_alert_zone") from error
+        except (OSError, RuntimeError, sqlite3.Error) as error:
+            raise HTTPException(503, "alert_zones_unavailable") from error
+        if not current():
+            raise HTTPException(403, "dashboard_authority_retired")
+        response.headers["Cache-Control"] = "no-store"
+        return _alert_zones(alert_output, preference)
 
     @router.get("/api/system/gpus")
     async def get_gpus(response: Response, request: Request):

@@ -8,14 +8,16 @@ Extracted from VoicePipeline to reduce its responsibility.
 
 import asyncio
 import logging
-from collections.abc import Hashable
+from collections.abc import Callable, Hashable
 
 from src.alerts import AlertManager, AlertScheduler
+from src.alerts.alert_manager import AlertVoiceOutput
 from src.alerts.ha_alert_source import HAAlertSource
 from src.conversation.command_turns import CommandTurns
-from src.core.household_clock import RoomNamespace, ZONE_PREFIX
+from src.core.household_clock import HouseholdClock, RoomNamespace, SUPPORTED_HOUSEHOLD_TIMEZONE, ZONE_PREFIX
 from src.intercom import Announcement, AnnouncementPriority, IntercomSystem
 from src.notifications import NotificationPriority, SmartNotificationManager
+from src.reminders.reminder_store import ReminderStore
 from src.timers import NamedTimer, NamedTimerManager
 
 logger = logging.getLogger(__name__)
@@ -67,6 +69,13 @@ class FeatureManager:
         self._running = False
         self._started: list = []
         self._alert_scheduler_task: asyncio.Task | None = None
+        if isinstance(alert_manager, AlertManager) and ha_alert_source is not None:
+            alert_manager.producer_status = ha_alert_source.get_producer_status
+
+    def bind_alert_mute(self, muted: Callable[[], bool]) -> None:
+        """Use the current application mute state at each alert admission."""
+        if self.alert_manager is not None and self.alert_manager.voice_output is not None:
+            self.alert_manager.voice_output.bind_mute(muted)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -443,7 +452,8 @@ class FeatureManager:
 
 
 def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
-                          user_manager=None, ha_client=None) -> FeatureManager:
+                          user_manager=None, ha_client=None, reminder_store: ReminderStore | None = None,
+                          household_clock: HouseholdClock | None = None) -> FeatureManager:
     """Build the application's feature producers with one local voice owner.
 
     Args:
@@ -452,6 +462,8 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
         zone_manager: Configured local zone routes, if any.
         user_manager: Notification profile lookup.
         ha_client: Existing feature data source.
+        reminder_store: Existing owner of the durable alert zone preference.
+        household_clock: Application clock for the household's quiet hours.
 
     Returns:
         Feature manager whose voice-producing callbacks await shared delivery.
@@ -480,8 +492,19 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
     manager = scheduler = ha_source = None
     if alerts.get("enabled", True):
         general = alerts.get("general", {})
+        ha_config = alerts.get("ha", {})
+        fallback = ha_config.get("output_zone") or voice.default_zone
+        if fallback == "all":
+            raise ValueError("alerts output_zone must name a local zone")
+        clock = household_clock or HouseholdClock(
+            config.get("routines", {}).get("timezone", SUPPORTED_HOUSEHOLD_TIMEZONE)
+        )
         manager = AlertManager(
-            tts_callback=response_handler.aspeak_to_all_zones if general.get("voice_notifications", True) else None,
+            voice_output=AlertVoiceOutput(
+                response_handler.aspeak, namespace, fallback, clock, reminder_store,
+                enabled=general.get("voice_notifications", True),
+                output_key=zone_manager.playback_output_key if zone_manager is not None else None,
+            ),
             cooldown_seconds=general.get("cooldown_seconds", 300.0),
             max_history=general.get("max_history", 1000),
             reannounce_interval_seconds=general.get("reannounce_interval_seconds"),
@@ -494,17 +517,11 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
                 pattern_interval=schedule.get("pattern_interval_seconds", 300.0),
                 device_interval=schedule.get("device_interval_seconds", 600.0),
             )
-            ha_config = alerts.get("ha", {})
             if ha_client is not None and ha_config:
                 source = HAAlertSource(ha_client, manager, ha_config, enabled_types=alerts.get("enabled_types"))
                 if source.configured:
                     ha_source = source
                     scheduler.register_ha_source(source.reconcile, ha_config.get("reconcile_interval_seconds", 5.0))
-                    if manager.tts_callback is not None:
-                        output_zone = ha_config.get("output_zone") or voice.default_zone
-                        if output_zone == "all":
-                            raise ValueError("alerts.ha.output_zone must name a local zone")
-                        manager.tts_callback = LocalVoiceDelivery(response_handler, output_zone, voice.require_zone).aspeak
     features = FeatureManager(
         timer_manager=NamedTimerManager(tts_callback=voice.aspeak),
         intercom=IntercomSystem(tts_callback=response_handler.aspeak, zone_manager=zone_manager,

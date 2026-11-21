@@ -44,14 +44,19 @@ import inspect
 import math
 import time
 from collections import defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Awaitable, Hashable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum, StrEnum
 from typing import Any, Callable
 from uuid import uuid4
 
+from src.core.household_clock import HouseholdClock, RoomNamespace
 from src.core.logging import get_logger
-from src.core.voice_delivery import DeliveryState, ResponseResult, ResponseStage, VoiceDeliveryError
+from src.core.observation import Observation
+from src.core.sqlite_work import AuthorityGuard
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult, ResponseStage, VoiceDeliveryError
+from src.reminders.reminder_store import AlertZonesPreference, ReminderStore
 
 logger = get_logger(__name__)
 
@@ -75,6 +80,131 @@ class AlertType(StrEnum):
 
 # Priorities spoken by voice; lower ones only stay in the history (web).
 SPOKEN_PRIORITIES = frozenset({AlertPriority.CRITICAL, AlertPriority.HIGH})
+QUIET_START_HOUR = 23
+QUIET_END_HOUR = 7
+_POLICY_MUTE_REASONS = frozenset({
+    "alert_quiet_hours", "alert_global_mute", "alert_mute_unavailable", "alert_no_output_zones",
+})
+
+
+@dataclass(frozen=True)
+class AlertProducerStatus:
+    """Current coverage of a shared producer, without entity IDs or payloads."""
+
+    name: str
+    observation: Observation
+    connected: bool
+    known: int
+    unknown: int
+    overflow: int
+    uncertain: bool
+
+
+class AlertVoiceOutput:
+    """Use the household's durable zone selection and local clock for alerts."""
+
+    def __init__(
+        self, speak: Callable[..., Awaitable[ResponseResult]], rooms: RoomNamespace, fallback: str | None,
+        clock: HouseholdClock, store: ReminderStore | None,
+        *, enabled: bool, output_key: Callable[[str], Hashable | None] | None,
+    ) -> None:
+        self._speak = speak
+        self._rooms = rooms
+        self._fallback = self._rooms.to_zone(fallback)
+        self._clock = clock
+        self._store = store
+        self._muted: Callable[[], bool] | None = None
+        self._output_key = output_key
+        self.enabled = enabled
+
+    def bind_mute(self, muted: Callable[[], bool]) -> None:
+        """Attach the application's current mute policy before producer startup."""
+        self._muted = muted
+
+    @property
+    def writable(self) -> bool:
+        """Whether a durable store is wired for this installation."""
+        return self._store is not None
+
+    @property
+    def configured_zones(self) -> list[str]:
+        """List the configured household rooms in output-zone form."""
+        return [zone for room in sorted(self._rooms.rooms) if (zone := self._rooms.to_zone(room))]
+
+    def selected_zones(self, preference: AlertZonesPreference | None) -> list[str]:
+        """Resolve a missing or reset preference, and skip retired rooms."""
+        if preference is None or preference.zones is None:
+            return [self._fallback] if self._fallback is not None else []
+        return list(dict.fromkeys(zone for value in preference.zones if (zone := self._rooms.to_zone(value))))
+
+    async def get_preference(self, *, guard: AuthorityGuard | None = None) -> AlertZonesPreference | None:
+        """Load the current preference through the shared SQLite owner."""
+        return None if self._store is None else await self._store.get_alert_zones(guard=guard)
+
+    async def set_preference(
+        self, zones: list[str] | None, *, expected_revision: int | None, guard: AuthorityGuard,
+    ) -> AlertZonesPreference:
+        """Validate room IDs and persist an ordered zone selection or reset."""
+        if self._store is None:
+            raise RuntimeError("alert_zones_store_unavailable")
+        selected = None
+        if zones is not None:
+            selected = []
+            for value in zones:
+                zone = self._rooms.to_zone(value)
+                if zone is None:
+                    raise ValueError("invalid_alert_zone")
+                if zone not in selected:
+                    selected.append(zone)
+        return await self._store.set_alert_zones(selected, expected_revision=expected_revision, guard=guard)
+
+    def mute_reason(self, now: datetime | None = None) -> str | None:
+        """Check the current mute state before queueing an episode or any output."""
+        if not self.enabled:
+            return "voice_notifications_disabled"
+        if self._muted is None:
+            return "alert_mute_unavailable"
+        if self._muted():
+            return "alert_global_mute"
+        if not QUIET_END_HOUR <= (now or self._clock.now_local()).hour < QUIET_START_HOUR:
+            return "alert_quiet_hours"
+        return None
+
+    async def speak(self, text: str, *, is_current: Callable[[], bool] | None = None) -> ResponseResult:
+        """Deliver once per selected physical output and combine delivery receipts."""
+        reason = self.mute_reason()
+        if reason is not None:
+            return ResponseResult(text, GenerationState.COMPLETE, DeliveryState.BLOCKED, reason)
+        zones = self.selected_zones(await self.get_preference())
+        if not zones:
+            return ResponseResult(text, GenerationState.COMPLETE, DeliveryState.BLOCKED, "alert_no_output_zones")
+        results: list[ResponseResult] = []
+        seen = set()
+        for zone in zones:
+            now = self._clock.now_local()
+            reason = self.mute_reason(now)
+            if is_current is not None and not is_current():
+                reason = "alert_evidence_unavailable"
+            if reason is not None:
+                results.append(ResponseResult(text, GenerationState.COMPLETE, DeliveryState.BLOCKED, reason))
+                break
+            key = self._output_key(zone) if self._output_key is not None else None
+            if key is None:
+                results.append(ResponseResult(text, GenerationState.COMPLETE, DeliveryState.BLOCKED,
+                                              "voice_output_zone_unavailable"))
+            elif key not in seen:
+                seen.add(key)
+                cutoff = now.replace(hour=QUIET_START_HOUR, minute=0, second=0, microsecond=0)
+                results.append(await self._speak(text, zone_id=zone, timeout_s=(cutoff - now).total_seconds()))
+        # A whole-episode retry is safe only if every route proved no audio began.
+        receipt = next((result for result in results if not result.success), results[0])
+        if all(_failed_without_output(result) for result in results):
+            return receipt
+        if any(result.success or result.output_started or result.spoken_segments for result in results):
+            return replace(receipt, output_started=True)
+        if _failed_without_output(receipt):
+            return next(result for result in results if not _failed_without_output(result))
+        return receipt
 
 
 class AlertDelivery(StrEnum):
@@ -175,6 +305,7 @@ class _Episode:
     defer_voice: bool = False
     pending_notice: bool | None = None  # None: no job; bool: whether to retry
     voice_in_flight: bool = False
+    voice_dispatched: bool = False
 
 
 # Failed delivery states that can prove no audio was produced (with output_started
@@ -218,6 +349,8 @@ def _delivery_outcome(result: Any) -> tuple[AlertDelivery, str | None]:
         if result.success:
             return AlertDelivery.DELIVERED, None
         if result.delivery is DeliveryState.BLOCKED:
+            if result.error in _POLICY_MUTE_REASONS and not result.output_started:
+                return AlertDelivery.MUTED, result.error
             return AlertDelivery.BLOCKED, result.error or "voice_delivery_blocked"
         return AlertDelivery.FAILED, result.error or "voice_delivery_" + result.delivery.value
     if result is False:
@@ -244,6 +377,7 @@ class AlertManager:
         reannounce_interval_seconds: float | None = None,
         clock: Callable[[], float] | None = None,
         now: Callable[[], datetime] | None = None,
+        voice_output: AlertVoiceOutput | None = None,
     ):
         """
         Inicializar AlertManager.
@@ -260,6 +394,7 @@ class AlertManager:
                 empeore (T036-U1-Q5).
             clock: Reloj monotónico inyectable (segundos) para episodios.
             now: Fábrica de instantes con zona horaria para los timestamps.
+            voice_output: Salida de hogar con preferencia de zonas y política Q20.
         """
         if reannounce_interval_seconds is not None and (
             type(reannounce_interval_seconds) not in (int, float)
@@ -270,6 +405,8 @@ class AlertManager:
         self.cooldown_seconds = cooldown_seconds
         self.max_history = max_history
         self.tts_callback = tts_callback
+        self.voice_output = voice_output
+        self.producer_status: Callable[[], tuple[AlertProducerStatus, ...]] | None = None
         self.reannounce_interval_seconds = reannounce_interval_seconds
         self._clock = clock or time.monotonic
         self._now = now or _utc_now
@@ -467,7 +604,8 @@ class AlertManager:
             await self._announce(episode, retry=True)
             return None
         if (
-            episode.latched
+            self.voice_output is None
+            and episode.latched
             and episode.reannounce
             and self.reannounce_interval_seconds is not None
             and episode.announced_at is not None
@@ -528,6 +666,15 @@ class AlertManager:
             episode: The open episode whose alert is spoken.
             retry: This notice is the single retry of an output-free failure.
         """
+        if self.voice_output is not None:
+            if episode.voice_dispatched and not retry:
+                return
+            reason = self.voice_output.mute_reason()
+            if reason is not None:
+                episode.voice_dispatched = True
+                episode.pending_notice = None
+                self._record_delivery(episode.alert, AlertDelivery.MUTED, reason)
+                return
         episode.retry_due = False
         if episode.defer_voice:
             episode.pending_notice = retry
@@ -535,6 +682,7 @@ class AlertManager:
                 self._record_delivery(episode.alert, AlertDelivery.PENDING, None)
             return
         episode.announced_at = self._clock()
+        episode.voice_dispatched = True
         output_free = await self._notify_voice(episode.alert)
         episode.retry_due = output_free and not retry
         if episode.retry_due:
@@ -557,10 +705,13 @@ class AlertManager:
                 return
             retry, episode.pending_notice = episode.pending_notice, None
             episode.voice_in_flight = True
+            episode.voice_dispatched = True
             episode.announced_at = self._clock()
         output_free = False
         try:
-            output_free = await self._notify_voice(episode.alert)
+            output_free = await self._notify_voice(
+                episode.alert, is_current=lambda: not episode.alert.processed and is_current(),
+            )
         finally:
             episode.voice_in_flight = False
             episode.retry_due = (output_free and not retry and not episode.alert.processed
@@ -572,21 +723,23 @@ class AlertManager:
             if not episode.voice_in_flight and episode.alert.delivery_attempts == 0:
                 self._record_delivery(episode.alert, AlertDelivery.BLOCKED, reason)
 
-    async def _notify_voice(self, alert: Alert) -> bool:
+    async def _notify_voice(self, alert: Alert, *, is_current: Callable[[], bool] | None = None) -> bool:
         """Speak the alert and record the output's receipt on it, never swallowing a failure.
 
         Returns:
             True when the notice failed before any audio started (retryable).
         """
         callback = self.tts_callback
-        if callback is None:
+        if callback is None and self.voice_output is None:
             self._record_delivery(alert, AlertDelivery.MUTED, "voice_notifications_disabled")
             return False
         message = self._format_voice_message(alert)
         alert.delivery_attempts += 1
         self._record_delivery(alert, AlertDelivery.PENDING, None)
         try:
-            if inspect.iscoroutinefunction(callback):
+            if self.voice_output is not None:
+                result = await self.voice_output.speak(message, is_current=is_current)
+            elif inspect.iscoroutinefunction(callback):
                 result = await callback(message)
             else:
                 result = await asyncio.to_thread(callback, message)

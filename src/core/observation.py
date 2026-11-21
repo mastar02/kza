@@ -20,6 +20,7 @@ class ObservationSource(StrEnum):
     ROUTER_STATE = "router-state"
     USER_REGISTRY = "user-registry"
     ALERT_MANAGER = "alert-manager"
+    HA_ALERTS = "ha-alerts"
     EVENT_STORE = "event-store"
     REMINDER_STORE = "reminder-store"
     GPU_PROBE = "nvidia-smi"

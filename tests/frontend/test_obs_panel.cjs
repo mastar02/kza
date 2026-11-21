@@ -98,6 +98,86 @@ test('hydrate reads permissions, marks failures unavailable and never invents da
   }
 });
 
+test('alert coverage distinguishes confirmed empty, partial, disconnected and expired producers', async t => {
+  let now = new Date('2026-11-10T12:00:01Z');
+  const store = data.createObservationStore({ now: () => now });
+  t.after(() => store.clear());
+  const read = (body, extra) => data.readCollection({
+    fetch: async () => reply(200, body, realHeaders(extra)), store, key: 'ALERTS', path: '/api/alerts',
+  });
+  const current = { id: 'battery_low', state: 'fresh', available: true, connected: true,
+    expires_at: '2026-11-10T12:00:06Z', overflow: 0, uncertain: false };
+  const down = { id: 'offline', state: 'unavailable', available: false, connected: false };
+  await read({ available: true, producers: [current], alerts: [] });
+  assert.equal(store.available('ALERTS'), true);
+  assert.deepEqual(store.get('ALERTS'), []);
+  const rows = [{ id: 'a1', acked: false }];
+  await read({ available: false, producers: [current, down], alerts: rows });
+  assert.equal(store.available('ALERTS'), false);
+  assert.deepEqual(store.get('ALERTS'), rows);
+  assert.deepEqual(store.entry('ALERTS').alertStatus.producers.map(item => data.alertProducerLabel(item, now)),
+    ['disponible', 'desconectada']);
+  now = new Date('2026-11-10T12:00:07Z');
+  assert.equal(data.alertProducerLabel(current, now), 'vencida');
+  await read({ available: false, producers: [down], alerts: rows }, { 'X-KZA-Source': 'degraded' });
+  assert.equal(store.status('ALERTS'), 'degradada');
+  assert.deepEqual(store.get('ALERTS'), rows);
+  await data.readCollection({ fetch: async () => reply(503, {}), store, key: 'ALERTS', path: '/api/alerts' });
+  assert.deepEqual(store.get('ALERTS'), []);
+  assert.equal(store.available('ALERTS'), false);
+});
+
+test('alert zone changes use admin permission, preserve [] and refresh independent of producer status', async t => {
+  const store = data.createObservationStore();
+  t.after(() => store.clear());
+  const observation = data.parseObservation(headers({ 'X-KZA-Source': 'degraded' }));
+  const output = { available: true, writable: true, zones: ['zone_living'], revision: 1 };
+  const envelope = { available: false, producers: [], alerts: [], output };
+  store.accept('ALERTS', observation, envelope);
+  let writes = 0;
+  const run = payload => data.runOperation({
+    fetch: async (url, request) => {
+      if (url === '/api/alerts/zones') {
+        assert.equal(request.method, 'PUT');
+        assert.equal(request.headers['Content-Type'], 'application/json');
+        assert.deepEqual(JSON.parse(request.body), { zones: [], expected_revision: 1 });
+        writes++;
+        return reply(200, {});
+      }
+      assert.equal(url, '/api/alerts');
+      return reply(200, { ...envelope, output: { ...output, zones: [], revision: 2 } }, { 'X-KZA-Source': 'degraded' });
+    }, store, kind: 'setAlertZones', target: 'zones', payload,
+  });
+  const payload = { zones: [], expected_revision: 1 };
+  store.setPermissions(['home:read']);
+  assert.equal((await run(payload)).state, 'denied');
+  assert.equal(writes, 0);
+  store.setPermissions(['home:read', 'admin:manage']);
+  assert.equal((await run(payload)).state, 'confirmed');
+  assert.equal(writes, 1);
+  assert.deepEqual(store.entry('ALERTS').alertStatus.output.zones, []);
+  assert.equal(store.entry('ALERTS').alertStatus.output.revision, 2);
+  assert.equal(store.available('ALERTS'), false);
+});
+
+test('the alerts view presents the zone selection as read-only for visitors', () => {
+  const window = { KzaObsData: data };
+  const React = {
+    createElement: (type, props, ...children) => ({ type, props: props || {}, children }),
+    useState: value => [value, () => {}],
+  };
+  const context = vm.createContext({ window, React, Card: 'Card' });
+  vm.runInContext(jsx('src/views/alerts.jsx'), context);
+  const output = { available: true, writable: true, zones: [], revision: 2, configured_zones: ['zone_living'] };
+  const choices = context.AlertZoneSelector({ output, obs: { operationOutcome: () => null } });
+  assert.equal(JSON.stringify(choices).includes('Guardar zonas'), true);
+  const viewer = context.AlertZones({ output, obs: { can: () => false } });
+  assert.equal(JSON.stringify(viewer).includes('Solo en la web'), true);
+  assert.equal(viewer.children[1].children[2], false);
+  const admin = context.AlertZones({ output, obs: { can: permission => permission === 'admin:manage' } });
+  assert.equal(admin.children[1].children[2].type, context.AlertZoneSelector);
+});
+
 test('hydrate requests login when whoami or a collection reports an expired session', async () => {
   const store = data.createObservationStore();
   const fetch = async url => url === '/api/admin/auth/whoami' ? reply(200, { permissions: [] }) : reply(401, {});
@@ -770,11 +850,13 @@ test('panel views use only existing authenticated endpoints for writes', () => {
     'POST /api/admin/alerts/{id}/ack',
     'POST /api/admin/services/{id}/restart',
     'POST /api/llm/endpoints/{id}/clear-cooldown',
+    'PUT /api/alerts/zones',
   ]);
   const admin = fs.readFileSync(path.resolve(__dirname, '../../src/dashboard/admin.py'), 'utf8');
   const observability = fs.readFileSync(path.resolve(__dirname, '../../src/dashboard/observability.py'), 'utf8');
   assert.match(admin, /@router\.post\("\/alerts\/\{alert_id\}\/ack", dependencies=\[Depends\(require_admin\)\]\)/);
   assert.match(admin, /@router\.delete\("\/alerts\/\{alert_id\}", dependencies=\[Depends\(require_admin\)\]\)/);
+  assert.match(observability, /@router\.put\("\/api\/alerts\/zones", dependencies=\[Depends\(require_admin\)\]\)/);
   assert.match(admin, /@router\.post\("\/services\/\{name\}\/restart", dependencies=\[Depends\(require_admin\)\]\)/);
   assert.match(observability, /@router\.post\("\/api\/llm\/endpoints\/\{endpoint_id\}\/clear-cooldown"\)/);
 });
