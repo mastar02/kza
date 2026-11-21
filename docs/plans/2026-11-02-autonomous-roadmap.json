@@ -1628,7 +1628,7 @@
         "tests/integration/test_voice_compound_commands.py",
         "tests/unit/orchestrator/test_compound_runner.py"
       ],
-      "next_action": "Código local de T037-U1..U7 fusionado (19a3a069) con matriz determinista. C13 de campo y el pronóstico en vivo quedan para P7; la regresión completa se consolida en T060. Sin aceptación C01/C02/C05/C13."
+      "next_action": "Código local de T037-U1..U7 fusionado (19a3a069) con matriz determinista. C13 de campo y el pronóstico en vivo quedan para P7; la consolidación de regresión en T060 verificará Q22 (los casos de estado cubren HTTP de diagnóstico) junto con C13 y el pronóstico real en P7. Sin aceptación C01/C02/C05/C13."
     },
     {
       "id": "T040",
