@@ -39,7 +39,8 @@ from src.nlu.sensitive_actions import is_sensitive
 from src.orchestrator import PathType
 from src.orchestrator.compound import CompoundPartContext, CompoundRunner
 from src.orchestrator.dispatcher import (
-    DispatchResult, compound_dispatch_result, compound_part_target, has_domotics_action_verb, notification_dnd_refusal,
+    DispatchResult, MultiUserOrchestrator, classify_voice_schedule, compound_dispatch_result, compound_part_target,
+    has_domotics_action_verb, notification_dnd_refusal,
 )
 from src.orchestrator.priority_queue import Priority
 from src.pipeline.earcon_gate import should_play_earcon
@@ -61,7 +62,7 @@ from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement,
     TaskOutcome, TaskStatus, TurnOutcome, project_turn_outcome,
 )
-from src.core.voice_delivery import GenerationState, ResponseResult
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.core.observation import Observation
 from src.nlu.llm_router import LLMCommandRouter
 from src.world.household_time import WEEKDAYS, parse_clock_query
@@ -394,6 +395,10 @@ class RequestRouter:
         self.ha = ha_client
         self.home_actions = home_actions if home_actions is not None else HomeActionService(ha_client)
         self.home_voice_resolver = home_voice_resolver if home_voice_resolver is not None else HomeVoiceResolver(self.home_actions)
+        if isinstance(orchestrator, MultiUserOrchestrator):
+            orchestrator.dispatcher.reminder_rooms = (
+                room_context_manager.get_all_rooms() if room_context_manager is not None else self.home_voice_resolver.rooms
+            )
         self.llm = llm_reasoner
         self.router = fast_router
         self.memory = memory_manager
@@ -1093,11 +1098,33 @@ class RequestRouter:
                 factual_reply = not refusal_only and is_factual_question(text, wake_words=wake_words, reflexive_only=True)
             elif household.family is HouseholdFamily.DEFERRED_ACTION:
                 refusal_only = is_polite_scheduled_device_request(text, wake_words=wake_words)
-        if refusal_only or factual_reply:
+        # A configured R4 is handled exclusively by the household path after
+        # the same wake veto as R3. The gate still applies all its other checks.
+        deferred = (
+            decision.reason == "non_immediate:deferred"
+            and self._voice_reminder_actions is not None
+            and (scheduled := self._voice_schedule_claim(text)) is not None
+            and scheduled.family is HouseholdFamily.DEFERRED_ACTION
+        )
+        if deferred:
+            refusal_only = False
+        if refusal_only or factual_reply or deferred:
             reply = self.command_gate.evaluate(text, stt_confidence=stt_confidence, reply_to_deferred_routine=True)
             if reply.reason != "gate_error":
                 decision = reply
         return self._verify_wake(text, decision, room_id), refusal_only, factual_reply
+
+    @property
+    def _voice_reminder_actions(self) -> bool | None:
+        if self.orchestrator_enabled and isinstance(self._orchestrator, MultiUserOrchestrator):
+            return self._orchestrator.dispatcher.voice_reminder_actions
+        return None
+
+    def _voice_schedule_claim(self, text: str) -> HouseholdIntent | None:
+        claimed = self.household_intents.classify(text)
+        if self._voice_reminder_actions is not None:
+            return classify_voice_schedule(text, claimed, self.household_intents)
+        return claimed
 
     async def _refuse_routine(self, result: dict, pipeline_start: float, response: str = ROUTINE_CREATE_REFUSAL) -> dict:
         """Finish a retired routine request without handing it to a producer."""
@@ -1198,7 +1225,13 @@ class RequestRouter:
             )
             return result
 
-        household = self.household_intents.classify(text)
+        household = self._voice_schedule_claim(text)
+        if (ambient_strict and household is not None and household.operation is HouseholdOperation.CREATE
+                and household.family in {HouseholdFamily.REMINDER, HouseholdFamily.DEFERRED_ACTION}
+                and self._voice_reminder_actions is True):
+            result["intent"] = "gate_rejected:ambient_reminder"
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
         routine_control = household is not None and household.controls_routine
         routine_proposal = self.voice_routines is not None and self.voice_routines.claims_proposal(household)
         routine_guard = None
@@ -1742,6 +1775,7 @@ class RequestRouter:
         same veto. A routine question with a clear own wake skips it whatever
         its length (T033-U1b-RV1, ``_is_clear_wake_household_routine_query``).
         """
+        room_turn = self._room_turns.get(room_id)
         summary = household.summary() if household is not None else "reminder_choice"
         result["household"] = summary
         logger.info("[Household] claimed %s", summary)
@@ -1793,10 +1827,35 @@ class RequestRouter:
             memory_sources=(self._memory_source.get(),) if self._memory_source.get() is not None else (),
             **({"routine_guard": routine_guard} if routine_guard is not None else {}),
         )
+        if isinstance(dispatch_result, DispatchResult) and dispatch_result.reminder_commit is not None:
+            dispatch_result = await self._deliver_reminder_readback(
+                dispatch_result, room_id=room_id, room_turn=room_turn, zone_id=zone_id, room_context=room_context)
         return await self._finish_orchestrated_turn(
             dispatch_result, result, text=text, zone_id=zone_id, room_context=room_context, emotion=cmd.emotion,
             pipeline_start=pipeline_start,
         )
+
+    async def _deliver_reminder_readback(self, pending: DispatchResult, *, room_id: str | None,
+                                        room_turn: int | None, zone_id: str | None, room_context) -> DispatchResult:
+        """Commit only after the complete readback finishes in the same turn."""
+        delivery = None
+        if self._room_turns.get(room_id) == room_turn:
+            delivery = await self._speak_response(pending.response, zone_id=zone_id, room_context=room_context)
+        superseded = self._room_turns.get(room_id) != room_turn
+        if delivery is not None and delivery.success and not superseded:
+            commit, pending.reminder_commit = pending.reminder_commit, None
+            assert commit is not None
+            committed = await commit()
+            committed.timings.update(pending.timings)
+            return committed
+        cancelled = superseded or (delivery is not None and delivery.delivery is DeliveryState.CANCELLED)
+        pending.reminder_commit = None
+        pending.response = ""
+        pending.speech_handled = True
+        pending.outcome = TaskOutcome(TaskStatus.CANCELLED if cancelled else TaskStatus.NEEDS_INPUT,
+                                      persistence=PersistenceState.NOT_WRITTEN, dispatch=DispatchState.NOT_SENT,
+                                      effect=EffectState.NOT_OBSERVED)
+        return pending
 
     async def _process_compound_turn(self, household: HouseholdIntent, result: dict, *, text: str, cmd,
                                      room_id: str | None, room_context, zone_id: str | None,

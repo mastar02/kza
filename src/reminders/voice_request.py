@@ -1,6 +1,6 @@
 """Rioplatense voice reminder requests: reminder verb, time, recurrence and zone.
 
-Pure parser (stdlib only, no I/O, no wiring yet). It turns a spoken request such
+Pure parser (stdlib only, no I/O). It turns a spoken request such
 as "recordame sacar la basura mañana a las 8 de la noche" into a
 :class:`VoiceReminderRequest` with the reminder text, the trigger time as a UTC
 epoch, an optional recurrence string accepted by
@@ -19,8 +19,8 @@ Rules (user answers Q7/Q8, p3/design.json precedence_contract R3/R4):
   ``zoneinfo.ZoneInfo``, America/Montevideo in production) and returned as UTC
   epochs. A fixed-offset or UTC clock is rejected, and a wall time that does
   not exist or occurs twice on a daylight-saving change is refused.
-* The raw complement after the reminder verb is kept unmodified so a later unit
-  (T031-U5) can parse a home action from it; :func:`extract_time_expression`
+* The raw complement after the reminder verb is kept unmodified for household
+  action admission (T031-U5); :func:`extract_time_expression`
   applies the same time grammar to a domotics clause without a reminder verb
   ("apagá la luz en 10 minutos", rule R4).
 """
@@ -1020,7 +1020,7 @@ _ALARM_ORDER = re.compile(
     r"|\b(?:encend|prend)(?:e|er|ela|erla)\b(?:\s+\S+){0,3}?\s+alarmas?\b")
 
 
-def forbidden_home_order(text: str) -> str | None:
+def forbidden_home_order(text: str, *, at_head: bool = False) -> str | None:
     """The kind of home order in ``text`` that voice control never executes, or ``None``.
 
     Locks, doors and gates ("cerrar la puerta con llave", "abrir el portón")
@@ -1030,17 +1030,64 @@ def forbidden_home_order(text: str) -> str | None:
 
     Args:
         text: Reminder text or a spoken clause.
+        at_head: Require the order to start the clause, for an R4 claim.
 
     Returns:
         ``"lock"`` or ``"alarm"``, or ``None`` when no such order is named.
     """
     folded = _fold(text)
-    if _LOCK_ORDER.search(folded):
+    if (_LOCK_ORDER.match(folded) if at_head else _LOCK_ORDER.search(folded)):
         return "lock"
-    if _ALARM_ORDER.search(folded):
+    if (_ALARM_ORDER.match(folded) if at_head else _ALARM_ORDER.search(folded)):
         return "alarm"
     return None
 
+
+
+# Keep the original complement for R3. R4 speaks and stores the infinitive.
+_ACTION_VERBS = {
+    form: infinitive
+    for infinitive, forms in {
+        "apagar": "apaga apague apaguen", "prender": "prende prenda prendan",
+        "encender": "encende enciende encienda", "subir": "subi sube suba",
+        "bajar": "baja baje bajen", "abrir": "abri abre abra",
+        "cerrar": "cerra cierra cierre", "poner": "pone pon ponga",
+        "activar": "activa active", "desactivar": "desactiva desactive",
+        "cambiar": "cambia cambie", "ajustar": "ajusta ajuste", "dejar": "deja deje",
+        "configurar": "configura configure", "parar": "para pare",
+        "detener": "detene deten detenga", "levantar": "levanta", "frenar": "frena frene",
+        "armar": "arma arme", "desarmar": "desarma desarme",
+        "iluminar": "ilumina", "cortar": "corta corte",
+        "agregar": "agrega agregue", "quitar": "quita quite", "pausar": "pausa pause",
+        "reproducir": "reproduci reproduce", "sincronizar": "sincroniza sincronice",
+        "registrar": "registra registre",
+    }.items()
+    for form in forms.split()
+}
+_ACTION_JOIN = re.compile(
+    r"(?:[,;]\s*|\s+(?:y|e|tambien|y despues|y luego)\s+)"
+    r"(?=(?:" + "|".join(_ACTION_VERBS) + r"|[a-z]+(?:ar|er|ir))\b)"
+)
+
+
+def split_reminder_actions(text: str) -> tuple[str, ...]:
+    """Split a complement before another verb, preserving the heard clauses.
+
+    Infinitives are common after a reminder verb. A conjunction within a
+    parameter ("treinta y cinco") stays inside its clause.
+    """
+    parts, start = [], 0
+    for match in _ACTION_JOIN.finditer(_fold(text)):
+        parts.append(text[start:match.start()].strip())
+        start = match.end()
+    parts.append(text[start:].strip())
+    return tuple(parts)
+
+
+def deferred_action_text(clause: str) -> str:
+    """Normalize the head of a deferred clause to an infinitive for storage."""
+    head, _, target = clause.partition(" ")
+    return f"{_ACTION_VERBS.get(_fold(head), head)} {target}".strip()
 
 class VoiceRequestParser:
     """Parser bound to the household clock, room aliases and wake words."""

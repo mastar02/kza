@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from src.application import ApplicationFactories
 from src.main import build_application
@@ -239,7 +240,7 @@ async def test_actual_factory_private_jobs_stay_silent_and_shared_jobs_deliver_o
                 ('confirmed', None)]
 
 
-async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_once(tmp_path, monkeypatch):
+async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_once(tmp_path, monkeypatch, dashboard_auth):
     """T031-U2: a reminder created by voice is a shared household row that survives a restart and fires once."""
     import src.tts.piper_tts as output_module
     import src.vectordb.chroma_sync as index_module
@@ -256,10 +257,10 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
     async with transport.serve() as url:
         config, _ = configuration(tmp_path, url)
         config['rooms'].update(enabled=True, living={'name': 'Living', 'mic_device_index': 0,
-            'capture_channel': 1, 'ma1260_zone': 1})
+            'capture_channel': 1, 'ma1260_zone': 1, 'default_light': 'light.living'})
         config['presence'] = {'enabled': False}
         config['tts']['streaming']['default_output_zone'] = 'living'
-        config['reminders']['output_zone'] = 'living'
+        config['reminders'].update(output_zone='living', voice_actions=True)
         config['orchestrator']['enabled'] = True
 
         async def command(graph, phrase):
@@ -272,9 +273,27 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
             await graph.pipeline.request_router._orchestrator.start()
             asked = await command(graph, 'Nexa recordame regar las plantas')
             assert asked['outcome']['status'] == 'needs_input' and not asked['task_completed']
+            deferred = await command(graph, 'Nexa apagá la luz del living en diez minutos')
+            assert deferred['task_completed'] and deferred['response'] == 'Anotado.'
+            action_row, = await graph.reminder_manager.get_active(None, shared_only=True)
+            assert action_row.user_id == 'household' and action_row.text == 'apagar la luz del living'
+            assert action_row.ha_actions == [
+                {'domain': 'light', 'service': 'turn_off', 'entity_id': 'light.living', 'data': None}]
+            assert transport.sends == []
+            async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver',
+                                   headers=dashboard_auth) as client:
+                response = await client.get('/api/reminders', params={'scope': 'shared'})
+                assert response.status_code == 200
+                projected, = response.json()
+                assert projected['id'] == action_row.id and projected['trigger_at'] == action_row.trigger_at
+                assert projected['ha_actions'] == [
+                    {'domain': 'light', 'service': 'turn_off', 'entity_id': 'light.living', 'room': 'Living'}]
+                deleted = await client.delete(f'/api/reminders/{action_row.id}')
+                assert deleted.status_code == 200 and deleted.json()['status'] == 'cancelled'
             created = await command(graph, 'Nexa recordame en 3 segundos regar las plantas')
             assert created['task_completed'] and created['outcome']['persistence'] == 'committed'
-            assert created['response'].startswith('Anotado: regar las plantas, hoy a las ')
+            assert created['response'] == 'Anotado.'
+            assert 'regar las plantas, hoy a las ' in ' '.join(tts.texts)
             listed = await command(graph, 'Nexa qué recordatorios tengo')
             assert 'regar las plantas' in listed['response']
             rows = await graph.reminder_manager.get_active(None, shared_only=True)

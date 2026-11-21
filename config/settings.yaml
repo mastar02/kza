@@ -704,6 +704,7 @@ lists:
   ha_entity_prefix: "todo.kza"
 
 reminders:
+  voice_actions: true
   db_path: "./data/reminders.db"
   # Cada anuncio es un intento durable ("notice:") reclamado antes del audio. Solo un
   # intento que no llegó a sonar (failed) se reintenta: hasta notice_max_attempts por
