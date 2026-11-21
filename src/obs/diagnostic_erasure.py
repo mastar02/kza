@@ -14,11 +14,19 @@ from src.obs.metrics_emitter import DiagnosticFailure, MetricsEmitter, project_d
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_METRICS_PATH = "/home/kza/logs/kza-metrics.jsonl"
+
+
+def diagnostic_projection_path(path: str | Path) -> Path:
+    """Return the nominal policy JSONL path without probing the filesystem."""
+    original = Path(path)
+    return original if original.stem.endswith('_policy_v1') else original.with_name(
+        original.stem+'_policy_v1'+original.suffix)
+
+
 def diagnostic_descriptor(path: str) -> dict:
     """Resolve the versioned local projection before registering its owner."""
-    original = Path(path)
-    target = original if original.stem.endswith('_policy_v1') else original.with_name(
-        original.stem+'_policy_v1'+original.suffix)
+    target = diagnostic_projection_path(path)
     if target.is_symlink():
         raise ValueError('diagnostic_target_symlink')
     return {'kind': 'numeric_catalog', 'path': str(target.resolve())}
@@ -156,7 +164,7 @@ async def build_diagnostic_services(config: dict, *, privacy, owner,
     """
     settings = config.get('observability', {})
     descriptor = await privacy.acall(diagnostic_descriptor,
-        settings.get('metrics_path', '/home/kza/logs/kza-metrics.jsonl'))
+        settings.get('metrics_path', DEFAULT_METRICS_PATH))
     await privacy.acall(privacy.ledger.erasures.register_target,
         ErasureParticipant.DIAGNOSTICS, 2, descriptor)
     # The local protocol cannot certify application/SDK logs, unversioned legacy
