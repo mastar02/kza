@@ -1,6 +1,7 @@
 """Application construction and lifecycle for policy-owned memory and SDKs."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextlib import AsyncExitStack
 from contextvars import Context
 from dataclasses import dataclass, field
@@ -107,7 +108,10 @@ class MemoryServices:
 
 
 async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chroma_client=None,
-                                clock=None, privacy=None, verify_only: bool = False) -> MemoryServices | None:
+                                clock=None, privacy=None, verify_only: bool = False,
+                                before_open: Callable[[MemoryServices], Awaitable[None]] | None = None,
+                                before_initialize: Callable[[MemoryServices], Awaitable[None]] | None = None,
+                                ) -> MemoryServices | None:
     """Register ownership before construction; preserve caller-owned clients.
 
     A release-mode verification run does not start the long-term maintenance
@@ -126,6 +130,8 @@ async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chrom
     if privacy is not None:
         privacy.add_borrower(services.begin_close)
     shutdown.push_async_callback(services.aclose)
+    if before_open is not None:
+        await before_open(services)
 
     def construct():
         if services._closed:
@@ -165,6 +171,8 @@ async def build_memory_services(config: dict, *, shutdown: AsyncExitStack, chrom
         if cancelled:
             raise asyncio.CancelledError
         raise RuntimeError('memory_services_construction_failed') from None
+    if before_initialize is not None:
+        await before_initialize(services)
     services._initializing = asyncio.create_task(services.manager.ainitialize(), context=Context())
     failed = cancelled = False
     try:

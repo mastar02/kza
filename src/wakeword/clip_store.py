@@ -466,7 +466,7 @@ async def build_wake_clip_store(config: dict, *, privacy, shutdown, owner=None,
     await store._work.run(store.register, config.get('training', {}).get('exports_dir', 'data/conversation_exports'), CollectorKind.CONVERSATION_EXPORTS)
     if owner is not None:
         from src.training.collector_erasure import build_collector_erasure
-        await build_collector_erasure(config, store=store, owner=owner, shutdown=shutdown)
+        store.collector_eraser = await build_collector_erasure(config, store=store, owner=owner, shutdown=shutdown)
     if not verify_only:
         store.start()
     return store

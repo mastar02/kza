@@ -89,7 +89,9 @@ class MA1260Controller:
         ip_address: str = None,
         ip_port: int = 8080,
         audio_output_device: int = None,  # Dispositivo de audio para output
-        default_source: MA1260Source = MA1260Source.SOURCE_1
+        default_source: MA1260Source = MA1260Source.SOURCE_1,
+        *,
+        initialize: bool = True,
     ):
         """
         Args:
@@ -119,8 +121,12 @@ class MA1260Controller:
         # Zona actualmente seleccionada para audio
         self._selected_zones: list[int] = []
         
-        # Inicializar conexión
-        if connection_type != "simulation":
+        if initialize:
+            self.initialize()
+
+    def initialize(self) -> None:
+        """Open the configured transport after ownership has been installed."""
+        if self.connection_type != "simulation":
             self._connect()
         else:
             logger.info("MA1260 en modo simulación")

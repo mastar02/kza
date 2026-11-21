@@ -278,10 +278,19 @@ class _Pins:
                     self.members.append((obj, name, container, _member_values(container),
                                          _member_tokens(container)))
 
-    def verify(self) -> None:
+    def verify(self, *, closed: bool = False) -> None:
         for obj, name, value in self.attributes:
             _require(_same_edge(getattr(obj, name), value), "binding_changed")
         for obj, name, container, members, tokens in self.members:
+            if closed and name == "_owned_tts_engines" and getattr(obj, name) == ():
+                from src.tts.piper_tts import DualTTS
+
+                # DualTTS drops these references on successful close. The
+                # original tuple was pinned before close and is still held here.
+                _require(type(obj) is DualTTS and _native_closed(obj)
+                         and all(_native_closed(child, asynchronous=False) for child in members),
+                         "tts_child_close_unconfirmed")
+                continue
             _require(getattr(obj, name) is container, "binding_changed")
             # WeakSets are unordered; retained members prevent identity reuse.
             _require(len(_member_values(container)) == len(members)
@@ -473,6 +482,21 @@ class _CaptureClosure:
         _require(all(type(owner) is AudioArchiver for owner in self.archivers),
                  "unsupported_archive_owner")
         self.archive_stores = tuple(owner._store for owner in self.archivers)
+        self.xvf = {}
+        hardware = getattr(graph, "output_hardware", None)
+        if hardware is not None:
+            from src.audio.xvf_controller import XvfController
+            from src.memory.output_registration_audio import AudioPublisherBinding
+
+            _require(type(hardware) is AudioPublisherBinding and hardware._publisher.producer == "presence_hardware",
+                     "unsupported_auxiliary_native")
+            hardware.require_current()
+            for loop in {graph.pipeline.audio_loop, graph.fallback_audio_loop}:
+                controllers = tuple(getattr(loop, "_xvf_by_room", {}).items())
+                _require(all(type(owner) is XvfController for _, owner in controllers),
+                         "unsupported_auxiliary_native")
+                if controllers:
+                    self.xvf[loop] = controllers
         self.uploads = ()
         self.before_close()
 
@@ -495,8 +519,9 @@ class _CaptureClosure:
         _require(control._supported and control._native_supported and not control._seal_failed,
                  "unsupported_capture_owner")
         for loop in {self.graph.pipeline.audio_loop, self.graph.fallback_audio_loop}:
-            _require(not any(getattr(loop, name, ()) for name in
-                ("_xvf_by_room", "_direction_room_ids", "_direction_observers", "_direction_retired",
+            _require(tuple(getattr(loop, "_xvf_by_room", {}).items()) == self.xvf.get(loop, ())
+                and not any(getattr(loop, name, ()) for name in
+                ("_direction_room_ids", "_direction_observers", "_direction_retired",
                  "_direction_join_tasks", "_direction_opening", "_xvf_pause_joins")),
                 "unsupported_auxiliary_native")
 
@@ -527,6 +552,11 @@ class _CaptureClosure:
 
     def verify_closed(self):
         self.before_close()
+        for loop, controllers in self.xvf.items():
+            _require(_finished(loop._closing), "xvf_close_unconfirmed")
+            for _, owner in controllers:
+                with owner._lock:
+                    _require(owner._poll_run is None and not owner._running, "xvf_close_unconfirmed")
         control = self.control
         _require(control._closed and control._sealed and control._phase == "closed"
                  and _finished(control._closing) and not control._uploads
@@ -644,7 +674,7 @@ class RuntimeClosureWitness:
         """Return content-free proof only after positive owned close receipts."""
         _require(not self._failed and self._prepared, "pre_close_required")
         try:
-            self._pins.verify()
+            self._pins.verify(closed=True)
             current_wake = tuple(self._graph.wake_models._models.values())
             _require(len(current_wake) == len(self._wake_models)
                      and all(left is right for left, right in zip(current_wake, self._wake_models)),

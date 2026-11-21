@@ -1,6 +1,7 @@
 """Cleanup-only policy-index access, including while semantic recall is disabled."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack
 from contextvars import copy_context
@@ -145,7 +146,9 @@ async def register_policy_index_target(config: dict, privacy: PrivacyServices) -
 
 
 async def build_erasure_services(config: dict, *, privacy: PrivacyServices, shutdown: AsyncExitStack,
-                                 memory=None, client_factory=None, verify_only: bool = False) -> ErasureCoordinator:
+                                 memory=None, client_factory=None, verify_only: bool = False,
+                                 before_start: Callable[[PolicyIndexEraser], Awaitable[None]] | None = None,
+                                 ) -> ErasureCoordinator:
     """Register durable index targets without enabling recall or broad erase UI.
 
     A release-mode verification run starts neither the index maintenance nor
@@ -158,6 +161,8 @@ async def build_erasure_services(config: dict, *, privacy: PrivacyServices, shut
     driver = PolicyIndexEraser(privacy, descriptor, memory=memory, client_factory=client_factory)
     owner.register(ErasureParticipant.SEMANTIC_INDEX, driver.clean,
                    versions=frozenset({1}), begin_close=driver.begin_close)
+    if before_start is not None:
+        await before_start(driver)
     if not verify_only:
         driver.maintenance.start()
         owner.start()

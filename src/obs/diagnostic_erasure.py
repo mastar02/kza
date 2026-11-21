@@ -1,6 +1,7 @@
 """Local numeric diagnostic cleanup without claiming unaudited channels erased."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextvars import Context
 import logging
 from pathlib import Path
@@ -155,7 +156,9 @@ class DiagnosticServices:
 
 
 async def build_diagnostic_services(config: dict, *, privacy, owner,
-                                    verify_only: bool = False) -> DiagnosticServices:
+                                    verify_only: bool = False,
+                                    before_start: Callable[[DiagnosticServices], Awaitable[None]] | None = None,
+                                    ) -> DiagnosticServices:
     """Register cleanup before opening catalogs or admitting conversation metrics.
 
     In a release-mode verification run (SC-4a skip list d-diagnostic-repair)
@@ -193,11 +196,13 @@ async def build_diagnostic_services(config: dict, *, privacy, owner,
         services.emitter = emitter
         privacy.add_borrower(emitter.begin_close)
         services._history.discard(descriptor['path'])
-        if not verify_only:
-            try:
-                await emitter.start()
-            except Exception:
-                logger.warning('Diagnostic retention unavailable; local repair will retry')
+    if before_start is not None:
+        await before_start(services)
+    if services.emitter is not None and not verify_only:
+        try:
+            await services.emitter.start()
+        except Exception:
+            logger.warning('Diagnostic retention unavailable; local repair will retry')
     if not verify_only:
         services.start()
     return services

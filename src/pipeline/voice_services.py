@@ -205,7 +205,7 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
     )
     if alert_muted is not None:
         features.bind_alert_mute(alert_muted)
-    shutdown.push_async_callback(features.stop)
+    shutdown.push_async_callback(features.aclose)
     timer_commands = TimerVoiceCommands(features.timer_manager)
     if reminder_store is not None and features.timer_manager is not None:
         features.timer_manager.bind_store(TimerStore(reminder_store))

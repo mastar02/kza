@@ -92,7 +92,7 @@ async def test_real_journal_composes_and_reads_every_audio_row(audio_writer, dec
     selection = dict.fromkeys(PRODUCERS, enabled)
     async with audio_writer(selection) as (writer, checks):
         bindings = await bind_audio_family_publishers(writer, CONFIG, selection=selection)
-        assert checks == ["full"]
+        assert checks == ["full"] * 8
         assert tuple(bindings) == (PRODUCERS if enabled else ())
         plans = resolve_audio_family_plans(CONFIG, writer.admission.state_root)
         if enabled:
@@ -230,7 +230,8 @@ async def test_invalid_intent_never_reaches_native_open(audio_writer, fault):
         target = root / "native-open"
         before = _journal_bytes(writer)
 
-        with pytest.raises(RuntimeError, match="publisher_plan"):
+        error = "publisher_metadata" if fault == "string_value" else "publisher_plan"
+        with pytest.raises(RuntimeError, match=error):
             await writer.publisher_intent("audio_health", plan)
             target.touch()
         assert not target.exists() and _journal_bytes(writer) == before
@@ -271,7 +272,9 @@ async def test_terminal_metadata_fails_closed(audio_writer, invalid):
         else:
             value["owner_counts"] = dict.fromkeys(value["owner_counts"], 0)
         before = _journal_bytes(writer)
-        with pytest.raises(RuntimeError, match="audio_publisher_(aggregate|owner_counts)"):
+        error = ("publisher_metadata" if invalid in {"extra_count", "bool_count", "false_state"}
+                 else "audio_publisher_(aggregate|owner_counts)")
+        with pytest.raises(RuntimeError, match=error):
             await handle.drained(value)
         assert _journal_bytes(writer) == before
 

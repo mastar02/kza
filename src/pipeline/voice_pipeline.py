@@ -153,7 +153,8 @@ class VoicePipeline:
                     ("orchestrator", self._orchestrator.stop() if self._orchestrator else None),
                     ("audio_loop", self.audio_loop.stop() if self.audio_loop else None),
                     ("command_processor", self.command_processor.aclose() if isinstance(self.command_processor, CommandProcessor) else None),
-                    ("features", self.features.stop() if self.features else None),
+                    ("features", self.features.aclose() if isinstance(self.features, FeatureManager)
+                     else self.features.stop() if self.features else None),
                 ]:
                     if coro:
                         try:

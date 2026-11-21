@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 import json
 import os
@@ -33,6 +33,44 @@ _CAPTURE_OWNERS = {
     "acoustic_calibration": capture.CalibrationAuthorityClient,
 }
 _CAPTURE_BOUNDARIES = dict.fromkeys(_CAPTURE_OWNERS, "delegated_target") | {"enroll_voice": "recorded_input"}
+
+
+def _capture_retired(client: capture.NativeCaptureAuthorityClient) -> bool:
+    return client._retired and client._closed and not client._uncertain
+
+
+class OfflineCaptureOwners:
+    """Retain every lazy client of a single delegated capture invocation.
+
+    The original LiveWakewordCapture closes the stream, drains admitted work
+    and retires each remote capability. Standalone commands have no local V4
+    admission and use this scope to observe those exact owner receipts.
+    """
+
+    def __init__(self, tool: str, origin: str, factory: Callable[[], capture.NativeCaptureAuthorityClient]) -> None:
+        self._nominal = _CAPTURE_OWNERS[tool]
+        self._origin = capture._origin(origin)
+        self._factory = factory
+        self._clients: list[capture.NativeCaptureAuthorityClient] = []
+
+    def create(self) -> capture.NativeCaptureAuthorityClient:
+        """Attach a fresh nominal client before passing it to the recorder."""
+        client = self._factory()
+        base._require(not any(client is previous for previous in self._clients), "offline_capture_duplicate_client")
+        try:
+            base._require(type(client) is self._nominal and client._origin == self._origin
+                          and client._capability is None and not client._closed, "offline_capture_owner")
+        except BaseException:
+            client.close()
+            raise
+        self._clients.append(client)
+        return client
+
+    def require_retired(self) -> None:
+        """Verify the original native-retirement receipt for every client."""
+        base._require(all(_capture_retired(client) for client in self._clients), "offline_capture_unsettled")
+
+
 _CAPTURE_MODES = {
     "train_wakeword": ("record", "test"),
     "train_nexa": ("record-positive", "record-negative", "test"),
@@ -546,8 +584,7 @@ def _observation(plan: OfflineFamilyPlan, owners: tuple[object, ...]) -> str:
             if plan.scope.tool == "enroll_voice":
                 base._require(owner._sealed, "offline_enrollment_unsettled")
                 return "resource_session_reported"
-            base._require(all(client._retired and client._closed and not client._uncertain for client in owners),
-                          "offline_capture_unsettled")
+            base._require(all(_capture_retired(client) for client in owners), "offline_capture_unsettled")
             return "native_retired"
         case "offline_exports_training":
             return "invocation_reported"

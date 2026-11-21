@@ -149,7 +149,7 @@ async def test_all_seven_publishers_compose_and_read_real_owner_evidence(world):
     root = writer.admission.state_root
     enabled = config["memory"]["enabled"]
     publishers = await bind_memory_family_publishers(writer, plans)
-    assert checks == ["full"]
+    assert checks == ["full"] * 8
     header, _, states, _ = v4.chain(writer._directory)
     assert tuple(plans) == PRODUCERS
     assert {producer: header["grammars"][producer] for producer in PRODUCERS} == {

@@ -625,6 +625,58 @@ La reversión se limita a esa imagen. Se aplican las condiciones del
 procedimiento L4 y el retiro Q5 al vencer el plazo.
 Producción sigue en `e9669ec` hasta el GO de P7.
 
+#### Recordatorios heredados en Epoch 2
+
+La excepción `database_rules.legacy_reminders` admite el archivo
+`reminders.db` heredado con la tabla `reminders` de exactamente doce
+columnas, sólo si faltan las tablas `timers` y `alert_preferences`.
+La regla fija los nombres y tipos de las doce columnas:
+`id TEXT`, `user_id TEXT`, `text TEXT`, `trigger_at REAL`,
+`created_at REAL`, `recurrence TEXT`, `recurrence_end REAL`,
+`ha_actions TEXT`, `state TEXT`, `last_fired_at REAL`,
+`fire_count INTEGER` y `scope TEXT`. El controlador exige el contrato
+completo de Epoch 2 cuando existen las tablas nuevas. Preservar el original
+como evidencia del traspaso y dejar que la inicialización del dueño
+`ReminderStore` actualice el estado gestionado habilitado para escritura.
+
+#### Retiro del consentimiento cloud (OQ-8, antes de H6)
+
+1. Usar `POST /api/admin/cloud-consent/withdraw` con una sesión vigente
+   que tenga `admin:manage`. Consultar `GET /api/admin/cloud-consent` para
+   confirmar el estado de la compuerta, el marcador y la escritura al cierre.
+   El retiro corta los pedidos cloud en curso. Los procesos separados de
+   code-index y `sync_ha_to_chroma.py` tienen su propia compuerta (K5).
+2. Si el retiro retorna `ok_not_durable` con `registration_failed` (F16),
+   la compuerta de esa sesión queda cerrada y el coordinador queda degradado.
+   Conservar el journal y los logs del run, verificar el fallo de registro y
+   preparar `reasoner.cloud.consent: false` en el estado privado por el
+   procedimiento de admisión antes de reanudar. Un cierre en mitad del retiro
+   puede dejar el marcador durable y la configuración anterior en disco.
+3. Si el lector devuelve `unverifiable` (F11), arrancar con cloud retirado.
+   Registrar qué run y generación originaron `chain_invalid`,
+   `epoch_unreadable_with_records`, `run_unreadable` o
+   `duplicate_generation`. Una restauración que cambia el dispositivo o
+   inodo del directorio invalida su `namespace_identity`. Dos runs con la
+   misma generación siguen siendo ambiguos después de un arranque asentador.
+   Preservar ambos y resolver la historia con el responsable del controlador.
+4. Arrancar con `consent: false` para asentar el retiro (F15). Corroborar
+   `last_settled` y la advertencia que identifica el origen supersedido.
+   Un nuevo consentimiento requiere un cambio explícito del operador y una
+   admisión válida.
+
+**Precondición de reversión D7.** Antes de un rollback a un build que
+ignora el marcador, verificar el journal y preparar el destino de rollback
+con `reasoner.cloud.consent: false`. Verificar esa configuración antes de
+habilitar el arranque del destino.
+
+**Compatibilidad de rollback V4.** Cuando un run V4 declara los nuevos
+IDs `<producer>_publisher/1`, `refuse_unknown_grammars` bloquea el
+arranque de builds V4 anteriores que carecen de los codecs, como
+`2f5e657`, incluso si la fila quedó deshabilitada. El rollback L4 al
+contenedor congelado pre-V4 `e9669ec` ignora ese journal y sigue sujeto a
+la ventana, decisión registrada y precondición D7. Preservar el journal
+gestionado para futuras lecturas.
+
 Ver el [roadmap de precedencia y pruebas](../plans/2026-11-21-precedence-roadmap-and-test-strategy.md).
 
 #### Contrato de esquema (época 1)

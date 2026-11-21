@@ -23,10 +23,16 @@ _LABEL = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _PRIVATE_FIELDS = frozenset({
     "audio", "embedding", "embeddings", "pcm", "samples", "transcript",
     "content", "payload", "repr", "headers", "authorization", "api_key", "private_key",
+    "apikey", "access_key", "passwd", "bearer", "cookie",
 })
 _PRIVATE_LABELS = frozenset({
     "credential", "credentials", "password", "secret", "secrets", "token", "tokens",
 })
+_PRIVATE_KEY = re.compile(
+    r"(?:^|_)(?:" + "|".join(sorted(_PRIVATE_FIELDS | _PRIVATE_LABELS)) + r")(?:_|$)"
+)
+_OBJECT_REPR = re.compile(r"<(?:[\w.]+ )?object at ")
+_AUDIO_COUNT_ROLES = frozenset({"audio_manager", "audio_loop", "multi_room_audio_loop", "audio_archiver"})
 
 
 class PublisherPhase(StrEnum):
@@ -82,11 +88,11 @@ def snapshot_metadata(value: object) -> dict:
     """
     remaining = base.MAX_RECORD_BYTES
 
-    def copy(item: object, depth: int, *, roles: bool = False):
+    def copy(item: object, depth: int, *, field: str = ""):
         nonlocal remaining
         remaining -= 1
         base._require(depth <= 12 and remaining >= 0, "publisher_metadata")
-        if roles:
+        if depth == 1 and field == "roles":
             _roles_shape(item)
             remaining -= sum(map(len, item))
             base._require(remaining >= 0, "publisher_metadata")
@@ -94,15 +100,24 @@ def snapshot_metadata(value: object) -> dict:
         if type(item) is dict:
             result = {}
             for key, child in item.items():
+                # The closed audio codec uses these exact role/count/destination
+                # keys. Its decoder separately pins the destination to the epoch.
+                audio_metadata = depth == 1 and (
+                    field == "owner_counts" and type(key) is str and key in _AUDIO_COUNT_ROLES
+                    and type(child) is int and 0 <= child <= 1
+                    or field == "enabled_owners" and key == "audio_archiver" and type(child) is bool
+                    or field == "destinations" and key == "keep_audio_dir"
+                    and type(child) is str and child.endswith("/data/ambient_audio")
+                )
                 base._require(type(key) is str and _LABEL.fullmatch(key)
-                    and key not in _PRIVATE_FIELDS and _PRIVATE_LABELS.isdisjoint(key.split("_")),
+                    and (audio_metadata or not _PRIVATE_KEY.search(key)),
                     "publisher_metadata")
                 remaining -= len(key)
-                result[key] = copy(child, depth + 1, roles=depth == 0 and key == "roles")
+                result[key] = copy(child, depth + 1, field=key)
             return result
         if type(item) is str:
             remaining -= len(item)
-            base._require(remaining >= 0, "publisher_metadata")
+            base._require(remaining >= 0 and not _OBJECT_REPR.search(item), "publisher_metadata")
             return item
         base._require(item is None or type(item) is bool
                       or type(item) is int and 0 <= item < 2**64, "publisher_metadata")

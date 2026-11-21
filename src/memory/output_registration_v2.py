@@ -701,7 +701,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             _reject("native_owner", self)
         self.admission._revalidate_native(execution)
 
-    def _start(self):
+    def _start(self, publisher_selection: Callable[[bool], dict[str, bool]] | None = None):
         with self._lock:
             self._current()
             ticket = self.admission._ticket
@@ -720,6 +720,11 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                 grammars = self._writer_grammars
                 # OQ-8: read the authoritative decision before this run exists.
                 self._decide_consent(self._namespace / self._format.namespace_name / "runs", ticket["run_id"])
+                if publisher_selection is not None:
+                    selection = publisher_selection(self._effective_decision is not None)
+                    base._require(selection.keys() == self._generic_publishers
+                                  and all(type(flag) is bool for flag in selection.values()), "publisher_selection")
+                    self._selected.update(selection)
             header = {"schema_version": self._format.schema_version, "run_id": ticket["run_id"], "generation": ticket["generation"],
                       "binding_id": ticket["binding_id"], "config_sha256": self.admission._config_digest,
                       "state_root": str(self.admission.state_root), "state_identity": base._identity(self.admission.state_root),
@@ -1353,6 +1358,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
 
     async def publisher_intent(self, producer: str, plan: dict) -> GenericOutputPublisher:
         """Record the metadata plan before the caller constructs or opens its owner."""
+        await self._run(self.admission.revalidate)
         await self._publisher_phase(producer, PublisherPhase.INTENT, plan=plan)
         return GenericOutputPublisher(self, producer)
 
@@ -1375,6 +1381,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
 
     async def publisher_disabled(self, producer: str, plan: dict) -> None:
         """Record a declared, unselected row before any owner was attached."""
+        await self._run(self.admission.revalidate)
         await self._publisher_phase(producer, PublisherPhase.DISABLED, plan=plan)
 
     async def _publisher_phase(self, producer: str, phase: PublisherPhase, *,
@@ -1403,8 +1410,11 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             event = {"kind": grammar.event_kind, "phase": phase.value, "plan": plan}
             if phase == PublisherPhase.DRAINED:
                 event["aggregate"] = aggregate
-            grammar.decode_event(event, prior, header["selected"][producer], header)
-            self._record(event)
+            decoded = grammar.decode_event(event, prior, header["selected"][producer], header)
+            record = {"kind": grammar.event_kind, "phase": phase.value, "plan": decoded["plan"]}
+            if phase is PublisherPhase.DRAINED:
+                record["aggregate"] = decoded["aggregate"]
+            self._record(record)
 
     # ------------------------------------------------------------------
     # V3 account publisher: the original UserManager atomic JSON writer,

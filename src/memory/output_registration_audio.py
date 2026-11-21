@@ -9,6 +9,7 @@ from importlib import import_module
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from src.core.household_clock import ROOM_SECTION_KEYS
 from src.core.runtime_admission import _config_digest
 from src.memory.output_publisher import GrammarSpec, PublisherPhase, publisher_grammar, publisher_plan
 from src.memory.output_registration import _require
@@ -180,6 +181,15 @@ def _configured_path(config: Mapping, root: PurePosixPath, destination: _Destina
     return root / path
 
 
+def selects_multi_room_audio(config: Mapping) -> bool:
+    """Mirror the composition root's effective microphone selection."""
+    rooms = config.get("rooms", {})
+    return bool(rooms.get("enabled", False)) and any(
+        room.get("mic_device_index") is not None or bool(room.get("mic_usb_port"))
+        for name, room in rooms.items() if name not in ROOM_SECTION_KEYS and isinstance(room, Mapping)
+    )
+
+
 def resolve_audio_family_plans(config: Mapping, state_root: str | PurePosixPath) -> dict[str, dict]:
     """Build all seven plans from config and the sealed state root without I/O.
 
@@ -188,6 +198,7 @@ def resolve_audio_family_plans(config: Mapping, state_root: str | PurePosixPath)
     journaled. Relative settings are interpreted against the state root.
     """
     root = _root_path(state_root)
+    multi_room = selects_multi_room_audio(config)
     plans = {}
     for producer, row in _ROWS.items():
         for destination in row.destinations:
@@ -198,6 +209,8 @@ def resolve_audio_family_plans(config: Mapping, state_root: str | PurePosixPath)
             if role.enabled_setting:
                 value = _setting(config, role.enabled_setting, role.enabled_default)
                 _require(type(value) is bool, "audio_publisher_config")
+                if role.name in {"ambient_store", "audio_archiver", "wake_clip_writer"}:
+                    value = value and multi_room
                 enabled[role.name] = value
         plans[producer] = _nominal_plan(row, root, enabled)
     return plans
@@ -268,7 +281,8 @@ class AudioPublisherBinding:
             if entries:
                 module, name = role.nominal_type.rsplit(".", 1)
                 nominal = getattr(import_module(module), name)
-                _require(all(type(entry.instance) is nominal for entry in entries), "audio_publisher_owner_type")
+                _require(all(type(entry.instance) is nominal and not getattr(entry.instance, "_capture_unreviewed", False)
+                             for entry in entries), "audio_publisher_owner_type")
             owners = {id(entry.instance): entry for entry in entries}
             _require(len(owners) == len(entries), "audio_publisher_owner_roles")
             snapshot[role.name] = owners
@@ -307,6 +321,32 @@ class AudioPublisherBinding:
     def require_current(self) -> None:
         """Check the exact instances before subsequent native admissions."""
         self._current()
+
+    def replace_retired_input(self, previous: object, successor: object) -> None:
+        """Track the exact successor created by AudioLoop after a clean pause."""
+        from src.audio.owned_input import OwnedInputStream
+
+        _require(self._publisher.producer == "audio_input" and self._phase is PublisherPhase.OPENING
+                 and self._owners.get("owned_input_stream") == (previous,)
+                 and type(previous) is OwnedInputStream and previous.retired
+                 and isinstance(previous._closing, asyncio.Task) and previous._closing.done()
+                 and not previous._closing.cancelled() and previous._closing.exception() is None
+                 and type(successor) is OwnedInputStream and successor._closing is None,
+                 "audio_publisher_input_successor")
+        self.require_current()
+        self._owners["owned_input_stream"] = (successor,)
+
+    def attach_response_cache(self, cache: object) -> None:
+        """Attach the optional cache installed by ApplicationGraph before warmup."""
+        from src.tts.response_cache import ResponseCache
+
+        _require(self._publisher.producer == "audio_output" and self._phase is PublisherPhase.OPENING
+                 and self._owners.get("response_cache") == () and type(cache) is ResponseCache,
+                 "audio_publisher_response_cache")
+        if cache not in tuple(slot.instance for slot in self._read_graph().get("response_cache", ())):
+            raise RuntimeError("output_registration_audio_publisher_response_cache")
+        self._owners["response_cache"] = (cache,)
+        self.require_current()
 
     async def opening(self) -> None:
         """Publish opening and recheck identities before the caller opens."""
@@ -378,6 +418,8 @@ async def bind_audio_family_publishers(
     _require(selection.keys() <= _ROWS.keys() and all(type(value) is bool for value in selection.values()),
              "audio_publisher_selection")
     _require(_config_digest(config) == coordinator.admission._config_digest, "audio_publisher_config")
+    _require(all(coordinator._selected.get(producer) is selection.get(producer, True)
+                 for producer in _ROWS), "audio_publisher_selection")
     plans = resolve_audio_family_plans(config, coordinator.admission.state_root)
     bindings = {}
     await coordinator._run(coordinator.admission.revalidate)

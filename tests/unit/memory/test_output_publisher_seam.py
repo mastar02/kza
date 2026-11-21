@@ -1,6 +1,6 @@
 """Generic V4 journal phases with real writes and a synthetic admission lease."""
 from contextlib import AsyncExitStack
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import os
 from pathlib import Path
 import pickle
@@ -22,8 +22,9 @@ from tests.unit.memory.test_delegated_output_inventory import (  # noqa: F401
 )
 from tests.unit.memory.test_output_registration_v4 import _record, _v4_run
 
-AUDIO = publisher_grammar("audio_input", roles=("single_input", "multi_room"))
-OFFLINE = publisher_grammar("offline_copies")
+AUDIO = replace(publisher_grammar("audio_input", roles=("single_input", "multi_room")),
+                grammar_id="audio_input_publisher/99")
+OFFLINE = replace(publisher_grammar("offline_copies"), grammar_id="offline_copies_publisher/99")
 SPECS = (AUDIO, OFFLINE)
 
 
@@ -42,6 +43,7 @@ async def writer(monkeypatch, decoder, local_grammar_table):  # noqa: F811
         str(decoder["state"] / "privacy.db"), runtime_admission._config_digest(config))
     monkeypatch.setattr(runtime_admission, "_verified_admissions", {admission: False})
     monkeypatch.setattr(admission, "_revalidate_live", lambda snapshot=None: None)
+    monkeypatch.setattr(admission, "revalidate", lambda: None)
     async with AsyncExitStack() as stack:
         admission.install_on(stack)
         coordinator = v2.OutputRegistrationV2(admission, config, key=base._KEY, journal_format=v4.V4_FORMAT,

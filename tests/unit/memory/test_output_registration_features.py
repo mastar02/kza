@@ -132,22 +132,25 @@ def test_existing_fields_reject_unreviewed_values_and_numeric_boolean_aliases(va
     spec = GRAMMAR_SPECS[1]
     header = {"selected": {spec.producer: True}}
     plan = home_integrations_plan(selected_roles=("ha_client",), ha_url="http://ha.example.invalid")
+    plan_error = "publisher_metadata" if value == "<object at 0x123>" else "features_plan"
+    aggregate_error = "publisher_metadata" if value == "<object at 0x123>" else "features_aggregate"
     for field in ("origin_sha256", "selection", "selection_configured"):
         invalid = dict(plan, **{field: value})
-        with pytest.raises(RuntimeError, match="features_plan"):
+        with pytest.raises(RuntimeError, match=plan_error):
             spec.decode_event(_event(spec, "intent", invalid), None, True, header)
     invalid = deepcopy(plan)
     invalid["owners"]["ha_client"]["kind"] = value
-    with pytest.raises(RuntimeError, match="features_plan"):
+    with pytest.raises(RuntimeError, match=plan_error):
         spec.decode_event(_event(spec, "intent", invalid), None, True, header)
 
     invalid_digest = _aggregate(spec.producer, ("ha_client",))
     invalid_digest["owners"]["ha_client"]["instance_sha256"] = value
     invalid_observation = _aggregate(spec.producer, ("ha_client",))
     invalid_observation["owners"]["ha_client"]["observation"] = value
-    for aggregate in (invalid_digest, invalid_observation, _aggregate(spec.producer, ()),
-                      _aggregate(spec.producer, ROLE_IDS[1])):
-        with pytest.raises(RuntimeError, match="features_aggregate"):
+    for aggregate, error in ((invalid_digest, aggregate_error), (invalid_observation, aggregate_error),
+                             (_aggregate(spec.producer, ()), "features_aggregate"),
+                             (_aggregate(spec.producer, ROLE_IDS[1]), "features_aggregate")):
+        with pytest.raises(RuntimeError, match=error):
             spec.decode_event(_event(spec, "drained", plan, aggregate=aggregate),
                               {"phase": "opening", "plan": plan}, True, header)
 
@@ -218,7 +221,7 @@ async def test_feature_grammars_round_trip_through_the_coordinator(
                 assert v4.chain(writer._directory) == before and len(revalidations) == 1
                 return
             bindings = await bind_features_family_publishers(writer, plans)
-            assert set(bindings) == {"home_integrations", "latency"} and len(revalidations) == 1
+            assert set(bindings) == {"home_integrations", "latency"} and len(revalidations) == 5
             owners = {
                 "home_integrations": {"ha_client": HomeAssistantClient(url, "synthetic-only")},
                 "latency": {"health_aggregator": HealthAggregator(), "llm_metrics": LLMMetricsTracker()},

@@ -255,7 +255,8 @@ def _nominal_owner(role: str, owner: object) -> bool:
     # The graph constructs the runtime owners. Keep this module metadata-only
     # until an instance has been constructed by its original factory.
     module = sys.modules.get(module_name)
-    return module is not None and type(owner) is vars(module).get(class_name)
+    return (module is not None and type(owner) is vars(module).get(class_name)
+            and not getattr(owner, "_capture_unreviewed", False))
 
 
 def _observed_drain(role: str, owner: object) -> bool:

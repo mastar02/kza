@@ -29,6 +29,10 @@ from src.memory import output_registration as base
 from src.memory import output_registration_v2 as v2
 from src.memory import output_registration_v3 as v3
 from src.memory.output_publisher import ALL_MATRIX_PRODUCERS, GrammarSpec, publisher_event_shape
+from src.memory.output_registration_audio import AUDIO_GRAMMAR_SPECS
+from src.memory.output_registration_features import FEATURES_GRAMMAR_SPECS
+from src.memory.output_registration_memory import MEMORY_GRAMMAR_SPECS
+from src.memory.output_registration_offline import OFFLINE_GRAMMAR_SPECS
 
 CONFIGURATION_REPRESENTATION = "kza-settings-yaml-raw-v1"
 CONFIGURATION_PREFIX = ".consent-"
@@ -378,6 +382,12 @@ def register_grammars(specs: Iterable[GrammarSpec]) -> None:
                 additions[spec.grammar_id] = _Grammar(spec.grammar_id, spec.producer, spec.event_kind,
                                                       partial(_extra_event, spec), spec)
         _GRAMMAR_ENTRIES.update(additions)
+
+
+ALL_RUNTIME_EXTRA_GRAMMARS = (
+    AUDIO_GRAMMAR_SPECS + MEMORY_GRAMMAR_SPECS + FEATURES_GRAMMAR_SPECS + OFFLINE_GRAMMAR_SPECS
+)
+register_grammars(ALL_RUNTIME_EXTRA_GRAMMARS)
 
 
 def declared_grammars(header: dict) -> dict[str, _Grammar]:

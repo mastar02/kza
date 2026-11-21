@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import time
+from contextlib import closing
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -103,7 +104,9 @@ class LatencyMonitor:
         db_path: str = "./data/latency.db",
         target_ms: float = 300.0,
         alert_callback: Callable[[LatencyRecord], None] | None = None,
-        window_size: int = 100
+        window_size: int = 100,
+        *,
+        initialize: bool = True,
     ):
         self.db_path = Path(db_path)
         self.target_ms = target_ms
@@ -124,13 +127,18 @@ class LatencyMonitor:
         for comp in self.COMPONENTS:
             self._stats[comp] = ComponentStats(name=comp)
 
+        if initialize:
+            self.initialize()
+
+    def initialize(self) -> None:
+        """Create the schema through a connection that closes on return."""
         self._init_db()
 
     def _init_db(self):
         """Inicializar base de datos SQLite"""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS latency_records (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,7 +215,7 @@ class LatencyMonitor:
     def _save_record(self, record: LatencyRecord):
         """Guardar registro en SQLite"""
         try:
-            with sqlite3.connect(self.db_path) as conn:
+            with closing(sqlite3.connect(self.db_path)) as conn, conn:
                 conn.execute("""
                     INSERT INTO latency_records
                     (timestamp, total_ms, target_ms, met_target, user, intent, components_json)
@@ -338,7 +346,7 @@ class LatencyMonitor:
         """Obtener estadísticas históricas de la DB"""
         cutoff = time.time() - (hours * 3600)
 
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn, conn:
             conn.row_factory = sqlite3.Row
 
             # Total y success rate

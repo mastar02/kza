@@ -90,6 +90,7 @@ class AudioLoop:
         self._room = CaptureRoom('', process=self._process_audio, poll=self._poll,
             clear=self._clear_capture, listening=lambda: self._state.listening, privacy=privacy)
         self._input = OwnedInputStream(self._make_stream, self._retire_input)
+        self._observe_input_successor = None
         if isinstance(ambient_detector, AudioEventDetector) and privacy is not None:
             ambient_detector.attach_privacy(privacy)
         if privacy is not None:
@@ -503,7 +504,10 @@ class AudioLoop:
         self._room.resume_admission()
         if isinstance(self.ambient_detector, AudioEventDetector):
             self.ambient_detector.resume_admission()
-        self._input = OwnedInputStream(self._make_stream, self._retire_input)
+        successor = OwnedInputStream(self._make_stream, self._retire_input)
+        if self._observe_input_successor is not None:
+            self._observe_input_successor(self._input, successor)
+        self._input = successor
         self._paused = False
         self._pausing = None
         if self._running:

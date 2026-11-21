@@ -272,6 +272,12 @@ class LLMReasoner:
             self._model = None
             self.load()
 
+    async def aclose(self) -> None:
+        """Release the locally owned llama.cpp model after its consumers drain."""
+        if self._model is not None:
+            await asyncio.to_thread(self._model.close)
+            self._model = None
+
     def unload_lora(self):
         """Descargar adapter LoRA"""
         if self._model and self._lora_loaded:

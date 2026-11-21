@@ -584,12 +584,12 @@ def test_each_grammar_rejects_unreviewed_shapes(tmp_path, producer, extra):
     plan = plans[producer].journal_plan()
     header = {"selected": {producer: True}}
     event = {"kind": spec.event_kind, "phase": "intent", "plan": plan}
-    with pytest.raises(RuntimeError, match="offline_plan"):
+    with pytest.raises(RuntimeError, match="publisher_metadata"):
         spec.decode_event(dict(event, plan={**plan, **extra}), None, True, header)
     prior = None
     for phase in ("intent", "attached", "opening"):
         prior = spec.decode_event(dict(event, phase=phase), prior, True, header)
-    with pytest.raises(RuntimeError, match="offline_aggregate"):
+    with pytest.raises(RuntimeError, match="publisher_metadata"):
         spec.decode_event(dict(event, phase="drained", aggregate=extra), prior, True, header)
     with pytest.raises(RuntimeError, match="offline_aggregate"):
         spec.decode_event(dict(event, phase="drained", aggregate={"observation": "PRIVATE"}), prior, True, header)

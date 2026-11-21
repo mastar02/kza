@@ -34,15 +34,17 @@ def _authority_factory(args: argparse.Namespace):
 def cmd_record(args: argparse.Namespace) -> None:
     """Grabar muestras de entrenamiento con una autoridad explícita."""
     authority_factory = _authority_factory(args)
+    from src.memory.output_registration_offline import OfflineCaptureOwners
     from src.wakeword.recorder import WakeWordRecorder
 
+    capture_owners = OfflineCaptureOwners("train_wakeword", args.dashboard_url, authority_factory)
     print(f"\n🎤 Grabación de muestras para: '{args.name}'")
     print("=" * 50)
 
     recorder = WakeWordRecorder(
         wake_word_name=args.name,
         output_dir=args.output_dir,
-        authority_factory=authority_factory,
+        authority_factory=capture_owners.create,
     )
 
     stats = recorder.get_stats()
@@ -67,6 +69,7 @@ def cmd_record(args: argparse.Namespace) -> None:
         recorded = recorder.record_negative_samples(n=args.count)
         print(f"\n✅ Grabadas {recorded} muestras negativas")
 
+    capture_owners.require_retired()
     # Mostrar estado final
     stats = recorder.get_stats()
     print("\n📊 Estado actual:")
