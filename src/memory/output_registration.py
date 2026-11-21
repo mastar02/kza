@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, NoReturn
 from src.core.owned_work import ClosePhase, OwnedBlockingWork, WorkCloseTimeout
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from contextlib import AsyncExitStack
     from src.core.runtime_admission import RuntimeAdmission
     from src.lists.list_store import ListStore
@@ -606,6 +607,7 @@ class DestinationRegistrationCoordinator:
 
 async def begin_registration(
     admission: RuntimeAdmission, config: dict, shutdown: AsyncExitStack | None,
+    *, publisher_selection: Callable[[bool], dict[str, bool]] | None = None,
 ) -> DestinationRegistrationCoordinator:
     """Install a coordinator only on the actual verified installed admission."""
     from src.core.runtime_admission import RuntimeAdmission, _config_digest, _verified_runs, _verified_admissions
@@ -616,13 +618,16 @@ async def begin_registration(
         and _config_digest(config) == admission._config_digest, "actual_admission")
     admission.revalidate()
     from src.memory.output_registration_v2 import OutputRegistrationV2
-    from src.memory.output_registration_v4 import V4_FORMAT
+    from src.memory.output_registration_v4 import ALL_RUNTIME_EXTRA_GRAMMARS, V4_FORMAT
     # New production runs write the extensible V4 grammar; explicit V2/V3 clients keep theirs.
-    coordinator = OutputRegistrationV2(admission, config, key=_KEY, journal_format=V4_FORMAT)
+    coordinator = OutputRegistrationV2(
+        admission, config, key=_KEY, journal_format=V4_FORMAT,
+        extra_grammars=ALL_RUNTIME_EXTRA_GRAMMARS if publisher_selection is not None else (),
+    )
     admission._output_registration = coordinator
     _ACTIVE.add(coordinator)
     shutdown.push_async_callback(coordinator.aclose)
-    await coordinator._run(coordinator._start)
+    await coordinator._run(coordinator._start, publisher_selection)
     return coordinator
 
 

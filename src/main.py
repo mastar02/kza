@@ -68,6 +68,8 @@ from src.pipeline.command_processor import CommandProcessor
 from src.pipeline.voice_services import LegacyTimerRequestRouter, build_voice_services, timer_fallback_zone
 from src.pipeline.request_router import RequestRouter
 from src.memory.services import build_memory_services
+from src.memory.output_registration_audio import AudioOwner
+from src.memory.runtime_output_publishers import CloseObservation, RuntimeOutputPublishers
 from src.memory.privacy_services import build_privacy_services
 from src.memory.index_erasure import build_erasure_services
 from src.ambient.erasure import build_capture_erasure
@@ -434,7 +436,9 @@ async def _build_configured_application(shutdown: AsyncExitStack,
     load_dotenv()
     config_path = os.getenv("CONFIG_PATH", "config/settings.yaml")
     logger.info("Loading application configuration: %s", config_path)
-    return await build_application(load_config(config_path), shutdown=shutdown, lifecycle=lifecycle)
+    return await build_application(
+        load_config(config_path), shutdown=shutdown, lifecycle=lifecycle, register_runtime_outputs=True,
+    )
 
 
 async def _run_main(shutdown: AsyncExitStack, *, lifecycle: ProcessLifecycle | None = None,
@@ -608,6 +612,7 @@ async def build_application(
     factories: ApplicationFactories | None = None,
     lifecycle: ProcessLifecycle | None = None,
     verify_only: bool | None = None,
+    register_runtime_outputs: bool = False,
 ) -> ApplicationGraph:
     """Construct the actual application graph without starting house producers.
 
@@ -639,12 +644,23 @@ async def build_application(
         raise RuntimeError("runtime_admission_release_verify_invalid")
     if verify_only:
         logger.info("[Verify] release-mode verification run: isolated boot, nothing started")
-    destination_registration = None
+    destination_registration = runtime_outputs = None
     if admission is not None:
         admission.install_on(shutdown)
         if lifecycle is not None:
             lifecycle.attach_admission(admission)
-        destination_registration = await admission.begin_destination_registration(config)
+        if register_runtime_outputs:
+            runtime_root = admission._binding.get("runtime_root")
+            runtime_outputs = RuntimeOutputPublishers(
+                config, admission.state_root, Path(admission._ticket["admission_root"]),
+                runtime_root=Path(runtime_root) if runtime_root is not None else None,
+            )
+            destination_registration = await admission.begin_destination_registration(
+                config, publisher_selection=runtime_outputs.select,
+            )
+            await runtime_outputs.bind(destination_registration, shutdown)
+        else:
+            destination_registration = await admission.begin_destination_registration(config)
     # OQ-8: one runtime gate shared by every cloud-capable client; closed now
     # when the journal's recorded decision keeps a withdrawal in force.
     consent_gate = CloudConsentGate()
@@ -700,12 +716,24 @@ async def build_application(
     home_action_service = HomeActionService(
         ha_client, policy=HomeControlPolicy(selection_path=ha_config.get("control_selection_path")),
     )
-    shutdown.push_async_callback(home_action_service.close)
+    home_action_close = None
+    if runtime_outputs is not None:
+        home_action_close = CloseObservation(home_action_service.close)
+        shutdown.push_async_callback(home_action_close.close)
+    else:
+        shutdown.push_async_callback(home_action_service.close)
     home_capabilities = HomeCapabilityService(ha_client, home_action_service.policy,
                                             policy_provider=lambda: home_action_service.policy)
     shutdown.push_async_callback(home_capabilities.aclose)
 
     # Verificar conexión (async)
+    if runtime_outputs is not None:
+        await runtime_outputs.handoff_many("home_integrations", {
+            "ha_client": lambda: ha_client,
+            "home_capabilities": lambda: home_capabilities,
+        }, receipt=lambda: ha_client._close_task)
+        await runtime_outputs.handoff("home_integrations", "home_actions", lambda: home_action_service,
+                                      receipt=lambda: home_action_close.task)
     if await ha_client.test_connection():
         logger.info("Home Assistant connected")
     else:
@@ -718,6 +746,8 @@ async def build_application(
     # Own each created Whisper adapter even if later construction fails.
     stt_executors = STTExecutorOwner()
     shutdown.push_async_callback(stt_executors.aclose)
+    if runtime_outputs is not None:
+        await runtime_outputs.handoff("model_resources", "stt_executors", lambda: stt_executors)
     # Speech-to-Text
     stt = (factories.stt or create_stt)(config.get("stt", {}))
     stt_executors.add_model(stt)
@@ -735,6 +765,8 @@ async def build_application(
     # Retain the model even if output or a later factory cannot be constructed.
     tts_models = TTSModelOwner()
     shutdown.push_async_callback(tts_models.aclose)
+    if runtime_outputs is not None:
+        await runtime_outputs.handoff("model_resources", "tts_models", lambda: tts_models)
     # Text-to-Speech
     # Review F3: a bare Piper model name resolves under paths.models_root.
     tts = (factories.tts or create_tts)(tts_settings(config))
@@ -756,6 +788,8 @@ async def build_application(
         excluded_patterns=vectordb_config.get("exclude_patterns"),
     )
     shutdown.push_async_callback(chroma.aclose)
+    if runtime_outputs is not None:
+        await runtime_outputs.handoff("house_vector_index", "chroma_sync", lambda: chroma)
 
     # LLM Reasoner — HTTP al kza-72b.service (default) o local GGUF (fallback)
     from src.llm import HttpReasoner
@@ -763,6 +797,12 @@ async def build_application(
     shutdown.push_async_callback(http_reasoners.aclose)
     hermes_reasoners = _HermesReasonerOwner()
     shutdown.push_async_callback(hermes_reasoners.aclose)
+    if runtime_outputs is not None:
+        await runtime_outputs.handoff_many("reasoner_transports", {
+            "http_reasoners": lambda: http_reasoners,
+            "hermes_reasoners": lambda: hermes_reasoners,
+        })
+
     reasoner_config = config.get("reasoner", {})
     reasoner_mode = reasoner_config.get("mode", "http")
 
@@ -781,6 +821,7 @@ async def build_application(
         )
         gate_allowed = False
 
+    local_reasoner = None
     if reasoner_mode == "http":
         # The resolver labels the gateway fallback CLOUD; consumers also
         # enforce the grant at every inference, including cached clients.
@@ -878,7 +919,24 @@ async def build_application(
                 rope_freq_base=reasoner_config.get("rope_freq_base", 1000000.0),
                 rope_freq_scale=reasoner_config.get("rope_freq_scale", 1.0),
             )
-            llm.load()
+            local_reasoner = llm
+            if runtime_outputs is not None:
+                reasoner_loader = OwnedBlockingWork()
+
+                async def close_local_reasoner():
+                    await asyncio.shield(reasoner_loader.begin_close())
+                    await local_reasoner.aclose()
+
+                local_reasoner_close = CloseObservation(close_local_reasoner)
+                shutdown.push_async_callback(local_reasoner_close.close)
+                await runtime_outputs.opening(
+                    "reasoner_transports", "local_reasoner", lambda: local_reasoner,
+                    receipt=lambda: local_reasoner_close.task,
+                )
+                await reasoner_loader.run(local_reasoner.load)
+                await runtime_outputs.opened("reasoner_transports", "local_reasoner")
+            else:
+                local_reasoner.load()
             logger.info("LLM 72B cargado en proceso (mode=local)")
 
     # Fast Router (GPU 2) - para clasificación rápida con KV-Cache
@@ -894,6 +952,8 @@ async def build_application(
             consent_gate=consent_gate,
         )
         shutdown.push_async_callback(fast_router.aclose)
+        if runtime_outputs is not None:
+            await runtime_outputs.handoff("reasoner_transports", "fast_router", lambda: fast_router)
         logger.info(f"Fast router (HTTP) → {router_config.get('base_url', 'http://127.0.0.1:8101/v1')}")
 
     # LLMRouter — candidate chain con cooldown y failover (plan #1 OpenClaw 2026-04-28).
@@ -938,22 +998,48 @@ async def build_application(
     privacy_services.add_borrower(tts_models.begin_close)
     if fast_router is not None:
         privacy_services.add_borrower(fast_router.begin_close)
-    memory_services = await build_memory_services(config, shutdown=shutdown, privacy=privacy_services,
-                                                  verify_only=verify_only)
+    async def register_memory_services(services):
+        await runtime_outputs.opening("personal_memory", "memory_services", lambda: services)
+
+    async def register_long_term(services):
+        await runtime_outputs.opening("personal_memory", "long_term_memory", lambda: services.manager.long_term)
+
+    memory_services = await build_memory_services(
+        config, shutdown=shutdown, privacy=privacy_services, verify_only=verify_only,
+        **({"before_open": register_memory_services, "before_initialize": register_long_term}
+           if runtime_outputs is not None else {}),
+    )
+    if runtime_outputs is not None and memory_services is not None:
+        await runtime_outputs.opened("personal_memory", "memory_services")
+        await runtime_outputs.opened("personal_memory", "long_term_memory")
     memory_manager = memory_services.manager if memory_services is not None else None
+    async def register_policy_index(driver):
+        await runtime_outputs.handoff("personal_memory", "policy_index_eraser", lambda: driver)
+
     erasure_services = await build_erasure_services(config, privacy=privacy_services, shutdown=shutdown,
-        memory=memory_manager.long_term if memory_manager is not None else None, verify_only=verify_only)
+        memory=memory_manager.long_term if memory_manager is not None else None, verify_only=verify_only,
+        **({'before_start': register_policy_index} if runtime_outputs is not None else {}))
     voice_registry = await build_voice_registry(privacy=privacy_services,owner=erasure_services,shutdown=shutdown,
                                                 verify_only=verify_only)
     speaker_models = SpeakerModelOwner()
     shutdown.push_async_callback(speaker_models.aclose)
+    if runtime_outputs is not None:
+        await runtime_outputs.handoff("model_resources", "speaker_models", lambda: speaker_models)
     speaker_models.add_borrower(voice_registry.begin_close)
     privacy_services.add_borrower(speaker_models.begin_close)
     wake_models = WakeModelOwner()
     shutdown.push_async_callback(wake_models.aclose)
+    if runtime_outputs is not None:
+        await runtime_outputs.handoff("model_resources", "wake_models", lambda: wake_models)
     privacy_services.add_borrower(wake_models.begin_close)
+    async def register_diagnostics(services):
+        await runtime_outputs.handoff_many("diagnostics", {
+            "diagnostic_services": lambda: services,
+            "metrics_emitter": lambda: services.emitter,
+        })
+
     diagnostic_services = await build_diagnostic_services(config, privacy=privacy_services, owner=erasure_services,
-                                                          verify_only=verify_only)
+        verify_only=verify_only, **({'before_start': register_diagnostics} if runtime_outputs is not None else {}))
     metrics_emitter = diagnostic_services.emitter
     capture_erasure = await build_capture_erasure(config, privacy=privacy_services, owner=erasure_services,
                                                   verify_only=verify_only)
@@ -998,7 +1084,15 @@ async def build_application(
             temperature=nlu_cfg.get("temperature", 0.0),
             source_policy=privacy_services.ledger,
         )
-        shutdown.push_async_callback(llm_command_router.aclose)
+        if runtime_outputs is not None:
+            command_router_close = CloseObservation(llm_command_router.aclose)
+            shutdown.push_async_callback(command_router_close.close)
+            await runtime_outputs.handoff(
+                "reasoner_transports", "llm_command_router", lambda: llm_command_router,
+                receipt=lambda: command_router_close.task,
+            )
+        else:
+            shutdown.push_async_callback(llm_command_router.aclose)
         logger.info(
             f"LLMCommandRouter habilitado (timeout={nlu_cfg.get('timeout_s', 1.5)}s, "
             f"max_history={nlu_cfg.get('max_history', 5)})"
@@ -1087,8 +1181,16 @@ async def build_application(
         latency_monitor = LatencyMonitor(
             db_path=monitoring_config.get("db_path", "./data/latency.db"),
             target_ms=float(latency_config.get("total", 300)),
-            alert_callback=on_latency_alert
+            alert_callback=on_latency_alert,
+            **({'initialize': False} if runtime_outputs is not None else {}),
         )
+        if runtime_outputs is not None:
+            latency_initializer = OwnedBlockingWork()
+            shutdown.push_async_callback(latency_initializer.aclose)
+            await runtime_outputs.opening("latency", "latency_sqlite", lambda: latency_monitor,
+                                          receipt=lambda: pipeline._stopping)
+            await latency_initializer.run(latency_monitor.initialize)
+            await runtime_outputs.opened("latency", "latency_sqlite")
         logger.info("Latency monitor habilitado")
 
     # U3b-0d2: worst event-loop block, for the later watchdog sizing.
@@ -1131,6 +1233,20 @@ async def build_application(
         await destination_registration.register_store(list_store, "lists")
     await list_store.initialize()
     list_manager = ListManager(store=list_store, ha_client=ha_client, config=lists_config)
+    calendar_close = None
+    if runtime_outputs is not None:
+        calendar_close = CloseObservation(integrations.calendar_reader.aclose)
+        shutdown.push_async_callback(calendar_close.close)
+        await runtime_outputs.handoff(
+            "home_integrations", "calendar_reader", lambda: integrations.calendar_reader,
+            receipt=lambda: calendar_close.task,
+        )
+        await runtime_outputs.handoff_many("home_integrations", {
+            "energy_monitor": lambda: integrations.energy_monitor,
+            "camera_health": lambda: integrations.camera_health,
+            "media_control": lambda: integrations.media_controller,
+            "ha_todo_sync": lambda: list_manager._ha_sync,
+        }, receipt=lambda: ha_client._close_task)
     if not verify_only and lists_config.get("ha_sync_enabled") and lists_config.get("ha_todo_entity"):
         reconnect_sync = HouseholdListReconnect(list_manager)
         ha_client.set_websocket_connected_handler(reconnect_sync.connected)
@@ -1154,6 +1270,24 @@ async def build_application(
     presence_detector = None
     multi_room_loop = None
     ambient_path = None
+    presence_close = amplifier_close = amplifier_work = None
+    wake_clip_writer = ma1260 = None
+    amplifier_factory = factories.amplifier or MA1260Controller
+
+    def build_amplifier(**options):
+        nonlocal amplifier_close, amplifier_work
+        managed = runtime_outputs is not None and amplifier_factory is MA1260Controller
+        amplifier = amplifier_factory(**options, **({"initialize": False} if managed else {}))
+        if managed:
+            amplifier_work = OwnedBlockingWork()
+
+            async def close_amplifier():
+                await asyncio.shield(amplifier_work.begin_close())
+                await asyncio.to_thread(amplifier.close)
+
+            amplifier_close = CloseObservation(close_amplifier)
+            shutdown.push_async_callback(amplifier_close.close)
+        return amplifier
 
     # Multi-Zone Audio System (Dayton MA1260) — legacy fallback
     zones_config = config.get("zones", {})
@@ -1162,7 +1296,7 @@ async def build_application(
     if zones_config.get("enabled", False):
         # Crear controlador MA1260
         ma1260_config = zones_config.get("ma1260", {})
-        ma1260 = (factories.amplifier or MA1260Controller)(
+        ma1260 = build_amplifier(
             connection_type=ma1260_config.get("connection_type", "simulation"),
             serial_port=ma1260_config.get("serial_port", "/dev/ttyUSB0"),
             baudrate=ma1260_config.get("baudrate", 9600),
@@ -1219,7 +1353,11 @@ async def build_application(
                 away_timeout=presence_config.get("away_timeout", 300),
                 just_arrived_duration=presence_config.get("just_arrived_duration", 300),
             )
-            shutdown.push_async_callback(presence_detector.stop)
+            if runtime_outputs is not None:
+                presence_close = CloseObservation(presence_detector.stop)
+                shutdown.push_async_callback(presence_close.close)
+            else:
+                shutdown.push_async_callback(presence_detector.stop)
             logger.info("Presence detector created")
 
         # Room context manager
@@ -1406,7 +1544,7 @@ async def build_application(
         # Build ZoneManager from rooms config if not already built from legacy zones
         if not zone_manager:
             ma1260_cfg = rooms_config.get("ma1260", {})
-            ma1260 = (factories.amplifier or MA1260Controller)(
+            ma1260 = build_amplifier(
                 connection_type=ma1260_cfg.get("connection_type", "simulation"),
                 serial_port=ma1260_cfg.get("serial_port", "/dev/ttyUSB0"),
                 baudrate=ma1260_cfg.get("baudrate", 9600),
@@ -2097,7 +2235,7 @@ async def build_application(
     # Dashboard API + Health Aggregator
     # ----------------------------------------------------------------
     dashboard_config = config.get("dashboard", {})
-    dashboard = None
+    dashboard = health_aggregator = None
     home_services = build_home_services(
         ha_client,
         room_context_manager.get_all_rooms() if room_context_manager else {},
@@ -2118,8 +2256,16 @@ async def build_application(
         if not verify_only:  # skip list b-retired-owner-prune: skipped, not deferred (SC-4a)
             await _prune_retired_memory_owners(privacy_services, dashboard_authority)
 
+    async def register_live_bus(bus):
+        await runtime_outputs.handoff_many("dashboard_transport", {
+            "live_event_bus": lambda: bus,
+            "live_receipt_store": lambda: bus._retention.receipts,
+            "browser_delivery": lambda: bus._retention,
+        }, receipt=lambda: bus._retention._closing)
+
     live_event_bus = await build_live_services(config,privacy=privacy_services,
-        owner=erasure_services,shutdown=shutdown,verify_only=verify_only)
+        owner=erasure_services,shutdown=shutdown,verify_only=verify_only,
+        **({'before_start': register_live_bus} if runtime_outputs is not None else {}))
 
     ambient_control = None
     if ambient_path is not None:
@@ -2207,6 +2353,8 @@ async def build_application(
         )
         speaker_models.add_borrower(dashboard.admin_work.begin_close)
         shutdown.push_async_callback(dashboard.stop)
+        if runtime_outputs is not None:
+            await runtime_outputs.handoff("dashboard_transport", "dashboard_http", lambda: dashboard)
         if dashboard_authority is not None:
             voice_routines.bind_proposal_review(
                 lambda: dashboard_authority.available and not dashboard.admin_work.status()["closed"],
@@ -2224,7 +2372,7 @@ async def build_application(
     # ----------------------------------------------------------------
     training_config = config.get("training", {})
     nightly_config_data = training_config.get("nightly", {})
-    nightly_trainer = None
+    nightly_trainer = habit_generator = training_close = None
 
     if nightly_config_data.get("enabled", False):
         habits_config = training_config.get("habits", {})
@@ -2271,7 +2419,20 @@ async def build_application(
             stt_correction_collector=stt_correction_collector,
             source_policy=privacy_services.ledger,
         )
-        shutdown.push_async_callback(lambda: asyncio.to_thread(nightly_trainer.stop_scheduler))
+        if runtime_outputs is None:
+            shutdown.push_async_callback(lambda: asyncio.to_thread(nightly_trainer.stop_scheduler))
+        else:
+            async def stop_training():
+                await asyncio.to_thread(nightly_trainer.stop_scheduler)
+                worker = nightly_trainer._scheduler_thread
+                if worker is not None and worker.is_alive():
+                    raise RuntimeError("training_close_unconfirmed")
+
+            training_close = CloseObservation(stop_training)
+            shutdown.push_async_callback(training_close.close)
+            await runtime_outputs.bind_offline(
+                "training", lambda: (nightly_trainer, habit_generator), receipt=lambda: training_close.task,
+            )
 
     # Assemble the slim VoicePipeline
     pipeline = VoicePipeline(
@@ -2317,6 +2478,8 @@ async def build_application(
         loop_lag=loop_lag,
         verify_only=verify_only,
         verify_run_id=admission.run_id if verify_only and admission is not None else None,
+        presence_stop=presence_close.close if presence_close is not None else None,
+        training_stop=training_close.close if training_close is not None else None,
     )
     from src.memory.producer_erasure import ProducerCoverage, build_producer_erasure
 
@@ -2333,6 +2496,98 @@ async def build_application(
     shutdown.push_async_callback(graph.producer_erasure.aclose)
     if configuration_changes is not None:
         configuration_changes.attach_graph(graph)
+    if runtime_outputs is not None:
+        def owners(*instances, receipt: asyncio.Task | None = None) -> tuple[AudioOwner, ...]:
+            return tuple(AudioOwner(instance, receipt) for instance in instances if instance is not None)
+
+        def audio_input_owners() -> dict[str, tuple[AudioOwner, ...]]:
+            multi = graph.pipeline.audio_loop if multi_room_loop is not None else None
+            single = graph.fallback_audio_loop
+            return {
+                "audio_manager": owners(single.audio_manager, receipt=single._closing),
+                "audio_loop": owners(single),
+                "multi_room_audio_loop": owners(multi),
+                "input_group": owners(multi._inputs) if multi is not None else (),
+                "room_stream": owners(*multi.room_streams.values(), receipt=multi._closing) if multi is not None else (),
+                "owned_input_stream": owners(single._input),
+            }
+
+        await runtime_outputs.bind_audio("audio_input", audio_input_owners)
+        audio_loop._observe_input_successor = runtime_outputs.audio["audio_input"].replace_retired_input
+        await runtime_outputs.bind_audio("audio_health", lambda: {
+            "multi_room_audio_loop": owners(graph.pipeline.audio_loop),
+        })
+        await runtime_outputs.bind_audio("audio_output", lambda: {
+            "voice_services": owners(graph.voice_services, receipt=graph.voice_services.responses._shutdown_task),
+            "response_handler": owners(graph.voice_services.responses),
+            "tts_model_owner": owners(graph.tts_models),
+            "local_voice_delivery": owners(graph.voice_services.features.voice_delivery,
+                                           receipt=graph.voice_services.responses._shutdown_task),
+            "response_cache": owners(graph.output_cache),
+        })
+        graph.observe_output_cache = runtime_outputs.audio["audio_output"].attach_response_cache
+        await runtime_outputs.bind_audio("presence_hardware", lambda: {
+            "presence_detector": owners(graph.presence_detector, receipt=presence_close.task if presence_close else None),
+            "room_context_manager": owners(room_context_manager,
+                                           receipt=presence_close.task if presence_close else pipeline._stopping),
+            "zone_manager": owners(zone_manager, receipt=amplifier_close.task if amplifier_close else None),
+            "ma1260": owners(zone_manager.ma1260 if zone_manager is not None else ma1260,
+                             receipt=amplifier_close.task if amplifier_close else None),
+            "xvf_controller": owners(*multi_room_loop._xvf_by_room.values(), receipt=multi_room_loop._closing)
+                if multi_room_loop is not None else (),
+        })
+        graph.output_hardware = runtime_outputs.audio.get("presence_hardware")
+        if amplifier_work is not None:
+            await amplifier_work.run(ma1260.initialize)
+        await runtime_outputs.bind_audio("capture", lambda: {
+            "capture_eraser": owners(capture_erasure),
+            "capture_control": owners(graph.capture_control),
+            "ambient_store": owners(graph.ambient_path.store, receipt=graph.ambient_path._closing)
+                if graph.ambient_path is not None else (),
+            "audio_archiver": owners(graph.ambient_path.transcriber._archiver) if graph.ambient_path is not None else (),
+        })
+        await runtime_outputs.bind_audio("collectors", lambda: {
+            "collector_eraser": owners(wake_clip_store.collector_eraser),
+            "wake_clip_store": owners(wake_clip_store),
+            "wake_clip_writer": owners(wake_clip_writer),
+            "stt_correction_collector": owners(stt_correction_collector),
+            "conversation_collector": owners(conversation_collector),
+        })
+
+        async def close_enrollment():
+            await pipeline.stop()
+            if voice_enrollment.is_active:
+                voice_enrollment._cancel_session("shutdown")
+
+        enrollment_close = CloseObservation(close_enrollment) if voice_enrollment is not None else None
+        if enrollment_close is not None:
+            shutdown.push_async_callback(enrollment_close.close)
+        await runtime_outputs.bind_audio("voices", lambda: {
+            "voice_registry": owners(graph.voice_registry),
+            "voice_ledger": owners(graph.voice_registry.ledger, receipt=graph.voice_registry._closing),
+            "voice_enrollment": owners(voice_enrollment, receipt=enrollment_close.task if enrollment_close else None),
+        })
+        await runtime_outputs.handoff_many("contexts", {
+            "context_eraser": lambda: context_erasure,
+            "context_manager": lambda: orchestrator.context_manager if orchestrator is not None else None,
+            "context_persister": lambda: orchestrator.context_manager.persister if orchestrator is not None else None,
+        }, receipt=lambda: orchestrator.context_manager._closing if orchestrator is not None else context_erasure._closing)
+        await runtime_outputs.handoff_many("reasoner_transports", {
+            "compactor": lambda: compactor,
+            "llm_router": lambda: llm_router,
+        }, receipt=lambda: pipeline._stopping)
+        await runtime_outputs.handoff_many("latency", {
+            "health_aggregator": lambda: health_aggregator,
+            "llm_metrics": lambda: llm_metrics_tracker,
+        }, receipt=lambda: dashboard._stop_task if dashboard is not None else pipeline._stopping)
+        await runtime_outputs.handoff_many("household_features", {
+            "feature_manager": lambda: graph.voice_services.features,
+            "timers_runtime": lambda: graph.voice_services.features.timer_manager,
+            "smart_notifications": lambda: graph.voice_services.features.notifications,
+            "alerts_runtime": lambda: graph.voice_services.features.alert_manager,
+            "intercom_delivery": lambda: graph.voice_services.features.intercom,
+        }, receipt=lambda: graph.voice_services.features._closing)
+        runtime_outputs.require_composed()
     await output_registration.composed(destination_registration, graph)
     if admission is not None:
         admission.attach_graph(graph)

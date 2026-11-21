@@ -293,9 +293,10 @@ class PresenceDetector:
         self._running = False
 
         # Cancelar tareas
-        for task in self._tasks:
+        tasks, self._tasks = self._tasks[:], []
+        for task in tasks:
             task.cancel()
-        self._tasks.clear()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         # Detener scanners
         for scanner in self._scanners.values():

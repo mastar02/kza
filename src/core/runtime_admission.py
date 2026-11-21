@@ -403,6 +403,7 @@ class RuntimeAdmission:
         self._validation_snapshot = None
         self._native_validations = WeakKeyDictionary()
         self._before_receipt: Callable[[], None] | None = None
+        self._receipt_prepared = False
         self.receipt_written = False
 
     def set_receipt_preparation(self, callback: Callable[[], None]) -> None:
@@ -410,6 +411,13 @@ class RuntimeAdmission:
         if self._before_receipt is not None:
             raise RuntimeError("runtime_admission_receipt_preparation_already_set")
         self._before_receipt = callback
+
+    def _prepare_receipt(self, *, fallback: Callable[[], None] | None = None) -> None:
+        """Run the original logging close once while its receipt can be observed."""
+        callback = self._before_receipt or fallback
+        if not self._receipt_prepared and callback is not None:
+            callback()
+            self._receipt_prepared = True
 
     @property
     def run_id(self) -> str:
@@ -436,10 +444,12 @@ class RuntimeAdmission:
                 _verified_admissions[self] = True
         shutdown.push_async_exit(self._after_owned_close)
 
-    async def begin_destination_registration(self, config: dict) -> DestinationRegistrationCoordinator:
+    async def begin_destination_registration(
+        self, config: dict, *, publisher_selection: Callable[[bool], dict[str, bool]] | None = None,
+    ) -> DestinationRegistrationCoordinator:
         """Register producer destinations without replacing source/close authority."""
         from src.memory.output_registration import begin_registration
-        return await begin_registration(self, config, self._shutdown)
+        return await begin_registration(self, config, self._shutdown, publisher_selection=publisher_selection)
 
     def attach_graph(self, graph) -> None:
         """Attach the actual public graph after successful construction."""
@@ -670,9 +680,8 @@ class RuntimeAdmission:
             logging.getLogger(__name__).warning(
                 "[Admission] closing with %d carried capture permission(s) never "
                 "acknowledged; the receipt does not record them", carried)
-        if self._before_receipt is not None:
-            # D1: logging is closed before the last state observation.
-            self._before_receipt()
+        # D1: logging is closed before the last state observation.
+        self._prepare_receipt()
         method, writers = await asyncio.to_thread(_open_state_writers, self.state_root)
         if writers:
             import logging

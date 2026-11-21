@@ -244,7 +244,10 @@ class HealthAggregator:
         return SubsystemHealth(name="home_assistant", status=status, detail=detail,
             extra={"error_count": health.error_count, "success_count": health.success_count,
                 "avg_latency_ms": health.avg_latency_ms, "ws_connected": health.ws_connected,
-                "last_error": health.last_error_message, "channels": projected})
+                "last_error": health.last_error_message, "channels": projected,
+                "retirements_pending": getattr(health, "retirements_pending", 0),
+                "retirements_quarantined": getattr(health, "retirements_quarantined", 0),
+                "retirements_quarantined_total": getattr(health, "retirements_quarantined_total", 0)})
 
     def _check_latency(self) -> SubsystemHealth:
         """Check latency monitor health."""

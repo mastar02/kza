@@ -95,10 +95,14 @@ def test_v1_v2_v3_decoders_and_constants_are_byte_and_ast_pinned():
 def test_v4_grammar_table_is_closed_and_reuses_the_unchanged_v3_account_function(decoder):  # noqa: F811
     module = v4()
     table = module._GRAMMARS
-    assert {key: (entry.grammar_id, entry.producer, entry.event_kind) for key, entry in table.items()} == {
+    legacy = {
         "account_publisher/1": ("account_publisher/1", "accounts", "account_publisher"),
         "configuration_publisher/1": ("configuration_publisher/1", "configuration", "configuration_publisher"),
         "configuration_publisher/2": ("configuration_publisher/2", "configuration", "configuration_publisher")}
+    expected = legacy | {spec.grammar_id: (spec.grammar_id, spec.producer, spec.event_kind)
+                         for spec in module.ALL_RUNTIME_EXTRA_GRAMMARS}
+    assert len(expected) == 26
+    assert {key: (entry.grammar_id, entry.producer, entry.event_kind) for key, entry in table.items()} == expected
     with pytest.raises(TypeError):
         table["future_publisher/1"] = table["account_publisher/1"]
     with pytest.raises(TypeError):
@@ -161,11 +165,16 @@ def test_v4_decoders_and_grammar_entries_are_byte_and_ast_pinned():
         source = inspect.getsource(getattr(module, name))
         assert hashlib.sha256(source.encode()).hexdigest() == source_sha, name
         assert hashlib.sha256(ast.dump(ast.parse(source)).encode()).hexdigest() == ast_sha, name
-    entries = {key: (entry.producer, entry.event_kind, entry.decode_event) for key, entry in module._GRAMMARS.items()}
+    entries = {key: (entry.producer, entry.event_kind, entry.decode_event)
+               for key, entry in module._GRAMMARS.items() if entry.spec is None}
     assert entries == {
         "account_publisher/1": ("accounts", "account_publisher", module._account_event),
         "configuration_publisher/1": ("configuration", "configuration_publisher", module._configuration_event),
         "configuration_publisher/2": ("configuration", "configuration_publisher", module._configuration_event_v2)}
+    for spec in module.ALL_RUNTIME_EXTRA_GRAMMARS:
+        entry = module._GRAMMARS[spec.grammar_id]
+        assert entry.spec is spec and entry.decode_event.func is module._extra_event
+        assert entry.decode_event.args == (spec,)
     assert module.V4_FORMAT.decode_chain is module.chain
     assert dict(module.CONFIGURATION_OUTCOMES) == {
         "no_pending": frozenset({"attached"}), "not_attempted_graph_failed": frozenset({"attached"}),
@@ -457,7 +466,7 @@ def test_reader_joins_v1_to_v4_and_reports_configuration_as_partial(world, reque
 
 @pytest.mark.parametrize("grammars,selected", [
     ({"accounts": "account_publisher/1", "configuration": "configuration_publisher/3"}, {}),
-    (dict(GRAMMARS, audio_health="audio_health_publisher/1"), {"audio_health": True}),
+    (dict(GRAMMARS, audio_health="audio_health_publisher/2"), {"audio_health": True}),
 ])
 def test_unknown_grammar_is_its_own_typed_reason_and_never_decoded(decoder, grammars, selected):  # noqa: F811
     plan = _configuration_plan(decoder)

@@ -69,6 +69,7 @@ class FeatureManager:
         self._running = False
         self._started: list = []
         self._alert_scheduler_task: asyncio.Task | None = None
+        self._closing: asyncio.Task | None = None
         if isinstance(alert_manager, AlertManager) and ha_alert_source is not None:
             alert_manager.producer_status = ha_alert_source.get_producer_status
 
@@ -83,6 +84,8 @@ class FeatureManager:
 
     async def start(self) -> None:
         """Start all non-None subsystems."""
+        if self._closing is not None:
+            raise RuntimeError("features_closed")
         if self._running:
             logger.warning("FeatureManager already running")
             return
@@ -105,6 +108,12 @@ class FeatureManager:
         except BaseException:
             await self.stop()
             raise
+
+    async def aclose(self) -> None:
+        """Retain the terminal feature drain across both pipeline and stack."""
+        if self._closing is None:
+            self._closing = asyncio.create_task(self.stop())
+        await asyncio.shield(self._closing)
 
     async def stop(self) -> None:
         """Stop attempted producers even after a partial startup failure."""

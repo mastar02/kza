@@ -279,6 +279,11 @@ class ApplicationGraph:
     household_clock: HouseholdClock | None = field(default=None, repr=False)
     integrations: IntegrationServices | None = field(default=None, repr=False)
     room_namespace: RoomNamespace | None = field(default=None, repr=False)
+    presence_stop: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
+    training_stop: Callable[[], Awaitable[None]] | None = field(default=None, repr=False)
+    output_hardware: Any = field(default=None, repr=False)
+    observe_output_cache: Callable[[Any], None] | None = field(default=None, repr=False)
+    output_cache: Any = field(default=None, init=False, repr=False)
     _run_entered: bool = field(default=False, init=False, repr=False)
 
     @property
@@ -305,6 +310,9 @@ class ApplicationGraph:
             try:
                 responses.register_owned_response_cache(cache)
                 registered = True
+                if self.observe_output_cache is not None:
+                    self.output_cache = cache
+                    self.observe_output_cache(cache)
                 await cache.build()
                 responses.attach_response_cache(cache, owned=True)
                 logger.info("Application response cache ready: %s phrases", cache.size())
@@ -455,9 +463,12 @@ class ApplicationGraph:
             stopping.push_async_callback(self.voice_services.features.stop_ha_alerts)
             stopping.push_async_callback(self.voice_services.stop_reminders)
             if self.presence_detector is not None:
-                stopping.push_async_callback(self.presence_detector.stop)
+                stopping.push_async_callback(self.presence_stop or self.presence_detector.stop)
             if self.nightly_trainer is not None:
-                stopping.push_async_callback(asyncio.to_thread, self.nightly_trainer.stop_scheduler)
+                if self.training_stop is None:
+                    stopping.push_async_callback(asyncio.to_thread, self.nightly_trainer.stop_scheduler)
+                else:
+                    stopping.push_async_callback(self.training_stop)
             if self.routine_scheduler is not None:
                 stopping.push_async_callback(self.routine_scheduler.stop)
             if dashboard_task is not None:

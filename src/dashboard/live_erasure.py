@@ -1,5 +1,7 @@
 """Durable Live browser receipts and local cleanup without certifying other views."""
 
+from collections.abc import Awaitable, Callable
+
 from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.live_receipts import LiveReceiptStore
 from src.memory.erasure_journal import ErasureParticipant, ErasureResult, ErasureStep
@@ -33,7 +35,8 @@ class LiveStreamEraser:
         return ErasureResult(pending==0,pending_count=pending)
 
 
-async def build_live_services(config: dict, *, privacy, owner, shutdown, verify_only: bool = False) -> LiveEventBus:
+async def build_live_services(config: dict, *, privacy, owner, shutdown, verify_only: bool = False,
+                              before_start: Callable[[LiveEventBus], Awaitable[None]] | None = None) -> LiveEventBus:
     """Register the owner before metadata work or private publishers can start.
 
     The bus retention is not started in a release-mode verification run
@@ -46,6 +49,8 @@ async def build_live_services(config: dict, *, privacy, owner, shutdown, verify_
         source_policy=privacy.ledger,clock=privacy.ledger.clock,receipts=receipts)
     privacy.add_borrower(bus.begin_close)
     shutdown.push_async_callback(bus.aclose)
+    if before_start is not None:
+        await before_start(bus)
     driver = LiveStreamEraser(privacy,bus,receipts)
     owner.register(ErasureParticipant.STREAMS,driver.clean,versions=frozenset({1,3,4}),begin_close=bus.begin_close)
     await privacy.acall(privacy.ledger.erasures.register_target,ErasureParticipant.STREAMS,1,LIVE_TARGET)

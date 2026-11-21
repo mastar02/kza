@@ -1,6 +1,7 @@
 """Local numeric diagnostic cleanup without claiming unaudited channels erased."""
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from contextvars import Context
 import logging
 from pathlib import Path
@@ -14,11 +15,19 @@ from src.obs.metrics_emitter import DiagnosticFailure, MetricsEmitter, project_d
 logger = logging.getLogger(__name__)
 
 
+DEFAULT_METRICS_PATH = "/home/kza/logs/kza-metrics.jsonl"
+
+
+def diagnostic_projection_path(path: str | Path) -> Path:
+    """Return the nominal policy JSONL path without probing the filesystem."""
+    original = Path(path)
+    return original if original.stem.endswith('_policy_v1') else original.with_name(
+        original.stem+'_policy_v1'+original.suffix)
+
+
 def diagnostic_descriptor(path: str) -> dict:
     """Resolve the versioned local projection before registering its owner."""
-    original = Path(path)
-    target = original if original.stem.endswith('_policy_v1') else original.with_name(
-        original.stem+'_policy_v1'+original.suffix)
+    target = diagnostic_projection_path(path)
     if target.is_symlink():
         raise ValueError('diagnostic_target_symlink')
     return {'kind': 'numeric_catalog', 'path': str(target.resolve())}
@@ -147,7 +156,9 @@ class DiagnosticServices:
 
 
 async def build_diagnostic_services(config: dict, *, privacy, owner,
-                                    verify_only: bool = False) -> DiagnosticServices:
+                                    verify_only: bool = False,
+                                    before_start: Callable[[DiagnosticServices], Awaitable[None]] | None = None,
+                                    ) -> DiagnosticServices:
     """Register cleanup before opening catalogs or admitting conversation metrics.
 
     In a release-mode verification run (SC-4a skip list d-diagnostic-repair)
@@ -156,7 +167,7 @@ async def build_diagnostic_services(config: dict, *, privacy, owner,
     """
     settings = config.get('observability', {})
     descriptor = await privacy.acall(diagnostic_descriptor,
-        settings.get('metrics_path', '/home/kza/logs/kza-metrics.jsonl'))
+        settings.get('metrics_path', DEFAULT_METRICS_PATH))
     await privacy.acall(privacy.ledger.erasures.register_target,
         ErasureParticipant.DIAGNOSTICS, 2, descriptor)
     # The local protocol cannot certify application/SDK logs, unversioned legacy
@@ -185,11 +196,13 @@ async def build_diagnostic_services(config: dict, *, privacy, owner,
         services.emitter = emitter
         privacy.add_borrower(emitter.begin_close)
         services._history.discard(descriptor['path'])
-        if not verify_only:
-            try:
-                await emitter.start()
-            except Exception:
-                logger.warning('Diagnostic retention unavailable; local repair will retry')
+    if before_start is not None:
+        await before_start(services)
+    if services.emitter is not None and not verify_only:
+        try:
+            await services.emitter.start()
+        except Exception:
+            logger.warning('Diagnostic retention unavailable; local repair will retry')
     if not verify_only:
         services.start()
     return services

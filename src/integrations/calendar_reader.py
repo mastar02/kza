@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from src.core.owned_work import OwnedBlockingWork
 from src.core.sqlite_work import AuthorityGuard
 
 logger = logging.getLogger(__name__)
@@ -163,6 +164,7 @@ class CalendarReader:
         self._clock = clock
         self._ha_client = ha_client
         self._ha_timeout = ha_timeout
+        self._files = OwnedBlockingWork()
 
     async def get_day(self, *, access: CalendarAccess, tomorrow: bool = False) -> CalendarRead:
         """Read a civil day in the household timezone, with exclusive midnight bounds."""
@@ -193,7 +195,7 @@ class CalendarReader:
             if not access._allows(source):
                 continue
             if isinstance(source, ICSCalendarSource):
-                result = await asyncio.to_thread(self._read_ics, source, start, end)
+                result = await self._files.run(self._read_ics, source, start, end)
             else:
                 result = await self._read_ha(source, start, end, access)
             reads.append((source, result))
@@ -204,6 +206,10 @@ class CalendarReader:
             key=lambda event: _as_utc(event.start),
         )
         return CalendarRead(tuple(events), all(result.complete for result in visible), configured=bool(visible))
+
+    async def aclose(self) -> None:
+        """Observe actual ICS reading before retiring the integration."""
+        await self._files.aclose()
 
     def _read_ics(self, source: ICSCalendarSource, start: datetime, end: datetime) -> CalendarRead:
         try:
