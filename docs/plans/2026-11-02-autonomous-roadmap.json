@@ -666,8 +666,13 @@
         "H4"
       ],
       "dependency_level": "verified_local",
-      "status": "in_progress",
-      "evidence": []
+      "status": "verified_local",
+      "evidence": [
+        "tests/integration/test_ha_sdk_retirement.py",
+        "tests/integration/test_runtime_output_census.py",
+        "tests/integration/test_compiled_output_registration_compatibility.py",
+        "docs/architecture/DEPLOYMENT.md"
+      ]
     },
     {
       "id": "P3",
@@ -1100,20 +1105,24 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "8b7c5660ebfd4b0c36f55fe9f2bd81d2d3624fd9",
         "e17c3b09b9f55d19d1a3992da1a66b4055ef86e9",
         "656b50eb4630d431c06724d7d1e0e47d61637164",
-        "f9d15addfad76cb108eb26d2476e9ead36ee62cb"
+        "f9d15addfad76cb108eb26d2476e9ead36ee62cb",
+        "14a7125f6b21e490970d534a4462f03f633c45b6",
+        "7bc33848e0f743667cc6a6fa3b60f2857e229250"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t021/a-evidence.json",
         "data/autonomous-roadmap-20261102/t021/b/evidence.json",
         "data/autonomous-roadmap-20261102/t021/c/evidence.json",
-        "data/autonomous-roadmap-20261102/t022/a/evidence.json"
+        "data/autonomous-roadmap-20261102/t022/a/evidence.json",
+        "tests/integration/test_ha_required_calls_recovery.py",
+        "tests/integration/test_ha_sdk_retirement.py"
       ],
-      "next_action": "T022-A verificada localmente en f9d15ad: cierre iniciado dentro del SDK retenido antes de auth, recibo por conexión capturado, aborto del protocolo al vencer observación y join del mismo propietario; no se confunden descriptor/closed con salida del writer o ping. Pasan 7 casos con aiohttp real y loopback, 414 finales y full de 7425 más una xfail conocida; 863 archivos intactos y Ruff sin hallazgos. El caso anterior de propietario resistente que supera los 60 s permanece intacto e incumplido. T021 sigue in_progress; C06/C20 no evaluados. Completar con T022 las fronteras de salida real sin excluir el retiro del presupuesto ni redefinir dependencia sana; la regla de tres intentos corresponde a autonomía del agente, no a un circuito runtime obligatorio."
+      "next_action": "Verificado localmente con recuperación del sucesor en loopback tras abortar y aislar un dueño WS resistente. El aislamiento conserva el retiro pendiente visible y evita efectos tardíos del dueño anterior. Medir C06 y C20 en campo según el perfil congelado."
     },
     {
       "id": "T022",
@@ -1127,7 +1136,7 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "f9d15addfad76cb108eb26d2476e9ead36ee62cb",
         "d6a8af201cab139c20d31ec8cc918275f10ae1c9",
@@ -1153,7 +1162,12 @@
         "a838165cf77b1bb67735866f458b5fe709874e48",
         "ac8ae1ce450b05efc1d6e3f2c93d02be3fc1a110",
         "e2d5f83478b6535e64b602847529543da5eba551",
-        "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828"
+        "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828",
+        "50585f17bfabdb2d9a1d00e3a57d3edd97d5d15d",
+        "ef8270e2c271aa88c4edb2394f1abcae0979e7f7",
+        "1f03a244a10fe510210701b3f4ffe4e08396a7e7",
+        "9f1e371e826163bb685942ef4a42e5cd4377fb7e",
+        "b5c2153d610aa351cba05dae1479c6983ad81d3b"
       ],
       "evidence": [
         "data/autonomous-roadmap-20261102/t022/a/evidence.json",
@@ -1198,9 +1212,13 @@
         "data/autonomous-roadmap-20261102/t022/x/normal-full-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-05-production-input-close-receipts.json",
         "docs/research/2026-11-05-capture-copy-reconciliation.json",
-        "docs/research/2026-11-05-multistore-restore-rehearsal.json"
+        "docs/research/2026-11-05-multistore-restore-rehearsal.json",
+        "tests/unit/memory/test_runtime_closure.py",
+        "tests/unit/memory/test_output_census.py",
+        "tests/integration/test_runtime_output_census.py",
+        "tests/integration/runtime_output_callsites.json"
       ],
-      "next_action": "T023-J y T024-A verificadas localmente: cierre nativo estricto y revalidación de recibos de capturas tras restore compatible, con fuente ajena preservada. Leer sus informes y continuar T024-B con los diez participantes y drivers reales. Productores e inventarios unresolved siguen pendientes; no inferir borrado agregado ni cierre de T022/T023, no repetir tandas sin motivo nuevo. T020/P1/T047, permisos y presupuestos se conservan."
+      "next_action": "Verificado localmente el registro de las 32 filas y la conciliación de sus cierres nominales, incluidos multi-room, reapertura de entrada, modelos y transportes. La clasificación de representaciones externas y las obligaciones de limpieza pendientes requieren evidencia adicional."
     },
     {
       "id": "T023",
@@ -1213,7 +1231,7 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "ec24701020ff3ae19f539b7bd80ca55bdec27acc",
         "a746f106042c95271de53b326804f4532445b160",
@@ -1224,7 +1242,9 @@
         "43b44b933d8bff8a8a8bd2bdbd4f4d5555bfc743",
         "815941b6d120bcfe385ab5897c4cc79b329c1204",
         "9d9613d0fe6058d27c0200aec7b688c4019f90b7",
-        "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828"
+        "3874ffc8ddeadcb231f48ee1eee02ed7dfdd5828",
+        "9f1e371e826163bb685942ef4a42e5cd4377fb7e",
+        "b5c2153d610aa351cba05dae1479c6983ad81d3b"
       ],
       "evidence": [
         "docs/research/2026-11-04-capture-suspension-composition.json",
@@ -1258,9 +1278,11 @@
         "data/autonomous-roadmap-20261102/t023/i/full-normal-attempt-01/acceptance-proof.json",
         "docs/research/2026-11-05-production-input-close-receipts.json",
         "docs/research/2026-11-05-capture-copy-reconciliation.json",
-        "docs/research/2026-11-05-multistore-restore-rehearsal.json"
+        "docs/research/2026-11-05-multistore-restore-rehearsal.json",
+        "tests/integration/test_wakeword_capture_authority.py",
+        "tests/integration/test_runtime_output_census.py"
       ],
-      "next_action": "T023-J y T024-A verificadas localmente: cierre nativo estricto y revalidación de recibos de capturas tras restore compatible, con fuente ajena preservada. Leer sus informes y continuar T024-B con los diez participantes y drivers reales. Productores e inventarios unresolved siguen pendientes; no inferir borrado agregado ni cierre de T022/T023, no repetir tandas sin motivo nuevo. T020/P1/T047, permisos y presupuestos se conservan."
+      "next_action": "Verificados localmente la reanudación con el dueño de entrada anterior retirado y el seguimiento de cada cliente delegado del grabador. Los recibos de cierre y la autoridad de captura se verifican en sus dueños originales. Conservar los ensayos de mute y restauración de T023-J para C04."
     },
     {
       "id": "T024",
@@ -1276,7 +1298,7 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "71971584430adbbaae425923d92f4a23a9ce7f25",
         "f5b846a538a71a386da68ca72b7fa35d619754b1",
@@ -1319,7 +1341,14 @@
         "431e44eafa9abe36d8ac958a64e9430553771da1",
         "b42d731dcec17a21f7844c2b2df538b0bec7e13b",
         "cdd3c84ecb142854dae4a616afde9ba4952ae9e5",
-        "c0e82df85012d6805e882276dfa29366516945b2"
+        "c0e82df85012d6805e882276dfa29366516945b2",
+        "9acc02a0d16f37c1ec7753c968f97a611e8b4c0b",
+        "50585f17bfabdb2d9a1d00e3a57d3edd97d5d15d",
+        "ef8270e2c271aa88c4edb2394f1abcae0979e7f7",
+        "1f03a244a10fe510210701b3f4ffe4e08396a7e7",
+        "4aae6818e6caa89615a529d49293604dba743ff5",
+        "9f1e371e826163bb685942ef4a42e5cd4377fb7e",
+        "b5c2153d610aa351cba05dae1479c6983ad81d3b"
       ],
       "evidence": [
         "docs/plans/2026-11-05-erasure-restore-continuation.json",
@@ -1375,9 +1404,14 @@
         "data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/test-only-commit-mapping.json",
         "docs/runbooks/2026-11-07-session-handoff.md",
         "data/autonomous-roadmap-20261102/session-closeout-20261107/handoff.json",
-        "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/failed-full-handoff-review.json"
+        "data/autonomous-roadmap-20261102/t024/f1/output-registration/next-batch-validation/diagnostic-noop-validation-round-01/failed-full-handoff-review.json",
+        "data/autonomous-roadmap-20261102/t024/f1/checkpoint-retirement/next-census-design-v2.json",
+        "tests/unit/memory/test_output_census.py",
+        "tests/integration/test_runtime_output_census.py",
+        "tests/integration/test_compiled_output_registration_compatibility.py",
+        "docs/architecture/DEPLOYMENT.md"
       ],
-      "next_action": "Las seis fallas de la full c0e82df se corrigieron (743efd3, 740ca42; round-02 aceptada en 0fed9c4). Cuentas/V3 quedó aceptada dentro de su alcance tras round-03 en dae7c2d, y configuración/V4 (journal V4 extensible) tras round-04 en 2f5e657, ambas con revisión independiente: 9 de 32 productores registrados. OQ-8 (marcador durable de retiro en el journal V4 más compuerta de egress en ejecución, 0c8f5be/0e9cc8a) quedó aceptado con salvedades tras round-07, con revisión independiente; queda abierto un cuelgue intermitente en test_capture_native_clients y el runbook de DEPLOYMENT antes de H6. Siguiente: prioridad T047 y luego orden 2 del diseño de censo v2 (registrar antes de sus efectos los productores de runtime restantes), con borrador de diseño, revisión independiente, implementación y validación fresca por unidad. Preservar oráculos y límites; F1, T024 y el roadmap completo siguen pendientes."
+      "next_action": "Verificados localmente el catálogo V4 de 32 filas, el censo de productores con recibos y la lectura compilada de historias coexistentes. El censo conserva global_inventory_complete=false para destinos privados o sin confirmar de SDK, servicios y colectores externos. Quedan abiertas la compactación y revisión global del orden 5 y la limpieza, guardas y evidencia física del orden 6. Evaluar C04 y C05 en la ventana autorizada."
     },
     {
       "id": "T025",
@@ -2802,11 +2836,11 @@
     "checkpoint_path": "data/autonomous-roadmap-20261102/checkpoint.json",
     "evidence_contract": "docs/runbooks/2026-11-02-autonomous-execution.md",
     "field_authorized": false,
-    "next_task": "T024",
-    "last_verified_phase": "P1",
-    "last_verified_task": "T020",
+    "next_task": "T043",
+    "last_verified_phase": "P2",
+    "last_verified_task": "T024",
     "frontend_design_instruction": "User 2026-11-02: integrate approved NEXO reference after the current native admin unit; included in this active goal, preserve appearance and connect real backend with separate voice/person/account permissions.",
-    "last_verified_unit": "T024-F0/artifact-build-process-independence",
+    "last_verified_unit": "P2-I1",
     "user_priority_after_admin_unit": "T047"
   },
   "test_suite_acceleration": {

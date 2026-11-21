@@ -630,7 +630,7 @@ Producción sigue en `e9669ec` hasta el GO de P7.
 La excepción `database_rules.legacy_reminders` admite el archivo
 `reminders.db` heredado con la tabla `reminders` de exactamente doce
 columnas, sólo si faltan las tablas `timers` y `alert_preferences`.
-La regla fija los nombres y tipos de las doce columnas:
+La regla fija las siguientes doce columnas con sus tipos.
 `id TEXT`, `user_id TEXT`, `text TEXT`, `trigger_at REAL`,
 `created_at REAL`, `recurrence TEXT`, `recurrence_end REAL`,
 `ha_actions TEXT`, `state TEXT`, `last_fired_at REAL`,
