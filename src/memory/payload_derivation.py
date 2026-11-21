@@ -1090,6 +1090,50 @@ def _privacy_schema_added(ordinary: list[dict], latest: list[dict],
     return bool(added) and [row for row in latest if row not in added] == ordinary
 
 
+# The managed Epoch 1 store's exact CREATE TABLE (80b47f5, ef8bc6db).
+_LEGACY_REMINDERS_DDL = """CREATE TABLE reminders (
+                        id TEXT PRIMARY KEY, user_id TEXT NOT NULL, text TEXT NOT NULL,
+                        trigger_at REAL NOT NULL, created_at REAL NOT NULL,
+                        recurrence TEXT, recurrence_end REAL, ha_actions TEXT,
+                        state TEXT NOT NULL DEFAULT 'active', last_fired_at REAL,
+                        fire_count INTEGER NOT NULL DEFAULT 0,
+                        scope TEXT NOT NULL DEFAULT 'private' CHECK (scope IN ('private', 'shared'))
+                    );
+CREATE INDEX idx_reminders_trigger ON reminders (trigger_at) WHERE state = 'active';
+CREATE INDEX idx_reminders_user ON reminders (user_id, state);
+"""
+_REMINDER_SCHEMA_TABLES = frozenset({"reminders", "timers", "alert_preferences"})
+
+
+def _reminder_schema_upgraded(ordinary: list[dict], latest: list[dict]) -> bool:
+    """Accept only the known SCHEMA-V2 reminder transition between pinned schemas."""
+    from src.reminders.reminder_store import reminder_schema
+
+    old_reminders = [row for row in ordinary if row["tbl_name"] in _REMINDER_SCHEMA_TABLES]
+    new_reminders = [row for row in latest if row["tbl_name"] in _REMINDER_SCHEMA_TABLES]
+    unchanged = [row for row in ordinary if row["tbl_name"] not in _REMINDER_SCHEMA_TABLES]
+    if unchanged != [row for row in latest if row["tbl_name"] not in _REMINDER_SCHEMA_TABLES]:
+        return False
+
+    def schema_rows(db: sqlite3.Connection) -> list[dict]:
+        return [dict(row) for row in db.execute(
+            "SELECT type,name,tbl_name,sql FROM sqlite_master ORDER BY type,name")
+            if row["tbl_name"] in _REMINDER_SCHEMA_TABLES]
+
+    with closing(sqlite3.connect(":memory:")) as db:
+        db.row_factory = sqlite3.Row
+        db.executescript(_LEGACY_REMINDERS_DDL)
+        if old_reminders != schema_rows(db):
+            return False
+        reminder_schema(db)
+        if new_reminders == schema_rows(db):
+            return True
+        # CREATE and ALTER store different SQL text for the same resulting columns.
+        db.execute("DROP TABLE reminders")
+        reminder_schema(db)
+        return new_reminders == schema_rows(db)
+
+
 def plan_payload_cut(ordinary: ClosedStateSnapshot, latest: ClosedStateSnapshot, *, now: float,
                      layout: DerivationLayout) -> PayloadCutPlan:
     """Deterministic read-only preflight of pinned inputs; no SDK or destination I/O."""
@@ -1133,6 +1177,9 @@ def plan_payload_cut(ordinary: ClosedStateSnapshot, latest: ClosedStateSnapshot,
             _privacy_schema_added(old["schema"], new["schema"])
             if mapping.destination_relative == layout.privacy_relative
             else _privacy_schema_added(old["schema"], new["schema"], _authority_schema_additions())))
+        if (not compatible_schema and PurePosixPath(mapping.ordinary_relative).name
+                == PurePosixPath(mapping.latest_relative).name == "reminders.db"):
+            compatible_schema = _reminder_schema_upgraded(old["schema"], new["schema"])
         _require(compatible_schema and old["application_id"] == new["application_id"]
             and old["user_version"] == new["user_version"], "payload_database_schema_changed")
         for name in ("pending_audio_deletions", "audio_write_intents", "quarantines", "staged"):
