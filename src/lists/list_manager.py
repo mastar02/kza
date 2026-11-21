@@ -1,12 +1,15 @@
 """Business logic for list operations with fuzzy matching and auto-creation."""
-from dataclasses import dataclass
 import logging
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 
-from src.lists.list_store import ListStore, UserList, ListItem, OwnerType
-from src.lists.ha_sync import HASyncManager
-from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.core.sqlite_work import AuthorityGuard
+from src.core.task_outcome import DispatchState, EffectState, PersistenceState, TaskOutcome, TaskStatus
+from src.home_assistant.ha_client import HomeAssistantClient
+from src.lists.ha_sync import (
+    HASyncManager, SyncReport, SyncStatus, _is_shared_target, _normalize, _select_shared_list,
+)
+from src.lists.list_store import ListItem, ListStore, OwnerType, UserList
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,7 @@ class ListWriteResult:
 
     item: ListItem | None
     outcome: TaskOutcome
+    sync_report: SyncReport | None = None
 
 
 class ListManager:
@@ -30,18 +34,19 @@ class ListManager:
     def __init__(
         self,
         store: ListStore,
-        ha_client=None,
+        ha_client: HomeAssistantClient | None = None,
         config: dict | None = None,
-    ):
+    ) -> None:
         self._store = store
-        self._ha_client = ha_client
-        self._config = config or {}
-        self._default_list_name: str = self._config.get(
-            "default_list_name", "compras"
-        )
-        self._ha_sync: HASyncManager | None = (
-            HASyncManager(ha_client, self._config.get("ha_entity_prefix", "todo.kza"))
-            if ha_client and self._config.get("ha_sync_enabled", False)
+        config = config or {}
+        self._default_list_name: str = config.get("default_list_name", "compras")
+        self._ha_sync_enabled = bool(config.get("ha_sync_enabled", False))
+        self._ha_sync = (
+            HASyncManager(
+                ha_client, store=store, list_name=self._default_list_name,
+                entity_id=config.get("ha_todo_entity"),
+            )
+            if self._ha_sync_enabled
             else None
         )
 
@@ -68,38 +73,97 @@ class ListManager:
 
     async def add_item(self, user_id: str | None, item_text: str, list_name: str | None = None, *,
                        shared_only: bool = False, guard: AuthorityGuard | None = None) -> ListItem | None:
-        """Add locally only after an eligible list and committed item are selected."""
+        """Return a confirmed pending item for the requested add."""
         result = await self.add_item_with_outcome(user_id, item_text, list_name,
             shared_only=shared_only, guard=guard)
-        return result.item
+        return result.item if result.outcome.task_completed else None
 
     async def add_item_with_outcome(self, user_id: str | None, item_text: str,
                                     list_name: str | None = None, *, shared_only: bool = False,
                                     guard: AuthorityGuard | None = None) -> ListWriteResult:
-        """Keep scope rejection separate from a committed local write and replication."""
+        """Report the effective local item after optional HA reconciliation."""
         lst = await self._resolve_list(user_id, list_name, shared_only=shared_only, guard=guard)
         if lst is None:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
                 persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
-        item = await self._store.add_item(list_id=lst.id, text=item_text,
-            added_by=None if shared_only else user_id, shared_only=shared_only, guard=guard)
+        item = await self._add_local_item(
+            lst.id, item_text, user_id, shared_only=shared_only, guard=guard, target=lst,
+        )
         if item is None:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
                 persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
-        replication = await self._replicate("sync_add_item", lst.name, item_text)
+
+        report = await self._replicate(lst, guard, added_item=item)
+        item = await self._verify_added_item(item, report, guard)
+        replication = self._dispatch_state(report)
+        if item is None or item.completed:
+            return ListWriteResult(item, TaskOutcome(TaskStatus.UNCERTAIN,
+                persistence=PersistenceState.UNCERTAIN, effect=EffectState.UNCERTAIN,
+                replication=replication), report)
         return ListWriteResult(item, TaskOutcome(TaskStatus.COMPLETED,
             persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
-            observation_scope="software_state", replication=replication))
+            observation_scope="software_state", replication=replication), report)
 
-    async def _replicate(self, method: str, *args) -> DispatchState:
-        if self._ha_sync is None:
-            return DispatchState.NOT_REQUIRED
+    async def _replicate(
+        self, lst: UserList, guard: AuthorityGuard | None, *, added_item: ListItem | None = None,
+    ) -> SyncReport | None:
+        if self._ha_sync is None or not _is_shared_target(lst, self._default_list_name):
+            return None
         try:
-            accepted = await getattr(self._ha_sync, method)(*args)
-            return DispatchState.ACCEPTED if accepted is True else DispatchState.UNCERTAIN
+            if added_item is not None:
+                return await self._ha_sync.sync_after_add(lst, added_item, guard=guard)
+            return await self._ha_sync.sync(lst, guard=guard)
         except Exception:
-            logger.warning("List committed locally; HA replication remains uncertain")
-            return DispatchState.UNCERTAIN
+            logger.warning("List committed locally; HA reconciliation remains incomplete")
+            return SyncReport(SyncStatus.INCOMPLETE)
+
+    async def _verify_added_item(
+        self, item: ListItem, report: SyncReport | None, guard: AuthorityGuard | None,
+    ) -> ListItem | None:
+        if report is None:
+            return item
+        try:
+            items = await self._store.get_items_in_scope(item.list_id, shared_only=True, guard=guard)
+        except PermissionError:
+            raise
+        except Exception:
+            logger.warning("Could not verify the added list item after HA reconciliation")
+            return None
+        return next((current for current in items or () if current.id == item.id), None)
+
+    @staticmethod
+    def _dispatch_state(report: SyncReport | None) -> DispatchState:
+        if report is None:
+            return DispatchState.NOT_REQUIRED
+        return DispatchState.ACCEPTED if report.status is SyncStatus.COMPLETE else DispatchState.UNCERTAIN
+
+    async def sync_with_ha(self, *, guard: AuthorityGuard | None = None) -> SyncReport:
+        """Reconcile the configured shared list, including changes originating in HA."""
+        if self._ha_sync is None:
+            return SyncReport(SyncStatus.DISABLED)
+        return await self._ha_sync.sync(guard=guard)
+
+    async def _sync_target(self, list_id: str | None, guard: AuthorityGuard | None) -> UserList | None:
+        if not self._ha_sync_enabled or list_id is None:
+            return None
+        selected = await _select_shared_list(self._store, self._default_list_name, guard)
+        return selected if selected is not None and selected.id == list_id else None
+
+    async def _add_local_item(
+        self, list_id: str, text: str, user_id: str | None, *,
+        shared_only: bool, guard: AuthorityGuard | None, target: UserList | None,
+        owner: str | None = None,
+    ) -> ListItem | None:
+        added_by = None if shared_only else user_id
+        if (target is None or not self._ha_sync_enabled or self._ha_sync is None
+                or not _is_shared_target(target, self._default_list_name)):
+            return await self._store.add_item(
+                list_id, text, added_by=added_by, guard=guard, shared_only=shared_only, owner=owner,
+            )
+
+        return await self._ha_sync.add_local(
+            target, text, added_by=added_by, shared_only=shared_only, guard=guard,
+        )
 
     async def remove_item(self, user_id: str | None, item_text: str, list_name: str | None = None, *,
                           shared_only: bool = False, guard: AuthorityGuard | None = None) -> bool:
@@ -111,8 +175,7 @@ class ListManager:
                                       list_name: str | None = None, *, shared_only: bool = False,
                                       guard: AuthorityGuard | None = None) -> ListWriteResult:
         """Apply scope before fuzzy matching and again before native deletion."""
-        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id,
-            shared_only=shared_only, guard=guard)
+        lst = await self.get_list(user_id, list_name, shared_only=shared_only, guard=guard)
         items = await self._store.get_items(lst.id, shared_only=shared_only, guard=guard) if lst is not None else []
         match = self._fuzzy_find(item_text, items)
         if match is None:
@@ -123,22 +186,31 @@ class ListManager:
         if removed is not True:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
                 persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
-        replication = await self._replicate("sync_remove_item", lst.name, match.text)
+        if self._ha_sync_enabled and self._ha_sync is not None:
+            self._ha_sync.note_removals(lst, (match,))
+        report = await self._replicate(lst, guard)
         return ListWriteResult(match, TaskOutcome(TaskStatus.COMPLETED,
             persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
-            observation_scope="software_state", replication=replication))
+            observation_scope="software_state", replication=self._dispatch_state(report)), report)
 
     async def get_list(self, user_id: str | None, list_name: str | None = None, *,
                        shared_only: bool = False, guard: AuthorityGuard | None = None) -> UserList | None:
         """Resolve an existing eligible list without implicitly creating one."""
-        return await self._store.find_list_by_name(list_name or self._default_list_name, user_id,
-            shared_only=shared_only, guard=guard)
+        name = list_name or self._default_list_name
+        lst = await self._store.find_list_by_name(name, user_id, shared_only=shared_only, guard=guard)
+        if lst is not None or not self._ha_sync_enabled or _normalize(name) != _normalize(self._default_list_name):
+            return lst
+        if not shared_only and user_id is not None:
+            visible = await self._store.get_lists_for_user(user_id, guard=guard)
+            for personal in visible:
+                if personal.owner_type is OwnerType.USER and _normalize(personal.name) == _normalize(name):
+                    return personal
+        return await _select_shared_list(self._store, self._default_list_name, guard)
 
     async def get_items(self, user_id: str | None, list_name: str | None = None, *,
                         shared_only: bool = False, guard: AuthorityGuard | None = None) -> list[ListItem]:
         """Read only items whose parent is eligible at each native projection."""
-        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id,
-            shared_only=shared_only, guard=guard)
+        lst = await self.get_list(user_id, list_name, shared_only=shared_only, guard=guard)
         if lst is None:
             return []
         return await self._store.get_items(lst.id, shared_only=shared_only, guard=guard)
@@ -146,11 +218,16 @@ class ListManager:
     async def clear_list(self, user_id: str | None, list_name: str | None = None, *,
                          shared_only: bool = False, guard: AuthorityGuard | None = None) -> bool:
         """Clear only an eligible list after its current scope is rechecked."""
-        lst = await self._store.find_list_by_name(list_name or self._default_list_name, user_id,
-            shared_only=shared_only, guard=guard)
+        lst = await self.get_list(user_id, list_name, shared_only=shared_only, guard=guard)
         if lst is None:
             return False
-        return await self._store.clear_list(lst.id, shared_only=shared_only, guard=guard)
+        target = self._ha_sync_enabled and _is_shared_target(lst, self._default_list_name)
+        items = await self._store.get_items(lst.id, shared_only=True, guard=guard) if target else []
+        cleared = await self._store.clear_list(lst.id, shared_only=shared_only, guard=guard)
+        if cleared and target:
+            self._ha_sync.note_removals(lst, items)
+            await self._replicate(lst, guard)
+        return cleared
 
     async def get_items_by_list_id(self, list_id: str, *, shared_only: bool = False,
                                    guard: AuthorityGuard | None = None) -> list[ListItem]:
@@ -173,16 +250,28 @@ class ListManager:
         self, list_id: str, item_text: str, user_id: str | None = None, *,
         guard: AuthorityGuard | None = None, shared_only: bool = False, owner: str | None = None,
     ) -> ListItem | None:
-        """Check the parent and add an item by ID under original authority."""
-        return await self._store.add_item(list_id, item_text,
-            added_by=None if shared_only else user_id, guard=guard, shared_only=shared_only, owner=owner)
+        """Return a pending item confirmed within the selected list and authority."""
+        target = await self._sync_target(list_id, guard)
+        item = await self._add_local_item(
+            list_id, item_text, user_id, shared_only=shared_only, guard=guard, owner=owner, target=target,
+        )
+        if item is not None and target is not None:
+            report = await self._replicate(target, guard, added_item=item)
+            item = await self._verify_added_item(item, report, guard)
+        return item if item is not None and not item.completed else None
 
     async def remove_item_by_id(self, item_id: str, *, list_id: str | None = None,
                                 guard: AuthorityGuard | None = None,
                                 shared_only: bool = False, owner: str | None = None) -> bool:
         """Delete an identified item only from an eligible selected list."""
-        return await self._store.remove_item(item_id, list_id=list_id,
+        target = await self._sync_target(list_id, guard)
+        items = await self._store.get_items(target.id, shared_only=True, guard=guard) if target else []
+        removed = await self._store.remove_item(item_id, list_id=list_id,
             guard=guard, shared_only=shared_only, owner=owner)
+        if removed and target is not None:
+            self._ha_sync.note_removals(target, (item for item in items if item.id == item_id))
+            await self._replicate(target, guard)
+        return removed
 
     async def get_all_lists(self, user_id: str | None, *, shared_only: bool = False,
                             guard: AuthorityGuard | None = None) -> list[UserList]:
@@ -193,12 +282,12 @@ class ListManager:
                             shared_only: bool = False,
                             guard: AuthorityGuard | None = None) -> UserList | None:
         """Resolve an eligible list; household voice cannot create personal defaults."""
-        name = list_name or self._default_list_name
-        lst = await self._store.find_list_by_name(name, user_id, shared_only=shared_only, guard=guard)
+        lst = await self.get_list(user_id, list_name, shared_only=shared_only, guard=guard)
         if lst is not None or shared_only:
             return lst
-        return await self._store.create_list(name=name, owner_type=OwnerType.USER, owner_id=user_id,
-            guard=guard)
+        return await self._store.create_list(
+            name=list_name or self._default_list_name, owner_type=OwnerType.USER, owner_id=user_id, guard=guard,
+        )
 
     @staticmethod
     def _fuzzy_find(
