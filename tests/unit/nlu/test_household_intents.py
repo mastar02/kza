@@ -47,6 +47,27 @@ def test_p5_energy_keeps_light_and_cover_phrases_unclaimed(text):
     assert classify_household_intent(text) is None
 
 
+@pytest.mark.parametrize("text", [
+    "cuánto cuesta un auto eléctrico",
+    "qué precio tiene un auto eléctrico",
+    "cuántos watts consume la heladera",
+    "cuánta energía consume el lavarropas de casa",
+    "cuántos watts consume la computadora",
+    "cuánto cuesta una casa",
+    "cuánto cuesta la factura del gas",
+    "cómo está la cámara del video portero",
+    "mostrame la cámara del videoportero",
+])
+def test_p5_integrations_leave_other_electrical_devices_and_doorbells_unclaimed(text):
+    assert classify_household_intent(text) is None
+
+
+def test_p5_camera_keeps_home_camera_health_query():
+    intent = classify_household_intent("cómo está la cámara del patio")
+    assert _shape(intent) == (F.CAMERA_HEALTH, O.QUERY, "P5")
+    assert intent.complement == "health"
+
+
 @pytest.mark.parametrize(("text", "kind"), [
     ("qué energía consume la casa", "energy"),
     ("cuánto consume el medidor de electricidad", "energy"),
@@ -56,6 +77,8 @@ def test_p5_energy_keeps_light_and_cover_phrases_unclaimed(text):
     ("cuánto gasté de luz este mes", "cost"),
     ("cuánto pagué de luz", "cost"),
     ("cuánto cuesta la factura de electricidad", "cost"),
+    ("qué precio tiene la luz de casa", "cost"),
+    ("cuántos watts consume el hogar", "power"),
 ])
 def test_p5_energy_requires_electrical_measurement_or_cost(text, kind):
     intent = classify_household_intent(text)
