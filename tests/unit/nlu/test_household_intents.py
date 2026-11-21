@@ -32,6 +32,37 @@ def _shape(intent):
     return intent.family, intent.operation, intent.rule
 
 
+@pytest.mark.parametrize("text", [
+    "qué luz está prendida en la cocina",
+    "qué luz está prendida",
+    "dame luz en la cocina",
+    "dame más luz",
+    "que se prenda la luz",
+    "que haya luz en el living",
+    "cuánta luz hay en el living",
+    "qué hace la cortina eléctrica",
+    "qué persiana eléctrica está encendida",
+])
+def test_p5_energy_keeps_light_and_cover_phrases_unclaimed(text):
+    assert classify_household_intent(text) is None
+
+
+@pytest.mark.parametrize(("text", "kind"), [
+    ("qué energía consume la casa", "energy"),
+    ("cuánto consume el medidor de electricidad", "energy"),
+    ("cuántos kilovatios hora marca el medidor", "energy"),
+    ("cuánta potencia consume la casa", "power"),
+    ("cuántos watts está consumiendo", "power"),
+    ("cuánto gasté de luz este mes", "cost"),
+    ("cuánto pagué de luz", "cost"),
+    ("cuánto cuesta la factura de electricidad", "cost"),
+])
+def test_p5_energy_requires_electrical_measurement_or_cost(text, kind):
+    intent = classify_household_intent(text)
+    assert _shape(intent) == (F.ENERGY, O.QUERY, "P5")
+    assert intent.complement == kind
+
+
 # Precedence table: utterance -> (family, operation, rule) or None (unclaimed).
 PRECEDENCE = [
     # R3 reminder/deferral verbs win over every domotics, music, list, sync or enrollment word.

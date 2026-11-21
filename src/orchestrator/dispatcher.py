@@ -766,7 +766,8 @@ async def dispatch_voice_integration(
                        if kind is MeasurementKind.ENERGY else "La potencia instantánea medida")
         suffix = (" Hay medidores sin lectura disponible."
                   if summary.available_count < summary.selected_count else "")
-        return reply(f"{description} es de {summary.total:f} {summary.unit}.{suffix}")
+        spoken_total = f"{summary.total:.3f}".rstrip("0").rstrip(".").replace(".", ",")
+        return reply(f"{description} es de {spoken_total} {summary.unit}.{suffix}")
 
     if intent.family is HouseholdFamily.CALENDAR:
         read = await services.calendar_reader.get_day(
@@ -807,7 +808,10 @@ async def dispatch_voice_integration(
         return reply("Hay más de una tele configurada. Indicá en qué habitación está.", TaskStatus.NEEDS_INPUT)
     player = players[0]
     if intent.operation is HouseholdOperation.QUERY:
-        state = await services.media_controller.read(actor, player.room, player.entity_id)
+        try:
+            state = await services.media_controller.read(actor, player.room, player.entity_id)
+        except ValueError:
+            return reply("No tengo un estado actual de la tele.", TaskStatus.FAILED)
         labels = {"playing": "reproduciendo", "paused": "en pausa", "idle": "sin reproducir", "off": "apagada",
                   "on": "encendida", "standby": "en espera", "buffering": "cargando"}
         if state.state not in labels:

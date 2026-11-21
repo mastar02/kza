@@ -1726,6 +1726,16 @@ class RequestRouter:
         """
         return not tv_signal and self.wake_acoustically_confirmed and capture_trigger == CaptureTrigger.WAKE
 
+    async def _admit_integration_query(
+        self, text: str, result: dict, *, room_id: str | None, tv_signal: bool, capture_trigger: str | None,
+    ) -> bool:
+        """Require a clear own wake or a positive 7B verdict for P5 reads."""
+        if self._has_clear_own_wake(tv_signal=tv_signal, capture_trigger=capture_trigger):
+            return True
+        # A missing classifier cannot admit an integration read when the wake
+        # is unproven, including when the producer omitted its capture trigger.
+        return await self._household_veto_passes(text, result, room_id=room_id, tv_signal=True)
+
     async def _household_veto_passes(self, text: str, result: dict, *, room_id: str | None, tv_signal: bool) -> bool:
         """Run the 7B as a veto on a weakly woken claimed turn (P3-F2 S6).
 
@@ -1811,9 +1821,15 @@ class RequestRouter:
             weak_wake = False
         # Proposals already require a clear acoustic capture and use local grammar.
         local_proposal = self.voice_routines is not None and self.voice_routines.claims_proposal(household)
-        local_integration = household is not None and household.family in INTEGRATION_FAMILIES
-        if weak_wake and not local_proposal and not local_integration and not await self._household_veto_passes(
-                text, result, room_id=room_id, tv_signal=tv_signal):
+        if household is not None and household.family in INTEGRATION_FAMILIES:
+            admitted = household.operation is HouseholdOperation.EXECUTE or await self._admit_integration_query(
+                text, result, room_id=room_id, tv_signal=tv_signal, capture_trigger=capture_trigger,
+            )
+        else:
+            admitted = not weak_wake or local_proposal or await self._household_veto_passes(
+                text, result, room_id=room_id, tv_signal=tv_signal,
+            )
+        if not admitted:
             logger.info("[Household] vetoed %s", summary)
             result["intent"] = "llm_rejected:household"
             result["success"] = False
@@ -2170,6 +2186,14 @@ class RequestRouter:
                                           textual_wake=textual_wake, capture_trigger=capture_trigger):
                 result["intent"] = "gate_rejected:media_capture"
                 result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
+            tv_signal = (textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
+                         or _capture_without_own_wake(capture_trigger))
+            if household.operation is HouseholdOperation.QUERY and not await self._admit_integration_query(
+                text, result, room_id=room_id, tv_signal=tv_signal, capture_trigger=capture_trigger,
+            ):
+                result.update(intent="llm_rejected:household", success=False, response="",
+                              latency_ms=(time.perf_counter() - pipeline_start) * 1000)
                 return result
             dispatched = await dispatch_voice_integration(self.integrations, household, origin_room=room_id)
             return await self._finish_orchestrated_turn(

@@ -138,7 +138,7 @@ class ListManager:
 
     @staticmethod
     def _dispatch_state(report: SyncReport | None) -> DispatchState:
-        if report is None:
+        if report is None or report.status in (SyncStatus.DISABLED, SyncStatus.INVALID_CONFIGURATION):
             return DispatchState.NOT_REQUIRED
         return DispatchState.ACCEPTED if report.status is SyncStatus.COMPLETE else DispatchState.UNCERTAIN
 

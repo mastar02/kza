@@ -5,6 +5,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import UTC, datetime, timedelta
 import sys
 import time
+from unittest.mock import AsyncMock
 
 from aiohttp import web
 from httpx import ASGITransport, AsyncClient
@@ -194,9 +195,11 @@ def rig(tmp_path, monkeypatch):
     return home, owner, open_graph
 
 
-async def say(graph, text, **capture):
+async def say(graph, text, *, capture_trigger="wake", **capture):
     graph.models.stt.text = text
-    turn = await graph.pipeline.process_command(CommandEvent(np.full(16000, 0.1, dtype=np.float32), "", **capture))
+    turn = await graph.pipeline.process_command(
+        CommandEvent(np.full(16000, 0.1, dtype=np.float32), "", capture_trigger=capture_trigger, **capture)
+    )
     if turn["response"]:
         assert turn["response"] == graph.models.tts.texts[-1]
     return turn
@@ -231,9 +234,10 @@ async def test_p5_voice_and_http_through_the_same_graph(rig, dashboard_auth, mon
         await session(graph, client, dashboard_auth, "P5 visitor")
 
         for phrase, expected in (
-            ("qué energía consume la casa", "lecturas acumuladas actuales"),
+            ("qué energía consume la casa", "lecturas acumuladas actuales es de 1,2 kWh"),
             ("cuánta potencia consume la casa", "420"),
             ("cuánto cuesta la factura de luz", "tarifa verificada"),
+            ("cuánto gasté de luz este mes", "tarifa verificada"),
             ("qué hay en el calendario hoy", SHARED_EVENT),
             ("agenda mañana", "No hay eventos"),
             ("qué está pasando en la tele del living", "Nublado"),
@@ -244,6 +248,12 @@ async def test_p5_voice_and_http_through_the_same_graph(rig, dashboard_auth, mon
             assert expected in turn["response"], (phrase, turn)
             assert turn["path"] == "fast_household"
             assert PRIVATE_EVENT not in turn["response"]
+
+        media_reads = list(home.reads)
+        video_turn = await say(graph, "cómo está la cámara grabando")
+        assert video_turn["intent"] == "camera_health" and video_turn["outcome"]["status"] == "unsupported"
+        assert "fuera de este servicio" in video_turn["response"]
+        assert home.reads == media_reads
 
         read = (await client.get("/api/integrations/energy")).json()
         assert read["reading_type"] == "accumulated_meter_reading"
@@ -296,6 +306,63 @@ async def test_p5_voice_and_http_through_the_same_graph(rig, dashboard_auth, mon
         assert not {PERSONAL, OTHER}.intersection(home.reads)
 
 
+@pytest.mark.parametrize("orchestrated", [True, False])
+async def test_p5_queries_require_veto_without_clear_own_wake(rig, monkeypatch, orchestrated):
+    home, _, open_graph = rig
+    async with open_graph(orchestrated=orchestrated) as (graph, _):
+        router = graph.pipeline.request_router
+        veto = AsyncMock(wraps=router._household_veto_passes)
+        monkeypatch.setattr(router, "_household_veto_passes", veto)
+        phrase = "qué hay en el calendario hoy"
+        for capture in (
+            {"textual_wake": True},
+            {"capture_trigger": "follow_up"},
+            {"capture_trigger": "barge_in"},
+            {"wake_score": 0.2},
+            {"ambient_strict": True},
+            {"capture_trigger": None},
+            {"capture_trigger": "inline"},
+        ):
+            veto.reset_mock()
+            turn = await say(graph, phrase, **capture)
+            veto.assert_awaited_once()
+            assert veto.await_args.args[0] == phrase
+            assert turn["intent"] == "llm_rejected:household" and not turn["response"], (capture, turn)
+        assert not home.reads and not home.calls and not graph.models.tts.texts
+
+        veto.reset_mock()
+        veto.return_value = True
+        turn = await say(graph, phrase, capture_trigger="follow_up")
+        veto.assert_awaited_once()
+        assert turn["intent"] == "calendar" and SHARED_EVENT in turn["response"]
+
+
+async def test_light_phrases_do_not_query_energy_sensors(rig):
+    home, _, open_graph = rig
+    async with open_graph() as (graph, _):
+        await graph.pipeline.request_router._orchestrator.start()
+        for phrase in ("qué luz está prendida en la cocina", "dame más luz"):
+            async with asyncio.timeout(3):
+                assert (await say(graph, phrase))["intent"] != "energy"
+        assert METER not in home.reads and POWER not in home.reads
+
+
+async def test_media_observation_mismatch_gets_clean_voice_failure(rig, monkeypatch):
+    home, _, open_graph = rig
+    async with open_graph() as (graph, _):
+        read_observation = graph.ha_client.read_entity_observation
+
+        async def mismatched_observation(entity_id):
+            assert entity_id == TV
+            return await read_observation(POWER)
+
+        monkeypatch.setattr(graph.ha_client, "read_entity_observation", mismatched_observation)
+        turn = await say(graph, "qué está pasando en la tele del living")
+        assert turn["outcome"]["status"] == "failed"
+        assert turn["response"] == "No tengo un estado actual de la tele."
+        assert home.reads == [POWER]
+
+
 async def test_default_selections_are_inert(rig, dashboard_auth):
     home, _, open_graph = rig
     async with open_graph(enabled=False) as (graph, client):
@@ -308,6 +375,11 @@ async def test_default_selections_are_inert(rig, dashboard_auth):
         assert (await client.get("/api/integrations/media")).json() == {"players": []}
         assert (await client.get("/api/integrations/cameras/health")).json()["source_status"] == "not_configured"
         assert (await client.post("/api/lists/sync")).json()["status"] == "invalid_configuration"
+        shared = await graph.list_manager.create_list(None, "compras", shared=True)
+        added = await client.post(f"/api/lists/{shared.id}/items", json={"text": "pan"})
+        assert added.status_code == 200
+        assert added.json()["outcome"]["status"] == "completed"
+        assert added.json()["outcome"]["replication"] == "not_required"
         assert not home.reads and not home.calls
 
 
