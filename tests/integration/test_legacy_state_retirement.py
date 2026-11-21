@@ -17,6 +17,8 @@ the intent, links never followed, and the CLI.
 """
 from __future__ import annotations
 
+import atexit
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -24,13 +26,18 @@ import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
+from scripts import adoption
 from scripts import adoption_commands as commands
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
-from tests.integration.test_adoption_commands import CONTAINER, VOICE, World, artifacts, tree, tree_manifest  # noqa: F401
+from tests.integration.test_adoption_commands import (  # noqa: F401
+    CONTAINER, VOICE, World, artifacts, copy_tree_preserving, tree, tree_manifest,
+    _relocate_ambient_db, _relocate_erasure_privacy_db, _relocate_legacy_tree, _replace_prefix_in_json,
+)
 from tests.mocks import adoption_legacy as fixture
 
 LEGACY = fixture.B_SLOT
@@ -102,8 +109,23 @@ def backup_databases(world: World) -> Path:
     return world.root / "backups" / CONTAINER / "databases"
 
 
-def adopted(world: World, *, close: bool = True, backups: bool = True, production: bool = True) -> World:
-    """Adopt; then the 2026-10-29 backups and (``production``) production's other legacy entries (R1E-2)."""
+_ADOPTED_TEMPLATE_CACHE: dict[tuple, tuple[Path, Path]] = {}
+_ADOPTED_TEMPLATE_DIRS: list[Path] = []
+
+
+def _cleanup_adopted_templates() -> None:
+    for directory in _ADOPTED_TEMPLATE_DIRS:
+        try:
+            if directory.exists():
+                stage.make_writable_then_remove(directory)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_adopted_templates)
+
+
+def _adopt_uncached(world: World, *, close: bool, backups: bool, production: bool) -> World:
     world.adopt()
     if backups:
         make_backups(world)
@@ -113,6 +135,263 @@ def adopted(world: World, *, close: bool = True, backups: bool = True, productio
     if close:
         clean_close(world)
     return world
+
+
+def _can_use_adopted_template(world: World) -> bool:
+    return (
+        not (world.root / "admission").exists()
+        and not (world.layout.models_root / "lora_adapters").exists()
+        and world.archive == world.artifacts["archive"]
+        and world.units.properties[VOICE]["ActiveState"] == "inactive"
+        and world.units.properties[VOICE]["UnitFileState"] == "disabled"
+        and os.path.islink(world.root / "current")
+        and os.readlink(world.root / "current") == os.fspath(Path("slots") / CONTAINER / "runtime")
+        and not (world.root / "slots" / "r1").exists()
+    )
+
+
+def _adopted_template(world: World, *, close: bool, backups: bool, production: bool) -> tuple[Path, Path]:
+    archive_real = os.path.realpath(world.archive)
+    st = os.lstat(archive_real)
+    key = (archive_real, st.st_size, st.st_mtime_ns, close, backups, production)
+    cached = _ADOPTED_TEMPLATE_CACHE.get(key)
+    if cached is not None and cached[0].is_dir():
+        return cached
+    tpl_root = Path(tempfile.mkdtemp(prefix="kza-adopted-tpl-")).resolve()
+    _ADOPTED_TEMPLATE_DIRS.append(tpl_root)
+    tpl_base = tpl_root / "world"
+    tpl_base.mkdir(mode=0o700)
+    tpl_legacy = tpl_base / "legacy"
+    copy_tree_preserving(world.base / "legacy", tpl_legacy)
+    _relocate_legacy_tree(tpl_legacy, os.fspath(world.base / "legacy"), os.fspath(tpl_legacy))
+    tpl_world = object.__new__(World)
+    tpl_world.base = tpl_base
+    tpl_world.layout = fixture.layout_of(tpl_legacy)
+    tpl_world.root = tpl_legacy / "releases"
+    tpl_world.scratch = tpl_base / "tmpfs"
+    tpl_world.scratch.mkdir(mode=0o700)
+    tpl_world.paths = commands.ProductionPaths(os.fspath(tpl_world.layout.models_root), adoption.PRODUCTION_LOGS,
+                                               adoption.PRODUCTION_METRICS)
+    from tests.integration.test_adoption_commands import Units
+    tpl_world.units = Units()
+    tpl_world.archive = world.archive
+    tpl_world.artifacts = world.artifacts
+    tpl_world.unit_dir = tpl_base / "unit.d"
+    tpl_world.unit_dir.mkdir()
+    _adopt_uncached(tpl_world, close=close, backups=backups, production=production)
+    entry = (tpl_legacy, tpl_world.root)
+    _ADOPTED_TEMPLATE_CACHE[key] = entry
+    return entry
+
+
+def _relocate_adopted_world(
+    world: World, tpl_legacy: Path, *, close: bool, backups: bool, production: bool,
+) -> None:
+    dst_legacy = world.base / "legacy"
+    stage.make_writable_then_remove(dst_legacy)
+    copy_tree_preserving(tpl_legacy, dst_legacy)
+    old_legacy = os.fspath(tpl_legacy)
+    new_legacy = os.fspath(dst_legacy)
+    _relocate_legacy_tree(dst_legacy, old_legacy, new_legacy, include_report=True)
+
+    # Refresh backup copies of the two SQLite files that embed paths so they match legacy_state byte-for-byte.
+    legacy_data = legacy_state(world) / "data"
+    if backups:
+        backup_targets = [backup_databases(world)]
+        if production:
+            backup_targets.append(world.root / "backups" / C63 / "databases")
+        for db_dir in backup_targets:
+            for name in ("ambient.db", "memory_privacy.db"):
+                dst_db = db_dir / name
+                if dst_db.is_file() and not dst_db.is_symlink():
+                    mode = stat.S_IMODE(os.lstat(dst_db).st_mode)
+                    shutil.copyfile(legacy_data / name, dst_db)
+                    os.chmod(dst_db, mode)
+
+    # Relocate adopted slot r1 state (settings.yaml, ambient.db, memory_privacy.db).
+    r1_runtime = world.root / "slots" / "r1" / "runtime"
+    r1_state = world.root / "slots" / "r1" / "state"
+    settings_path = r1_state / "config" / "settings.yaml"
+    settings_mode = stat.S_IMODE(os.lstat(settings_path).st_mode)
+    settings_path.write_text(settings_path.read_text().replace(old_legacy, new_legacy))
+    os.chmod(settings_path, settings_mode)
+    _relocate_ambient_db(r1_state / "data" / "ambient.db", old_legacy, new_legacy)
+    _relocate_erasure_privacy_db(r1_state / "data" / "memory_privacy.db", old_legacy, new_legacy)
+
+    # Recompute binding, state digests, and re-chain admission records with exact SHA-256 digests and inodes.
+    admission_dir = world.root / "admission"
+    bindings_dir = admission_dir / "bindings"
+    [old_binding_path] = list(bindings_dir.glob("*.json"))
+    old_binding = json.loads(old_binding_path.read_text())
+    new_binding = dict(
+        old_binding,
+        runtime_root=os.fspath(r1_runtime),
+        state_root=os.fspath(r1_state),
+        state_identity=stage._identity(r1_state),
+        store_roots={rel: stage._identity(r1_state / rel) for rel in old_binding["store_roots"]},
+        authority=stage.capture_state_authority(r1_state),
+    )
+    new_binding_id = stage._digest(new_binding)
+    old_binding_path.unlink()
+    stage._atomic_record(bindings_dir / (new_binding_id + ".json"), new_binding, immutable=True)
+    stage._atomic_record(
+        r1_state / ".kza-state-binding.json",
+        {"schema_version": 1, "admission_root": os.fspath(world.root),
+         "binding_id": new_binding_id, "state_root": os.fspath(r1_state)},
+    )
+
+    new_state_manifest = stage.state_manifest_sha256(r1_state)
+    new_closed_state = stage.closed_state_sha256(new_binding)
+    new_committed_manifest = adoption.manifest_digest(
+        [entry for entry in commands.prepared_manifest(r1_state) if entry[0] != ".kza-state-binding.json"]
+    )
+
+    adoption_dir = stage.adoption_directory(world.root)
+    [old_plan_path] = list(adoption_dir.glob("plan-*.json"))
+    [old_intent_path] = list(adoption_dir.glob(commands.COMMIT_INTENT_PREFIX + "*.json"))
+    [old_record_path] = list(adoption_dir.glob("adoption-*.json"))
+    plan = _replace_prefix_in_json(json.loads(old_plan_path.read_text()), old_legacy, new_legacy)
+    intent = json.loads(old_intent_path.read_text())
+    record = _replace_prefix_in_json(json.loads(old_record_path.read_text()), old_legacy, new_legacy)
+
+    new_source_manifest = adoption.manifest_digest(
+        adoption.source_manifest(world.layout, plan["source"]["metrics_path"])
+    )
+    plan["source"]["manifest_sha256"] = new_source_manifest
+    plan["report"]["source_manifest_sha256"] = new_source_manifest
+    plan["prepared"]["binding"] = new_binding
+    plan["prepared"]["binding_sha256"] = new_binding_id
+    plan["prepared"]["state_manifest_sha256"] = new_state_manifest
+    plan["prepared"]["closed_state_sha256"] = new_closed_state
+    plan["prepared"]["committed_manifest_sha256"] = new_committed_manifest
+    new_plan_sha = stage._digest(plan)
+
+    old_plan_path.unlink()
+    stage._atomic_record(adoption_dir / ("plan-" + new_plan_sha + ".json"), plan, immutable=True)
+    intent["plan_sha256"] = new_plan_sha
+    old_intent_path.unlink()
+    stage._atomic_record(
+        adoption_dir / (commands.COMMIT_INTENT_PREFIX + new_plan_sha + ".json"), intent, immutable=True,
+    )
+
+    mc_dir = admission_dir / "manual-components"
+    adoption_seals_dir = mc_dir / "adoption-seals"
+    [old_aseal_path] = list(adoption_seals_dir.glob("*.json"))
+    aseal = json.loads(old_aseal_path.read_text())
+    capture = dict(aseal["capture"], state_root=os.fspath(r1_state), state_identity=stage._identity(r1_state))
+    h1 = {"schema_version": 1, "generation": 1, "binding_id": new_binding_id, "status": "closed", "run_id": None}
+    aseal.update({
+        "binding_id": new_binding_id,
+        "capture": capture,
+        "closed_head": h1,
+        "plan_sha256": new_plan_sha,
+        "source_manifest_sha256": new_source_manifest,
+        "committed_manifest_sha256": new_committed_manifest,
+        "state_manifest_sha256": new_state_manifest,
+        "closed_state_sha256": new_closed_state,
+    })
+    new_aseal_id = stage._digest(aseal)
+    old_aseal_path.unlink()
+    stage._atomic_record(adoption_seals_dir / (new_aseal_id + ".json"), aseal, immutable=True)
+
+    heads_dir = mc_dir / "heads"
+    old_heads = [(json.loads(p.read_text()), p) for p in heads_dir.glob("*.json")]
+    old_heads.sort(key=lambda item: item[0]["head"]["generation"])
+    for _val, path in old_heads:
+        path.unlink()
+
+    comp1 = dict(old_heads[0][0], authority_seal=new_aseal_id, capture=capture, head=h1, previous=None)
+    stage._atomic_record(heads_dir / (stage._digest(h1) + ".json"), comp1, immutable=True)
+
+    record.update({
+        "binding_id": new_binding_id,
+        "head": h1,
+        "plan_sha256": new_plan_sha,
+        "seal_sha256": new_aseal_id,
+        "source_manifest_sha256": new_source_manifest,
+    })
+    old_record_path.unlink()
+    stage._atomic_record(stage.adoption_record_path(world.root, h1), record, immutable=True)
+
+    final_head = h1
+    if close:
+        h2 = {"schema_version": 1, "generation": 2, "binding_id": new_binding_id, "status": "closed", "run_id": None}
+        comp2 = dict(
+            old_heads[1][0],
+            authority_seal=new_aseal_id,
+            capture=capture,
+            head=h2,
+            previous=stage.manual_reference(comp1),
+        )
+        stage._atomic_record(heads_dir / (stage._digest(h2) + ".json"), comp2, immutable=True)
+
+        receipts_dir = admission_dir / "receipts"
+        [receipt_path] = list(receipts_dir.glob("*.json"))
+        receipt = dict(json.loads(receipt_path.read_text()), binding_id=new_binding_id)
+        receipt_path.unlink()
+        stage._atomic_record(receipt_path, receipt, immutable=True)
+        new_receipt_sha = hashlib.sha256(receipt_path.read_bytes()).hexdigest()
+
+        run_id = receipt["run_id"]
+        rs_path = admission_dir / "receipt-states" / (run_id + ".json")
+        rs = dict(
+            json.loads(rs_path.read_text()),
+            binding_id=new_binding_id,
+            state_manifest_sha256=new_state_manifest,
+            closed_state_sha256=new_closed_state,
+        )
+        rs_path.unlink()
+        stage._atomic_record(rs_path, rs, immutable=True)
+
+        run_path = admission_dir / "runs" / (run_id + ".json")
+        run_rec = dict(json.loads(run_path.read_text()), binding_id=new_binding_id)
+        run_path.unlink()
+        stage._atomic_record(run_path, run_rec, immutable=True)
+
+        closures_dir = admission_dir / "closures"
+        [old_closure_path] = list(closures_dir.glob("*.json"))
+        closure = json.loads(old_closure_path.read_text())
+        closure["binding_id"] = new_binding_id
+        closure["receipt_sha256"] = new_receipt_sha
+        closure["running_head"]["binding_id"] = new_binding_id
+        old_closure_path.unlink()
+        stage._atomic_record(closures_dir / (new_binding_id + ".json"), closure, immutable=True)
+
+        h4 = {"schema_version": 1, "generation": 4, "binding_id": new_binding_id, "status": "closed", "run_id": None}
+        seals_dir = mc_dir / "seals"
+        [old_rseal_path] = list(seals_dir.glob("*.json"))
+        rseal = dict(
+            json.loads(old_rseal_path.read_text()),
+            binding_id=new_binding_id,
+            capture=capture,
+            closed_head=h4,
+            closure_proof=closure,
+        )
+        new_rseal_id = stage._digest(rseal)
+        old_rseal_path.unlink()
+        stage._atomic_record(seals_dir / (new_rseal_id + ".json"), rseal, immutable=True)
+
+        comp4 = dict(
+            old_heads[2][0],
+            authority_seal=new_rseal_id,
+            capture=capture,
+            head=h4,
+            previous=stage.manual_reference(comp2),
+        )
+        stage._atomic_record(heads_dir / (stage._digest(h4) + ".json"), comp4, immutable=True)
+        final_head = h4
+
+    stage._atomic_record(admission_dir / "head.json", final_head)
+    world.units.properties[VOICE]["ActiveState"] = "inactive"
+
+
+def adopted(world: World, *, close: bool = True, backups: bool = True, production: bool = True) -> World:
+    """Adopt; then the 2026-10-29 backups and (``production``) production's other legacy entries (R1E-2)."""
+    if _can_use_adopted_template(world):
+        tpl_legacy, _tpl_root = _adopted_template(world, close=close, backups=backups, production=production)
+        _relocate_adopted_world(world, tpl_legacy, close=close, backups=backups, production=production)
+        return world
+    return _adopt_uncached(world, close=close, backups=backups, production=production)
 
 
 def retire(world: World, *, wall: float = DUE, **options):
