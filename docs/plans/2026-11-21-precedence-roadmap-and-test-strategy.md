@@ -8,7 +8,7 @@
 
 T025, T032, T034 y T037 pasan a `verified_local` porque su código local está 100 % fusionado en la rama base. T043 pasa de `planned` a `in_progress` con los commits de T043-U1 y T043-U2 (Batch N). `verified_local` no significa aceptación: la prueba física de Cocina (C19/C20) queda en P7/T070; C13 de campo y el pronóstico en vivo quedan para P7, y la consolidación de regresión en T060 verificará Q22 (los casos de estado cubren HTTP de diagnóstico) junto con C13 y el pronóstico real. T031-U4 fue descartada por decisión Q7.
 
-La Ola 0 incluye además T090-U6 (`--lanes`, guarda anti-thermouy, `NI=5` nativo), el arreglo de las 2 carreras observadas bajo carga y la sincronización del roadmap.
+La Ola 0 incluye además T090-U6 (`--lanes`, guarda anti-thermouy, `nice -n 5` explícito), el arreglo de las 2 carreras observadas bajo carga y la sincronización del roadmap.
 
 ## Grafo de precedencia
 
@@ -65,6 +65,7 @@ flowchart TD
   U6 -- "T054" --> PW
   PW --> O3
   Q -.-> P60
+  Q -.-> P62
   W1 --> W2
   W2 --> G2
   W3 --> G2
@@ -85,7 +86,7 @@ flowchart TD
 
 Notas de precedencia:
 
-- Los cinco módulos P5 (T050, T051, T052, T053, T054) alimentan P5-Wire, que corre después de ellos en la Ola 2. Los de la Ola 1 (T050, T052, T054) ya están listos; T051 y T053 se completan en la Ola 2 y P5-Wire cierra la ola.
+- Los cinco módulos P5 (T050, T051, T052, T053, T054) alimentan P5-Wire, que corre después de ellos en la Ola 2. Los de la Ola 1 (T050, T052, T054) quedan listos al terminar la Ola 1; T051 y T053 se completan en la Ola 2 y P5-Wire cierra la ola.
 - La Ola 2 depende de SCHEMA-V2 (Ola 1): T030-U3/T031-U3/T036-U3 persisten zonas y alertas sobre ese esquema.
 - T046-U1/U3 es un carril paralelo sujeto a una ventana de Mac quieta: no bloquea el paso de Ola 2 a Ola 3; su medición debe estar lista antes de T060 y T062.
 - T061 (soak 72 h) arranca en background bajo `yo` cuando T060, T062, T063 y T064 terminaron. Durante esas 72 h se preparan en paralelo los guiones de P7 y P8, antes de la adopción directa única en P7.
@@ -144,8 +145,8 @@ Mientras la validación de la Ola N corre (por ejemplo en `kza-yo`), los especia
 Extensión del runner (`scripts/run_test_suite.py`) con:
 
 - `--lanes`: selección explícita de carriles para ejecutar solo los afectados (base de la re-ejecución por carril).
-- Guarda anti-thermouy: el runner detecta la interferencia de los jobs ThermoUY y la reporta/aborta en vez de falsear presupuestos de tiempo.
-- `NI=5` nativo con `--workers 6` en `taskset -c 24-47`, sin depender de `nice` externo, dentro de los límites de `yo` (`MemoryHigh=32 GiB`, `MemorySwapMax=0`).
+- Guarda anti-thermouy: el runner detecta la interferencia de los 4 timers `thermouy-*` (corren en `systemctl --user` de `yo`; se consultan con `systemctl --user show`) y la reporta/aborta en vez de falsear presupuestos de tiempo.
+- `nice -n 5` explícito (NI=5, por debajo de `kza` en NI=0 sin caer en NI=10/NI=15) con `--workers 6` en `taskset -c 24-47`; el shell SSH de `yo` inicia en NI=0, por lo que no se asume NI heredado, dentro de los límites de `yo` (`MemoryHigh=32 GiB`, `MemorySwapMax=0`).
 
 No relaja oráculos, timeouts ni el chequeo `before_NRestarts == after_NRestarts` de `systemd-journald`.
 
