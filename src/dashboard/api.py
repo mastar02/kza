@@ -229,6 +229,7 @@ class ReminderCreateModel(BaseModel):
     recurrence: str | None = Field(default=None, max_length=16, pattern=REMINDER_RECURRENCE_PATTERN)
     ha_actions: list[dict] | None = None
     scope: ReminderScope = ReminderScope.PRIVATE
+    delivery_room: str | None = None
 
 
 _NO_STORE = {"Cache-Control": "no-store"}
@@ -326,7 +327,7 @@ def _reminder_actions(reminder, rooms: Mapping[str, str]) -> list[dict] | None:
 def _reminder_to_dict(reminder, rooms: Mapping[str, str]) -> dict:
     return {"id": reminder.id, "text": reminder.text, "trigger_at": reminder.trigger_at,
             "recurrence": reminder.recurrence, "state": reminder.state, "scope": reminder.scope,
-            "ha_actions": _reminder_actions(reminder, rooms)}
+            "ha_actions": _reminder_actions(reminder, rooms), "delivery_room": reminder.delivery_room}
 
 
 # ==================== Dashboard API ====================
@@ -442,6 +443,9 @@ class DashboardAPI:
         self.home_catalog = home_catalog if home_catalog is not None else HomeCatalogService(
             ha_client, home_rooms or {}, policy=self.home_actions.policy if self.home_actions is not None else None,
             policy_provider=(lambda: self.home_actions.policy) if self.home_actions is not None else None)
+        # The application injects a catalog with these rooms already loaded.
+        # Validating a local room id does not require a Home Assistant observation.
+        self._reminder_room_ids = frozenset(getattr(self.home_catalog, "_rooms", ()))
 
         # FastAPI app
         self.app = DashboardApplication(
@@ -1082,10 +1086,12 @@ class DashboardAPI:
             shared = data.scope is ReminderScope.SHARED
             if not shared and tasks.person is None:
                 return _task_error(403, "personal_session_required", write=True)
+            if data.delivery_room is not None and data.delivery_room not in self._reminder_room_ids:
+                return _task_error(422, "invalid_delivery_room", write=True)
             owner = HomeActor.household().subject if shared else tasks.person
             try:
                 r = await self.reminder_manager.create(owner, data.text, data.trigger_at,
-                    data.recurrence, data.ha_actions, scope=data.scope,
+                    data.recurrence, data.ha_actions, scope=data.scope, delivery_room=data.delivery_room,
                     guard=session_guard(request, tasks.permissions(write=True), principal))
             except PermissionError:
                 return _task_error(403, "reminder_write_denied", write=True)
@@ -1093,7 +1099,7 @@ class DashboardAPI:
                 return _task_error(422, "invalid_reminder_action", write=True)
             return JSONResponse(content={"id": r.id, "text": r.text, "trigger_at": r.trigger_at,
                                          "recurrence": r.recurrence, "state": r.state, "scope": r.scope,
-                                         "outcome": _committed()}, headers=_NO_STORE)
+                                         "delivery_room": r.delivery_room, "outcome": _committed()}, headers=_NO_STORE)
 
         @self.app.delete("/api/reminders/{reminder_id}")
         async def delete_reminder(reminder_id: str, request: Request,

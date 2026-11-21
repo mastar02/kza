@@ -241,7 +241,7 @@ async def test_actual_factory_private_jobs_stay_silent_and_shared_jobs_deliver_o
 
 
 async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_once(tmp_path, monkeypatch, dashboard_auth):
-    """T031-U2: a reminder created by voice is a shared household row that survives a restart and fires once."""
+    """A voice reminder keeps its shared scope and explicit output room across a real factory restart."""
     import src.tts.piper_tts as output_module
     import src.vectordb.chroma_sync as index_module
 
@@ -257,10 +257,11 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
     async with transport.serve() as url:
         config, _ = configuration(tmp_path, url)
         config['rooms'].update(enabled=True, living={'name': 'Living', 'mic_device_index': 0,
-            'capture_channel': 1, 'ma1260_zone': 1, 'default_light': 'light.living'})
+            'capture_channel': 1, 'ma1260_zone': 1, 'default_light': 'light.living'},
+            cocina={'name': 'Cocina', 'aliases': ['fogón'], 'ma1260_zone': 2})
         config['presence'] = {'enabled': False}
         config['tts']['streaming']['default_output_zone'] = 'living'
-        config['reminders'].update(output_zone='living', voice_actions=True)
+        config['reminders'].update(output_zone='zone_living', voice_actions=True)
         config['orchestrator']['enabled'] = True
 
         async def command(graph, phrase):
@@ -273,6 +274,13 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
             await graph.pipeline.request_router._orchestrator.start()
             asked = await command(graph, 'Nexa recordame regar las plantas')
             assert asked['outcome']['status'] == 'needs_input' and not asked['task_completed']
+            for phrase in ('recordame regar las plantas en diez minutos en el garaje',
+                           'recordame en el fogón regar las plantas en diez minutos en el living'):
+                asked = await command(graph, f'Nexa {phrase}')
+                assert asked['outcome']['status'] == 'needs_input'
+                assert asked['outcome']['persistence'] == 'not_written'
+                assert '¿En qué habitación' in asked['response']
+                assert await graph.reminder_manager._store.count_active() == 0
             deferred = await command(graph, 'Nexa apagá la luz del living en diez minutos')
             assert deferred['task_completed'] and deferred['response'] == 'Anotado.'
             action_row, = await graph.reminder_manager.get_active(None, shared_only=True)
@@ -286,11 +294,12 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
                 assert response.status_code == 200
                 projected, = response.json()
                 assert projected['id'] == action_row.id and projected['trigger_at'] == action_row.trigger_at
+                assert projected['delivery_room'] == 'living'
                 assert projected['ha_actions'] == [
                     {'domain': 'light', 'service': 'turn_off', 'entity_id': 'light.living', 'room': 'Living'}]
                 deleted = await client.delete(f'/api/reminders/{action_row.id}')
                 assert deleted.status_code == 200 and deleted.json()['status'] == 'cancelled'
-            created = await command(graph, 'Nexa recordame en 3 segundos regar las plantas')
+            created = await command(graph, 'Nexa recordame en el fogón en 3 segundos regar las plantas')
             assert created['task_completed'] and created['outcome']['persistence'] == 'committed'
             assert created['response'] == 'Anotado.'
             assert 'regar las plantas, hoy a las ' in ' '.join(tts.texts)
@@ -299,13 +308,16 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
             rows = await graph.reminder_manager.get_active(None, shared_only=True)
             assert [(r.user_id, r.scope, r.text, r.ha_actions, r.recurrence) for r in rows] == [
                 ('household', ReminderScope.SHARED, 'regar las plantas', None, None)]
+            assert rows[0].delivery_room == 'cocina'
             created_id = rows[0].id
         # Restart the real factory on the same stores: the row is there and fires exactly once.
         async with AsyncExitStack() as stack:
             graph = await build_application(config, shutdown=stack, factories=factories)
             store = graph.reminder_manager._store
-            assert (await store.get_by_id(created_id)).state is ReminderState.ACTIVE
+            restored = await store.get_by_id(created_id)
+            assert restored.state is ReminderState.ACTIVE and restored.delivery_room == 'cocina'
             before = len(tts.texts)
+            amp.select_zone.reset_mock()
             graph.voice_services.start_reminders()
             try:
                 async with asyncio.timeout(15):
@@ -316,12 +328,32 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
                 await graph.voice_services.stop_reminders()
             spoken = ' '.join(tts.texts[before:])
             assert spoken.count('regar las plantas') == 1
+            amp.select_zone.assert_called_once_with(2)
             fired = await store.get_by_id(created_id)
             assert fired.fire_count == 1 and fired.scope is ReminderScope.SHARED
             assert transport.sends == []
             notices = await store._work.read(lambda db: [tuple(row) for row in db.execute(
                 "SELECT status FROM reminder_home_actions WHERE request_id LIKE 'notice:%'").fetchall()])
             assert notices == [('confirmed',)]
+
+            async with AsyncClient(transport=ASGITransport(app=graph.dashboard.app), base_url='http://testserver',
+                                   headers=dashboard_auth) as client:
+                body = {'text': 'Comprar pan', 'trigger_at': time.time() + 3600, 'scope': 'shared'}
+                for invalid in ('garaje', 'fogón', 'zone_cocina', ''):
+                    response = await client.post('/api/reminders', json={**body, 'delivery_room': invalid})
+                    assert response.status_code == 422
+                assert await store.count_active() == 0
+
+                expected = {}
+                for target in ({'delivery_room': 'cocina'}, {'delivery_room': None}, {}):
+                    response = await client.post('/api/reminders', json={**body, **target})
+                    assert response.status_code == 200
+                    created = response.json()
+                    assert created['delivery_room'] == target.get('delivery_room')
+                    expected[created['id']] = target.get('delivery_room')
+                response = await client.get('/api/reminders', params={'scope': 'shared'})
+                assert response.status_code == 200
+                assert {r['id']: r['delivery_room'] for r in response.json()} == expected
 
 
 async def test_actual_factory_restart_after_three_days_gives_one_late_notice_and_no_home_actions(tmp_path, monkeypatch):

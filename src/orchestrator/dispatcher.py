@@ -109,6 +109,7 @@ from src.reminders.voice_request import (
     VoiceRequestParser,
     deferred_action_text,
     forbidden_home_order,
+    parse_reminder_request,
     period_hours,
     split_reminder_actions,
 )
@@ -211,8 +212,11 @@ _REMINDER_DETAIL_QUESTIONS = {
     "dst_gap": "Esa hora no existe ese día por el cambio de horario. Decímelo completo con otra hora.",
     "dst_fold": "Esa hora se repite ese día por el cambio de horario. Decímelo completo con otra hora.",
 }
-_REMINDER_ROOM_QUESTION = ("Por ahora no elijo en qué habitación suena un recordatorio. Decímelo de nuevo sin "
-                           "nombrar la habitación.")
+_REMINDER_ROOM_QUESTION = ("¿En qué habitación querés que te avise? Decime de nuevo el recordatorio con una sola "
+                           "habitación configurada.")
+_REMINDER_NO_ROOMS_QUESTION = ("Por ahora no elijo en qué habitación suena un recordatorio. Decímelo de nuevo sin "
+                               "nombrar la habitación.")
+_REMINDER_ROOM_ARTICLE = re.compile(r"^(?:el|la|los|las)\s+")
 _REMINDER_HEAD_QUESTION = "No entendí el recordatorio. Decímelo completo, por ejemplo: {example}."
 # The reminder text is a home command (a grammar intent, or a lock, door, gate or alarm order voice control never
 # executes, review T031-U2-RV4): it is only announced, never executed (T031-U2 text-only; T031-U5 adds actions;
@@ -624,6 +628,35 @@ def _room_qualifies_reminder_action(request: VoiceReminderRequest) -> bool:
         or parse_home_command(request.text) is not None
         or forbidden_home_order(request.text) is not None
     )
+
+
+def _reminder_room_alias(value: str) -> str:
+    words = re.sub(r"[\W_]+", " ", normalize_target(value)).strip()
+    return _REMINDER_ROOM_ARTICLE.sub("", words)
+
+
+def _unresolved_reminder_room(request: VoiceReminderRequest, aliases: Mapping[str, set[str]]) -> bool:
+    """Recognize unsolved leading, trailing, or coordinated delivery phrases."""
+    body = normalize_target(request.text)
+    if body.startswith("en "):
+        return True
+    _, marker, tail = body.rpartition(" en ")
+    if marker:
+        parts = re.split(r"\s+[yo]\s+", tail)
+        if len(parts) == 1 and " que " not in tail:
+            return True
+        if len(parts) > 1 and all(_reminder_room_alias(part) in aliases or _REMINDER_ROOM_ARTICLE.match(part)
+                                  for part in parts):
+            return True
+    if request.zone_phrase is not None:
+        _, _, after = request.complement.partition(request.zone_phrase)
+        joined = re.match(r"^[\s,]*(?:y|o)\s+(.+)", normalize_target(after))
+        if joined:
+            if _REMINDER_ROOM_ARTICLE.match(joined[1]):
+                return True
+            rest = _reminder_room_alias(joined[1])
+            return any(rest == alias or rest.startswith(alias + " ") for alias in aliases)
+    return False
 
 
 @dataclass
@@ -1086,11 +1119,7 @@ class RequestDispatcher:
         # T037-U3-R1: the dispatch text still carries the wake pre-roll, often
         # heard as an alias; strip the same wake terms the rest of the NLU does.
         self._clock_wake_words = tuple(sorted(WAKE_TERMS | set(self.household_intents.settings.wake_words)))
-        # T031-U2: voice reminders are read on the household clock; a spoken room alias is found (and, until
-        # T031-U3 resolves it, asked again) rather than left in the reminder text.
-        self._reminder_requests = VoiceRequestParser(lambda: self.household_clock.now_local(),
-                                                     zone_aliases=tuple(ROOM_ALIASES),
-                                                     wake_words=self._clock_wake_words)
+        self._reminder_requests = VoiceRequestParser(lambda: self.household_clock.now_local())
         self.hooks = hooks  # plan #3 OpenClaw — HookRegistry or None
         self._before_handler_warn_ms = before_handler_warn_ms
         # Voice-auth opcional (default OFF): exige speaker enrolado para ejecutar
@@ -2559,19 +2588,20 @@ class RequestDispatcher:
         start, end = filler_span(text, self.household_intents.settings.wake_words,
                                  paused_trails=_REQUEST_PAUSED_TRAILS)
         heard = text[start:end]
+        delivery_room = origin_room
+        room_aliases = self._reminder_delivery_aliases() if not deferred else {}
         try:
             if deferred:
                 request = self._reminder_requests.parse_deferred(heard)
                 example = minutes_example = "apagá la luz del living en diez minutos"
-            elif alarm:
-                trimmed = self.household_intents.classify(heard) if heard != text else household
-                complement = trimmed.complement if trimmed is not None and trimmed.rule == "R3a" else household.complement
-                request = self._reminder_requests.parse_reminder(f"recordame {_alarm_noun(text)} {complement}")
             else:
-                request = self._reminder_requests.parse_reminder(heard)
-                if (self.voice_reminder_actions is True and request is not None and request.ok
-                        and request.zone_phrase is not None and _room_qualifies_reminder_action(request)):
-                    request = replace(request, text=f"{request.text} {request.zone_phrase}", zone_phrase=None)
+                if alarm:
+                    trimmed = self.household_intents.classify(heard) if heard != text else household
+                    complement = (trimmed.complement if trimmed is not None and trimmed.rule == "R3a"
+                                  else household.complement)
+                    heard = f"recordame {_alarm_noun(text)} {complement}"
+                request = parse_reminder_request(heard, self.household_clock.now_local(), zone_aliases=room_aliases,
+                                                 wake_words=self._clock_wake_words)
         except ValueError:
             logger.warning("[Reminder] voice create refused: household clock unusable; nothing written")
             return self._household_refusal(PathType.FAST_REMINDER, intent,
@@ -2581,6 +2611,19 @@ class RequestDispatcher:
         if question is not None:
             return self._household_refusal(PathType.FAST_REMINDER, intent, question, TaskStatus.NEEDS_INPUT)
         assert request is not None and request.trigger_at is not None
+        if isinstance(request, VoiceReminderRequest):
+            rooms = (room_aliases.get(_reminder_room_alias(request.zone_phrase[3:]), set())
+                     if request.zone_phrase is not None else set())
+            literal = request.complement.lstrip().startswith(('"', "'", "«", "“"))
+            if ((not literal and _unresolved_reminder_room(request, room_aliases))
+                    or (request.zone_phrase is not None and len(rooms) != 1)):
+                question = _REMINDER_ROOM_QUESTION if room_aliases else _REMINDER_NO_ROOMS_QUESTION
+                return self._household_refusal(PathType.FAST_REMINDER, intent, question, TaskStatus.NEEDS_INPUT)
+            if request.zone_phrase is not None:
+                if self.voice_reminder_actions is True and not alarm and _room_qualifies_reminder_action(request):
+                    request = replace(request, text=f"{request.text} {request.zone_phrase}", zone_phrase=None)
+                else:
+                    delivery_room, = rooms
         if isinstance(request, DeferredClause) and len(split_reminder_actions(request.clause)) > 1:
             timed = normalize_target(heard)
             when = normalize_target(request.time_phrase or "")
@@ -2591,8 +2634,20 @@ class RequestDispatcher:
         if self.voice_reminder_actions is not True or alarm:
             assert isinstance(request, VoiceReminderRequest)
             return await self._commit_voice_reminder(request.text, request.trigger_at, request.recurrence,
-                                                     None, intent, after_readback=False)
-        return await self._prepare_reminder_readback(request, intent, origin_room=origin_room)
+                                                     None, intent, after_readback=False, delivery_room=delivery_room)
+        return await self._prepare_reminder_readback(request, intent, origin_room=origin_room,
+                                                     delivery_room=delivery_room)
+
+    def _reminder_delivery_aliases(self) -> dict[str, set[str]]:
+        """Index spoken forms from the configured rooms, keeping ambiguous aliases visible."""
+        aliases: dict[str, set[str]] = {}
+        for room_id in self.room_namespace.rooms | self.reminder_rooms.keys():
+            room = self.reminder_rooms.get(room_id)
+            names = (room_id, room.name, room.display_name, *room.aliases) if room else (room_id,)
+            for name in names:
+                if alias := _reminder_room_alias(name):
+                    aliases.setdefault(alias, set()).add(room_id)
+        return aliases
 
     @property
     def voice_reminder_actions(self) -> bool | None:
@@ -2602,7 +2657,8 @@ class RequestDispatcher:
         return value if type(value) is bool else None
 
     async def _prepare_reminder_readback(self, request: VoiceReminderRequest | DeferredClause,
-                                         intent: str, *, origin_room: str | None) -> DispatchResult:
+                                         intent: str, *, origin_room: str | None,
+                                         delivery_room: str | None) -> DispatchResult:
         deferred = isinstance(request, DeferredClause)
         text = request.clause if deferred else request.text
         literal = not deferred and request.complement.lstrip().startswith(('"', "'", "«", "“"))
@@ -2659,7 +2715,7 @@ class RequestDispatcher:
 
         async def commit() -> DispatchResult:
             return await self._commit_voice_reminder(text, trigger_at, request.recurrence, scheduled, intent,
-                                                     after_readback=True)
+                                                     after_readback=True, delivery_room=delivery_room)
 
         return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, readback, intent=intent,
                               reminder_commit=commit)
@@ -2753,11 +2809,12 @@ class RequestDispatcher:
         return matches[0] if len(matches) == 1 else None
 
     async def _commit_voice_reminder(self, text: str, trigger_at: float, recurrence: str | None,
-                                     actions: list[dict] | None, intent: str, *, after_readback: bool) -> DispatchResult:
+                                     actions: list[dict] | None, intent: str, *, after_readback: bool,
+                                     delivery_room: str | None) -> DispatchResult:
         try:
             reminder = await self.reminder_manager.create(
                 HomeActor.household().subject, text, trigger_at, recurrence=recurrence,
-                ha_actions=actions, scope=ReminderScope.SHARED)
+                ha_actions=actions, scope=ReminderScope.SHARED, delivery_room=delivery_room)
         except Exception:
             logger.warning("[Reminder] voice create unconfirmed; no completion receipt")
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, _REMINDER_CREATE_UNCERTAIN,
@@ -2821,9 +2878,6 @@ class RequestDispatcher:
                 return _REMINDER_DETAIL_QUESTIONS[request.detail].format(example=example,
                                                                          minutes_example=minutes_example)
             return _REMINDER_QUESTIONS[request.ambiguity].format(example=example)
-        if isinstance(request, VoiceReminderRequest) and request.zone_phrase is not None:
-            logger.info("[Reminder] voice create needs input: room named")
-            return _REMINDER_ROOM_QUESTION
         return None
 
     def _open_reminder_choice(self, candidates: tuple, choice_key: tuple[str, str | None] | None, *,

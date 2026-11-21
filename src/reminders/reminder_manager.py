@@ -180,9 +180,23 @@ class ReminderManager:
         trigger_at: float,
         recurrence: str | None = None,
         ha_actions: list[dict] | None = None,
-        *, guard: AuthorityGuard | None = None, scope: ReminderScope = ReminderScope.PRIVATE,
+        *,
+        guard: AuthorityGuard | None = None,
+        scope: ReminderScope = ReminderScope.PRIVATE,
+        delivery_room: str | None = None,
     ) -> Reminder:
-        """Create a new reminder via the store."""
+        """Create a new reminder via the store.
+
+        Args:
+            user_id: Subject that owns the reminder.
+            text: Reminder text.
+            trigger_at: First occurrence as an epoch timestamp.
+            recurrence: Optional recurrence rule.
+            ha_actions: Optional home actions, validated before insertion.
+            guard: Authority check for the write.
+            scope: Shared household or private reminder scope.
+            delivery_room: Configured bare room id, or None for the default output.
+        """
         scope = ReminderScope(scope)
         for action in ha_actions or []:
             if type(action) is not dict or action.keys() - {"domain", "service", "entity_id", "data"}:
@@ -200,6 +214,7 @@ class ReminderManager:
             ha_actions=ha_actions,
             guard=guard,
             scope=scope,
+            delivery_room=delivery_room,
         )
         if scope is ReminderScope.SHARED:
             logger.info("Created reminder %s (scope=shared) at %s", reminder.id,
