@@ -6,6 +6,7 @@ Chromium live in tests/frontend/browser_web_timing_probe.py (never a measurement
 
 import asyncio
 from collections import defaultdict
+import gzip
 import json
 from pathlib import Path
 import re
@@ -46,10 +47,15 @@ class FakeClient:
     async def send(self, method, params=None, *, klass, phase=None):
         if not probe.method_class_allowed(method, klass):
             raise ValueError(f'no_deadline_class:{method}:{klass}')
-        self.log.append({'method': method, 'params': params, 'class': klass, 'phase': phase or self.phase,
-                         'sent': time.monotonic()})
+        entry = {'method': method, 'params': params, 'class': klass, 'phase': phase or self.phase,
+                 'sent': time.monotonic()}
+        self.log.append(entry)
         answer = self.answers.get(method)
-        return answer(params) if callable(answer) else (answer or {})
+        try:
+            return answer(params) if callable(answer) else (answer or {})
+        except probe.CdpTimeout:
+            entry.update(timeout=True, deadline=time.monotonic())
+            raise
 
     async def send_pipelined(self, commands, *, klass):
         return [await self.send(method, params, klass=klass) for method, params in commands]
@@ -279,6 +285,12 @@ def test_timed_window_timeout_failure_live_browser_invalid_when_crashed_or_disco
     assert probe.classify(RunFacts(timeouts=timed, navigate_sent=True))[0] == Outcome.FAILURE
     assert probe.classify(RunFacts(timeouts=timed, crashed=True))[0] == Outcome.INVALID
     assert probe.classify(RunFacts(timeouts=timed, disconnected=True))[0] == Outcome.INVALID
+
+
+def test_timed_evaluate_before_final_flush_is_failure_even_with_a_visibility_fault():
+    facts = RunFacts(timeouts=[Timeout('timed', 'evaluate', 'Runtime.evaluate')],
+                     environment_faults=['page_hidden'])
+    assert probe.classify(facts) == (Outcome.FAILURE, 'cdp_timeout:Runtime.evaluate')
 
 
 def test_timeout_by_phase_setup_and_collection_invalid_timed_failure():
@@ -827,7 +839,12 @@ def test_process_check_exempts_own_ancestry_but_not_other_agents():
 def test_no_obs_url_and_no_c11_clock_on_obs():
     cells = probe.batch_plan_views()
     assert all('/obs' not in cell['url_path'] for cell in cells)
-    assert len(cells) == 13
+    assert [cell['view'] for cell in cells if cell['viewport'] == 'desktop'] == [
+        '#hogar', '#acciones', '#rutinas', '#tareas', '#memoria', '#mis-recuerdos', '#personas', '#voces',
+        '#accesos', '#evaluacion',
+    ]
+    assert [cell['view'] for cell in cells if cell['viewport'] == 'mobile'] == ['#hogar', '#acciones', '#voces']
+    assert probe.VIEW_ROLES['#tareas'] == 'home' and '#tareas' not in probe.CORE_SCRIPT
     assert {cell['view'] for cell in cells if cell['c11']} == {'#acciones', '#voces'}
     assert '/obs' not in json.dumps(probe.CORE_SCRIPT)
 
@@ -1433,7 +1450,11 @@ async def test_setup_timeout_retry_warm_drains_before_creating_target(monkeypatc
     assert first['reason'] == 'setup_timeout:Tracing.start' and not first['navigate_sent']
     assert [entry['method'] for entry in result['setup_retry']['recovery_commands']] == [
         'Target.closeTarget', 'Tracing.end', 'Tracing.tracingComplete', 'Target.createTarget']
+    assert first['trace_events'] == 1
+    with gzip.open(tmp_path / f'trace-{spec.ordinal:05d}-first.json.gz', 'rt') as evidence:
+        assert json.load(evidence) == [{'name': 'discarded attempt'}]
     assert result['outcome'] == Outcome.VALID and result['trace_events'] == 0
+    assert not (tmp_path / f'trace-{spec.ordinal:05d}.json.gz').exists()
     assert result['ordinal'] == spec.ordinal and result['role'] == 'warm' and result['target_id'] != old_target
     assert browser.targets[-1][1].config['token'] != first_token
     assert not any(entry['method'] in ('Network.clearBrowserCache', 'Page.removeScriptToEvaluateOnNewDocument')
@@ -1519,7 +1540,15 @@ async def test_leave_step_timeout_is_post_window_hang():
     assert probe.classify(run.facts)[0] == Outcome.POST_WINDOW_HANG
 
 
-async def test_run_lifecycle_setup_activation_timed_flush_collect_and_leave():
+@pytest.mark.parametrize('visibility, expected_reason', [
+    ('success', None),
+    ('minimised', 'page_hidden'),
+    ('window_state_only', 'window_state'),
+    ('visible_busy', 'cdp_timeout:Runtime.evaluate'),
+    ('late_visibility', 'cdp_timeout:Runtime.evaluate'),
+    ('missing_window_read', 'cdp_timeout:Runtime.evaluate'),
+])
+async def test_run_lifecycle_setup_activation_timed_flush_collect_and_leave(visibility, expected_reason):
     run = make_run(view='#rutinas', capture=None)
     run.filter.committed = False
     run.filter.time_origin = None
@@ -1538,11 +1567,35 @@ async def test_run_lifecycle_setup_activation_timed_flush_collect_and_leave():
         asyncio.get_running_loop().call_soon(lambda: [run.records.offer(json.dumps(item)) for item in documents])
         return {'loaderId': 'L'}
 
+    def evaluate(params):
+        if not params.get('awaitPromise') or visibility == 'success':
+            return {'result': {'value': True}}
+        if visibility == 'minimised':
+            record(run, 'focus', point='flush', visibility='hidden', hasFocus=False, time=950.0,
+                   _received=time.monotonic())
+        raise probe.CdpTimeout('Runtime.evaluate', 'evaluate', 'timed')
+
+    def version(_params):
+        # Browser.getVersion after the timeout probes liveness. A later switch of
+        # visibility must not change the already expired timed-window deadline.
+        if visibility == 'late_visibility':
+            record(run, 'visibility_event', event='visibilitychange', timeStamp=960.0, _received=time.monotonic())
+        return {'product': 'Chrome/157'}
+
+    state = {'window_state_only': 'minimized', 'missing_window_read': None}.get(visibility, 'normal')
     page.answers = {'Page.navigate': navigate, 'Page.addScriptToEvaluateOnNewDocument': {'identifier': '9'},
-                    'Runtime.evaluate': lambda params: {'result': {'value': 'hasFocus' in params['expression'] or 1}}}
-    browser.answers = {'Browser.getWindowForTarget': {'bounds': {'windowState': 'normal'}},
-                       'Browser.getVersion': {'product': 'Chrome/157'}}
+                    'Runtime.evaluate': evaluate}
+    browser.answers = {'Browser.getWindowForTarget': lambda _: {
+        'bounds': {'windowState': state if run.facts.navigate_sent else 'normal'}},
+                       'Browser.getVersion': version}
     await run._run()
+    result = run.result()
+    if expected_reason is not None:
+        expected = Outcome.FAILURE if expected_reason.startswith('cdp_timeout:') else Outcome.INVALID
+        assert (result['outcome'], result['reason']) == (expected, expected_reason)
+        assert result['facts']['timeouts'][0]['method'] == 'Runtime.evaluate'
+        assert probe.visibility_action_check(result)['ok'] is (expected == Outcome.INVALID)
+        return
     methods = [entry['method'] for entry in page.log]
     assert methods.index('Page.addScriptToEvaluateOnNewDocument') < methods.index('Page.bringToFront') \
         < methods.index('Page.navigate')
@@ -1551,7 +1604,6 @@ async def test_run_lifecycle_setup_activation_timed_flush_collect_and_leave():
     assert page.log[-2]['phase'] == 'timed' and page.log[-2].get('flush') is True
     assert [entry['method'] for entry in browser.log if entry['phase'] == 'collect'] == \
         ['Browser.getWindowForTarget', 'Browser.getVersion']
-    result = run.result()
     assert result['outcome'] == Outcome.VALID and result['post_window_violations'] == []
     assert result['browser_version'] == 'Chrome/157' and result['metrics']['inp'] == probe.LOAD_ONLY_INP
 
@@ -2179,7 +2231,7 @@ class FakeSession:
 
 
 def drive_measure_cell(monkeypatch, tmp_path, mode, *, fill_ins=None, view='#voces'):
-    """measure_cell with every Mac side effect faked; run_batch runs the first non-warm-up slot only."""
+    """Exercise measure_cell with one percentile-eligible slot and no Mac side effects."""
     import tests.frontend.browser_support as support
     prereg = tmp_path / 'prereg.json'
     prereg.write_text(json.dumps({'fill_ins': fill_ins or {}}))
@@ -2202,7 +2254,7 @@ def drive_measure_cell(monkeypatch, tmp_path, mode, *, fill_ins=None, view='#voc
     async def fake_batch(plan, environment, **kwargs):
         seen.update(plan=plan, kwargs=kwargs)
         await environment.start_fixture()
-        slot = next(slot for slot in plan['slots'] if not slot.get('warm_up'))
+        slot = next(slot for slot in plan['slots'] if not (slot.get('warm_up') or slot.get('trace_contrast')))
         run = await environment.run_slot(slot)
         run.update(viewport=plan['cell']['viewport'], view=plan['cell']['view'])
         run.update({key: slot.get(key) for key in ('trace_contrast', 'untraced_inp', 'warm_up', 'primer')})
@@ -2283,6 +2335,61 @@ async def test_setup_retry_isolated_by_verified_preregistration_sha(monkeypatch,
         (directory / 'run-99999.json').write_text(json.dumps(traced))
     assert probe.smoke_frame_event(smoke_root)['phases'] == 1
     assert probe.smoke_frame_event(revised_root)['phases'] == 1
+
+
+def test_frame_event_cli_counts_discarded_batches_and_omits_unopened_traces(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(probe.sys, 'platform', 'darwin')
+    smoke_dir = tmp_path / 'canonical-smoke'
+    smoke_dir.mkdir()
+    smoke_link = tmp_path / 'smoke'
+    smoke_link.symlink_to(smoke_dir, target_is_directory=True)
+    monkeypatch.setattr(probe, 'SMOKE_ROOT', smoke_link)
+    prereg = tmp_path / 'preregistration.json'
+    prereg.write_text(json.dumps({'setup_timeout_retry': True}))
+    sha = probe.file_sha256(prereg)
+    root = probe.SMOKE_ROOT / f'prereg-{sha}'
+    record = probe.SmokeRecord(write_smoke_prerequisites(root / 'smoke-record.json'))
+    traced = {'mode': 'smoke', 'outcome': 'valid', 'machine_state': probe.MACHINE_STATE,
+              'method_identity': {'preregistration_sha256': sha}, 'interaction_traced': True,
+              'steps': [{'status': 'dispatched'}], 'trace_events': 1, 'trace_candidates_present': ['DrawFrame'],
+              'metrics': {'action_feedback': {'raf': 100.0, 'screencast': 101.0, 'presented': {'DrawFrame': 101.0}}}}
+    empty = dict(traced, trace_events=0, trace_candidates_present=[], metrics={})
+    traces = {
+        'batch:desktop:#acciones': ('complete', [traced]),
+        'batch:desktop:#hogar': ('discarded', [
+            empty, dict(empty, outcome='invalid'),
+            dict(empty, outcome='failure', reason='cdp_timeout:Tracing.start', steps=[]),
+        ]),
+        'batch:mobile:#hogar': ('complete', [empty]),
+        'instrumentation_overhead': ('complete', [traced]),
+    }
+    aborted_item = 'batch:desktop:#acciones'
+    aborted = record.start(aborted_item, sha)
+    partial = root / '20261121T120000-desktop-acciones-a1'
+    partial.mkdir()
+    (partial / 'run-00000.json').write_text(json.dumps(traced))
+    (partial / 'run-00001.json').write_text(json.dumps(dict(empty, method_identity={'preregistration_sha256': SHA})))
+    record.finish(aborted, 'aborted', {'error': 'CancelledError'}, faults=['crash'])
+
+    items = [f'batch:{cell["viewport"]}:{cell["view"]}' for cell in probe.batch_plan_views()]
+    for index, item in enumerate([*items, 'instrumentation_overhead']):
+        entry_sha = SHA if item == 'batch:mobile:#hogar' else sha
+        entry = record.start(item, entry_sha, 'crash' if item == aborted_item else None)
+        status, runs = traces.get(item, ('complete', []))
+        name = '20261121T120001-desktop-acciones-a2' if item == aborted_item else f'evidence-{index}'
+        directory = root / name
+        directory.mkdir()
+        for ordinal, run in enumerate(runs):
+            evidence = dict(run, method_identity={'preregistration_sha256': entry_sha})
+            (directory / f'run-{ordinal:05d}.json').write_text(json.dumps(evidence))
+        reasons = ['invalid_runs_over_10_percent'] if status == 'discarded' else []
+        record.finish(entry, status, {'directory': str(directory.resolve()), 'reasons': reasons})
+
+    assert probe.main(['smoke-item', 'frame-event', '--reviewed-sha256', sha, '--preregistration', str(prereg)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['phases'] == 4 and result['choice']['method_change'] is True
+    assert result['choice']['candidate'] is None
+    assert probe.SmokeRecord(record.path).data['runs'][-1]['result'] == result
 
 
 def test_smoke_inputs_come_from_the_deciding_entry_and_no_item_repeats_after_a_later_stage(tmp_path):
