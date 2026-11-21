@@ -13,6 +13,8 @@ compiled launcher rehearsals do); the schema-only child runs from it.
 """
 from __future__ import annotations
 
+import atexit
+from contextlib import closing
 import gzip
 import hashlib
 import io
@@ -20,12 +22,14 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import signal
 import sqlite3
 import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 from types import SimpleNamespace
 
@@ -127,12 +131,168 @@ class Units:
         return True
 
 
+_LEGACY_TEMPLATE_CACHE: dict[tuple[str, int], Path] = {}
+_LEGACY_TEMPLATE_DIRS: list[Path] = []
+
+
+def _cleanup_legacy_templates() -> None:
+    for directory in _LEGACY_TEMPLATE_DIRS:
+        try:
+            if directory.exists():
+                stage.make_writable_then_remove(directory)
+        except OSError:
+            pass
+
+
+atexit.register(_cleanup_legacy_templates)
+
+
+def copy_tree_preserving(source: Path, destination: Path) -> None:
+    """Copy a directory tree preserving symlinks, permissions (including 0555/0444), mtimes, and SQLite bytes."""
+    src_info = os.lstat(source)
+    if not stat.S_ISDIR(src_info.st_mode):
+        raise ValueError(f"Expected directory source: {source}")
+    os.mkdir(destination, 0o700)
+    dir_modes: list[tuple[Path, int, int, int]] = [(destination, stat.S_IMODE(src_info.st_mode),
+                                                    src_info.st_atime_ns, src_info.st_mtime_ns)]
+    stack: list[tuple[Path, Path]] = [(source, destination)]
+    while stack:
+        src_dir, dst_dir = stack.pop()
+        with os.scandir(src_dir) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                src_item = Path(entry.path)
+                dst_item = dst_dir / entry.name
+                mode = stat.S_IMODE(info.st_mode)
+                if stat.S_ISLNK(info.st_mode):
+                    os.symlink(os.readlink(src_item), dst_item)
+                elif stat.S_ISDIR(info.st_mode):
+                    os.mkdir(dst_item, 0o700)
+                    dir_modes.append((dst_item, mode, info.st_atime_ns, info.st_mtime_ns))
+                    stack.append((src_item, dst_item))
+                elif stat.S_ISREG(info.st_mode):
+                    shutil.copyfile(src_item, dst_item)
+                    os.utime(dst_item, ns=(info.st_atime_ns, info.st_mtime_ns))
+                    os.chmod(dst_item, mode)
+                else:
+                    raise ValueError(f"Unsupported special file in template: {src_item}")
+    for dst_dir, mode, atime_ns, mtime_ns in reversed(dir_modes):
+        os.utime(dst_dir, ns=(atime_ns, mtime_ns))
+        os.chmod(dst_dir, mode)
+
+
+def _replace_prefix_in_json(value, old_prefix: str, new_prefix: str):
+    if isinstance(value, str):
+        return value.replace(old_prefix, new_prefix)
+    if isinstance(value, list):
+        return [_replace_prefix_in_json(item, old_prefix, new_prefix) for item in value]
+    if isinstance(value, dict):
+        return {key: _replace_prefix_in_json(item, old_prefix, new_prefix) for key, item in value.items()}
+    return value
+
+
+def _relocate_erasure_privacy_db(db_path: Path, old_prefix: str, new_prefix: str) -> dict[str, str]:
+    """Rewrite embedded path prefixes in erasure_targets and recompute target ids and referencing rows."""
+    mode = stat.S_IMODE(os.lstat(db_path).st_mode)
+    id_map: dict[str, str] = {}
+    with closing(sqlite3.connect(db_path, isolation_level=None)) as db:
+        db.execute("BEGIN IMMEDIATE")
+        rows = db.execute("SELECT id, participant, version, descriptor FROM erasure_targets").fetchall()
+        updated_rows = []
+        changed = False
+        for old_id, participant, version, raw_desc in rows:
+            if old_prefix in raw_desc:
+                new_desc = _replace_prefix_in_json(json.loads(raw_desc), old_prefix, new_prefix)
+                encoded = adoption._canonical(new_desc)
+                new_id = adoption.target_id(participant, version, new_desc)
+                changed = True
+            else:
+                encoded = raw_desc
+                new_id = old_id
+            id_map[old_id] = new_id
+            updated_rows.append((new_id, participant, version, encoded))
+        if changed:
+            db.execute("DELETE FROM erasure_targets")
+            db.executemany("INSERT INTO erasure_targets VALUES (?,?,?,?)", updated_rows)
+            tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            for table in ("erasure_steps", "policy_index_deletions", "wake_clips_v1"):
+                if table not in tables:
+                    continue
+                for old_id, new_id in id_map.items():
+                    if old_id != new_id:
+                        db.execute(f'UPDATE "{table}" SET target_id=? WHERE target_id=?', (new_id, old_id))
+        db.execute("COMMIT")
+    os.chmod(db_path, mode)
+    return id_map
+
+
+def _relocate_ambient_db(db_path: Path, old_prefix: str, new_prefix: str) -> None:
+    mode = stat.S_IMODE(os.lstat(db_path).st_mode)
+    with closing(sqlite3.connect(db_path, isolation_level=None)) as db:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            "UPDATE utterances SET audio_path = replace(audio_path, ?, ?) WHERE instr(audio_path, ?) > 0",
+            (old_prefix, new_prefix, old_prefix),
+        )
+        db.execute("COMMIT")
+    os.chmod(db_path, mode)
+
+
+def _relocate_legacy_tree(legacy_dir: Path, old_legacy: str, new_legacy: str, *, include_report: bool = True) -> None:
+    """Relocate the three files in a cloned build_legacy tree that embed the legacy root path."""
+    data = fixture.layout_of(legacy_dir).legacy_state / "data"
+    _relocate_ambient_db(data / "ambient.db", old_legacy, new_legacy)
+    _relocate_erasure_privacy_db(data / "memory_privacy.db", old_legacy, new_legacy)
+    report_path = legacy_dir / "report.json"
+    if include_report and report_path.is_file():
+        report = json.loads(report_path.read_text())
+        with closing(sqlite3.connect(data / "memory_privacy.db")) as db:
+            db.row_factory = sqlite3.Row
+            report["targets"] = [dict(row) for row in db.execute("SELECT * FROM erasure_targets ORDER BY id")]
+        mode = stat.S_IMODE(os.lstat(report_path).st_mode)
+        report_path.write_text(json.dumps(report))
+        os.chmod(report_path, mode)
+
+
+def current_umask() -> int:
+    """The process umask, read without leaving it changed (momentarily 0o077, never looser)."""
+    mask = os.umask(0o077)
+    os.umask(mask)
+    return mask
+
+
+def _legacy_template(tree: Path) -> Path:
+    # build_legacy writes its tree under the caller's umask (0644/0755 under 0022, 0664/0775 under
+    # 0002) and copy_tree_preserving keeps those modes, so the umask is part of the template.
+    key = (os.path.realpath(tree), current_umask())
+    cached = _LEGACY_TEMPLATE_CACHE.get(key)
+    if cached is not None and cached.is_dir():
+        return cached
+    tpl_root = Path(tempfile.mkdtemp(prefix="kza-legacy-tpl-")).resolve()
+    _LEGACY_TEMPLATE_DIRS.append(tpl_root)
+    legacy_dir = tpl_root / "legacy"
+    fixture.build_legacy(legacy_dir, tree, adapters=False)
+    _LEGACY_TEMPLATE_CACHE[key] = legacy_dir
+    return legacy_dir
+
+
 class World:
     """One production-shaped root: the two legacy slots, 'current' on e9669ec, the checkout's models."""
 
     def __init__(self, base: Path, tree: Path, artifacts: dict, **build) -> None:
         self.base = base
-        self.layout = fixture.build_legacy(base / "legacy", tree, **build)
+        if build.get("pre_slot") is None:
+            tpl = _legacy_template(tree)
+            legacy_dir = base / "legacy"
+            copy_tree_preserving(tpl, legacy_dir)
+            _relocate_legacy_tree(legacy_dir, os.fspath(tpl), os.fspath(legacy_dir))
+            self.layout = fixture.layout_of(legacy_dir)
+            if build.get("adapters"):
+                adapter = self.layout.models_root / "lora_adapters" / "custom_adapter"
+                adapter.mkdir(parents=True)
+                (adapter / "adapter_model.safetensors").write_bytes(b"lora")
+        else:
+            self.layout = fixture.build_legacy(base / "legacy", tree, **build)
         self.root = base / "legacy" / "releases"
         runtime = self.root / "slots" / CONTAINER / "runtime"
         runtime.mkdir(mode=0o700)  # Production mode; 0o700 holds under any umask.

@@ -1,5 +1,6 @@
 """Authenticate every registered private route before reading or mutating state."""
 
+from functools import lru_cache
 import re
 from unittest.mock import MagicMock
 
@@ -26,8 +27,10 @@ def _session_client(tmp_path):
     return create
 
 
-def _private_routes():
+@lru_cache(maxsize=1)
+def _private_routes() -> tuple[tuple[str, str], ...]:
     app = DashboardAPI(event_bus=LiveEventBus()).app
+    routes: list[tuple[str, str]] = []
     for route in app.routes:
         if not isinstance(route, APIRoute) or route.path in {"/", "/api/admin/auth/login"}:
             continue
@@ -42,12 +45,11 @@ def _private_routes():
                 ("POST", "/api/capture/native/manual-voice-command/retire"),
             }:
                 continue
-            yield method, path
+            routes.append((method, path))
+    return tuple(routes)
 
 
-@pytest.mark.parametrize("method,path", list(_private_routes()))
-@pytest.mark.parametrize("credential", ["missing", "wrong", "unconfigured", "foreign_origin"])
-def test_all_private_http_routes_reject_before_using_dependencies(method, path, credential, monkeypatch, dashboard_auth):
+def _make_mocked_dashboard() -> tuple[DashboardAPI, MagicMock]:
     services = MagicMock()
     dashboard = DashboardAPI(
         routine_scheduler=services, presence_detector=services, ha_client=services,
@@ -56,6 +58,33 @@ def test_all_private_http_routes_reject_before_using_dependencies(method, path, 
         user_manager=services, alert_manager=services, event_logger=services,
     )
     services.reset_mock()
+    return dashboard, services
+
+
+@pytest.fixture(scope="module")
+def _private_http_client():
+    """One mocked dashboard per module; the credential is read per request, so tests set it."""
+    dashboard, services = _make_mocked_dashboard()
+    with TestClient(dashboard.app) as client:
+        # The startup window stays inside the oracle: nothing may touch a dependency there either.
+        assert services.mock_calls == [], services.mock_calls
+        yield client, dashboard, services
+
+
+@pytest.fixture(scope="module")
+def _private_ws_client():
+    bus = LiveEventBus()
+    dashboard = DashboardAPI(event_bus=bus)
+    with TestClient(dashboard.app) as client:
+        assert bus.subscriber_count == 0 and dashboard._ws_clients == []
+        yield client, dashboard, bus
+
+
+@pytest.mark.parametrize("method,path", _private_routes())
+@pytest.mark.parametrize("credential", ["missing", "wrong", "unconfigured", "foreign_origin"])
+def test_all_private_http_routes_reject_before_using_dependencies(
+    method, path, credential, monkeypatch, dashboard_auth, _private_http_client,
+):
     headers = {}
     expected = 401
     if credential == "wrong":
@@ -66,17 +95,19 @@ def test_all_private_http_routes_reject_before_using_dependencies(method, path, 
     elif credential == "foreign_origin":
         headers = {**dashboard_auth, "Origin": "https://other.invalid"}
         expected = 403
-    with TestClient(dashboard.app) as client:
-        response = client.request(method, path, json={} if method not in {"GET", "HEAD"} else None, headers=headers)
+    client, _dashboard, services = _private_http_client
+    client.cookies.clear()
+    services.reset_mock()
+    response = client.request(method, path, json={} if method not in {"GET", "HEAD"} else None, headers=headers)
     assert response.status_code == expected, (method, path, response.text)
     assert services.mock_calls == [], (method, path, services.mock_calls)
 
 
 @pytest.mark.parametrize("path", ["/ws", "/ws/live", "/ws/evaluation"])
 @pytest.mark.parametrize("credential", ["missing", "wrong", "unconfigured", "foreign_origin"])
-def test_private_websockets_reject_before_subscribing(path, credential, monkeypatch, dashboard_auth):
-    bus = LiveEventBus()
-    dashboard = DashboardAPI(event_bus=bus)
+def test_private_websockets_reject_before_subscribing(
+    path, credential, monkeypatch, dashboard_auth, _private_ws_client,
+):
     headers = {}
     if credential == "wrong":
         headers = {"Authorization": "Bearer not-the-credential"}
@@ -84,10 +115,11 @@ def test_private_websockets_reject_before_subscribing(path, credential, monkeypa
         monkeypatch.delenv("KZA_DASHBOARD_TOKEN")
     elif credential == "foreign_origin":
         headers = {**dashboard_auth, "Origin": "null"}
-    with TestClient(dashboard.app) as client:
-        with pytest.raises(WebSocketDisconnect) as error:
-            with client.websocket_connect(path, headers=headers):
-                pytest.fail("Unauthorized socket was accepted")
+    client, dashboard, bus = _private_ws_client
+    client.cookies.clear()
+    with pytest.raises(WebSocketDisconnect) as error:
+        with client.websocket_connect(path, headers=headers):
+            pytest.fail("Unauthorized socket was accepted")
     assert error.value.code == 1008
     assert bus.subscriber_count == 0
     assert dashboard._ws_clients == []
