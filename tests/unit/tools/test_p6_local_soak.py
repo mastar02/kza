@@ -207,24 +207,36 @@ def cli(*args, expected=0):
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="requires a Linux systemd user manager")
-def test_real_systemd_user_unit_smoke():
+def test_real_systemd_user_unit_smoke(candidate, tmp_path):
     if not shutil.which("systemd-run") or not shutil.which("systemctl"):
         pytest.skip("systemd-run --user is unavailable")
     manager = run_group(["systemctl", "--user", "show", "--property=Version", "--value"], timeout=10)
     if manager.returncode != 0:
         pytest.skip("systemd user manager is unavailable")
-    code = (
-        "import os, sys; from tools.p6_local_soak import linux_isolation, offline_io; "
-        "assert os.umask(0o077) == 0o077; sys.addaudithook(offline_io); print(linux_isolation())"
-    )
-    probe = run_group(
-        ["systemd-run", "--user", "--wait", "--pipe", "--collect", "--property=RuntimeMaxSec=15s",
-         f"--working-directory={ROOT}", *(f"--property={prop}" for prop in soak.UNIT_PROPERTIES),
-         sys.executable, "-B", "-c", code],
-        timeout=25,
-    )
-    assert probe.returncode == 0, probe.stdout + probe.stderr
-    assert "'memory_high_bytes': 25769803776" in probe.stdout
+
+    def unit_cli(*args):
+        probe = run_group(
+            ["systemd-run", "--user", "--wait", "--pipe", "--collect", "--property=RuntimeMaxSec=250s",
+             f"--working-directory={ROOT}", *(f"--property={prop}" for prop in soak.UNIT_PROPERTIES),
+             sys.executable, "-B", "-m", "tools.p6_local_soak", *map(str, args)],
+            timeout=270,
+        )
+        assert probe.returncode == 0, probe.stdout + probe.stderr
+        return probe.stdout
+
+    archive, review, _ = candidate
+    receipt = json.loads(unit_cli("preflight", "--archive", archive, "--review", review,
+                                  "--state-root", tmp_path.resolve()))
+    state = Path(receipt["state"])
+    unit_cli("run-soak", "--state", state, "--require-user-unit", "--duration-s", 3)
+    unit_cli("inject-faults", "--state", state, "--require-user-unit")
+    unit_cli("summarize", "--state", state)
+    result = json.loads((state / "soak-summary.json").read_text())
+    assert_short_soak(result, "linux_at_start")
+    for start in result["isolation_at_start"].values():
+        assert start["isolation"]["memory_high_bytes"] == 24 * 1024**3
+        assert start["isolation"]["no_new_privileges"] is True
+    make_fixture_runtime_writable(state)
 
 
 def test_rejects_archive_with_wrong_hash(candidate, tmp_path):
@@ -255,6 +267,25 @@ def test_real_candidate_short_soak_and_faults(candidate, tmp_path):
     assert (state / "faults.jsonl").read_bytes() == journal
     cli("summarize", "--state", state)
     result = json.loads((state / "soak-summary.json").read_text())
+    assert_short_soak(result, "process_at_start")
+
+    # With the real fault evidence, make C19 eligible and vary the phase admissions.
+    full = {"window_seconds": soak.WINDOW_S,
+            "series": {key: {"threshold_met": True} for key in soak.SERIES}}
+    under_unit = {phase: {"kind": "linux_at_start"} for phase in ("run-soak", "inject-faults")}
+    evidence = result["fault_evidence"]
+    for phase in under_unit:
+        mixed = {**under_unit, phase: {"kind": "process_at_start"}}
+        flags = soak.verdicts(full, True, evidence, True, isolation_at_start=mixed)
+        assert flags["c19_72h_passed"] and flags["c20_faults_passed"]
+        assert flags["c03_h2_passed"] and flags["c04_mute_passed"]
+        assert not flags["overall_t061_local_passed"]
+    assert not soak.verdicts(full, True, evidence, True)["overall_t061_local_passed"]
+    assert soak.verdicts(full, True, evidence, True, isolation_at_start=under_unit)["overall_t061_local_passed"]
+    make_fixture_runtime_writable(state)
+
+
+def assert_short_soak(result: dict, isolation_kind: str):
     assert result["stability"]["window_seconds"] == 3
     assert result["stability"]["samples"] == 3
     assert all(value["useful_seconds"] == 3 for value in result["stability"]["series"].values())
@@ -264,7 +295,7 @@ def test_real_candidate_short_soak_and_faults(candidate, tmp_path):
     assert result["total"]["series"]["kza"]["planned_unavailable_seconds"] > 0
     assert set(result["isolation_at_start"]) == {"run-soak", "inject-faults"}
     for start in result["isolation_at_start"].values():
-        assert start["kind"] == "process_at_start"
+        assert start["kind"] == isolation_kind
         assert start["isolation"]["offline_audit_hook"] is True
         assert start["isolation"]["cuda_visible_devices"] == ""
         assert "interfaces" in start["isolation"] and "dev_dri_visible" in start["isolation"]
@@ -276,6 +307,8 @@ def test_real_candidate_short_soak_and_faults(candidate, tmp_path):
     assert evidence["global_mute_restore"]["resurrected_rows"] == 0, evidence
     assert result["c20_faults_passed"] is result["c03_h2_passed"] is result["c04_mute_passed"] is True, evidence
 
-    # pytest owns this private fixture and needs to remove its read-only tree later.
+
+def make_fixture_runtime_writable(state: Path):
+    """Let pytest remove its read-only runtime after the assertions."""
     for directory in (state / "runtime", *(path for path in (state / "runtime").rglob("*") if path.is_dir())):
         directory.chmod(0o700)

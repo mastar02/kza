@@ -22,16 +22,42 @@ El preflight compara SHA-256, inventario y ABI con el manifiesto revisado. Extra
 
 La unidad de usuario de `yo` configura afinidad a CPU 24–47, nice 5, `MemoryHigh=24G`, `NoNewPrivileges=yes`, `UMask=0077` y `CUDA_VISIBLE_DEVICES=`. Cada fase ejecutada por la unidad comprueba que la afinidad efectiva esté dentro de ese conjunto de CPU, que nice sea al menos 5 y que `NoNewPrivs` y `memory.high` estén aplicados en el proceso y su cgroup v2.
 
-El worker verifica el selector CUDA vacío y el hook de auditoría de Python antes de importar el candidato. El hook limita las conexiones auditadas a `127.0.0.1` y `::1` y rechaza operaciones de archivos auditadas sobre rutas de producción, incluidas las que resuelven por enlace. El arnés usa modelos sintéticos en CPU y registra las interfaces de red y la visibilidad de `/dev/dri` como observaciones del host. Esta política opera en espacio de usuario y su cobertura corresponde a las operaciones auditadas por Python. En Ubuntu 24.04 funciona con la configuración de AppArmor existente.
+El worker verifica el selector CUDA vacío y precarga la dependencia instalada `sounddevice`, que en Linux resuelve PortAudio mediante `ldconfig`. Su `XDG_RUNTIME_DIR` privado evita que PulseAudio cree un enlace de compatibilidad durante esa importación. Activa y comprueba el hook de auditoría de Python antes de importar el candidato. El hook limita las conexiones auditadas a `127.0.0.1` y `::1` y rechaza subprocesos y operaciones de archivos auditadas sobre rutas de producción, incluidas las que resuelven por enlace. El arnés usa modelos sintéticos en CPU y registra las interfaces de red y la visibilidad de `/dev/dri` como observaciones del host. Esta política opera en espacio de usuario y cubre las operaciones auditadas por Python.
 
-Ejecutar primero una unidad transitoria de humo con las mismas propiedades. Debe terminar con código 0 y mostrar el límite `memory_high_bytes=25769803776` en el resultado del chequeo.
+Ejecutar primero el flujo completo de tres segundos con unidades transitorias y un expediente temporal. Cada comando debe terminar con código 0. El resumen debe acreditar ambas fases bajo la unidad de usuario y aprobar los fallos locales. El expediente de la ventana de 72 horas se prepara por separado.
 
 ```bash
-systemd-run --user --wait --pipe --collect --working-directory="$PWD" \
-  --property=CPUAffinity=24-47 --property=Nice=5 --property=MemoryHigh=24G \
-  --property=NoNewPrivileges=yes --property=UMask=0077 \
-  --property=Environment=CUDA_VISIBLE_DEVICES= \
-  "$PY" -B -c 'import os, sys; from tools.p6_local_soak import linux_isolation, offline_io; assert os.umask(0o077) == 0o077; sys.addaudithook(offline_io); print(linux_isolation())'
+(
+  set -e
+  SMOKE=$(mktemp -d "${TMPDIR:-/tmp}/kza-soak-smoke.XXXXXX")
+  SMOKE_STATE="$SMOKE/$COMMIT"
+  cleanup() {
+    if [ -d "$SMOKE_STATE/runtime" ]; then
+      find "$SMOKE_STATE/runtime" -type d -exec chmod u+w {} +
+    fi
+    rm -rf -- "$SMOKE"
+  }
+  trap cleanup EXIT
+  smoke_unit() {
+    systemd-run --user --wait --pipe --collect --working-directory="$PWD" \
+      --property=CPUAffinity=24-47 --property=Nice=5 --property=MemoryHigh=24G \
+      --property=NoNewPrivileges=yes --property=UMask=0077 \
+      --property=Environment=CUDA_VISIBLE_DEVICES= \
+      "$PY" -B -m tools.p6_local_soak "$@"
+  }
+  smoke_unit preflight --archive "$REVIEW/runtime.tar.gz" \
+    --review "$REVIEW/release-review.json" --state-root "$SMOKE"
+  smoke_unit run-soak --state "$SMOKE_STATE" --require-user-unit --duration-s 3
+  smoke_unit inject-faults --state "$SMOKE_STATE" --require-user-unit
+  smoke_unit summarize --state "$SMOKE_STATE"
+  jq -e '
+    .stability.window_seconds == 3 and .stability.samples == 3 and
+    .isolation_at_start["run-soak"].kind == "linux_at_start" and
+    .isolation_at_start["inject-faults"].kind == "linux_at_start" and
+    .c20_faults_passed and .c03_h2_passed and .c04_mute_passed and
+    (.overall_t061_local_passed == false)
+  ' "$SMOKE_STATE/soak-summary.json"
+)
 ```
 
 Con el humo aprobado, generar e iniciar `kza-soak-ID.service`.
@@ -65,7 +91,7 @@ jq '{c19_72h_passed, c20_faults_passed, c03_h2_passed, c04_mute_passed, overall_
   "$STATE/soak-summary.json"
 ```
 
-El veredicto `overall_t061_local_passed` exige las cuatro comprobaciones locales y una ventana terminada de al menos 259 200 segundos. Los resultados de H2 y mute corresponden a los escenarios de T061. El expediente de release conserva además las pruebas del contrato completo de C03/C04, restauración de T063 y el bloque físico T074.
+El veredicto `overall_t061_local_passed` exige las cuatro comprobaciones locales, una ventana terminada de al menos 259 200 segundos y una admisión `linux_at_start` para cada fase. Los resultados de H2 y mute corresponden a los escenarios de T061. El expediente de release conserva además las pruebas del contrato completo de C03/C04, restauración de T063 y el bloque físico T074.
 
 ## Verificar el arnés en una corrida corta
 

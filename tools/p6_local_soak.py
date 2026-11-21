@@ -11,6 +11,7 @@ import fcntl
 from functools import cache
 import getpass
 import hashlib
+from importlib import import_module
 import ipaddress
 import json
 import logging
@@ -200,8 +201,9 @@ def locked(state: Path):
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise ValueError("another soak command owns this state") from error
-        if any(path.is_symlink() or not (path.is_dir() or path.is_file()) for path in state.rglob("*")):
-            raise ValueError("symlinks and special files are forbidden in soak state")
+        for path in state.rglob("*"):
+            if path.is_symlink() or not (path.is_dir() or path.is_file()):
+                raise ValueError(f"symlink or special file in soak state: {path.relative_to(state)}")
         yield fd
     finally:
         os.close(fd)
@@ -342,7 +344,10 @@ def process_isolation(*paths: Path) -> dict:
     if gpu_selector != "":
         raise ValueError("CUDA_VISIBLE_DEVICES must be empty")
     with socket.socket(socket.AF_INET) as probe:
-        checks = [("socket.connect", (probe, ("192.0.2.1", 443)), "external network")]
+        checks = [
+            ("socket.connect", (probe, ("192.0.2.1", 443)), "external network"),
+            ("subprocess.Popen", ("t061-audit-probe", [], None, None), "child processes"),
+        ]
         checks.extend(
             ("open", (str(root / ".t061-audit-probe"), "r", os.O_RDONLY), "protected path")
             for root in PROTECTED
@@ -364,7 +369,7 @@ def worker_env(state: Path) -> dict[str, str]:
     """Pass an explicit environment without house credentials or GPU selectors."""
     return {
         "PATH": os.defpath, "HOME": str(state / "work"), "TMPDIR": str(state / "work"),
-        "XDG_CACHE_HOME": str(state / "work" / "cache"),
+        "XDG_CACHE_HOME": str(state / "work" / "cache"), "XDG_RUNTIME_DIR": str(state / "work"),
         "CUDA_VISIBLE_DEVICES": "", "HIP_VISIBLE_DEVICES": "", "NVIDIA_VISIBLE_DEVICES": "void",
         "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "ANONYMIZED_TELEMETRY": "False",
         "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "KZA_DASHBOARD_TOKEN": secrets.token_hex(32),
@@ -376,8 +381,13 @@ def isolate_process(state: Path, runtime: Path) -> None:
     if any(name == "src" or name.startswith("src.") for name in sys.modules):
         raise RuntimeError("candidate modules already imported")
     guard(state / "work", runtime)
-    sys.addaudithook(offline_io)
+    if os.environ.get("CUDA_VISIBLE_DEVICES") != "":
+        raise ValueError("CUDA_VISIBLE_DEVICES must be empty")
     os.chdir(state / "work")
+    # On Linux the installed dependency resolves PortAudio using ldconfig.
+    # Load it before sealing subprocesses and before exposing the candidate.
+    import_module("sounddevice")
+    sys.addaudithook(offline_io)
     sys.path.insert(0, str(runtime))
 
 
@@ -1089,7 +1099,8 @@ def at_most(value, limit: float) -> bool:
     return type(value) in (float, int) and 0 <= value <= limit
 
 
-def verdicts(block: dict | None, finished: bool, faults: dict, faults_finished: bool) -> dict:
+def verdicts(block: dict | None, finished: bool, faults: dict, faults_finished: bool,
+             *, isolation_at_start: dict | None = None) -> dict:
     """Require positive observations for each local contract."""
     full = block is not None and finished and block["window_seconds"] >= WINDOW_S
     c19 = full and all(series["threshold_met"] for series in block["series"].values())
@@ -1112,9 +1123,12 @@ def verdicts(block: dict | None, finished: bool, faults: dict, faults_finished: 
         "unauthenticated_rejected", "operator_resume_confirmed", "source_denied_on_restart", "source_still_denied",
     )) and mute.get("rows_in_older_copy") == 1 and mute.get("rows_copied_back") == 1
            and mute.get("resurrected_rows") == 0)
+    isolation = isolation_at_start or {}
+    linux_phases = all(isolation.get(phase, {}).get("kind") == "linux_at_start"
+                       for phase in ("run-soak", "inject-faults"))
     return {"c19_local_window_met": full, "c19_72h_passed": c19, "c20_faults_passed": c20,
             "c03_h2_passed": c03, "c04_mute_passed": c04,
-            "overall_t061_local_passed": full and c19 and c20 and c03 and c04}
+            "overall_t061_local_passed": c19 and c20 and c03 and c04 and linux_phases}
 
 
 def summarize(state: Path, receipt: dict) -> dict:
@@ -1178,7 +1192,8 @@ def summarize(state: Path, receipt: dict) -> dict:
                   phase: sorted(seconds) for phase, seconds in duplicate_seconds.items()
               },
               "fault_timeline": [event for event in events if event["kind"] in {"fault_started", "fault_finished"}],
-              **verdicts(block, windows_disjoint and "window_finished" in windows, outcomes, passed_plan)}
+              **verdicts(block, windows_disjoint and "window_finished" in windows, outcomes, passed_plan,
+                         isolation_at_start=isolation)}
     save_json(state / "soak-summary.json", result)
     return result
 
