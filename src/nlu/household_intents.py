@@ -1561,19 +1561,32 @@ _ENERGY_DETERMINER = (
 _ENERGY_MONTH = (
     r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|setiembre|septiembre|octubre|noviembre|diciembre)"
 )
+_ENERGY_TIME_POINT = r"(?:hoy|ayer|anoche|ahora(?: mismo)?)"
+_ENERGY_TARIFF_BAND = r"(?:horas?|horarios?) (?:pico|punta|valle)"
 _ENERGY_PERIOD = (
-    rf"(?:lo que va del mes|(?:{_ENERGY_DETERMINER} )?(?:(?:ultim[oa]s?|proxim[oa]s?) )?"
+    rf"(?:{_ENERGY_TIME_POINT}|lo que va (?:del|de la) (?:{_ENERGY_TIME_UNIT}|{_ENERGY_READING_PERIOD})|"
+    rf"(?:(?:tod[oa]s? )?{_ENERGY_DETERMINER} |cada )?(?:(?:ultim[oa]s?|proxim[oa]s?) )?"
     rf"(?:\d{{1,2}} de {_ENERGY_MONTH}|(?:{_NUMBER} )?"
-    rf"(?:horario pico|hora punta|principio (?:de|del) mes|{_ENERGY_TIME_UNIT}|{_ENERGY_READING_PERIOD}|"
-    rf"{_ENERGY_MONTH}|lunes|martes|miercoles|jueves|viernes|sabado|domingo|momento|total|promedio|standby)"
+    rf"(?:{_ENERGY_TARIFF_BAND}|dia de hoy|principio (?:de|del) mes|{_ENERGY_TIME_UNIT}|"
+    rf"{_ENERGY_READING_PERIOD}|{_ENERGY_MONTH}|lunes|martes|miercoles|jueves|viernes|sabado|domingo|"
+    r"minutos?|segundos?|momento|fecha|total|promedio|general|standby)"
     r"(?: (?:pasad[oa]s?|anterior(?:es)?))?))"
 )
 _ENERGY_DOCUMENT = r"(?:boletas?|recibos?|facturas?|tarifas?|precios?|costos?|valores?|lecturas?|importes?|montos?)"
+_ENERGY_ADVERB = r"(?:aca|aqui|recien|mas o menos|\w+mente)"
+_ENERGY_TIME_ENDPOINT = rf"(?:{_ENERGY_PERIOD}|las? {_NUMBER}|\d+)"
+_ENERGY_TARIFF_TYPE = (
+    r"(?:simple|(?:doble|triple)(?: horario)?|(?:bi|tri)?horaria|residencial|social|plana|nocturna|diurna|"
+    r"inteligente|estacional|variable|fija|reducida|(?:de )?(?:pico|punta|valle))"
+)
 _ENERGY_OBJECT_CONTEXT = re.compile(
-    rf"(?:hoy|ayer|anoche|ahora|actualmente|{_ENERGY_PERIOD}|"
-    rf"en (?:{_ENERGY_DETERMINER} )?(?:{_METER_SCOPE}|{_ELECTRICITY}|pesos?|dinero)|"
-    rf"(?:en|desde|durante|por|a|al|hasta|para) "
-    rf"(?:{_ENERGY_PERIOD}|(?:{_ENERGY_DETERMINER} )?{_ENERGY_DOCUMENT}|las? {_NUMBER}|\d+)|"
+    rf"(?:{_ENERGY_ADVERB}|{_ENERGY_PERIOD}|"
+    rf"en (?:{_ENERGY_DETERMINER} )?(?:{_METER_SCOPE}|{_ELECTRICITY}|departamento|apartamento|pesos?|dinero|"
+    r"pico|punta|valle)|"
+    rf"(?:en|desde|durante|por|a|al|hasta|para|hace) "
+    rf"(?:{_ENERGY_TIME_ENDPOINT}|(?:{_ENERGY_DETERMINER} )?{_ENERGY_DOCUMENT})|"
+    rf"entre (?:semana|{_ENERGY_TIME_ENDPOINT} y {_ENERGY_TIME_ENDPOINT})|fuera de {_ENERGY_TARIFF_BAND}|"
+    rf"con (?:la )?tarifa(?: {_ENERGY_TARIFF_TYPE})?|"
     rf"(?:de|del) (?:{_ENERGY_PERIOD}|(?:{_ENERGY_DETERMINER} )?"
     rf"(?:{_ELECTRICITY}|{_ENERGY_DOCUMENT}|consumos?)))(?: |$)"
 )
@@ -1582,9 +1595,18 @@ _ENERGY_OBJECT_LINK = re.compile(
     r"(?:consum[ei]\w*|usa\w*|gast\w*|tira\w*|necesit\w*|requier\w*|demand\w*)\b)(?: |$)"
 )
 _ENERGY_OBJECT_PARTICIPLE = re.compile(rf"{_ENERGY_PARTICIPLE}(?: |$)")
+_ENERGY_MEASUREMENT_HEAD = (
+    rf"(?:{_METER_SCOPE}|{_ELECTRICITY}|{_ENERGY_UNITS}|potencias?|(?:kilo)?(?:watts?|vatios?)|consumos?)"
+)
 _ENERGY_OBJECT_TAIL = re.compile(
-    rf"$|(?:{_ENERGY_DETERMINER} )?(?:{_METER_SCOPE}|{_ELECTRICITY}|{_ENERGY_UNITS}|"
-    r"potencias?|(?:kilo)?(?:watts?|vatios?)|consumos?)\b"
+    rf"$|(?:(?:tod[oa]s? )?{_ENERGY_DETERMINER} )?{_ENERGY_MEASUREMENT_HEAD}\b"
+)
+_ENERGY_GENITIVE = re.compile(
+    rf"\b{_ENERGY_MEASUREMENT_HEAD}\b"
+    rf"(?: (?:electric[oa]s?|domestic[oa]s?|instantane[oa]s?|total(?:es)?|{_ENERGY_PARTICIPLE})\b)* (?:de|del) "
+)
+_ENERGY_GENITIVE_TAIL = re.compile(
+    rf"(?:{_ENERGY_PERIOD}|(?:{_ENERGY_DETERMINER} )?(?:{_ENERGY_MEASUREMENT_HEAD}|{_ENERGY_DOCUMENT}))\b"
 )
 _ELECTRICITY_SUBJECT = re.compile(rf"\b(?:{_ELECTRICITY}|(?:consumos?|tarifas?|facturas?) electric[oa]s?)\b")
 _HOUSEHOLD_METER = re.compile(rf"\b{_METER_SCOPE}\b")
@@ -1634,6 +1656,10 @@ def _energy_object_in_scope(text: str, link: re.Match[str]) -> bool:
 
 def _energy_measurement(text: str) -> str | None:
     if not _ENERGY_QUERY.search(text) or _LIGHT_OR_COVER.search(text) or _ENERGY_NON_HOUSEHOLD_TARGET.search(text):
+        return None
+    # Check the target of each measurement phrase even without a verb, and
+    # follow nested genitives such as the meter of the neighbor's house.
+    if any(not _ENERGY_GENITIVE_TAIL.match(text, noun.end()) for noun in _ENERGY_GENITIVE.finditer(text)):
         return None
     if any(not _energy_object_in_scope(text, link) for link in _ENERGY_OBJECT_LINK.finditer(text)):
         return None

@@ -143,6 +143,25 @@ def test_p5_energy_rejects_unknown_targets_after_measurement_verbs(text):
     assert classify_household_intent(text) is None
 
 
+@pytest.mark.parametrize("text", [
+    "cuál es la potencia del termotanque",
+    "cuál es la potencia de un termotanque",
+    "cuántos watts de mi termotanque",
+    "cuántos kwh del termotanque",
+    "potencia instantánea del termotanque",
+    "cuánto consume la luz del baño",
+    "cuánta energía consume la instalación del termotanque",
+    "cuánto consume la casa del vecino",
+    "cuántos watts del medidor de la casa del vecino",
+    "cuánta energía consume la red eléctrica de uruguay",
+    "cuántos watts consume desde ayer el termotanque",
+    "qué potencia usa aproximadamente la caldera",
+    "cuántos kwh lleva registrados con la tarifa doble la batería del tesla",
+])
+def test_p5_energy_validates_genitive_targets_and_targets_after_qualifiers(text):
+    assert classify_household_intent(text) is None
+
+
 @pytest.mark.parametrize("text", ["cómo está la cámara del patio", "estado de la cámara del timbre"])
 def test_p5_camera_keeps_home_camera_health_query(text):
     intent = classify_household_intent(text)
@@ -261,6 +280,23 @@ def test_p5_camera_keeps_home_camera_health_query(text):
     ("cuántos kwh consumimos hasta las ocho", "energy"),
     ("cuánta energía llevamos registrada para esta noche", "energy"),
     ("cuántos kwh tenemos en el horario pico", "energy"),
+    ("cuánto gastamos de luz desde ayer", "cost"),
+    ("cuánto gastamos de luz hasta ahora", "cost"),
+    ("cuántos kwh consumimos en lo que va del año", "energy"),
+    ("cuántos kwh consumimos en lo que va de la semana", "energy"),
+    ("cuánta energía consumimos aproximadamente", "energy"),
+    ("cuánta energía consumimos más o menos acá", "energy"),
+    ("cuántos kwh consumimos entre el lunes y hoy", "energy"),
+    ("cuántos kwh consumimos entre las ocho y las diez", "energy"),
+    ("cuántos kwh consumimos fuera de hora pico", "energy"),
+    ("cuánta energía consumimos cada día en el apartamento", "energy"),
+    ("cuántos kwh consumimos todo el día", "energy"),
+    ("cuánta energía consume toda la casa", "energy"),
+    ("cuánto gastamos de luz con la tarifa doble", "cost"),
+    ("cuánto gastamos de luz con tarifa inteligente", "cost"),
+    ("cuántos kwh consumimos en horario valle", "energy"),
+    ("cuál es la potencia del medidor de la casa", "power"),
+    ("cuántos kwh de la factura", "cost"),
 ])
 def test_p5_energy_requires_electrical_measurement_or_cost(text, kind):
     intent = classify_household_intent(text)
