@@ -7,7 +7,6 @@ Chromium live in tests/frontend/browser_web_timing_probe.py (never a measurement
 import asyncio
 from collections import defaultdict
 import json
-import math
 from pathlib import Path
 import re
 import shutil
@@ -708,6 +707,50 @@ class BatchFakes:
                                       events=self.events)
 
 
+async def test_batch_preserves_sample_quota_after_setup_invalids_and_timed_failures():
+    plan = probe.plan_batch(SHA, 'mac-chrome', 'mobile', '#voces', 1, pairs=40, contrast_pairs=0, warm_ups=0)
+    environment = BatchFakes().environment()
+    saved = []
+
+    async def run_slot(slot):
+        ordinal = slot['ordinal']
+        outcome, reason = {
+            0: (Outcome.INVALID, 'setup_timeout:Network.clearBrowserCache'),
+            2: (Outcome.FAILURE, 'cdp_timeout:Tracing.start'),
+        }.get(ordinal, (Outcome.VALID, None))
+        return {'ordinal': ordinal, 'viewport': 'mobile', 'view': '#voces', 'outcome': outcome, 'reason': reason,
+                'navigate_sent': ordinal != 0, 'metrics': {'lcp': 50, 'preview': {'value': 70}},
+                'cache_sources': {'disk': 10}}
+
+    environment.run_slot = run_slot
+    environment.record_slot = saved.append
+    batch = await probe.run_batch(plan, environment, idle=1, post_batch=1)
+    assert not batch['discarded'] and batch['runs'] == saved and len(saved) == 83
+    assert saved[1]['reason'] == 'warm_slot_without_preceding_load'
+    assert [(run['replaces'], bool(run['primer'])) for run in saved[-3:]] == [(0, False), (1, True), (1, False)]
+    cold, warm = probe.summary_rows(saved, None)
+    assert cold['n_valid'] == warm['n_valid'] == 40
+    assert cold['c11_preview']['failures'] == 1 and cold['c11_preview']['max'] == INF
+    assert cold['c11_preview']['p95'] == warm['c11_preview']['p95'] == 70
+    assert warm['c11_preview']['failures'] == 0
+
+
+async def test_expired_fixture_stops_replacements_without_publishing_partial_results(monkeypatch):
+    plan = probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#acciones', 1, pairs=1, contrast_pairs=0, warm_ups=0)
+    environment = BatchFakes().environment()
+    monkeypatch.setattr(probe, 'FIXTURE_LIFETIME_S', 10)
+    clock = iter((1, 1, 12, 12, 12))
+    monkeypatch.setattr(probe, 'time', SimpleNamespace(time=lambda: next(clock)))
+
+    async def fixture():
+        return {'started_at': 1}
+
+    environment.start_fixture = fixture
+    batch = await probe.run_batch(plan, environment, idle=1, post_batch=1, warm_rule=False)
+    assert len(batch['runs']) == 1 and batch['reasons'] == ['fixture_lifetime']
+    assert probe.batch_summary(batch['runs'], 'baseline', batch)['rows'] == []
+
+
 async def test_batch_load_readings_order_thresholds_and_warm_after_failed_cold():
     plan = probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#hogar', 1, pairs=3, contrast_pairs=0, warm_ups=1)
     cold_failed = next(slot['ordinal'] for slot in plan['slots'] if slot['role'] == 'cold' and not slot.get('warm_up'))
@@ -862,7 +905,9 @@ def test_overhead_median_a_minus_c_with_components_and_consequences():
             'b': {'inp': [40, 40, 48], 'raf_feedback': [12, 14, 16]},
             'c': {'inp': [24, 32, 40], 'raf_feedback': [10, 12, 14]}}
     result = probe.overhead(arms)
-    point = lambda value: {'low': value, 'high': value, 'evaluable': True}
+    def point(value):
+        return {'low': value, 'high': value, 'evaluable': True}
+
     assert result['inp']['overhead'] == point(16) and result['inp']['screencast'] == point(8) \
         and result['inp']['tracing'] == point(8)
     assert result['raf_feedback']['screencast'] == point(8) and result['raf_feedback']['overhead'] == point(10)
@@ -1765,7 +1810,9 @@ async def test_browser_close_keeps_profile_while_browser_lives(tmp_path, monkeyp
 
 async def test_batch_machine_state_and_caffeinate_assertion_gate_quiet_machine():
     """V8: AC power, display and lock (when chosen) at start and end, and the caffeinate assertion, gate the batch."""
-    plan = lambda: probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#rutinas', 1, pairs=1, contrast_pairs=0, warm_ups=0)
+    def plan():
+        return probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#rutinas', 1, pairs=1, contrast_pairs=0, warm_ups=0)
+
     battery = BatchFakes()
     environment = battery.environment()
     environment.machine_state = lambda: {'ac_power': False, 'display_asleep': False, 'locked': False}
@@ -2062,6 +2109,31 @@ def test_native_play_gesture_window_and_unsubtracted_value():
 CHOSEN_RULE = {'dx_px': 24.0, 'y_fraction': 0.5, 'status': 'smoke_candidate'}
 
 
+def frozen_fill_ins():
+    return {'idle_load': 1.0, 'post_batch_load': 2.0, 'background_branch': 'none',
+            'frame_event': {'candidate': 'PipelineReporter'}, 'play_control_rule': CHOSEN_RULE,
+            'lock_read': {'read': 'read1'}, 'warm_cache': {'reached': True, 'share': 0.9},
+            'overhead': {'untraced_inp': False, 'screencast_limited_to_contrast': False},
+            'harness_only_deadlines_ms': dict(probe.DEFAULT_HARNESS_DEADLINES)}
+
+
+def write_frozen_preregistration(path, **overrides):
+    document = {'schema': 't046-preregistration/v1', 'status': 'frozen', 'setup_timeout_retry': True,
+                'fill_ins': frozen_fill_ins(), **overrides}
+    path.write_text(json.dumps(document))
+    return probe.file_sha256(path)
+
+
+def f7_run(ordinal, *, outcome=Outcome.VALID, reason=None, status='dispatched', playing=True):
+    records = [{'type': 'control_ready', 'time': 15, 'target': {'kind': 'audio', 'hit': 'audio'}}]
+    if playing:
+        records.append({'type': 'media', 'event': 'playing', 'timeStamp': 20, '_received': 0.02})
+    steps = [{'step': 'reproducir', 'status': status, 'ready_record': 'control_ready', 'dispatch_sent': 0.016}]
+    return {'ordinal': ordinal, 'outcome': outcome, 'reason': reason, 'play_rule': CHOSEN_RULE, 'mode': 'smoke',
+            'method_identity': {'preregistration_sha256': SHA, 'machine_state': probe.MACHINE_STATE},
+            'steps': steps if status else [], 'records': {'accepted': records}}
+
+
 def write_smoke_prerequisites(path, *, rule=CHOSEN_RULE, items=('quiet_baseline', 'cold_focus', 'background_activity',
                                                                  'fixture_pages')):
     results = {'quiet_baseline': {'idle': 1.5}, 'cold_focus': {'passed': True},
@@ -2132,6 +2204,9 @@ def drive_measure_cell(monkeypatch, tmp_path, mode, *, fill_ins=None, view='#voc
         await environment.start_fixture()
         slot = next(slot for slot in plan['slots'] if not slot.get('warm_up'))
         run = await environment.run_slot(slot)
+        run.update(viewport=plan['cell']['viewport'], view=plan['cell']['view'])
+        run.update({key: slot.get(key) for key in ('trace_contrast', 'untraced_inp', 'warm_up', 'primer')})
+        environment.record_slot(run)
         return {'cell': plan['cell'], 'attempt': plan['attempt'], 'seed': plan['seed'], 'planned': plan['planned'],
                 'runs': [run], 'discarded': False, 'reasons': []}
     monkeypatch.setattr(probe, 'run_batch', fake_batch)
@@ -2331,13 +2406,14 @@ def test_a_discarded_voces_cell_with_a_recorded_fault_is_repeated_before_the_ove
 async def test_baseline_needs_every_batch_fill_in_and_uses_the_frozen_composition(monkeypatch, tmp_path):
     """R6-1, R6-2: baseline refuses without play_control_rule (and the other batch fill-ins); the composition is
     3 warm-ups, 40 pairs and 10 contrast pairs, the smoke's 1/5/2, never a CLI value."""
-    fill_ins = {'idle_load': 1.0, 'post_batch_load': 2.0, 'background_branch': 'none',
-                'frame_event': {'candidate': 'PipelineReporter'}}
+    fill_ins = frozen_fill_ins()
+    fill_ins.pop('play_control_rule')
     args, seen = drive_measure_cell(monkeypatch, tmp_path, 'baseline', fill_ins=fill_ins)
+    write_frozen_preregistration(probe.PREREGISTRATION, fill_ins=fill_ins)
     with pytest.raises(SystemExit, match='fill_ins_missing:play_control_rule'):
         await probe.measure_cell(args, 'baseline', probe.file_sha256(probe.PREREGISTRATION))
     fill_ins['play_control_rule'] = CHOSEN_RULE
-    probe.PREREGISTRATION.write_text(json.dumps({'fill_ins': fill_ins}))
+    write_frozen_preregistration(probe.PREREGISTRATION, fill_ins=fill_ins)
     sha = probe.file_sha256(probe.PREREGISTRATION)
     await probe.measure_cell(args, 'baseline', sha)
     plan = seen['plan']
@@ -2345,7 +2421,7 @@ async def test_baseline_needs_every_batch_fill_in_and_uses_the_frozen_compositio
     assert sum(1 for slot in plan['slots'] if slot.get('trace_contrast')) == 20
     assert FakeSession.specs[-1].play_rule == CHOSEN_RULE and FakeSession.specs[-1].frame_event == 'PipelineReporter'
     assert seen['kwargs']['warm_rule'] is True
-    write_smoke_prerequisites(tmp_path / 'smoke' / 'smoke-record.json')
+    write_smoke_prerequisites(tmp_path / 'smoke' / f'prereg-{sha}' / 'smoke-record.json')
     await probe.measure_cell(args, 'smoke', sha)
     plan = seen['plan']
     assert plan['planned'] == 14 and sum(1 for slot in plan['slots'] if slot.get('warm_up')) == 1
@@ -2357,6 +2433,62 @@ async def test_baseline_needs_every_batch_fill_in_and_uses_the_frozen_compositio
         probe.parse_args(['measure-cell', '--smoke', '--reviewed-sha256', SHA, '--pairs', '5'])
     with pytest.raises(SystemExit):
         probe.parse_args(['measure-client', '--frozen-sha256', SHA, '--contrast-pairs', '3'])
+
+
+@pytest.mark.parametrize(('overrides', 'error'), [
+    ({'status': 'draft_pending_smoke'}, 'preregistration_not_frozen'),
+    ({'setup_timeout_retry': 1}, 'setup_timeout_retry_opt_in_required'),
+    ({'fill_ins': {**frozen_fill_ins(), 'frame_event': {'candidate': None}}}, 'fill_in_invalid:frame_event'),
+    ({'fill_ins': {**frozen_fill_ins(), 'lock_read': {'read': 'unknown'}}}, 'fill_in_invalid:lock_read'),
+    ({'fill_ins': {**frozen_fill_ins(), 'warm_cache': {'reached': False, 'share': 0.95}}}, 'fill_in_invalid:warm_cache'),
+    ({'fill_ins': {**frozen_fill_ins(), 'harness_only_deadlines_ms': {'interaction_trace': 12000}}},
+     'fill_in_refused_for_deadline_class:interaction_trace'),
+])
+async def test_client_refuses_unfrozen_or_unusable_method_before_any_cell(monkeypatch, tmp_path, overrides, error):
+    args, seen = drive_measure_cell(monkeypatch, tmp_path, 'baseline')
+    args.preregistration = tmp_path / 'external.json'
+    sha = write_frozen_preregistration(args.preregistration, **overrides)
+    with pytest.raises(SystemExit, match=error):
+        await probe.measure_client(args, 'baseline', sha)
+    assert not seen and not (tmp_path / 'u1').exists()
+
+
+async def test_completed_batch_report_uses_frozen_run_settings_and_refuses_tampering(monkeypatch, tmp_path):
+    args, seen = drive_measure_cell(monkeypatch, tmp_path, 'baseline', view='#acciones')
+    args.preregistration = tmp_path / 'external.json'
+    sha = write_frozen_preregistration(args.preregistration)
+    args.preregistration.write_text(args.preregistration.read_text() + '\n')
+    with pytest.raises(SystemExit, match='preregistration_hash_mismatch'):
+        await probe.measure_cell(args, 'baseline', sha)
+    assert not seen
+    sha = probe.file_sha256(args.preregistration)
+    original = FakeSession.execute
+
+    async def execute(self, spec, fixture):
+        result = await original(self, spec, fixture)
+        result['metrics']['action_feedback'] = {'start': 10, 'presented': {'PipelineReporter': 25, 'DrawFrame': 40}}
+        return result
+
+    monkeypatch.setattr(FakeSession, 'execute', execute)
+    batch = await probe.measure_cell(args, 'baseline', sha)
+    directory = Path(batch['directory'])
+    assert directory.parent.name == f'prereg-{sha}' and FakeSession.setup_timeout_retry
+    report = json.loads((directory / 'summary.json').read_text())
+    assert report['method_identity']['preregistration_sha256'] == sha
+    assert report['rows'][0]['n_valid'] == 1 and report['rows'][0]['c11_action_feedback']['p95'] == 15
+    args.preregistration.unlink()
+    assert probe.summarize_directory(directory, 'baseline') == report
+    header = directory / 'batch.json'
+    batch.update(discarded=True, reasons=['invalid_runs_over_10_percent'])
+    probe.write_json_atomic(header, probe.json_safe(batch))
+    discarded = probe.summarize_directory(directory, 'baseline')
+    assert discarded['status'] == 'discarded' and discarded['rows'] == []
+    run_path = next(directory.glob('run-*.json'))
+    run = json.loads(run_path.read_text())
+    run['method_identity']['preregistration_sha256'] = SHA
+    run_path.write_text(json.dumps(run))
+    with pytest.raises(SystemExit, match='summary_batch_identity_mismatch'):
+        probe.summarize_directory(directory, 'baseline')
 
 
 async def test_smoke_client_resumes_after_a_crash_with_the_recorded_cause(monkeypatch, tmp_path):
@@ -2540,7 +2672,11 @@ def test_frame_event_acceptance_needs_the_first_raf_bound_and_counts_empty_trace
     empty = {'metrics': {}, 'trace_candidates_present': [], 'trace_events': 0, 'interaction_traced': True,
              'steps': [{'status': 'dispatched'}]}
     untraced = dict(empty, interaction_traced=False)
-    assert probe.frame_event_phases([empty, untraced]) == [{'present': set(), 'interactions': []}]
+    legacy_cdp_timeout = dict(empty, reason='cdp_timeout:Tracing.start', steps=[])
+    assert probe.frame_event_phases([empty, untraced, legacy_cdp_timeout]) == [{'present': set(), 'interactions': []}]
+    candidate = 'PipelineReporter'
+    phase = {'present': {candidate}, 'interactions': [{candidate: True}] * 9 + [{}]}
+    assert probe.frame_event_choice([phase])['shares'][candidate]['share'] == 0.9
 
 
 async def test_overhead_arms_trace_a_and_b_and_screencast_only_a(monkeypatch, tmp_path):
@@ -2646,14 +2782,79 @@ async def test_dialog_variant_and_play_click_records(tmp_path):
     await run._frame({'sessionId': 2, 'metadata': {'timestamp': 100.02}, 'data': 'AAEC'})
     assert run.play_click_frame['timestamp'] == 100.02
     assert (tmp_path / 'play-click-00007.jpg').read_bytes() == b'\x00\x01\x02'
-    runs = [{'ordinal': 1, 'outcome': Outcome.VALID, 'reason': None, 'play_click_frame': None,
-             'facts': {'product_failures': [], 'environment_faults': []},
-             'records': {'accepted': [{'type': 'control_ready', 'target': {'kind': 'audio', 'hit': 'audio'}},
-                                      {'type': 'media', 'event': 'playing'}]}}]
+    runs = [f7_run(ordinal) for ordinal in range(5)]
     summary = probe.dialog_variant_summary(runs, CHOSEN_RULE)
     assert summary['plays'] is True and summary['runs'][0]['target']['hit'] == 'audio'
     runs[0]['records']['accepted'].pop()
     assert probe.dialog_variant_summary(runs, CHOSEN_RULE)['plays'] is False
+
+
+def test_f7_report_replays_five_invalid_plays_and_separates_pre_gesture_failures(tmp_path):
+    path = write_smoke_prerequisites(tmp_path / 'smoke-record.json')
+    record = probe.SmokeRecord(path)
+    fixture = record.data['runs'][-1]
+    directory = tmp_path / 'fixture'
+    directory.mkdir()
+    fixture['reviewed_sha256'] = SHA
+    fixture['result']['directory'] = str(directory)
+    fixture['result']['observations']['preview_dialog'] = {'plays': True}  # Legacy summary ignored validity.
+    reasons = ('page_unfocused', 'visibility_event', 'page_unfocused', 'visibility_event', 'visibility_event')
+    for ordinal, reason in enumerate(reasons, 130):
+        probe.write_json_atomic(directory / f'preview_dialog-{ordinal:05d}.json',
+                                f7_run(ordinal, outcome=Outcome.INVALID, reason=reason))
+
+    for item, status, runs in (
+        (probe.F7_CELLS[0], 'discarded', [f7_run(1), f7_run(2, outcome=Outcome.INVALID, reason='page_unfocused')]),
+        (probe.F7_CELLS[1], 'complete', [
+            f7_run(3, outcome=Outcome.FAILURE, reason='interaction_end_missing:muestra', status=None, playing=False),
+            f7_run(4, outcome=Outcome.FAILURE, reason='cdp_timeout:Tracing.start', status=None, playing=False),
+            f7_run(5, outcome=Outcome.FAILURE, reason='cdp_timeout:Input.dispatchTouchEvent',
+                   status='dispatch_unconfirmed', playing=False),
+            f7_run(6, outcome=Outcome.FAILURE, reason='preview_failed_open:no_playing', playing=False),
+            f7_run(7),
+        ]),
+    ):
+        batch = tmp_path / item.split(':')[1]
+        batch.mkdir()
+        for run in runs:
+            probe.write_json_atomic(batch / f'run-{run["ordinal"]:05d}.json', run)
+        record.data['runs'].append({'item': item, 'status': status, 'started_at': 10, 'reviewed_sha256': SHA,
+                                    'machine_state': probe.MACHINE_STATE, 'faults': [],
+                                    'result': {'play_control_rule': CHOSEN_RULE, 'directory': str(batch),
+                                               'reasons': ['invalid_runs_over_10_percent'] if status == 'discarded' else []}})
+    report = probe.f7_report(record, SHA)
+    assert report['decision'] == 'b_method_change'
+    assert report['dialog']['n_valid'] == report['dialog']['n_playing'] == 0
+    assert all(row['playing'] and row['playback'] == 'invalid' for row in report['dialog']['runs'])
+    desktop, mobile = (report['cells'][item] for item in probe.F7_CELLS)
+    assert desktop['source'] == 'd2_invalid_share_only' and desktop['playback'] == {'playing': 1}
+    assert mobile['decision'] == 'a_product_defect'
+    assert mobile['playback'] == {'pre_gesture': 1, 'pre_gesture_cdp_timeout': 1, 'dispatch_unconfirmed': 1,
+                                  'no_playing': 1, 'playing': 1}
+    (tmp_path / 'mobile' / 'run-00006.json').unlink()
+    cell = probe.f7_cell_report(record, probe.F7_CELLS[1], SHA, CHOSEN_RULE)
+    assert cell['decision'] == 'c_no_playback_defect_observed'
+    record.data['runs'][-2]['faults'] = ['disconnect']
+    assert probe.f7_cell_report(record, probe.F7_CELLS[0], SHA, CHOSEN_RULE) == {
+        'decision': 'd1_repeat', 'recorded_causes': ['disconnect']}
+
+
+def test_f7_requires_five_valid_plays_and_ignores_media_before_the_gesture():
+    runs = [f7_run(ordinal) for ordinal in range(5)]
+    assert not probe.dialog_variant_summary(runs[:4], CHOSEN_RULE)['plays']
+    runs[0]['records']['accepted'][-1]['_received'] = 0.015
+    assert probe.f7_playback_status(runs[0]) == 'no_playing'
+    runs[0].update(outcome=Outcome.INVALID, reason='page_unfocused')
+    result = probe.dialog_variant_summary(runs, CHOSEN_RULE)
+    assert result['n_valid'] == result['n_playing'] == 4 and not result['plays']
+    trials = [{'rule': CHOSEN_RULE, 'runs': 5, 'n_valid': 4, 'n_playing': 4},
+              {'rule': probe.PLAY_CONTROL_RULE, 'runs': 5, 'n_valid': 5, 'n_playing': 5}]
+    assert probe.play_rule_choice(trials)['method_change']
+    runs[0] = f7_run(0, outcome=Outcome.FAILURE, reason='preview_failed_open:no_playing', playing=False)
+    missed = probe.dialog_variant_summary(runs, CHOSEN_RULE)
+    assert missed['n_valid'] == 5 and missed['n_playing'] == 4 and not missed['plays']
+    trials[0]['n_valid'] = missed['n_valid']
+    assert probe.play_rule_choice(trials)['rule'] == probe.PLAY_CONTROL_RULE
 
 
 async def test_click_uses_the_latest_reported_target_rectangle():
@@ -2703,8 +2904,9 @@ async def test_shared_machine_records_covariates_and_never_gates(tmp_path, monke
     busy = BatchFakes(start_ok=False, end_load=9.0)
     environment = busy.environment()
     environment.loadavgs = lambda: {'1m': 9.0, '5m': 8.0, '15m': 7.0}
-    plan = lambda: probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#rutinas', 1, pairs=1, contrast_pairs=0,
-                                    warm_ups=0)
+    def plan():
+        return probe.plan_batch(SHA, 'mac-chrome', 'desktop', '#rutinas', 1, pairs=1, contrast_pairs=0, warm_ups=0)
+
     result = await probe.run_batch(plan(), environment, idle=0.2, post_batch=0.3)
     assert not result['discarded'] and result['reasons'] == [] and 'fixture_start' in busy.events
     assert result['machine_state'] == 'shared'
