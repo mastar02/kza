@@ -499,9 +499,18 @@ def build_feature_manager(config: dict, *, response_handler, zone_manager=None,
         clock = household_clock or HouseholdClock(
             config.get("routines", {}).get("timezone", SUPPORTED_HOUSEHOLD_TIMEZONE)
         )
+        alert_rooms = set(namespace.rooms) - {"all", "default"}
+        if zone_manager is not None:
+            for zone_id in zone_manager.get_all_zones():
+                if not isinstance(zone_id, str):
+                    continue
+                room = zone_id.removeprefix(ZONE_PREFIX)
+                if (room and room == room.strip() and not room.startswith(ZONE_PREFIX)
+                        and room not in {"all", "default"}):
+                    alert_rooms.add(room)
         manager = AlertManager(
             voice_output=AlertVoiceOutput(
-                response_handler.aspeak, namespace, fallback, clock, reminder_store,
+                response_handler.aspeak, RoomNamespace(alert_rooms), fallback, clock, reminder_store,
                 enabled=general.get("voice_notifications", True),
                 output_key=zone_manager.playback_output_key if zone_manager is not None else None,
             ),

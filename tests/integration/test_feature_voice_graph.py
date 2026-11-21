@@ -2,6 +2,7 @@
 
 import asyncio
 from contextlib import AsyncExitStack
+from datetime import UTC, datetime
 import threading
 import time
 from types import SimpleNamespace
@@ -13,6 +14,7 @@ import pytest
 
 from src.alerts.alert_manager import AlertDelivery, AlertType, AlertPriority
 from src.application import ApplicationFactories
+from src.core.household_clock import HouseholdClock
 from src.core.voice_delivery import VoiceDeliveryError
 from src.intercom.intercom_system import Announcement
 from src.main import build_application
@@ -32,7 +34,14 @@ from tests.mocks.voice_graph import voice_graph
 pytestmark = pytest.mark.asyncio
 
 
-async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(monkeypatch, tmp_path):
+@pytest.fixture
+def daylight_clock():
+    """Freeze the household clock at 12:00 in Montevideo."""
+    noon = datetime(2026, 11, 21, 15, tzinfo=UTC).timestamp()
+    return HouseholdClock(time_source=lambda: noon)
+
+
+async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(monkeypatch, tmp_path, daylight_clock):
     original, engine, backend, _, amplifier = voice_graph(monkeypatch)
     store = ReminderStore(str(tmp_path / 'reminders.db'))
     await store.initialize()
@@ -43,7 +52,8 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
     async with AsyncExitStack() as stack:
         stack.push_async_callback(store.close)
         services = build_voice_services(config, tts=engine, zone_manager=original.zone_manager,
-            shutdown=stack, reminder_store=store, ha_client=ha)
+            shutdown=stack, reminder_store=store, ha_client=ha, household_clock=daylight_clock,
+            alert_muted=lambda: False)
         features = services.features
         await features.intercom._load_zones()
         await features.timer_manager._announce_warning(SimpleNamespace(name='pasta', zone_id='zone_origin'), 30)
@@ -52,8 +62,11 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
         assert announcement.delivered and announcement.failed_zones == []
         notice = Notification('notice', 'Aviso', 'Mensaje de prueba.', user_id='synthetic', zone_id='zone_origin')
         await features.notifications._deliver_to_channel(notice, 'synthetic', NotificationChannel.VOICE, {})
+        selected_before_alert = amplifier.select_zone.call_count
         alert = await features.alert_manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, 'Alerta de prueba.')
         assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.DELIVERED, None)
+        assert amplifier.select_zone.call_count == selected_before_alert + 1
+        amplifier.select_zone.assert_called_with(1)
         reminder = await store.create(user_id='synthetic', text='Recordatorio de prueba.', trigger_at=time.time()-1,
             scope=ReminderScope.SHARED)
         await services.reminders._fire_reminder(reminder)
@@ -65,12 +78,12 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
         expected = np.concatenate([engine.audio(text) for text in engine.calls])
         np.testing.assert_array_equal(backend.heard()[:, 0], expected)
         amplifier.select_zone.assert_called_with(1)
-        amplifier.select_all_zones.assert_called_once()
+        amplifier.select_all_zones.assert_not_called()
         ha.call_service.assert_not_called()
     assert services.responses.get_delivery_status()['closed']
 
 
-async def test_real_ha_delta_reaches_configured_pcm_and_yields_to_an_active_command(monkeypatch, tmp_path):
+async def test_real_ha_delta_reaches_configured_pcm_and_yields_to_an_active_command(monkeypatch, tmp_path, daylight_clock):
     door = "binary_sensor.synthetic_contact"
     subscription = asyncio.get_running_loop().create_future()
     ws_requests = []
@@ -98,6 +111,7 @@ async def test_real_ha_delta_reaches_configured_pcm_and_yields_to_an_active_comm
         return socket
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("src.main.HouseholdClock", lambda _timezone: daylight_clock)
     monkeypatch.setattr(chroma_sync, "SentenceTransformer", lambda *_args, **_kwargs: OfflineEncoder())
     backend, engine = AudioBackend(), PCMEngine(frames=240)
     monkeypatch.setattr(piper_tts, "sd", backend)
@@ -202,12 +216,13 @@ async def test_feature_delivery_failure_is_not_announced_as_completed_or_retried
         ha.get_entities.assert_not_called()
 
 
-async def test_alert_output_failure_is_recorded_on_the_alert_not_swallowed(monkeypatch):
+async def test_alert_output_failure_is_recorded_on_the_alert_not_swallowed(monkeypatch, daylight_clock):
     original, engine, backend, _, _ = voice_graph(monkeypatch)
     backend.fail_start = True
     async with AsyncExitStack() as stack:
-        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}}}, tts=engine,
-            shutdown=stack, zone_manager=original.zone_manager)
+        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}, 'ha': {'output_zone': 'zone_origin'}}},
+            tts=engine, shutdown=stack, zone_manager=original.zone_manager,
+            household_clock=daylight_clock, alert_muted=lambda: False)
         alert = await services.features.alert_manager.create_alert(
             AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.')
         assert alert.delivery is AlertDelivery.FAILED
@@ -216,13 +231,14 @@ async def test_alert_output_failure_is_recorded_on_the_alert_not_swallowed(monke
         assert len(engine.calls) == 1
 
 
-async def test_alert_notice_that_never_started_is_retried_once_on_the_real_graph(monkeypatch):
+async def test_alert_notice_that_never_started_is_retried_once_on_the_real_graph(monkeypatch, daylight_clock):
     """T036-U1-Q1: synthesis failed before any PCM reached the player, so the next check retries once."""
     original, engine, backend, _, _ = voice_graph(monkeypatch)
     engine.failure = RuntimeError('synthetic synthesis failure')
     async with AsyncExitStack() as stack:
-        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}}}, tts=engine,
-            shutdown=stack, zone_manager=original.zone_manager)
+        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}, 'ha': {'output_zone': 'zone_origin'}}},
+            tts=engine, shutdown=stack, zone_manager=original.zone_manager,
+            household_clock=daylight_clock, alert_muted=lambda: False)
         manager = services.features.alert_manager
         alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.')
         assert alert.delivery is AlertDelivery.FAILED and alert.delivery_attempts == 1
@@ -236,14 +252,15 @@ async def test_alert_notice_that_never_started_is_retried_once_on_the_real_graph
         assert len(engine.calls) == 2
 
 
-async def test_alert_notice_whose_pcm_reached_the_player_is_never_repeated(monkeypatch):
+async def test_alert_notice_whose_pcm_reached_the_player_is_never_repeated(monkeypatch, daylight_clock):
     """T036-U1-Q1: PCM handed to the player counts as output started (shared convention), even if the
     device then fails to start; the notice stays failed and is never spoken again."""
     original, engine, backend, _, _ = voice_graph(monkeypatch)
     backend.fail_start = True
     async with AsyncExitStack() as stack:
-        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}}}, tts=engine,
-            shutdown=stack, zone_manager=original.zone_manager)
+        services = build_voice_services({'alerts': {'scheduler': {'enabled': False}, 'ha': {'output_zone': 'zone_origin'}}},
+            tts=engine, shutdown=stack, zone_manager=original.zone_manager,
+            household_clock=daylight_clock, alert_muted=lambda: False)
         manager = services.features.alert_manager
         alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.')
         assert alert.delivery is AlertDelivery.FAILED
@@ -252,6 +269,49 @@ async def test_alert_notice_whose_pcm_reached_the_player_is_never_repeated(monke
             assert await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, 'Alerta de prueba.') is None
         assert alert.delivery is AlertDelivery.FAILED and alert.delivery_attempts == 1
         assert len(engine.calls) == 1 and len(backend.outputs) == 1
+
+
+async def test_voice_services_share_the_alert_preference_and_require_a_bound_mute(monkeypatch, tmp_path, daylight_clock):
+    original, engine, backend, _, amplifier = voice_graph(monkeypatch)
+    store = ReminderStore(str(tmp_path / 'reminders.db'))
+    config = {'alerts': {'scheduler': {'enabled': False}, 'ha': {'output_zone': 'zone_origin'}}}
+    now = daylight_clock.epoch()
+    clock = HouseholdClock(time_source=lambda: now)
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(store.close)
+        await store.initialize()
+        services = build_voice_services(config, tts=engine, shutdown=stack, zone_manager=original.zone_manager,
+                                        reminder_store=store, household_clock=clock)
+        manager = services.features.alert_manager
+        output = manager.voice_output
+        assert output.writable is True
+        assert output.configured_zones == ['zone_origin', 'zone_other']
+        saved = await output.set_preference(['zone_other'], expected_revision=0, guard=lambda: True)
+        assert saved == await store.get_alert_zones() and saved.zones == ('zone_other',)
+
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, 'Antes de conectar el silencio.')
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.MUTED, 'alert_mute_unavailable')
+        assert engine.calls == [] and backend.heard().size == 0
+
+        muted = False
+        services.features.bind_alert_mute(lambda: muted)
+        now = clock.to_epoch(datetime(2026, 11, 21, 23))
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, 'Durante el horario silencioso.')
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.MUTED, 'alert_quiet_hours')
+        assert engine.calls == []
+
+        now = daylight_clock.epoch()
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, 'Después de conectar el silencio.')
+        assert alert.delivery is AlertDelivery.DELIVERED
+        assert len(engine.calls) == 1
+        amplifier.select_zone.assert_called_once_with(2)
+        amplifier.select_all_zones.assert_not_called()
+        np.testing.assert_array_equal(backend.heard()[:, 0], engine.audio(engine.calls[0]))
+
+        muted = True
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, 'Silencio global.')
+        assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.MUTED, 'alert_global_mute')
+        assert len(engine.calls) == 1
 
 
 async def test_missing_background_route_does_not_follow_active_zone(monkeypatch):

@@ -11,6 +11,8 @@ Tests ensure that:
 
 import asyncio
 import sys
+from contextlib import AsyncExitStack
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, AsyncMock
 
@@ -25,7 +27,11 @@ import pytest
 import yaml
 
 from src.alerts import AlertManager, AlertPriority, AlertScheduler, AlertType, CheckType
+from src.alerts.alert_manager import AlertCondition, AlertDelivery, AlertVoiceOutput
+from src.core.household_clock import HouseholdClock, RoomNamespace
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.pipeline.feature_manager import ALERTS_NONE, ALERTS_UNAVAILABLE, FeatureManager, build_feature_manager
+from src.reminders.reminder_store import ReminderStore
 
 SETTINGS_PATH = Path(__file__).resolve().parents[3] / "config" / "settings.yaml"
 
@@ -597,6 +603,77 @@ class TestFeatureManagerAlerts:
         assert fm.get_alert_summary() == ALERTS_UNAVAILABLE
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deferred", [False, True])
+async def test_opt_in_alert_reannouncement_respects_mute_and_acknowledgement(deferred):
+    elapsed = 0.0
+    muted = False
+    noon = datetime(2026, 11, 21, 15, tzinfo=UTC).timestamp()
+    speak = AsyncMock(return_value=ResponseResult("Aviso", GenerationState.COMPLETE, DeliveryState.COMPLETE))
+    output = AlertVoiceOutput(speak, RoomNamespace(["origin"]), "zone_origin",
+                             HouseholdClock(time_source=lambda: noon), None,
+                             enabled=True, output_key=lambda zone: zone)
+    output.bind_mute(lambda: muted)
+    manager = AlertManager(voice_output=output, reannounce_interval_seconds=10, clock=lambda: elapsed)
+    condition = AlertCondition("synthetic", "window")
+
+    async def check():
+        alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.HIGH, "Ventana abierta",
+                                           condition=condition, defer_voice=deferred)
+        if deferred:
+            await manager.deliver_deferred_notice(AlertType.SECURITY, condition, is_current=lambda: True)
+        return alert
+
+    alert = await check()
+    assert speak.await_count == 1 and alert.delivery is AlertDelivery.DELIVERED
+    elapsed = 9
+    await check()
+    assert speak.await_count == 1
+    elapsed = 10
+    muted = True
+    await check()
+    assert speak.await_count == 1 and alert.delivery is AlertDelivery.DELIVERED
+    muted = False
+    await check()
+    assert speak.await_count == 2 and speak.await_args.kwargs["zone_id"] == "zone_origin"
+    await manager.mark_processed(alert.alert_id)
+    elapsed = 20
+    await check()
+    assert speak.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [DeliveryState.FAILED, DeliveryState.BLOCKED])
+async def test_partial_alert_zone_delivery_explains_receipt_and_prevents_retry(failure, tmp_path):
+    def result(text, *, zone_id, timeout_s):
+        if zone_id == "zone_origin":
+            return ResponseResult(text, GenerationState.COMPLETE, DeliveryState.COMPLETE)
+        return ResponseResult(text, GenerationState.COMPLETE, failure, "synthetic_output_refusal")
+
+    speak = AsyncMock(side_effect=result)
+    noon = datetime(2026, 11, 21, 15, tzinfo=UTC).timestamp()
+    store = ReminderStore(str(tmp_path / "reminders.db"))
+    async with AsyncExitStack() as stack:
+        stack.push_async_callback(store.close)
+        await store.initialize()
+        output = AlertVoiceOutput(speak, RoomNamespace(["origin", "other"]), None,
+                                 HouseholdClock(time_source=lambda: noon), store,
+                                 enabled=True, output_key=lambda zone: zone)
+        output.bind_mute(lambda: False)
+        await output.set_preference(["zone_origin", "zone_other"], expected_revision=0, guard=lambda: True)
+        receipt = await output.speak("Aviso")
+        assert receipt.error == "alert_partial_zone_delivery" and receipt.output_started
+
+        manager = AlertManager(voice_output=output)
+        speak.reset_mock()
+        alert = await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, "Aviso")
+        assert alert.delivery_reason == "alert_partial_zone_delivery"
+        assert alert.delivery.value == failure.value
+        await manager.create_alert(AlertType.DEVICE, AlertPriority.HIGH, "Aviso")
+        assert alert.delivery_attempts == 1
+        assert [call.kwargs["zone_id"] for call in speak.await_args_list] == ["zone_origin", "zone_other"]
+
+
 class TestBuildFeatureManagerAlerts:
     """Alert wiring from the existing alerts section of settings."""
 
@@ -620,13 +697,14 @@ class TestBuildFeatureManagerAlerts:
         assert features.alert_manager.reannounce_interval_seconds is None
 
     def test_reannounce_interval_from_config(self):
-        features, handler = self._build({"general": {"reannounce_interval_seconds": 900}})
+        features, _ = self._build({"general": {"reannounce_interval_seconds": 900}})
         assert features.alert_manager.reannounce_interval_seconds == 900
-        assert features.alert_manager.tts_callback == handler.aspeak_to_all_zones
+        assert features.alert_manager.voice_output is not None
+        assert features.alert_manager.tts_callback is None
 
     def test_voice_notifications_off_mutes(self):
         features, _ = self._build({"general": {"voice_notifications": False}})
-        assert features.alert_manager.tts_callback is None
+        assert features.alert_manager.voice_output.mute_reason() == "voice_notifications_disabled"
 
     def test_production_wiring_without_producers_is_unavailable(self):
         """Today's graph registers no producer: the summary must say unavailable (CORE-05)."""

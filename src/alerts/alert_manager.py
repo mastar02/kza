@@ -198,6 +198,8 @@ class AlertVoiceOutput:
                 results.append(await self._speak(text, zone_id=zone, timeout_s=(cutoff - now).total_seconds()))
         # A whole-episode retry is safe only if every route proved no audio began.
         receipt = next((result for result in results if not result.success), results[0])
+        if not receipt.success and any(result.success for result in results):
+            return replace(receipt, error="alert_partial_zone_delivery", output_started=True)
         if all(_failed_without_output(result) for result in results):
             return receipt
         if any(result.success or result.output_started or result.spoken_segments for result in results):
@@ -588,9 +590,8 @@ class AlertManager:
                 await self._announce(episode)
             return alert
         if alert.processed:
-            # User answer T036-U1-Q5 (option A): an acknowledged alert is never spoken
-            # again, neither by the retry nor by the re-announce. Only an escalation
-            # (above) reopens the acknowledgement and speaks.
+            # T036-U1-Q5: only an escalation reopens an acknowledgement.
+            # Retries and interval notices stay suppressed while it is acknowledged.
             if episode.retry_due:
                 episode.retry_due = False
                 logger.info("Alert voice retry dropped, alert acknowledged (id=%s)", alert.alert_id)
@@ -604,15 +605,14 @@ class AlertManager:
             await self._announce(episode, retry=True)
             return None
         if (
-            self.voice_output is None
-            and episode.latched
+            episode.latched
             and episode.reannounce
             and self.reannounce_interval_seconds is not None
             and episode.announced_at is not None
             and now - episode.announced_at >= self.reannounce_interval_seconds
         ):
             logger.info("Alert re-announced: %s (id=%s)", alert.alert_type.value, alert.alert_id)
-            await self._announce(episode)
+            await self._announce(episode, reannounce=True)
             return None
         logger.debug("Alert deduped (open episode): %s (id=%s)", alert.alert_type.value, alert.alert_id)
         return None
@@ -653,24 +653,26 @@ class AlertManager:
                     f"Error executing alert handler: {e} (type={alert.alert_type.value}, id={alert.alert_id})"
                 )
 
-    async def _announce(self, episode: _Episode, *, retry: bool = False) -> None:
+    async def _announce(self, episode: _Episode, *, retry: bool = False, reannounce: bool = False) -> None:
         """Speak the episode's alert and record its delivery receipt.
 
         A notice that failed before any audio started is retried once, at the
         episode's next observation; a retry is never retried again (user answer
-        T036-U1-Q1). Output that started, a blocked or muted notice, and every
-        other failure are never repeated. Neither the retry nor the re-announce
-        speaks an acknowledged alert; only an escalation does (T036-U1-Q5).
+        T036-U1-Q1). An interval announcement is a separate opt-in for latched
+        episodes. Both paths check mute and skip acknowledged alerts.
 
         Args:
             episode: The open episode whose alert is spoken.
             retry: This notice is the single retry of an output-free failure.
+            reannounce: A new notice due after the configured interval.
         """
         if self.voice_output is not None:
-            if episode.voice_dispatched and not retry:
+            if episode.voice_dispatched and not (retry or reannounce):
                 return
             reason = self.voice_output.mute_reason()
             if reason is not None:
+                if reannounce:
+                    return  # Preserve the previous delivery receipt while muted.
                 episode.voice_dispatched = True
                 episode.pending_notice = None
                 self._record_delivery(episode.alert, AlertDelivery.MUTED, reason)

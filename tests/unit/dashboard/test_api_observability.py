@@ -28,6 +28,9 @@ class AlertOutputs:
     def playback_output_key(self, zone):
         return zone
 
+    def get_all_zones(self):
+        return {}
+
     async def aspeak(self, text, *, zone_id, timeout_s):
         assert timeout_s > 0
         self.spoken.append(zone_id)
