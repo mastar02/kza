@@ -284,3 +284,179 @@ test('U3b-3: Mis recuerdos is visible only to a household account bound to a per
   assert.ok(!session.views().includes('mymemory'));
   assert.deepEqual(await attempt(person), []);
 });
+
+test('createApi classifies 401/403/409/503/http, timeout, caller abort and network errors in Spanish without leaking raw English', async t => {
+  const rawEnglish = /Failed to fetch|AbortError|TimeoutError|NetworkError|TypeError|ECONNREFUSED|The operation was aborted/i;
+  const reply = (status, body, extraHeaders = {}) => ({
+    ok: status >= 200 && status < 300, status,
+    headers: { get: name => extraHeaders[name] ?? extraHeaders[name.toLowerCase()] ?? null },
+    json: async () => body,
+  });
+
+  // HTTP 401, 403, 409, 503 and generic HTTP status (500) + X-KZA-Demo + 204.
+  const cases = [
+    [401, { detail: 'token_expired' }, 'unauthorized', /no está autorizada/, 1],
+    [403, { detail: 'origin denied' }, 'forbidden', /no tiene permiso/, 0],
+    [409, { detail: 'revision_conflict' }, 'conflict', /Conflicto/, 0],
+    [503, { detail: 'dashboard_authority_unavailable' }, 'unavailable', /no está disponible/, 0],
+    [500, { detail: 'internal_fault' }, 'http', /500/, 0],
+  ];
+  for (const [status, body, kind, pattern, expectedUnauth] of cases) {
+    let unauth = 0, demo = 0;
+    const api = home.createApi({
+      fetch: async () => reply(status, body, { 'X-KZA-Demo': 'true' }),
+      onUnauthorized: () => { unauth++; },
+      onDemo: () => { demo++; },
+    });
+    await assert.rejects(api('/api/home/catalog'), error => {
+      assert.equal(error.status, status);
+      assert.equal(error.kind, kind);
+      assert.equal(error.detail, body.detail);
+      assert.match(error.message, pattern);
+      assert.doesNotMatch(error.message, rawEnglish);
+      return true;
+    });
+    assert.equal(unauth, expectedUnauth);
+    assert.equal(demo, 1);
+  }
+
+  // 204 returns null without JSON decode.
+  const noContentApi = home.createApi({ fetch: async () => reply(204, null) });
+  assert.equal(await noContentApi('/api/home/actions'), null);
+
+  // invalidateSession() prevents late 401 from expiring a newer session.
+  {
+    let unauth = 0;
+    const pending = deferred();
+    const api = home.createApi({ fetch: () => pending.promise, onUnauthorized: () => { unauth++; } });
+    const req = api('/api/home/catalog');
+    api.invalidateSession();
+    pending.resolve(reply(401, { detail: 'late_401' }));
+    await assert.rejects(req, error => error.status === 401 && error.kind === 'unauthorized');
+    assert.equal(unauth, 0);
+  }
+
+  // Network failure (TypeError / offline): preserves instanceof TypeError without leaking raw English.
+  {
+    let unauth = 0;
+    const api = home.createApi({
+      fetch: async () => { throw new TypeError('Failed to fetch'); },
+      onUnauthorized: () => { unauth++; },
+    });
+    await assert.rejects(api('/api/home/catalog'), error => {
+      assert.ok(error instanceof TypeError);
+      assert.equal(error.status, null);
+      assert.equal(error.kind, 'network');
+      assert.equal(error.detail, undefined);
+      assert.match(error.message, /conectar/);
+      assert.doesNotMatch(error.message, rawEnglish);
+      return true;
+    });
+    assert.equal(unauth, 0);
+  }
+
+  // Caller abort (pre-aborted and in-flight) is distinguished from internal timeout and never calls onUnauthorized.
+  {
+    let unauth = 0, calls = 0;
+    const pre = new AbortController();
+    pre.abort();
+    const api = home.createApi({
+      fetch: async () => { calls++; return reply(401, {}); },
+      onUnauthorized: () => { unauth++; },
+    });
+    await assert.rejects(api('/api/home/catalog', { signal: pre.signal }), error => {
+      assert.equal(error.status, null);
+      assert.equal(error.kind, 'aborted');
+      assert.equal(error.name, 'AbortError');
+      assert.equal(error.detail, undefined);
+      assert.match(error.message, /cancelada/);
+      assert.doesNotMatch(error.message, rawEnglish);
+      return true;
+    });
+    assert.equal(calls, 0);
+    assert.equal(unauth, 0);
+
+    const caller = new AbortController();
+    const pending = deferred();
+    const inflightApi = home.createApi({
+      fetch: (_path, { signal }) => new Promise((resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true });
+        pending.promise.then(resolve, reject);
+      }),
+      onUnauthorized: () => { unauth++; },
+      timeoutMs: 60000,
+    });
+    const req = inflightApi('/api/home/catalog', { signal: caller.signal });
+    caller.abort();
+    await assert.rejects(req, error => {
+      assert.equal(error.kind, 'aborted');
+      assert.equal(error.name, 'AbortError');
+      assert.equal(error.status, null);
+      assert.doesNotMatch(error.message, rawEnglish);
+      return true;
+    });
+    assert.equal(unauth, 0);
+  }
+
+  // Internal timeout (timeoutMs) is distinguished from caller abort and suppresses late 401 onUnauthorized.
+  {
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    let unauth = 0, seenSignal = null;
+    const api = home.createApi({
+      fetch: (_path, { signal }) => new Promise((_, reject) => {
+        seenSignal = signal;
+        signal.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true });
+      }),
+      onUnauthorized: () => { unauth++; },
+      timeoutMs: 250,
+    });
+    const req = api('/api/home/catalog');
+    t.mock.timers.tick(249);
+    assert.equal(seenSignal.aborted, false);
+    t.mock.timers.tick(1);
+    assert.equal(seenSignal.aborted, true);
+    await assert.rejects(req, error => {
+      assert.equal(error.status, null);
+      assert.equal(error.kind, 'timeout');
+      assert.equal(error.name, 'TimeoutError');
+      assert.equal(error.detail, undefined);
+      assert.match(error.message, /no respondió a tiempo/);
+      assert.doesNotMatch(error.message, rawEnglish);
+      return true;
+    });
+    assert.equal(unauth, 0);
+
+    // A 401 response resolving after internal timeout must not invoke onUnauthorized.
+    const late401 = deferred();
+    const apiLate = home.createApi({
+      fetch: () => late401.promise,
+      onUnauthorized: () => { unauth++; },
+      timeoutMs: 100,
+    });
+    const lateReq = apiLate('/api/home/catalog');
+    t.mock.timers.tick(100);
+    late401.resolve(reply(401, { detail: 'late' }));
+    await assert.rejects(lateReq, error => error.kind === 'timeout' && error.status === null);
+    assert.equal(unauth, 0);
+  }
+
+  // createScopedApi preserves structured kind/status/detail from createApi and retires only on 401/retired-403.
+  {
+    const session = nexo.createSession({ wall: () => 0, monotonic: () => 0 });
+    session.accept(identity(['home:read', 'home:control']));
+    let retired = 0;
+    const transport = home.createApi({
+      fetch: async (path) => {
+        if (path === '/api/home/catalog') return reply(503, { detail: 'ha_unavailable' });
+        if (path === '/api/home/actions') return reply(409, { detail: 'busy' });
+        return reply(401, { detail: 'expired' });
+      },
+    });
+    const scoped = nexo.createScopedApi({ session, transport, onRetired: () => { retired++; } });
+    await assert.rejects(scoped('/api/home/catalog'), error => error.status === 503 && error.kind === 'unavailable' && error.detail === 'ha_unavailable');
+    await assert.rejects(scoped('/api/home/actions', { method: 'POST' }), error => error.status === 409 && error.kind === 'conflict' && error.detail === 'busy');
+    assert.equal(retired, 0);
+    await assert.rejects(scoped('/api/admin/auth/whoami'), error => error.status === 401 && error.kind === 'unauthorized');
+    assert.equal(retired, 1);
+  }
+});
