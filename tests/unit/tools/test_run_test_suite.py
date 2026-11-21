@@ -302,13 +302,131 @@ def test_run_tier2_lanes_waits_for_a_and_b_and_runs_exact_compiled_nodeids(tmp_p
     start_c = timeline.index(("start", "lane-c-compiled-solo"))
     assert start_c > end_a and start_c > end_b2
 
+    # Lane B stays strictly serial (no xdist) to protect daemon-reload and systemd-journald NRestarts.
+    for lane_b_step in ("lane-b-linux", "lane-b-sc6b1", "lane-b-sc6b2"):
+        assert "-n" not in recorded_cmds[lane_b_step]
+
     cmd_c = recorded_cmds["lane-c-compiled-solo"]
     assert all("::" in target for target in cmd_c if target.startswith("tests/integration/"))
     assert len([t for t in cmd_c if t.startswith("tests/integration/")]) == len(runner.COMPILED_SOLO_TESTS)
-    assert "-n" not in cmd_c
+    n_idx = cmd_c.index("-n")
+    assert cmd_c[n_idx + 1] == "2"
+    assert "--dist=load" in cmd_c
     assert "KZA_REQUIRE_REAL_SYSTEMD" not in recorded_envs["lane-a-core"]
     assert "KZA_REQUIRE_REAL_SYSTEMD" not in recorded_envs["lane-c-compiled-solo"]
     assert recorded_envs["lane-b-linux"]["KZA_REQUIRE_REAL_SYSTEMD"] == "1"
+
+
+def test_resolve_solo_workers_defaults_and_overrides():
+    assert runner.resolve_solo_workers(None, workers=8, has_xdist=True) == 2
+    assert runner.resolve_solo_workers(None, workers=2, has_xdist=True) == 2
+    assert runner.resolve_solo_workers(None, workers=1, has_xdist=True) == 1
+    assert runner.resolve_solo_workers(None, workers=8, has_xdist=False) == 1
+    assert runner.resolve_solo_workers(1, workers=8, has_xdist=True) == 1
+    assert runner.resolve_solo_workers(3, workers=8, has_xdist=True) == 3
+    assert runner.resolve_solo_workers(3, workers=8, has_xdist=False) == 1
+    with pytest.raises(ValueError, match="solo-workers"):
+        runner.resolve_solo_workers(0, workers=8, has_xdist=True)
+
+
+def test_build_pytest_command_supports_load_dist_mode(tmp_path):
+    cmd = runner.build_pytest_command(
+        Path("/venv/bin/python"),
+        targets=list(runner.COMPILED_SOLO_TESTS),
+        workers=2,
+        basetemp=tmp_path / "bt",
+        use_xdist=True,
+        dist_mode="load",
+    )
+    n_idx = cmd.index("-n")
+    assert cmd[n_idx + 1] == "2"
+    assert "--dist=load" in cmd
+    assert "--dist=worksteal" not in cmd
+
+
+@pytest.mark.parametrize(
+    ("workers", "has_xdist", "solo_workers", "expected_n"),
+    [
+        (8, True, 1, None),
+        (1, True, None, None),
+        (8, False, None, None),
+        (8, True, 3, "3"),
+    ],
+)
+def test_run_tier2_lanes_respects_solo_workers_and_keeps_lane_b_serial(
+    tmp_path, monkeypatch, workers, has_xdist, solo_workers, expected_n
+):
+    recorded_cmds: dict[str, list[str]] = {}
+
+    def fake_run(name: str, cmd: list[str], *, cwd: Path, env: dict[str, str], log_path: Path) -> dict:
+        recorded_cmds[name] = list(cmd)
+        return {"name": name, "exit_code": 0, "duration_s": 0.01, "log": str(log_path)}
+
+    monkeypatch.setattr(runner, "_run_subprocess", fake_run)
+    runner.run_tier2_lanes(
+        repo=tmp_path,
+        python_exe=Path("/venv/bin/python"),
+        env=runner.sanitize_env({}),
+        basetemp_root=tmp_path / "bt",
+        out_dir=tmp_path / "out",
+        workers=workers,
+        has_xdist=has_xdist,
+        run_node=False,
+        solo_workers=solo_workers,
+    )
+    for lane_b_step in ("lane-b-linux", "lane-b-sc6b1", "lane-b-sc6b2"):
+        assert "-n" not in recorded_cmds[lane_b_step]
+    cmd_c = recorded_cmds["lane-c-compiled-solo"]
+    if expected_n is None:
+        assert "-n" not in cmd_c
+        assert "--dist=load" not in cmd_c
+    else:
+        n_idx = cmd_c.index("-n")
+        assert cmd_c[n_idx + 1] == expected_n
+        assert "--dist=load" in cmd_c
+
+
+def test_cli_forwards_solo_workers_and_rejects_non_positive(tmp_path, monkeypatch):
+    import json
+
+    solo = tmp_path / "runs" / "SOLO_WINDOW"
+    solo.parent.mkdir(parents=True)
+    out_dir = tmp_path / "out"
+    seen_kwargs: list[dict] = []
+
+    monkeypatch.setattr(runner, "DEFAULT_SOLO_WINDOW_FILE", solo)
+    monkeypatch.setattr(runner.sys, "platform", "linux")
+    monkeypatch.setattr(runner, "_xdist_available", lambda _p: True)
+    monkeypatch.setattr(runner, "journald_nrestarts", lambda: 42)
+    monkeypatch.setattr(
+        runner,
+        "run_tier2_lanes",
+        lambda **kw: seen_kwargs.append(kw) or [{"name": "lane-c-compiled-solo", "exit_code": 0, "duration_s": 0.01, "log": "x"}],
+    )
+
+    rc = runner.main(
+        [
+            "--tier",
+            "2",
+            "--workers",
+            "6",
+            "--solo-workers",
+            "1",
+            "--no-prebuild",
+            "--no-node",
+            "--out-dir",
+            str(out_dir),
+            "--cache-dir",
+            str(tmp_path / "cache"),
+        ]
+    )
+    assert rc == 0
+    assert seen_kwargs[0]["solo_workers"] == 1
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["solo_workers"] == 1
+
+    with pytest.raises(SystemExit):
+        runner.main(["--tier", "0", "--targets", "tests/a.py", "--solo-workers", "0"])
 
 
 def test_safe_rmtree_ignores_symlinks_to_outside_files(tmp_path):

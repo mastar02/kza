@@ -289,13 +289,16 @@ def working_tree_digest(repo: Path) -> str:
 
 
 def prebuild_standard_artifacts(repo: Path, cache_dir: Path) -> dict[str, str]:
-    """Pre-populate ``by-commit`` cache with current X5/X4/Y5 overlay and PRE_LAUNCHER_COMMIT.
+    """Pre-populate ``by-commit`` cache with standard Tier 1/2 runtime artifacts.
+
+    Prewarms X5/X4/Y5/Y4 overlays, ``PRE_LAUNCHER_COMMIT``, ``HEAD``/``epoch4``
+    and ``schema_compatible_revision(repo, "HEAD")`` before launching workers.
 
     Unlike mutant-only bypass env vars, this returns only ``KZA_RUNTIME_ARTIFACT_CACHE_DIR``
     so test fixtures still execute their own Git ancestry, ``LAUNCHER_CONTRACT`` and
     commit-matching assertions while hitting immutable verified tarballs in ``by-commit/``.
     """
-    from tests.mocks import epoch4, launcher_rehearsal
+    from tests.mocks import epoch4, launcher_rehearsal, slot_reconciliation
 
     repo = Path(repo).resolve()
     cache_dir = Path(cache_dir).resolve()
@@ -312,8 +315,10 @@ def prebuild_standard_artifacts(repo: Path, cache_dir: Path) -> dict[str, str]:
                 check=True,
                 timeout=120,
             )
+            head = _git(clone, "rev-parse", "--verify", "HEAD^{commit}")
             x5 = launcher_rehearsal.overlay_commit(repo, clone, message="u3b-0d rehearsal")
             x4 = epoch4.epoch4_commit(clone, x5)
+            head_epoch4 = x4 if x5 == head else epoch4.epoch4_commit(clone, head)
             environment = dict(
                 os.environ,
                 GIT_AUTHOR_NAME="rehearsal",
@@ -324,15 +329,28 @@ def prebuild_standard_artifacts(repo: Path, cache_dir: Path) -> dict[str, str]:
                 GIT_COMMITTER_DATE="2026-11-12T00:00:01Z",
             )
             y5 = _git(clone, "commit-tree", x5 + "^{tree}", "-p", x5, "-m", "u3b-0d rehearsal Y", env=environment)
+            y4 = _git(clone, "commit-tree", x4 + "^{tree}", "-p", x4, "-m", "u3b-0d rehearsal Y", env=environment)
             pre_commit = launcher_rehearsal.pre_launcher_revision(clone, x5)
+            schema_compat = slot_reconciliation.schema_compatible_revision(repo, "HEAD")
 
-            revisions: list[tuple[str, str]] = [
+            candidate_revisions: list[tuple[str, str]] = [
                 ("x5.tar.gz", x5),
                 ("x4.tar.gz", x4),
                 ("y5.tar.gz", y5),
+                ("y4.tar.gz", y4),
                 ("pre.tar.gz", pre_commit),
+                ("head.tar.gz", head),
+                ("head-epoch4.tar.gz", head_epoch4),
+                ("schema-compat.tar.gz", schema_compat),
             ]
-            with ThreadPoolExecutor(max_workers=4) as pool:
+            revisions: list[tuple[str, str]] = []
+            seen_revisions: set[str] = set()
+            for filename, rev in candidate_revisions:
+                if rev not in seen_revisions:
+                    seen_revisions.add(rev)
+                    revisions.append((filename, rev))
+
+            with ThreadPoolExecutor(max_workers=min(6, len(revisions))) as pool:
                 futures = [
                     pool.submit(cached_build_runtime, clone, tmp_path / filename, rev)
                     for filename, rev in revisions

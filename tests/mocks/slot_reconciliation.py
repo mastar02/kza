@@ -2,20 +2,59 @@
 from __future__ import annotations
 
 import ast
+import copy
 import json
 from pathlib import Path
 import re
 import subprocess
+import threading
+
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
+_CACHE_LOCK = threading.Lock()
+_TABLE_COLUMNS_CACHE: dict[str, dict] = {}
+_SCHEMA_COMPATIBLE_CACHE: dict[str, str] = {}
+
+
+def clear_revision_caches() -> None:
+    """Clear in-process memoization caches for revision schema lookups."""
+    with _CACHE_LOCK:
+        _TABLE_COLUMNS_CACHE.clear()
+        _SCHEMA_COMPATIBLE_CACHE.clear()
+
+
+def _resolve_commit(repo: Path, revision: str) -> str:
+    """Resolve a git revision to its immutable 40-char commit SHA."""
+    if _COMMIT_SHA_RE.fullmatch(revision) is not None:
+        return revision
+    return subprocess.check_output(
+        ["git", "rev-parse", "--verify", revision + "^{commit}"],
+        cwd=repo,
+        text=True,
+    ).strip()
 
 
 def _table_columns(repo: Path, revision: str) -> dict:
     """The admission schema registry (_TABLE_COLUMNS) as committed at revision."""
-    source = subprocess.check_output(["git", "show", revision + ":scripts/stage_runtime.py"],
-        cwd=repo, text=True)
+    commit = _resolve_commit(repo, revision)
+    with _CACHE_LOCK:
+        cached = _TABLE_COLUMNS_CACHE.get(commit)
+    if cached is not None:
+        return copy.deepcopy(cached)
+
+    source = subprocess.check_output(
+        ["git", "show", commit + ":scripts/stage_runtime.py"],
+        cwd=repo,
+        text=True,
+    )
     for node in ast.parse(source).body:
-        if isinstance(node, ast.Assign) and any(getattr(target, "id", None) == "_TABLE_COLUMNS"
-                                                 for target in node.targets):
-            return ast.literal_eval(node.value)
+        if isinstance(node, ast.Assign) and any(
+            getattr(target, "id", None) == "_TABLE_COLUMNS"
+            for target in node.targets
+        ):
+            parsed = ast.literal_eval(node.value)
+            with _CACHE_LOCK:
+                _TABLE_COLUMNS_CACHE[commit] = copy.deepcopy(parsed)
+            return parsed
     raise ValueError("reconciliation_schema_registry_unavailable")
 
 
@@ -33,11 +72,22 @@ def schema_compatible_revision(repo: Path, new_revision: str) -> str:
     """
     from tests.mocks import slot_rollback as original
 
-    wanted = _table_columns(repo, new_revision)
-    candidates = subprocess.check_output(["git", "rev-list", "--reverse", "--topo-order", new_revision,
-        "--", *original.MANAGED_COMPANIONS], cwd=repo, text=True).split()
+    commit = _resolve_commit(repo, new_revision)
+    with _CACHE_LOCK:
+        cached = _SCHEMA_COMPATIBLE_CACHE.get(commit)
+    if cached is not None:
+        return cached
+
+    wanted = _table_columns(repo, commit)
+    candidates = subprocess.check_output(
+        ["git", "rev-list", "--reverse", "--topo-order", commit, "--", *original.MANAGED_COMPANIONS],
+        cwd=repo,
+        text=True,
+    ).split()
     for revision in candidates:
         if original.is_managed_capable(repo, revision) and _table_columns(repo, revision) == wanted:
+            with _CACHE_LOCK:
+                _SCHEMA_COMPATIBLE_CACHE[commit] = revision
             return revision
     raise ValueError("reconciliation_schema_compatible_revision_unavailable")
 

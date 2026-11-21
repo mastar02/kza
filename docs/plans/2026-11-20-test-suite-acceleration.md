@@ -25,8 +25,8 @@ Medición directa sobre los artefactos JUnit XML y metadatos de `/home/yo/projec
 |---|---|---|
 | `T090-U1` | Runner portátil `scripts/run_test_suite.py` con `pytest-xdist` (`--dist=worksteal`), Tiers `0/1/2`, `/dev/shm` acotado a Tier 0, `basetemp` único autolimpiado en disco (`out_dir/basetemp-*`) y caché persistente en disco (`~/.cache/kza-runtime-artifacts`) en Tier 1/2 con límite predeterminado de `8` workers y carril `systemd` paralelo desde `t=0` en Tier 2 | `verified_local` |
 | `T090-U2` | Caché unificado content-addressed `tests/mocks/runtime_artifact_cache.py` (`<commit>-<python_magic>`) con `fcntl.flock` y hardlinks atómicos cableado en los fixtures/helpers que invocan `build_runtime` como insumo | `verified_local` |
-| `T090-U3` | Optimización de fixtures lentos sin tocar oráculos (`test_private_access.py`, árboles base inmutables en `test_legacy_state_retirement.py` / `test_adoption_commands.py` / `compaction_world.py`) | Planificada |
-| `T090-U4` | Aceleración del carril `systemd` (`sc6b` + `test_linux_*`) y `compiled-solo` preservando `systemd-journald NRestarts` y presupuestos reales | Planificada |
+| `T090-U3` | Optimización de fixtures lentos sin tocar oráculos (`test_private_access.py`, árboles base inmutables en `test_legacy_state_retirement.py` / `test_adoption_commands.py` / `compaction_world.py`) | En curso (asiento paralelo) |
+| `T090-U4` | Aceleración de `systemd` (`sc6b` + `test_linux_*`) y `compiled-solo` preservando `systemd-journald NRestarts` y presupuestos reales: memoización en proceso de `schema_compatible_revision` y `_table_columns`, precalentamiento de `schema_compatible_revision(repo, "HEAD")` y `epoch4` en `~/.cache/kza-runtime-artifacts`, y `--solo-workers` (`--dist=load`, default `2`) en `lane-c-compiled-solo` tras cerrar Carriles A y B | `verified_local` |
 | `T090-U5` | Integración de Tiers en el runbook de Mac, el workflow multi-asiento y `.github/workflows/ci.yml`, con tests de estructura del workflow | `verified_local` |
 
 ## Niveles de ejecución (Tiers)
@@ -38,9 +38,10 @@ Ejecutar desde el checkout del SHA bajo prueba con el venv KZA de Python 3.13.
   suficiente. Omitir `--no-node` si el cambio afecta al frontend.
 - **Tier 1**, validación sin systemd en Mac M4 Pro o en `kza-yo` con objetivo
   de ~3–5 min. Usa hasta 8 workers por defecto, preconstruye artefactos en
-  `~/.cache/kza-runtime-artifacts` y limpia el `out_dir/basetemp-*` único al
-  salir. Ejecuta Node y la suite Python salvo los cinco módulos de systemd
-  real y los ocho `COMPILED_SOLO_TESTS`.
+  `~/.cache/kza-runtime-artifacts` (incluidos `X5/X4/Y5/Y4`, `PRE_LAUNCHER_COMMIT`,
+  `HEAD`/`epoch4` y `schema_compatible_revision(repo, "HEAD")`) y limpia el
+  `out_dir/basetemp-*` único al salir. Ejecuta Node y la suite Python salvo los
+  cinco módulos de systemd real y los ocho `COMPILED_SOLO_TESTS`.
 
 ```bash
 .venv/bin/python scripts/run_test_suite.py --tier 0 --no-node --targets tests/unit/tools/test_run_test_suite.py
@@ -58,12 +59,40 @@ env OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_THREA
 ```
 
 Node, el carril A (suite sin systemd con xdist) y el carril B (cinco módulos
-seriales con `KZA_REQUIRE_REAL_SYSTEMD=1`, incluido SC-6b en dos fases) se
-ejecutan en paralelo. Una vez terminados, el carril C ejecuta los ocho
-nodeids `compiled-solo` en serie. El runner toma ambas lecturas de
+seriales con `use_xdist=False` y `KZA_REQUIRE_REAL_SYSTEMD=1`, incluido SC-6b en
+dos fases para preservar `daemon-reload` y `before_NRestarts == after_NRestarts`
+de `systemd-journald`) se ejecutan en paralelo. Una vez terminados ambos
+carriles A y B, el carril C (`lane-c-compiled-solo`) ejecuta los ocho nodeids
+`COMPILED_SOLO_TESTS` con `--solo-workers` (por defecto `2` cuando `pytest-xdist`
+está disponible y `--workers >= 2`, si no `1`; distribución `--dist=load`) con
+CPU y disco completamente libres para respetar el presupuesto real de `55 s` de
+`advance-N` sin alterar timeouts de tests. Se puede forzar ejecución estrictamente
+serial con `--solo-workers 1`. El runner toma ambas lecturas de
 `systemd-journald` bajo la misma exclusión por `SOLO_WINDOW` y `flock`.
 El gate requiere `exit_code == 0`, `nrestarts_ok == true` y dos lecturas
 válidas con `before_NRestarts == after_NRestarts` en `summary.json`.
+
+### Detalle de optimizaciones `T090-U3` y `T090-U4`
+
+- **`T090-U3` (fixtures lentos):** optimización de fixtures sin modificar
+  oráculos ni relajar aserciones (`test_private_access.py`, reutilización de
+  árboles base inmutables en `test_legacy_state_retirement.py`,
+  `test_adoption_commands.py` y `compaction_world.py`).
+- **`T090-U4` (carriles `systemd` y `compiled-solo`):**
+  1. Memoización en proceso de `schema_compatible_revision(repo, new_revision)` y
+     `_table_columns(repo, revision)` en `tests/mocks/slot_reconciliation.py` por
+     commit SHA resuelto (con copia defensiva y `clear_revision_caches()`),
+     evitando re-escanear `git rev-list` + `git show` + `ast.parse` en cada test
+     compilado incluso entre clones temporales `epoch4_checkout`.
+  2. Extensión de `prebuild_standard_artifacts(repo, cache_dir)` en
+     `tests/mocks/runtime_artifact_cache.py` para precalentar en
+     `~/.cache/kza-runtime-artifacts` `schema_compatible_revision(repo, "HEAD")` y
+     los commits `epoch4` (`x4`, `y4` y `epoch4(HEAD)` cuando difiere del overlay)
+     antes de lanzar los workers de Tier 1/2.
+  3. Flag `--solo-workers` en `scripts/run_test_suite.py` (default `2` cuando
+     `has_xdist` y `--workers >= 2`, si no `1`, con `--dist=load`) para
+     `lane-c-compiled-solo`, lanzado exclusivamente al concluir Carril A y
+     Carril B, manteniendo Carril B estrictamente serial (`use_xdist=False`).
 
 GitHub Actions ejecuta `unit-tests`, `safety-tests` e `integration-tests` con
 `pytest -n auto --dist=worksteal`. El job de integración excluye los cinco

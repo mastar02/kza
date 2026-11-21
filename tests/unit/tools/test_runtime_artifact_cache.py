@@ -228,14 +228,38 @@ def test_corrupt_sidecar_or_tarball_rebuilds_cleanly(tmp_path, monkeypatch, corr
 
 
 def test_prebuild_returns_only_cache_dir_without_launcher_bypass(tmp_path, monkeypatch):
-    from tests.mocks import epoch4, launcher_rehearsal
+    from tests.mocks import epoch4, launcher_rehearsal, slot_reconciliation
 
     prebuild_calls: list[str] = []
-    monkeypatch.setattr(launcher_rehearsal, "overlay_commit", lambda *_a, **_kw: "a" * 40)
-    monkeypatch.setattr(epoch4, "epoch4_commit", lambda *_a, **_kw: "b" * 40)
-    monkeypatch.setattr(launcher_rehearsal, "pre_launcher_revision", lambda *_a, **_kw: prebuild_calls.append("pre_checked") or "c" * 40)
-    monkeypatch.setattr(cache_mod, "build_runtime", _fake_build([]))
-    monkeypatch.setattr(cache_mod, "_git", lambda _cwd, *args, **_kw: "d" * 40 if "commit-tree" in args else args[-1].removesuffix("^{commit}"))
+    built: list[tuple[Path, Path, str]] = []
+    head_sha = "a" * 40
+    x4_sha = "b" * 40
+    pre_sha = "c" * 40
+    y5_sha = "d" * 40
+    y4_sha = "e" * 40
+    compat_sha = "f" * 40
+
+    monkeypatch.setattr(launcher_rehearsal, "overlay_commit", lambda *_a, **_kw: head_sha)
+    monkeypatch.setattr(epoch4, "epoch4_commit", lambda _clone, rev: x4_sha if rev == head_sha else "9" * 40)
+    monkeypatch.setattr(
+        launcher_rehearsal,
+        "pre_launcher_revision",
+        lambda *_a, **_kw: prebuild_calls.append("pre_checked") or pre_sha,
+    )
+    monkeypatch.setattr(
+        slot_reconciliation,
+        "schema_compatible_revision",
+        lambda repo, rev: prebuild_calls.append(f"schema_compat:{rev}") or compat_sha,
+    )
+    monkeypatch.setattr(cache_mod, "build_runtime", _fake_build(built))
+
+    def fake_git(_cwd, *args, **_kw):
+        if "commit-tree" in args:
+            return y5_sha if args[1].startswith(head_sha) else y4_sha
+        target = args[-1].removesuffix("^{commit}")
+        return head_sha if target == "HEAD" else target
+
+    monkeypatch.setattr(cache_mod, "_git", fake_git)
     monkeypatch.setattr(
         cache_mod.subprocess,
         "run",
@@ -243,7 +267,153 @@ def test_prebuild_returns_only_cache_dir_without_launcher_bypass(tmp_path, monke
     )
 
     env = cache_mod.prebuild_standard_artifacts(tmp_path / "repo", tmp_path / "cache")
-    assert prebuild_calls == ["pre_checked"]
+    assert prebuild_calls == ["pre_checked", "schema_compat:HEAD"]
+    assert {rev for _repo, _out, rev in built} == {head_sha, x4_sha, y5_sha, y4_sha, pre_sha, compat_sha}
     assert env == {cache_mod.CACHE_DIR_ENV: str((tmp_path / "cache").resolve())}
     assert "KZA_LAUNCHER_ARTIFACTS_CACHE" not in env
     assert "KZA_COMPACTION_ARTIFACT" not in env
+
+
+def test_prebuild_warms_distinct_head_and_head_epoch4_when_overlay_differs(tmp_path, monkeypatch):
+    from tests.mocks import epoch4, launcher_rehearsal, slot_reconciliation
+
+    built: list[tuple[Path, Path, str]] = []
+    epoch4_inputs: list[str] = []
+    head_sha = "1" * 40
+    x5_sha = "2" * 40
+    x4_sha = "3" * 40
+    head_epoch4_sha = "4" * 40
+    y5_sha = "5" * 40
+    y4_sha = "6" * 40
+    pre_sha = "7" * 40
+    compat_sha = "8" * 40
+
+    monkeypatch.setattr(launcher_rehearsal, "overlay_commit", lambda *_a, **_kw: x5_sha)
+
+    def fake_epoch4(_clone, rev):
+        epoch4_inputs.append(rev)
+        return x4_sha if rev == x5_sha else head_epoch4_sha
+
+    monkeypatch.setattr(epoch4, "epoch4_commit", fake_epoch4)
+    monkeypatch.setattr(launcher_rehearsal, "pre_launcher_revision", lambda *_a, **_kw: pre_sha)
+    monkeypatch.setattr(slot_reconciliation, "schema_compatible_revision", lambda _repo, _rev: compat_sha)
+    monkeypatch.setattr(cache_mod, "build_runtime", _fake_build(built))
+
+    def fake_git(_cwd, *args, **_kw):
+        if "commit-tree" in args:
+            return y5_sha if args[1].startswith(x5_sha) else y4_sha
+        target = args[-1].removesuffix("^{commit}")
+        return head_sha if target == "HEAD" else target
+
+    monkeypatch.setattr(cache_mod, "_git", fake_git)
+    monkeypatch.setattr(
+        cache_mod.subprocess,
+        "run",
+        lambda *_a, **_kw: type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    cache_mod.prebuild_standard_artifacts(tmp_path / "repo", tmp_path / "cache")
+    assert epoch4_inputs == [x5_sha, head_sha]
+    assert {rev for _repo, _out, rev in built} == {
+        head_sha,
+        x5_sha,
+        x4_sha,
+        head_epoch4_sha,
+        y5_sha,
+        y4_sha,
+        pre_sha,
+        compat_sha,
+    }
+
+
+def test_slot_reconciliation_table_columns_memoizes_and_returns_copy(tmp_path, monkeypatch):
+    from tests.mocks import slot_reconciliation as sr
+
+    sr.clear_revision_caches()
+    git_calls: list[tuple[Path, tuple[str, ...]]] = []
+    commit_a = "1" * 40
+    commit_b = "2" * 40
+    head_target = [commit_a]
+
+    def fake_check_output(cmd, *, cwd, text=True):
+        git_calls.append((Path(cwd), tuple(cmd)))
+        if cmd[:3] == ["git", "rev-parse", "--verify"]:
+            return head_target[0] + "\n"
+        if cmd[:2] == ["git", "show"]:
+            rev = cmd[2].split(":", 1)[0]
+            if rev == commit_a:
+                return '_TABLE_COLUMNS = {"privacy": "id:TEXT"}\n'
+            return '_TABLE_COLUMNS = {"privacy": "id:TEXT owner:TEXT"}\n'
+        raise AssertionError(f"unexpected git command: {cmd}")
+
+    monkeypatch.setattr(sr.subprocess, "check_output", fake_check_output)
+    try:
+        cols_first = sr._table_columns(tmp_path / "clone1", commit_a)
+        cols_first["privacy"] = "mutated"
+        cols_second = sr._table_columns(tmp_path / "clone2", commit_a)
+        assert cols_second == {"privacy": "id:TEXT"}
+        assert len(git_calls) == 1
+
+        # Symbolic HEAD resolves dynamically and hits cache for commit_a, then misses once HEAD advances.
+        assert sr._table_columns(tmp_path / "clone1", "HEAD") == {"privacy": "id:TEXT"}
+        assert sum(1 for _cwd, cmd in git_calls if cmd[:2] == ("git", "show")) == 1
+
+        head_target[0] = commit_b
+        assert sr._table_columns(tmp_path / "clone1", "HEAD") == {"privacy": "id:TEXT owner:TEXT"}
+        assert sum(1 for _cwd, cmd in git_calls if cmd[:2] == ("git", "show")) == 2
+    finally:
+        sr.clear_revision_caches()
+
+
+def test_slot_reconciliation_schema_compatible_revision_memoizes_across_clones(tmp_path, monkeypatch):
+    from tests.mocks import slot_reconciliation as sr
+    from tests.mocks import slot_rollback as sb
+
+    sr.clear_revision_caches()
+    old_sha = "3" * 40
+    mid_sha = "4" * 40
+    new_sha = "5" * 40
+    rev_list_calls = 0
+    show_calls = 0
+    managed_calls = 0
+
+    def fake_check_output(cmd, *, cwd, text=True):
+        nonlocal rev_list_calls, show_calls
+        if cmd[:3] == ["git", "rev-parse", "--verify"]:
+            return new_sha + "\n"
+        if cmd[:2] == ["git", "rev-list"]:
+            rev_list_calls += 1
+            return f"{old_sha}\n{mid_sha}\n{new_sha}\n"
+        if cmd[:2] == ["git", "show"]:
+            show_calls += 1
+            rev = cmd[2].split(":", 1)[0]
+            if rev == old_sha:
+                return '_TABLE_COLUMNS = {"t": "v1"}\n'
+            return '_TABLE_COLUMNS = {"t": "v2"}\n'
+        raise AssertionError(f"unexpected git command: {cmd}")
+
+    def fake_is_managed(_repo, rev):
+        nonlocal managed_calls
+        managed_calls += 1
+        return rev in {old_sha, mid_sha, new_sha}
+
+    monkeypatch.setattr(sr.subprocess, "check_output", fake_check_output)
+    monkeypatch.setattr(sb, "is_managed_capable", fake_is_managed)
+    try:
+        assert sr.schema_compatible_revision(tmp_path / "clone1", new_sha) == mid_sha
+        assert rev_list_calls == 1
+        assert show_calls == 3  # new_sha, old_sha, mid_sha
+        assert managed_calls == 2  # old_sha, mid_sha
+
+        # Repeated calls across distinct shared clones or via HEAD hit the in-process cache.
+        assert sr.schema_compatible_revision(tmp_path / "clone2", new_sha) == mid_sha
+        assert sr.schema_compatible_revision(tmp_path / "clone3", "HEAD") == mid_sha
+        assert rev_list_calls == 1
+        assert show_calls == 3
+        assert managed_calls == 2
+
+        sr.clear_revision_caches()
+        assert sr.schema_compatible_revision(tmp_path / "clone1", new_sha) == mid_sha
+        assert rev_list_calls == 2
+    finally:
+        sr.clear_revision_caches()
