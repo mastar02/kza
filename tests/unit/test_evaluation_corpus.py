@@ -552,7 +552,7 @@ def test_folded_expiry_cannot_precede_capture_in_utc(manifest):
 
 
 ROOT = Path(__file__).resolve().parents[2]
-P6_PROTOCOL_SHA256 = "77f1fe17e2c6cb8bb172e9eefdb15437b519488edb64f7294f89e7c23b9603ef"
+P6_PROTOCOL_SHA256 = "719469d8c8a3b392ddef69160fae8ad31f4f5c261cbe45b834357b59509440a7"
 P6_CRITERIA = {
     "C12": (("wer_clear_max_pct", "wer_adverse_max_pct", "coverage_min_pct"),
             ("clear_min", "adverse_min", "critical_condition_min")),

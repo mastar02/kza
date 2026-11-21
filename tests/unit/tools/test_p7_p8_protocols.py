@@ -145,7 +145,7 @@ def field(tmp_path):
         good("idempotency_passed", "reconciliation_passed", "personal_lists_local")
     )
     integrations["I03"]["read_only"] = True
-    integrations["I04"]["selected_controls_verified"] = True
+    integrations["I04"].update(good("selected_controls_verified", "idempotency_passed"))
     integrations["I05"].update(technical_only=True, video_accessed=False)
     rows["T070"].update(
         observed_at=at(hours=2),
@@ -217,6 +217,7 @@ def field(tmp_path):
                 selection=value,
                 operated=True,
                 source_kind="real",
+                simulated=False,
                 observation_sha256=proof(f"{key} recheck"),
             )
             for key, value in selection.items()
@@ -655,6 +656,7 @@ def test_p7_valid(task, field):
         ),
         ("T070", ("integrations", "I03", "simulated"), True, "real source required"),
         ("T070", ("integrations", "I04", "operated"), False, "operated"),
+        ("T070", ("integrations", "I04", "idempotency_passed"), False, "idempotency_passed"),
         ("T071", ("receipts", 0, "revoked_at"), at(days=2), "consent expired"),
         ("T071", ("receipts", 0, "expires_at"), at(days=2), "consent expired"),
         ("T071", ("frozen_at",), at(days=3), "frozen before"),
@@ -702,10 +704,14 @@ def test_p7_valid(task, field):
             False,
             "global_inventory_complete",
         ),
+        ("T075", ("census", "registered_producers"), 31, "exactly 32 producers"),
         ("T075", ("restore", "no_resurrection"), False, "no_resurrection"),
+        ("T075", ("rollback", "contract", "phrase"), "Frase alterada", "L4 plan mismatch"),
         ("T075", ("rollback", "deadline"), at(days=17), "14 days"),
         ("T075", ("candidate", "schema_contract_epoch"), 3, "EPOCH = 2"),
         ("T075", ("integration_recheck", "I03", "operated"), False, "operated"),
+        ("T075", ("integration_recheck", "I04", "simulated"), True, "real Q16 source required"),
+        ("T075", ("integration_recheck", "I04", "simulated"), 0, "real Q16 source required"),
     ],
 )
 def test_bad_field_evidence_is_rejected(task, path, value, message, field):

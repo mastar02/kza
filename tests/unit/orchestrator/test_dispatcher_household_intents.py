@@ -473,6 +473,31 @@ async def test_claimed_turn_ignores_every_caller_hint(leaves, service_filter):
     assert leaves.home.await_count == 0 and leaves.chroma.asearch_command.await_count == 0
 
 
+@pytest.mark.parametrize(
+    ("target_entity_id", "service_filter"),
+    [("switch.living", "turn_on"), ("light.living", "toggle")],
+)
+async def test_fast_domotics_refuses_invalid_explicit_target(leaves, target_entity_id, service_filter):
+    dispatcher = leaves.dispatcher()
+    before = leaves.snapshot()
+
+    result = await dispatcher._fast_path(
+        text="prendé la luz del living",
+        path=PathType.FAST_DOMOTICS,
+        user_id="unknown",
+        zone_id="zone_living",
+        permission_level=0,
+        service_filter=service_filter,
+        target_entity_id=target_entity_id,
+    )
+
+    assert result.path is PathType.FAST_DOMOTICS
+    assert result.success is False
+    assert result.intent == "invalid_target"
+    assert result.response == "No pude completar esa acción."
+    assert leaves.effects(before) == ZERO
+
+
 async def test_claimed_turn_carries_origin_and_zone(leaves):
     from src.core.household_clock import RoomNamespace
     dispatcher = leaves.dispatcher(room_namespace=RoomNamespace(("living", "hall")))

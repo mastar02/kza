@@ -298,6 +298,8 @@ afirmación de mejora o aceptación acústica.
 
 ## Manifiesto verificable
 
+Se actualizaron los sellos de las fuentes tras el cierre de NLU R11 y la corrección de RESIDUO-3 del dispatcher, antes de abrir cualquier reserva de campo.
+
 ```json
 {
   "protocol": "p6-v1",
@@ -318,7 +320,7 @@ afirmación de mejora o aceptación acústica.
     "src/evaluation/corpus.py": {"sha256": "49480cd5c015f70b6e04836fd2956abbc84b399bd1c5114408e9ee53bb3f9b79", "symbols": ["CorpusManifest.require_comparison", "CorpusManifest.deadline"]},
     "src/evaluation/freeze_manifest.py": {"sha256": "3756fd55386a3f81bffa8b4fd1e66279a5a41a408fa7a94c0bbf0c46c336c621", "symbols": ["validate_inventory", "canonical_sha256", "seeded_order", "recognition", "complete_task", "WakeCounts.rejection_upper", "WakeCounts.false_per_hour_upper", "WakeCounts.review_coverage", "nearest_rank", "complete_delivery", "clarity_median", "voice_pair_counts", "PairCounts.precision", "PairCounts.recall", "PairCounts.coverage"]},
     "src/evaluation/provenance.py": {"sha256": "958cea046aaac2f978156732f74134e89fa97a443b6c16f3fd3e142c91f574d1", "symbols": ["CaptureProvenance.comparable", "FrameInterval.millisecond_bounds"]},
-    "src/nlu/household_intents.py": {"sha256": "b6e0adf726234d4f556abd0d7c324c148d2c1a0ca64ffecbdf196acfba6b34b1", "symbols": ["HouseholdIntentClassifier.classify"]},
+    "src/nlu/household_intents.py": {"sha256": "4b73b71cb3bbe7d089dc3970061d2c0cb2359b2925d425133a47ba5116912854", "symbols": ["HouseholdIntentClassifier.classify"]},
     "src/pipeline/post_wake_endpoint.py": {"sha256": "82722926c2c0e13e1a84fd072c65183b489aacafe52cffd9ccf2e5c62c2c7ae6", "symbols": ["EndpointState.analyze"]},
     "src/pipeline/response_handler.py": {"sha256": "11d229715fe54820de5b52590bd1c8e6b0c9c1a1e8976c386f1cdc90f5197004", "symbols": ["ResponseHandler.aplay_earcon", "ResponseHandler._result", "ResponseHandler._render", "ResponseHandler.cancel"]},
     "src/pipeline/wake_verification.py": {"sha256": "389719aec759a76ebcac291d2bb9d6a17252614b09efdc1eb1609a4c2a8a33e0", "symbols": ["WakeVerifier.evaluate"]},

@@ -64,7 +64,7 @@ LINUX_SYSTEMD_MODULES: tuple[str, ...] = (
     "tests/integration/test_linux_sc6b_release_rehearsal.py",
 )
 
-# Exact eight timing-budget compiled rehearsals run solo after main parallel load.
+# Timing-budget compiled rehearsals run in a separate lane after the main parallel load.
 COMPILED_SOLO_TESTS: tuple[str, ...] = (
     "tests/integration/test_copy_observation.py::test_compiled_existing_copy_observations_preserve_current_authority_without_grants",
     "tests/integration/test_copy_collector_cleanup.py::test_current_authority_cleans_mixed_collector_copies_and_drains_cancelled_native",
@@ -74,6 +74,7 @@ COMPILED_SOLO_TESTS: tuple[str, ...] = (
     "tests/integration/test_compiled_output_registration_compatibility.py::test_compiled_v1_v2_histories_share_original_closed_controller",
     "tests/integration/test_compiled_slot_rollback.py::test_compiled_slot_rollback_preserves_latest_privacy_authority",
     "tests/integration/test_pre_u3b_owner_derivation.py::test_pre_u3b_state_derives_with_one_lookup_index_and_the_empty_owner_schema",
+    "tests/integration/test_p6_bytecode_restore_reproducibility.py",
 )
 
 COMPILED_SOLO_MODULES: tuple[str, ...] = tuple(

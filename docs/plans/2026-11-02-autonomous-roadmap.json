@@ -747,7 +747,7 @@
         "H6"
       ],
       "dependency_level": "verified_local",
-      "status": "planned",
+      "status": "in_progress",
       "evidence": []
     },
     {
@@ -2050,7 +2050,8 @@
       "implementation_commits": [
         "fa3f74b0ffab554b4dfa45c5da1737066c957f5b",
         "d925f4920bff8ef22018ee103aec18761f7df2c5",
-        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed",
+        "8d58d4bc54b3f01da060d3b6e7fd372e4262cce1"
       ],
       "evidence": [
         "tests/unit/integrations/test_energy_monitor.py",
@@ -2181,9 +2182,13 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "1b7a666de8e7cdeacdc607266f8c0a41d4e947f0"
+      ],
+      "evidence": [
+        "tests/integration/test_p6_regression.py"
+      ],
       "next_action": null
     },
     {
@@ -2200,10 +2205,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "in_progress",
+      "implementation_commits": [
+        "b695f88526978a6f2c0952c8f0231ac822cf2167"
+      ],
+      "evidence": [
+        "tools/p6_local_soak.py",
+        "tests/unit/tools/test_p6_local_soak.py",
+        "docs/runbooks/p6-local-soak.md"
+      ],
+      "next_action": "Ejecutar ventana de 72 h bajo yo@kza-yo con el candidato sellado tras Gate Tier 2."
     },
     {
       "id": "T062",
@@ -2226,9 +2237,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "747f34cf0c6a84372e6144c7c2b66dad7a75592d",
+        "1b7a666de8e7cdeacdc607266f8c0a41d4e947f0"
+      ],
+      "evidence": [
+        "docs/plans/p6-evaluation.md",
+        "src/evaluation/freeze_manifest.py",
+        "tests/unit/test_evaluation_corpus.py"
+      ],
       "next_action": null
     },
     {
@@ -2243,9 +2261,14 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "265b38053db257b0e3c2e4077564288a503f7121"
+      ],
+      "evidence": [
+        "tests/integration/test_p6_bytecode_restore_reproducibility.py",
+        "docs/runbooks/p6-bytecode-restore.md"
+      ],
       "next_action": null
     },
     {
@@ -2261,9 +2284,15 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "5d6a8789a5da53d33412a1b649962336714f4137"
+      ],
+      "evidence": [
+        "tools/release_manifest_review.py",
+        "docs/runbooks/p6-release.md",
+        "tests/unit/tools/test_p6_release_manifest.py"
+      ],
       "next_action": null
     },
     {
