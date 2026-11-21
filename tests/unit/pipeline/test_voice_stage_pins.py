@@ -75,7 +75,19 @@ def test_the_composition_root_builds_the_stage_once_and_hands_it_to_the_router()
     sites, count = _calls(lambda node: ast.unparse(node.func) == "build_voice_attribution")
     assert sites == [("src/main.py", "build_application", "build_voice_attribution")] and count == 1
     tree = ast.parse((ROOT / "src/main.py").read_text(encoding="utf-8"))
-    router = next(node for node in ast.walk(tree) if isinstance(node, ast.Call) and ast.unparse(node.func) == "RequestRouter")
+    [build] = [node for node in tree.body
+               if isinstance(node, ast.AsyncFunctionDef) and node.name == "build_application"]
+    assignments = {
+        target.id: node.value
+        for node in build.body if isinstance(node, ast.Assign)
+        for target in node.targets if isinstance(target, ast.Name)
+    }
+    stage = assignments["voice_attributor"]
+    assert isinstance(stage, ast.Call) and ast.unparse(stage.func) == "build_voice_attribution"
+    factory = assignments["router_factory"]
+    assert ast.unparse(factory) == "RequestRouter if orchestrator_enabled else LegacyTimerRequestRouter"
+    router = assignments["request_router"]
+    assert isinstance(router, ast.Call) and ast.unparse(router.func) == "router_factory"
     assert {keyword.arg: ast.unparse(keyword.value) for keyword in router.keywords}["voice_attributor"] == "voice_attributor"
 
 

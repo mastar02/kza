@@ -530,7 +530,9 @@ async def test_fact_dependency_expiry_removes_event_metadata_without_erase_opera
                 FactDependency(fact.id, fact.revision, fact.expires_at),
             ),
         )
-        await events.alog("light.synthetic", "turn_on", sources=(derived,))
+        # Seed a committed event through the owned writer before advancing the clock.
+        await events.acall(events.log, "light.synthetic", "turn_on", sources=(derived,))
+        assert len(rows(events.db_path)) == 1
         clock.now += 30 * 86400
         await drain(retention)
         assert rows(events.db_path) == []

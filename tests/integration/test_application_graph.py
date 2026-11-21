@@ -1154,8 +1154,8 @@ def patch_main(monkeypatch, config, leaves):
     return module
 
 
-async def until(predicate):
-    async with asyncio.timeout(2):
+async def until(predicate, *, timeout=2):
+    async with asyncio.timeout(timeout):
         while not predicate():
             await asyncio.sleep(0.001)
 
@@ -1260,7 +1260,11 @@ async def test_cancelled_real_main_warmup_retains_native_work_before_authority_c
         monkeypatch.setattr(module.VoicePipeline, "run", run)
         task = asyncio.create_task(module.main())
         try:
-            await until(engine.entered.is_set)
+            # Reaching native warmup also waits for the full graph to be constructed.
+            await until(lambda: engine.entered.is_set() or task.done(), timeout=10)
+            if task.done():
+                task.result()
+            assert engine.entered.is_set(), f"{stage} warmup did not enter native work"
             graph = seen[0]
             assert not graph.routine_scheduler._running
             task.cancel()

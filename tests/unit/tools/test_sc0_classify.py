@@ -50,6 +50,28 @@ def test_every_projected_table_writer_has_exactly_one_keyed_rule(rows):
     assert problems == []
 
 
+def test_shared_list_alert_and_timer_writers_have_their_reachability_class(rows):
+    expected = (
+        ("HASyncManager.add_local.match_or_reopen", "UPDATE list_items", "user"),
+        ("HASyncManager._apply_local.apply", "DELETE FROM list_items", "recurring"),
+        ("HASyncManager._apply_local.apply", "INSERT INTO list_items", "recurring"),
+        ("HASyncManager._apply_local.apply", "UPDATE list_items", "recurring"),
+        ("ReminderStore.set_alert_zones.operation", "INSERT INTO alert_preferences", "user"),
+        ("ReminderStore.finish_home_action.operation", "UPDATE reminder_home_actions", "recurring"),
+        ("TimerStore._update", "UPDATE timers", "follows_caller"),
+        ("TimerStore.save.write", "INSERT INTO timers", "user"),
+        ("TimerStore.recover.write", "INSERT INTO reminder_home_actions", "boot_repair"),
+        ("TimerStore.claim_notice", "UPDATE reminder_home_actions", "recurring"),
+        ("TimerStore._cleanup", "DELETE FROM timers", "recurring"),
+        ("TimerStore._cleanup", "DELETE FROM reminder_home_actions", "recurring"),
+    )
+    for function, key, kind in expected:
+        [row] = _row(rows, function, key)
+        assert row["projection"] == "full", (function, key)
+        [rule] = classify.matching_rules(row)
+        assert rule.kind == kind, (function, key)
+
+
 def test_a_writer_outside_every_rule_is_unclassified_not_caught_by_its_file(rows):
     """The purge_notice_rows shape: a new function of reminder_store.py deleting a protected table."""
     [purge] = _row(rows, "ReminderStore.purge_notice_rows.operation", "DELETE FROM reminder_home_actions")
