@@ -17,9 +17,11 @@ from pathlib import Path
 import signal
 import sqlite3
 import stat
-from contextlib import closing
+from contextlib import ExitStack, closing
+from subprocess import Popen
 import sys
 import time
+from unittest.mock import Mock
 
 import pytest
 
@@ -515,6 +517,39 @@ def test_boot_class_adoption_does_not_spend_the_crash_budget(root, tmp_path):
     again = _serve(root, tmp_path, "clean", name="d.txt", boot_id_file=boot)
     assert again.code == 0  # records are keyed by head digest, not time: compare the multiset
     assert sorted(item["class"] for item in launcher._recoveries(root)) == ["boot", "crash"]
+
+
+def test_wait_forwards_stop_before_probing_when_notify_is_also_ready(tmp_path, monkeypatch):
+    class StopFirstSelector(launcher.selectors.DefaultSelector):
+        def select(self, timeout=None):
+            events = super().select(0)
+            assert {key.data for key, _ in events} == {"stop", "notify"}
+            return sorted(events, key=lambda event: event[0].data, reverse=True)
+
+    monkeypatch.setattr(launcher.selectors, "DefaultSelector", StopFirstSelector)
+    manager = rehearsal.FakeManager(budget=12.0, state="stopping")
+    serve = launcher.Serve(
+        launcher.ServeOptions(root=tmp_path, stop_grace=60, unit_timeout_stop=90),
+        manager=manager, notifier=launcher.SystemdNotifier(None), clock=lambda: 0.0,
+    )
+    process = Mock(spec=Popen)
+    process.poll.side_effect = [None, 0]
+    with ExitStack() as stack:
+        stack.enter_context(closing(serve.stop))
+        notify_read, notify_write = os.pipe()
+        stack.callback(os.close, notify_read)
+        stack.callback(os.close, notify_write)
+        control_read, control_write = os.pipe()
+        stack.callback(os.close, control_read)
+        stack.callback(os.close, control_write)
+        os.set_blocking(notify_read, False)
+        os.write(notify_write, b"ARMED=1\nREADY=1\n")
+        os.write(serve.stop.write_fd, b"T")
+
+        serve._wait(process, notify_read, control_write, launcher.RebootBudget(12.0, 90.0))
+
+    process.send_signal.assert_called_once_with(signal.SIGTERM)
+    assert serve.events.index("stop forwarded") < serve.events.index("system state stopping")
 
 
 def test_shutdown_mode_forwards_first_then_probes_and_writes_fast(root, tmp_path, monkeypatch):
