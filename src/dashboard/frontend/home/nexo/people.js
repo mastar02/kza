@@ -217,6 +217,7 @@
         void mutate(`/api/admin/users/${encodeURIComponent(person.id)}`, 'DELETE', undefined, 'Persona retirada.');
       }, 'identity-danger'));
       actions.lastChild.id = 'confirm-person-removal'; dialog.append(actions); dialog.showModal();
+      actions.firstChild.focus(); // The safe choice ("Conservar persona") takes the initial focus, never the destructive one.
     }
     function leave() {
       retireVoices(); visible = false; readVersion++; readController?.abort(); readController = null;

@@ -300,14 +300,14 @@ async def audit_rotation(page: Page, evidence: Path, remount) -> dict:
         await page.command('Emulation.setEmulatedMedia', {'features': [{'name': 'prefers-reduced-motion', 'value': preference}]})
         await page.evaluate("document.querySelector('#reset-view').click()")
         await asyncio.sleep(1.2)
-        await page.evaluate("document.querySelector('#rotate-left').click();window.__kzaFrame0=null")
+        await page.evaluate("window.__kzaFrame0=document.querySelector('#house-canvas canvas').toDataURL();document.querySelector('#rotate-left').click()")
         await asyncio.sleep(0.15)
         await page.evaluate("window.__kzaFrame1=document.querySelector('#house-canvas canvas').toDataURL()")
         await asyncio.sleep(1.2)
-        result = await page.evaluate("({settledEarly:window.__kzaFrame1===document.querySelector('#house-canvas canvas').toDataURL()})")
+        result = await page.evaluate("({moved:window.__kzaFrame1!==window.__kzaFrame0,settledEarly:window.__kzaFrame1===document.querySelector('#house-canvas canvas').toDataURL()})")
         observed[preference] = result
         if preference == 'reduce':
-            assert result['settledEarly'], f'Q26 reduced motion: the rotation still eases {result}'
+            assert result['moved'] and result['settledEarly'], f'Q26 reduced motion: the rotation must render at once, without easing {result}'
         else:
             assert not result['settledEarly'], f'Q26 default motion: the rotation is expected to ease {result}'
     await page.command('Emulation.setEmulatedMedia', {'features': []})

@@ -658,6 +658,19 @@ for (const id of ['dialog-close', 'dialog-done']) byId(id).addEventListener('cli
 // Any focus or pointer choice by the user supersedes a focus held across stale data.
 document.addEventListener('pointerdown', () => { staleFocus = null; }, true);
 document.addEventListener('focusin', event => { if (event.target !== staleFocus) staleFocus = null; });
+// APG modal dialog: Tab and Shift+Tab wrap inside the topmost open modal instead of reaching the page behind or the browser chrome.
+document.addEventListener('keydown', event => {
+  if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
+  const dialog = [...document.querySelectorAll('dialog[open]')].filter(item => item.matches(':modal')).at(-1);
+  if (!dialog) return;
+  const items = [...dialog.querySelectorAll('a[href],button,input:not([type=hidden]),select,textarea,summary,audio[controls],[tabindex]')]
+    .filter(item => !item.disabled && item.tabIndex >= 0 && item.getClientRects().length && !item.closest('[inert]'));
+  if (!items.length) { event.preventDefault(); dialog.focus(); return; }
+  const active = document.activeElement, first = items[0], last = items.at(-1);
+  if (!dialog.contains(active)) { event.preventDefault(); (event.shiftKey ? last : first).focus(); }
+  else if (event.shiftKey && active === first) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && active === last) { event.preventDefault(); first.focus(); }
+});
 document.addEventListener('keydown', event => { if (event.key === 'Escape') { document.body.classList.remove('map-expanded'); byId('expand-map').setAttribute('aria-expanded', 'false'); } });
 document.addEventListener('visibilitychange', () => {
   if (!session.active()) { if (!byId('nexo-workspace').hidden) retire('Tu sesión venció.'); return; }
