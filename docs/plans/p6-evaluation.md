@@ -21,9 +21,9 @@ evidencia con la reserva. Los estados de campo siguen pendientes.
   y el SHA-256 de cada artefacto ejecutado. El custodio concilia audio, hashes,
   sesiones y consentimiento antes de certificar la independencia.
 - T072 verifica los sellos antes de abrir la reserva, luego ejecuta en las
-  sesiones de otro día y custodia el resultado original. Cualquier cambio de
-  identidad del candidato, fórmula, umbral, exclusión o instrumento que afecte
-  la comparabilidad requiere otro sello, con justificación y otra reserva
+  sesiones en días calendario UTC disjuntos y custodia el resultado original.
+  Cualquier cambio de identidad del candidato, fórmula, umbral, exclusión o
+  instrumento que afecte la comparabilidad requiere otro sello, con justificación y otra reserva
   independiente para los casos afectados. Conservar la primera evaluación y
   sus fallos. Ausencia de datos, sello roto o estrato insuficiente impiden
   aceptar el criterio afectado.
@@ -55,7 +55,10 @@ evidencia con la reserva. Los estados de campo siguen pendientes.
   calibra con el corpus consentido. Una finalidad de evaluación no habilita
   reentrenamiento, LoRA, clonación ni incorporación al corpus ordinario.
 - `validate_inventory` rechaza IDs/hashes/orígenes/sesiones compartidos entre
-  particiones. Una ventana semiabierta `[inicio, fin)`, normalizada a UTC,
+  particiones y hashes PCM de clip repetidos dentro de una misma partición.
+  Calibración y reserva deben ocupar días calendario UTC disjuntos. Si una
+  captura cruza medianoche, cuenta en cada día que ocupa. Una ventana
+  semiabierta `[inicio, fin)`, normalizada a UTC,
   no puede solaparse entre desarrollo (entrenamiento/calibración) y reserva,
   aun con IDs distintos. El panel consentido y declarado de antemano puede
   repetirse entre calibración y reserva en sesiones y ventanas independientes.
@@ -75,8 +78,9 @@ evidencia con la reserva. Los estados de campo siguen pendientes.
   una sesión autorizada. Al abrir cada artefacto, revalidar consentimiento
   durable, estado de borrado, identidad del archivo y el menor plazo entre
   vencimiento original, captura + 30 días, cierre y revocación. Una copia o
-  restauración hereda el plazo original. El validador puro comprueba el
-  inventario y recibos aportados por el custodio. La apertura usa la
+  restauración hereda el plazo original. El validador puro exige que la
+  admisión ocurra estrictamente antes de `fin + 30 días` y comprueba el
+  inventario y los recibos aportados por el custodio. La apertura usa la
   autoridad de evaluación vigente.
 - Etiqueta de voz de referencia, agrupación acústica sugerida, persona,
   cuenta, roles y consentimiento tienen referencias separadas. La
@@ -312,9 +316,9 @@ afirmación de mejora o aceptación acústica.
     "src/core/task_outcome.py": {"sha256": "c214a0adf96820e2cf796950e16b0ce920b1394631fbbf027878f769e3f6d8a4", "symbols": ["TaskOutcome.task_completed", "project_turn_outcome"]},
     "src/core/voice_delivery.py": {"sha256": "19427ffca636619249b01de13112ec054115dc12e826f3162226f1b5dabab894", "symbols": ["ResponseResult.success", "DeliveryState"]},
     "src/evaluation/corpus.py": {"sha256": "49480cd5c015f70b6e04836fd2956abbc84b399bd1c5114408e9ee53bb3f9b79", "symbols": ["CorpusManifest.require_comparison", "CorpusManifest.deadline"]},
-    "src/evaluation/freeze_manifest.py": {"sha256": "80bb5d0f71bd379f883c78fb5d526afb58978627fd9ef05382bbc15f10945f06", "symbols": ["validate_inventory", "canonical_sha256", "seeded_order", "recognition", "complete_task", "WakeCounts.rejection_upper", "WakeCounts.false_per_hour_upper", "WakeCounts.review_coverage", "nearest_rank", "complete_delivery", "clarity_median", "voice_pair_counts", "PairCounts.precision", "PairCounts.recall", "PairCounts.coverage"]},
+    "src/evaluation/freeze_manifest.py": {"sha256": "3756fd55386a3f81bffa8b4fd1e66279a5a41a408fa7a94c0bbf0c46c336c621", "symbols": ["validate_inventory", "canonical_sha256", "seeded_order", "recognition", "complete_task", "WakeCounts.rejection_upper", "WakeCounts.false_per_hour_upper", "WakeCounts.review_coverage", "nearest_rank", "complete_delivery", "clarity_median", "voice_pair_counts", "PairCounts.precision", "PairCounts.recall", "PairCounts.coverage"]},
     "src/evaluation/provenance.py": {"sha256": "958cea046aaac2f978156732f74134e89fa97a443b6c16f3fd3e142c91f574d1", "symbols": ["CaptureProvenance.comparable", "FrameInterval.millisecond_bounds"]},
-    "src/nlu/household_intents.py": {"sha256": "0085c9abe5579d67d361b10bccd0499dd573c0459d7b6fc2910aee85c2c54f6a", "symbols": ["HouseholdIntentClassifier.classify"]},
+    "src/nlu/household_intents.py": {"sha256": "b6e0adf726234d4f556abd0d7c324c148d2c1a0ca64ffecbdf196acfba6b34b1", "symbols": ["HouseholdIntentClassifier.classify"]},
     "src/pipeline/post_wake_endpoint.py": {"sha256": "82722926c2c0e13e1a84fd072c65183b489aacafe52cffd9ccf2e5c62c2c7ae6", "symbols": ["EndpointState.analyze"]},
     "src/pipeline/response_handler.py": {"sha256": "11d229715fe54820de5b52590bd1c8e6b0c9c1a1e8976c386f1cdc90f5197004", "symbols": ["ResponseHandler.aplay_earcon", "ResponseHandler._result", "ResponseHandler._render", "ResponseHandler.cancel"]},
     "src/pipeline/wake_verification.py": {"sha256": "389719aec759a76ebcac291d2bb9d6a17252614b09efdc1eb1609a4c2a8a33e0", "symbols": ["WakeVerifier.evaluate"]},

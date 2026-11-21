@@ -2,7 +2,7 @@
 
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import StrEnum
 from hashlib import sha256
 from itertools import combinations
@@ -78,7 +78,7 @@ def validate_inventory(
         shared_panel: Preregistered voices allowed in calibration and reserve.
 
     Raises:
-        PermissionError: Consent is missing, invalid, revoked or expired.
+        PermissionError: Consent is invalid or the capture has exceeded retention.
         ValueError: The inventory is incomplete, invalid or contaminated.
     """
     if type(shared_panel) is not frozenset or not all(map(_opaque, shared_panel)):
@@ -86,9 +86,10 @@ def validate_inventory(
     now = _utc(now)
     partitions: set[Partition] = set()
     clip_ids: set[str] = set()
+    audio_hashes: set[str] = set()
     identifiers: dict[tuple[str, str], Partition] = {}
     speakers: dict[str, set[Partition]] = {}
-    windows: list[tuple[datetime, datetime, bool]] = []
+    windows: list[tuple[datetime, datetime, Partition]] = []
     for clip in clips:
         if (
             type(clip.split) is not Partition
@@ -102,6 +103,8 @@ def validate_inventory(
         start, end = _utc(clip.start), _utc(clip.end)
         if not start < end <= now:
             raise ValueError("invalid_capture_window")
+        if now - end >= timedelta(days=30):
+            raise PermissionError("capture_retention_expired")
         receipt = receipts.get(clip.consent_ref)
         if (
             type(receipt) is not ConsentReceipt
@@ -123,9 +126,12 @@ def validate_inventory(
         if clip.clip_id in clip_ids:
             raise ValueError("duplicate_clip")
         clip_ids.add(clip.clip_id)
+        if clip.audio_sha256 in audio_hashes:
+            raise ValueError("duplicate_audio")
+        audio_hashes.add(clip.audio_sha256)
         for speaker in clip.speaker_refs:
             speakers.setdefault(speaker, set()).add(clip.split)
-        windows.append((start, end, clip.split is Partition.RESERVED))
+        windows.append((start, end, clip.split))
 
     if not {Partition.CALIBRATION, Partition.RESERVED} <= partitions:
         raise ValueError("calibration_and_reserve_required")
@@ -136,12 +142,25 @@ def validate_inventory(
             raise ValueError("cross_partition_speaker")
 
     latest_end: dict[bool, datetime] = {}
-    for start, end, reserved in sorted(windows):
+    windows.sort()
+    for start, end, split in windows:
+        reserved = split is Partition.RESERVED
         other_end = latest_end.get(not reserved)
         if other_end is not None and start < other_end:
             raise ValueError("cross_partition_window")
         if reserved not in latest_end or end > latest_end[reserved]:
             latest_end[reserved] = end
+
+    # A half-open window ending at UTC midnight occupies only the previous day.
+    calendar_ends: dict[Partition, date] = {}
+    for start, end, split in windows:
+        if split is Partition.TRAINING:
+            continue
+        other = Partition.CALIBRATION if split is Partition.RESERVED else Partition.RESERVED
+        if other in calendar_ends and start.date() <= calendar_ends[other]:
+            raise ValueError("cross_partition_utc_day")
+        last_day = (end - timedelta(microseconds=1)).date()
+        calendar_ends[split] = max(last_day, calendar_ends.get(split, last_day))
 
 
 def canonical_sha256(value: object) -> str:

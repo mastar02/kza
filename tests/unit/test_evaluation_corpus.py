@@ -552,7 +552,7 @@ def test_folded_expiry_cannot_precede_capture_in_utc(manifest):
 
 
 ROOT = Path(__file__).resolve().parents[2]
-P6_PROTOCOL_SHA256 = "53a55486e009f549d7a4c42a6bc28ea8239c75a512b8ff50887ec02c54aaba33"
+P6_PROTOCOL_SHA256 = "77f1fe17e2c6cb8bb172e9eefdb15437b519488edb64f7294f89e7c23b9603ef"
 P6_CRITERIA = {
     "C12": (("wer_clear_max_pct", "wer_adverse_max_pct", "coverage_min_pct"),
             ("clear_min", "adverse_min", "critical_condition_min")),
@@ -687,15 +687,50 @@ def test_p6_rejects_cross_partition_lineage(field_inventory, field, shared_field
         validate_inventory((contaminated, calibration), receipts, now=now)
 
 
-def test_p6_rejects_nested_overlapping_windows_but_allows_an_exact_boundary(field_inventory):
+def test_p6_rejects_nested_overlapping_windows_but_allows_a_utc_midnight_boundary(field_inventory):
     calibration, reserve, receipts, now = field_inventory
     inside = calibration.start + timedelta(seconds=1)
     time_zone = timezone(timedelta(hours=-3))
     reserve = replace(reserve, start=inside.astimezone(time_zone), end=inside + timedelta(seconds=1))
     with pytest.raises(ValueError, match="cross_partition_window"):
         validate_inventory((reserve, calibration), receipts, now=now)
-    boundary = replace(reserve, start=calibration.end, end=calibration.end + timedelta(seconds=1))
-    validate_inventory((boundary, calibration), receipts, now=now)
+    midnight = CAPTURED.replace(hour=0) + timedelta(days=1)
+    boundary = replace(reserve, start=midnight.astimezone(time_zone), end=midnight + timedelta(seconds=1))
+    validate_inventory((boundary, replace(calibration, end=midnight)), receipts, now=now)
+
+
+def test_p6_rejects_different_sessions_with_any_capture_on_the_same_utc_day(field_inventory):
+    calibration, reserve, receipts, now = field_inventory
+    # The calibration crosses midnight. The reserved clip starts later that UTC day,
+    # although its local date and the calibration's start date differ.
+    midnight = CAPTURED.replace(hour=0) + timedelta(days=1)
+    calibration = replace(calibration, end=midnight + timedelta(seconds=1))
+    local = timezone(timedelta(hours=3))
+    start = (midnight + timedelta(hours=22)).astimezone(local)
+    assert calibration.end.date() != start.date()
+    reserve = replace(reserve, start=start, end=start + timedelta(seconds=1))
+    with pytest.raises(ValueError, match="cross_partition_utc_day"):
+        validate_inventory((reserve, calibration), receipts, now=now)
+
+
+def test_p6_rejects_repeated_pcm_within_one_split(field_inventory):
+    calibration, reserve, receipts, now = field_inventory
+    second = replace(reserve, clip_id="clip-res-copy")
+    with pytest.raises(ValueError, match="duplicate_audio"):
+        validate_inventory((calibration, reserve, second), receipts, now=now)
+    # Multiple distinct clips from the same original/session remain admissible.
+    validate_inventory((calibration, reserve, replace(second, audio_sha256="e" * 64)), receipts, now=now)
+
+
+def test_p6_capture_retention_expires_at_30_days_even_with_current_consent(field_inventory):
+    calibration, reserve, receipts, _ = field_inventory
+    deadline = calibration.end + timedelta(days=30)
+    receipts = {key: replace(receipt, expires_at=deadline + timedelta(days=10))
+                for key, receipt in receipts.items()}
+    validate_inventory((calibration, reserve), receipts, now=deadline - timedelta(microseconds=1))
+    for now in (deadline, deadline + timedelta(days=1)):
+        with pytest.raises(PermissionError, match="capture_retention_expired"):
+            validate_inventory((calibration, reserve), receipts, now=now)
 
 
 def test_p6_rejects_an_empty_split_or_invalid_clip_provenance(field_inventory):
