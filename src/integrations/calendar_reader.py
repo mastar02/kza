@@ -9,7 +9,7 @@ import os
 import re
 import stat
 from calendar import monthrange
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence, Set
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
@@ -18,8 +18,6 @@ from pathlib import Path
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from aiohttp import ClientError
-
 from src.core.sqlite_work import AuthorityGuard
 
 logger = logging.getLogger(__name__)
@@ -27,6 +25,10 @@ logger = logging.getLogger(__name__)
 _CONTENT_LINE = re.compile(r'([a-zA-Z0-9-]+(?:;(?:"[^"]*"|[^:";])*)*):(.*)')
 _PARAMETERS = re.compile(r'(?:[^;"]|"[^"]*")+')
 _TEXT_ESCAPE = re.compile(r"\\([nN,;\\])")
+_DURATION = re.compile(
+    r"\+?P(?:(?P<weeks>[0-9]+)W|(?:(?P<days>[0-9]+)D)?"
+    r"(?:T(?=[0-9])(?:(?P<hours>[0-9]+)H)?(?:(?P<minutes>[0-9]+)M)?(?:(?P<seconds>[0-9]+)S)?)?)"
+)
 _WEEKDAYS = {day: index for index, day in enumerate(("MO", "TU", "WE", "TH", "FR", "SA", "SU"))}
 
 
@@ -200,16 +202,21 @@ class CalendarReader:
             logger.debug("Local calendar could not be read")
             return CalendarRead((), complete=False)
 
-        events = []
+        series: dict[str | int, list[_EventProperties]] = {}
         complete = True
         try:
-            for properties in _vevents(content):
-                try:
-                    events.extend(_ics_occurrences(properties, source.scope, self._timezone, start, end))
-                except (ValueError, OverflowError, ZoneInfoNotFoundError):
-                    complete = False
+            for index, properties in enumerate(_vevents(content)):
+                uid = _ics_text(properties, "UID")
+                series.setdefault(uid or index, []).append(properties)
         except ValueError:
             complete = False
+
+        events = []
+        for components in series.values():
+            try:
+                events.extend(_ics_series(components, source.scope, self._timezone, start, end))
+            except (ValueError, OverflowError, ZoneInfoNotFoundError):
+                complete = False
         return CalendarRead(tuple(events), complete=complete)
 
     async def _read_ha(
@@ -231,7 +238,7 @@ class CalendarReader:
                     data={"start_date_time": start.isoformat(), "end_date_time": end.isoformat()},
                     timeout=self._ha_timeout,
                 )
-        except (OSError, ClientError):
+        except Exception:
             logger.debug("Home Assistant calendar request failed")
             return failed
 
@@ -291,9 +298,12 @@ class _Property:
     parameters: dict[str, str] = field(default_factory=dict)
 
 
-def _vevents(content: str) -> Iterator[dict[str, list[_Property]]]:
+type _EventProperties = dict[str, list[_Property]]
+
+
+def _vevents(content: str) -> Iterator[_EventProperties]:
     components: list[str] = []
-    properties: dict[str, list[_Property]] = {}
+    properties: _EventProperties = {}
     found_calendar = False
     for line in content.split("\n"):
         line = line.removesuffix("\r")
@@ -345,6 +355,67 @@ def _ics_time(prop: _Property, local: ZoneInfo) -> tuple[datetime, bool]:
     return datetime.strptime(value, "%Y%m%dT%H%M%S").replace(tzinfo=zone), False
 
 
+def _ics_text(properties: _EventProperties, name: str) -> str:
+    if name not in properties:
+        return ""
+    return _TEXT_ESCAPE.sub(
+        lambda match: "\n" if match[1] in ("n", "N") else match[1], properties[name][0].value,
+    )
+
+
+def _ics_series(
+    components: list[_EventProperties], scope: CalendarScope, local: ZoneInfo,
+    window_start: datetime, window_end: datetime,
+) -> Iterator[CalendarEvent]:
+    masters = []
+    overrides: dict[datetime, _EventProperties] = {}
+    for properties in components:
+        if "RDATE" in properties:
+            raise ValueError("RDATE is unsupported")
+        if "RECURRENCE-ID" not in properties:
+            masters.append(properties)
+            continue
+        identifiers = properties["RECURRENCE-ID"]
+        if len(identifiers) != 1 or not _ics_text(properties, "UID") or "RRULE" in properties:
+            raise ValueError("Invalid calendar override")
+        identifier = identifiers[0]
+        if identifier.parameters.keys() - {"TZID", "VALUE"}:
+            raise ValueError("Unsupported RECURRENCE-ID parameter")
+        recurrence_start, all_day = _ics_time(identifier, local)
+        value_type = identifier.parameters.get("VALUE", "DATE" if all_day else "DATE-TIME")
+        if value_type.upper() != ("DATE" if all_day else "DATE-TIME"):
+            raise ValueError("Invalid RECURRENCE-ID value type")
+        original = _as_utc(recurrence_start)
+        if original in overrides:
+            raise ValueError("Duplicate calendar override")
+        overrides[original] = properties
+
+    # Collect overrides regardless of their file order or the query window.
+    for properties in masters:
+        yield from _ics_occurrences(properties, scope, local, window_start, window_end, overrides.keys())
+    for properties in overrides.values():
+        yield from _ics_occurrences(properties, scope, local, window_start, window_end)
+
+
+def _ics_duration(value: str, all_day: bool) -> tuple[timedelta, timedelta]:
+    match = _DURATION.fullmatch(value)
+    if match is None:
+        raise ValueError("Unsupported iCalendar duration")
+    weeks, days, hours, minutes, seconds = match.groups()
+    if all_day and any((hours, minutes, seconds)):
+        raise ValueError("All-day duration must use days or weeks")
+    civil = timedelta(weeks=int(weeks or 0), days=int(days or 0))
+    elapsed = timedelta(hours=int(hours or 0), minutes=int(minutes or 0), seconds=int(seconds or 0))
+    if not civil and not elapsed:
+        raise ValueError("Duration must be positive")
+    return civil, elapsed
+
+
+def _add_duration(start: datetime, civil: timedelta, elapsed: timedelta) -> datetime:
+    end = start + civil if civil else start
+    return (_as_utc(end) + elapsed).astimezone(start.tzinfo) if elapsed else end
+
+
 def _overlaps(event: CalendarEvent, start: datetime, end: datetime) -> bool:
     begins, finishes = _as_utc(event.start), _as_utc(event.end)
     if begins == finishes:
@@ -353,8 +424,9 @@ def _overlaps(event: CalendarEvent, start: datetime, end: datetime) -> bool:
 
 
 def _ics_occurrences(
-    properties: dict[str, list[_Property]], scope: CalendarScope, local: ZoneInfo,
+    properties: _EventProperties, scope: CalendarScope, local: ZoneInfo,
     window_start: datetime, window_end: datetime,
+    suppressed: Set[datetime] = frozenset(),
 ) -> Iterator[CalendarEvent]:
     first = {name: values[0] for name, values in properties.items()}
     status = first.get("STATUS", _Property("")).value.upper() or None
@@ -364,23 +436,27 @@ def _ics_occurrences(
         raise ValueError("Expected DTSTART")
     start, all_day = _ics_time(first["DTSTART"], local)
     if "DTEND" in first:
+        if "DURATION" in first:
+            raise ValueError("DTEND and DURATION cannot coexist")
         end, end_all_day = _ics_time(first["DTEND"], local)
         if end_all_day != all_day:
             raise ValueError("Mismatched calendar date types")
+        civil = end - start if all_day else timedelta()
+        elapsed = timedelta() if all_day else _as_utc(end) - _as_utc(start)
     else:
-        end = start + timedelta(days=int(all_day))
+        civil, elapsed = (
+            _ics_duration(first["DURATION"].value, all_day)
+            if "DURATION" in first else (timedelta(days=int(all_day)), timedelta())
+        )
+        end = _add_duration(start, civil, elapsed)
     if _as_utc(end) < _as_utc(start) or (all_day and end == start):
         raise ValueError("Invalid calendar event end")
 
-    def decoded(name: str) -> str:
-        return _TEXT_ESCAPE.sub(
-            lambda match: "\n" if match[1] in ("n", "N") else match[1],
-            first.get(name, _Property("")).value,
-        )
-
-    event = CalendarEvent(decoded("UID") or None, decoded("SUMMARY"), decoded("LOCATION") or None,
-                          status, start, end, all_day, scope)
-    exclusions = {
+    event = CalendarEvent(
+        _ics_text(properties, "UID") or None, _ics_text(properties, "SUMMARY"),
+        _ics_text(properties, "LOCATION") or None, status, start, end, all_day, scope,
+    )
+    exclusions = suppressed | {
         _as_utc(_ics_time(_Property(value, prop.parameters), local)[0])
         for prop in properties.get("EXDATE", ())
         for value in prop.value.split(",")
@@ -391,7 +467,7 @@ def _ics_occurrences(
         return
 
     rule = _parse_rule(first["RRULE"].value, start, local)
-    duration = end - start if all_day else _as_utc(end) - _as_utc(start)
+    duration = civil + elapsed
     # Leave room for an ongoing event and for offset changes across its span.
     local_window_day = window_start.astimezone(start.tzinfo).date()
     lower = date.fromordinal(max(1, local_window_day.toordinal() - duration.days - 2))
@@ -410,7 +486,7 @@ def _ics_occurrences(
             break
         if day < lower or instant in exclusions:
             continue
-        finishes = begins + duration if all_day else (instant + duration).astimezone(end.tzinfo)
+        finishes = _add_duration(begins, civil, elapsed).astimezone(end.tzinfo)
         occurrence = replace(event, start=begins, end=finishes)
         if _overlaps(occurrence, window_start, window_end):
             yield occurrence

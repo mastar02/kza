@@ -133,6 +133,100 @@ async def test_exdates_respect_timezone_and_do_not_extend_count(data_root):
     assert result.events[0].end == datetime(2026, 11, 4, 11, tzinfo=LOCAL)
 
 
+async def test_moved_override_replaces_original_by_uid_even_across_window(data_root):
+    write_ics(
+        data_root / "home.ics",
+        "UID:series\nSUMMARY:Moved\nRECURRENCE-ID:20261102T130000Z\n"
+        "DTSTART:20261105T150000Z\nDTEND:20261105T160000Z",
+        "UID:series\nSUMMARY:Master\nDTSTART;TZID=America/Montevideo:20261101T100000\n"
+        "RRULE:FREQ=DAILY;COUNT=3",
+        "UID:other\nSUMMARY:Unrelated\nDTSTART:20261102T130000Z",
+    )
+    reader = CalendarReader([shared_ics("home.ics")], data_root=data_root)
+    result = await reader.get_events(START, END)
+    assert result.complete
+    assert [(event.summary, event.start.astimezone(UTC)) for event in result.events] == [
+        ("Master", START + timedelta(hours=13)),
+        ("Unrelated", START + timedelta(days=1, hours=13)),
+        ("Master", START + timedelta(days=2, hours=13)),
+        ("Moved", START + timedelta(days=4, hours=15)),
+    ]
+    old_window = await reader.get_events(START + timedelta(days=1), START + timedelta(days=2))
+    new_window = await reader.get_events(START + timedelta(days=4), START + timedelta(days=5))
+    assert old_window.complete and [event.summary for event in old_window.events] == ["Unrelated"]
+    assert new_window.complete and [event.summary for event in new_window.events] == ["Moved"]
+
+
+async def test_cancelled_all_day_override_suppresses_original_in_its_file(data_root):
+    write_ics(
+        data_root / "home.ics",
+        "UID:series\nSUMMARY:Home\nDTSTART;VALUE=DATE:20261101\nRRULE:FREQ=DAILY;COUNT=3",
+        "UID:series\nRECURRENCE-ID;VALUE=DATE:20261102\nSTATUS:CANCELLED",
+    )
+    write_ics(data_root / "other.ics", "UID:series\nSUMMARY:Other file\nDTSTART;VALUE=DATE:20261102")
+    reader = CalendarReader([shared_ics("home.ics"), shared_ics("other.ics")], data_root=data_root)
+    result = await reader.get_events(START, END)
+    assert result.complete
+    assert [(event.summary, event.start.day) for event in result.events] == [
+        ("Home", 1), ("Other file", 2), ("Home", 3),
+    ]
+
+
+@pytest.mark.parametrize("parameter", ["RANGE=THISANDFUTURE", "X-OTHER=VALUE", "VALUE=PERIOD"])
+async def test_unsupported_override_marks_read_partial_and_suppresses_series(data_root, parameter):
+    write_ics(
+        data_root / "home.ics",
+        "UID:series\nDTSTART:20261101T130000Z\nRRULE:FREQ=DAILY;COUNT=3",
+        f"UID:series\nRECURRENCE-ID;{parameter}:20261102T130000Z\nDTSTART:20261102T180000Z",
+        "UID:unrelated\nDTSTART:20261103T110000Z",
+    )
+    result = await CalendarReader([shared_ics("home.ics")], data_root=data_root).get_events(START, END)
+    assert not result.complete
+    assert [event.uid for event in result.events] == ["unrelated"]
+
+
+async def test_duration_includes_ongoing_timed_and_all_day_events(data_root):
+    write_ics(
+        data_root / "home.ics",
+        "UID:timed\nDTSTART:20261101T100000Z\nDURATION:PT6H",
+        "UID:all-day\nDTSTART;VALUE=DATE:20261101\nDURATION:P1D",
+    )
+    reader = CalendarReader([shared_ics("home.ics")], data_root=data_root)
+    result = await reader.get_events(START + timedelta(hours=12), START + timedelta(hours=13))
+    assert result.complete
+    assert [(event.uid, event.end.astimezone(UTC)) for event in result.events] == [
+        ("all-day", START + timedelta(days=1, hours=3)),
+        ("timed", START + timedelta(hours=16)),
+    ]
+
+
+async def test_recurring_duration_distinguishes_civil_days_from_hours_across_dst(data_root):
+    write_ics(
+        data_root / "home.ics",
+        "UID:civil\nDTSTART;TZID=Europe/Madrid:20261017T100000\nDURATION:P1D\nRRULE:FREQ=WEEKLY;COUNT=2",
+        "UID:elapsed\nDTSTART;TZID=Europe/Madrid:20261017T100000\nDURATION:PT24H\nRRULE:FREQ=WEEKLY;COUNT=2",
+    )
+    reader = CalendarReader([shared_ics("home.ics")], data_root=data_root)
+    result = await reader.get_events(datetime(2026, 10, 24, tzinfo=UTC), END)
+    assert result.complete
+    assert [(event.uid, event.end.astimezone(UTC)) for event in result.events] == [
+        ("civil", datetime(2026, 10, 25, 9, tzinfo=UTC)),
+        ("elapsed", datetime(2026, 10, 25, 8, tzinfo=UTC)),
+    ]
+
+
+@pytest.mark.parametrize("property_line", ["DURATION:P1M", "DURATION:PT", "RDATE:20261103T100000Z"])
+async def test_unsupported_duration_or_rdate_marks_read_partial(data_root, property_line):
+    write_ics(
+        data_root / "home.ics",
+        f"UID:unsupported\nDTSTART:20261101T100000Z\n{property_line}",
+        "UID:valid\nDTSTART:20261101T110000Z",
+    )
+    result = await CalendarReader([shared_ics("home.ics")], data_root=data_root).get_events(START, END)
+    assert not result.complete
+    assert [event.uid for event in result.events] == ["valid"]
+
+
 async def test_weekly_rule_keeps_wall_time_and_honors_utc_until(data_root):
     write_ics(
         data_root / "home.ics",
@@ -274,6 +368,8 @@ class RecordingHA:
 
     async def get_entity_state(self, entity_id):
         self.calls.append(("state", entity_id))
+        if self.mode == "state-error":
+            raise RuntimeError("state transport failed")
         return {"state": self.state}
 
     async def call_service_with_response(self, domain, service, entity_id, data=None, timeout=5.0):
@@ -283,6 +379,10 @@ class RecordingHA:
             raise ConnectionError("connection failed")
         if self.mode == "timeout":
             await asyncio.Event().wait()
+        if self.mode == "events-error":
+            raise RuntimeError("events transport failed")
+        if self.mode == "empty":
+            return {"service_response": {entity_id: {"events": []}}}
         return {"service_response": {entity_id: {"events": [{
             "summary": "Personal HA", "location": "Private HA location",
             "start": "2026-11-01T14:00:00Z", "end": "2026-11-01T15:00:00Z",
@@ -300,6 +400,25 @@ async def test_ha_unavailable_network_failure_and_timeout(state, mode):
     if state == "off":
         expected.append(("events", "calendar.home"))
     assert client.calls == expected
+
+
+@pytest.mark.parametrize("mode", ["state-error", "events-error"])
+async def test_unexpected_ha_transport_error_preserves_local_source(data_root, mode):
+    write_ics(data_root / "home.ics", "UID:home\nDTSTART:20261101T100000Z")
+    reader = CalendarReader(
+        [HACalendarSource(CalendarScope.SHARED, "calendar.home"), shared_ics("home.ics")],
+        data_root=data_root, ha_client=RecordingHA(mode=mode),
+    )
+    result = await reader.get_events(START, END)
+    assert not result.complete
+    assert [event.uid for event in result.events] == ["home"]
+
+
+async def test_empty_ha_events_is_a_complete_read():
+    client = RecordingHA(mode="empty")
+    reader = CalendarReader([HACalendarSource(CalendarScope.SHARED, "calendar.home")], ha_client=client)
+    assert await reader.get_events(START, END) == CalendarRead((), complete=True)
+    assert client.calls == [("state", "calendar.home"), ("events", "calendar.home")]
 
 
 async def test_ha_without_configured_entities_and_without_client():
@@ -388,3 +507,55 @@ async def test_revoked_session_drops_inflight_personal_ha_result():
         shared_only=False, user_id="owner", personal_authorized=True, session_current=lambda: active,
     )
     assert await reader.get_events(START, END, access=access) == CalendarRead((), complete=True)
+
+
+async def test_revocation_after_ha_state_blocks_get_events():
+    active = True
+
+    class RevokingHA(RecordingHA):
+        async def get_entity_state(self, entity_id):
+            nonlocal active
+            state = await super().get_entity_state(entity_id)
+            active = False
+            return state
+
+    client = RevokingHA()
+    reader = CalendarReader(
+        [HACalendarSource(CalendarScope.PERSONAL, "calendar.personal", owner_user_id="owner")],
+        ha_client=client,
+    )
+    access = CalendarAccess(
+        shared_only=False, user_id="owner", personal_authorized=True, session_current=lambda: active,
+    )
+    assert await reader.get_events(START, END, access=access) == CalendarRead((), complete=True)
+    assert client.calls == [("state", "calendar.personal")]
+
+
+async def test_revoked_session_drops_inflight_personal_ics_result(data_root, monkeypatch):
+    active = True
+    write_ics(data_root / "personal.ics", "UID:private\nDTSTART:20261101T100000Z")
+    write_ics(data_root / "home.ics", "UID:home\nDTSTART:20261101T110000Z")
+    read_local_ics = calendar_reader._read_local_ics
+
+    def revoke_during_read(root, path):
+        nonlocal active
+        content = read_local_ics(root, path)
+        if path.name == "personal.ics":
+            active = False
+        return content
+
+    monkeypatch.setattr(calendar_reader, "_read_local_ics", revoke_during_read)
+    reader = CalendarReader(
+        [
+            ICSCalendarSource(CalendarScope.PERSONAL, Path("personal.ics"), owner_user_id="owner"),
+            shared_ics("home.ics"),
+        ],
+        data_root=data_root,
+    )
+    access = CalendarAccess(
+        shared_only=False, user_id="owner", personal_authorized=True, session_current=lambda: active,
+    )
+    result = await reader.get_events(START, END, access=access)
+    assert not active
+    assert result.complete
+    assert [event.uid for event in result.events] == ["home"]
