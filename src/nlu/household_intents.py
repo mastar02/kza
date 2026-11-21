@@ -1561,20 +1561,40 @@ _ENERGY_DETERMINER = (
 _ENERGY_MONTH = (
     r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|setiembre|septiembre|octubre|noviembre|diciembre)"
 )
-_ENERGY_TIME_POINT = r"(?:hoy|ayer|anoche|ahora(?: mismo)?)"
+_ENERGY_TIME_POINT = r"(?:hoy|ayer|anteayer|antes de ayer|anoche|ahora(?: mismo)?)"
 _ENERGY_TARIFF_BAND = r"(?:horas?|horarios?) (?:pico|punta|valle)"
+_ENERGY_DAY_NUMBER = r"(?:[0-2]?\d|3[01])"
+_ENERGY_MONTH_NUMBER = r"(?:0?[1-9]|1[0-2])"
+_ENERGY_YEAR = r"20\d{2}"
+_ENERGY_DATE = (
+    rf"(?:{_ENERGY_DAY_NUMBER} de {_ENERGY_MONTH}(?: de {_ENERGY_YEAR})?|"
+    rf"{_ENERGY_DAY_NUMBER} {_ENERGY_MONTH_NUMBER} {_ENERGY_YEAR}|"
+    rf"{_ENERGY_YEAR} {_ENERGY_MONTH_NUMBER} {_ENERGY_DAY_NUMBER})"
+)
 _ENERGY_PERIOD = (
     rf"(?:{_ENERGY_TIME_POINT}|lo que va (?:del|de la) (?:{_ENERGY_TIME_UNIT}|{_ENERGY_READING_PERIOD})|"
     rf"(?:(?:tod[oa]s? )?{_ENERGY_DETERMINER} |cada )?(?:(?:ultim[oa]s?|proxim[oa]s?) )?"
-    rf"(?:\d{{1,2}} de {_ENERGY_MONTH}|(?:{_NUMBER} )?"
+    rf"(?:{_ENERGY_DATE}|(?:{_NUMBER} )?"
     rf"(?:{_ENERGY_TARIFF_BAND}|dia de hoy|principio (?:de|del) mes|{_ENERGY_TIME_UNIT}|"
     rf"{_ENERGY_READING_PERIOD}|{_ENERGY_MONTH}|lunes|martes|miercoles|jueves|viernes|sabado|domingo|"
     r"minutos?|segundos?|momento|fecha|total|promedio|general|standby)"
     r"(?: (?:pasad[oa]s?|anterior(?:es)?))?))"
 )
 _ENERGY_DOCUMENT = r"(?:boletas?|recibos?|facturas?|tarifas?|precios?|costos?|valores?|lecturas?|importes?|montos?)"
-_ENERGY_ADVERB = r"(?:aca|aqui|recien|mas o menos|\w+mente)"
-_ENERGY_TIME_ENDPOINT = rf"(?:{_ENERGY_PERIOD}|las? {_NUMBER}|\d+)"
+_ENERGY_ADVERB = r"(?:aca|aqui|recien|mas o menos|de mas|\w+mente)"
+_ENERGY_TIME_ENDPOINT = rf"(?:{_ENERGY_PERIOD}|las? {_NUMBER}|(?:[01]?\d|2[0-3])[:.][0-5]\d|\d+)"
+_ENERGY_DATED_QUALIFIER = (
+    rf"(?:{_ENERGY_TIME_ENDPOINT} (?:a|al) {_ENERGY_TIME_ENDPOINT}|hace {_ENERGY_PERIOD}|"
+    rf"{_ENERGY_PERIOD}|{_ENERGY_YEAR}|(?:[01]?\d|2[0-3])[:.][0-5]\d|{_ENERGY_DAY_NUMBER}|las? {_NUMBER})"
+)
+_ENERGY_MEASUREMENT_HEAD = (
+    rf"(?:{_METER_SCOPE}|{_ELECTRICITY}|{_ENERGY_UNITS}|potencias?|(?:kilo)?(?:watts?|vatios?)|consumos?)"
+)
+# The same complement can qualify a reading noun or a measurement verb.
+_ENERGY_OF_SCOPE = (
+    rf"(?:{_ENERGY_DATED_QUALIFIER}|(?:{_ENERGY_DETERMINER} )?"
+    rf"(?:{_ENERGY_MEASUREMENT_HEAD}|{_ENERGY_DOCUMENT}|ute))"
+)
 _ENERGY_TARIFF_TYPE = (
     r"(?:simple|(?:doble|triple)(?: horario)?|(?:bi|tri)?horaria|residencial|social|plana|nocturna|diurna|"
     r"inteligente|estacional|variable|fija|reducida|(?:de )?(?:pico|punta|valle))"
@@ -1587,27 +1607,32 @@ _ENERGY_OBJECT_CONTEXT = re.compile(
     rf"(?:{_ENERGY_TIME_ENDPOINT}|(?:{_ENERGY_DETERMINER} )?{_ENERGY_DOCUMENT})|"
     rf"entre (?:semana|{_ENERGY_TIME_ENDPOINT} y {_ENERGY_TIME_ENDPOINT})|fuera de {_ENERGY_TARIFF_BAND}|"
     rf"con (?:la )?tarifa(?: {_ENERGY_TARIFF_TYPE})?|"
-    rf"(?:de|del) (?:{_ENERGY_PERIOD}|(?:{_ENERGY_DETERMINER} )?"
-    rf"(?:{_ELECTRICITY}|{_ENERGY_DOCUMENT}|consumos?)))(?: |$)"
+    rf"(?:de|del) {_ENERGY_OF_SCOPE})(?: |$)"
+)
+_ENERGY_VERB = (
+    rf"(?:{_ENERGY_ACCUMULATION_VERB}|(?:consum[ei]\w*|usa\w*|gast\w*|tira\w*|"
+    r"necesit\w*|requier\w*|demand\w*)\b)"
 )
 _ENERGY_OBJECT_LINK = re.compile(
-    rf"\b(?:(?P<accumulation>{_ENERGY_ACCUMULATION_VERB})|"
-    r"(?:consum[ei]\w*|usa\w*|gast\w*|tira\w*|necesit\w*|requier\w*|demand\w*)\b)(?: |$)"
+    rf"\b(?:(?P<expense>(?:{_ENERGY_DETERMINER}|de|del|en|por|para|con|sobre) gastos?\b)|"
+    rf"(?P<accumulation>{_ENERGY_ACCUMULATION_VERB})|{_ENERGY_VERB})(?: |$)"
 )
 _ENERGY_OBJECT_PARTICIPLE = re.compile(rf"{_ENERGY_PARTICIPLE}(?: |$)")
-_ENERGY_MEASUREMENT_HEAD = (
-    rf"(?:{_METER_SCOPE}|{_ELECTRICITY}|{_ENERGY_UNITS}|potencias?|(?:kilo)?(?:watts?|vatios?)|consumos?)"
-)
 _ENERGY_OBJECT_TAIL = re.compile(
     rf"$|(?:(?:tod[oa]s? )?{_ENERGY_DETERMINER} )?{_ENERGY_MEASUREMENT_HEAD}\b"
 )
+# Adjectives are open-ended. Stop at clause boundaries and allow common
+# measurement qualifiers such as 'por hora' and 'en watts' inside the phrase.
+_ENERGY_GENITIVE_MODIFIER = (
+    rf"(?:por {_ENERGY_PERIOD}|en {_ENERGY_MEASUREMENT_HEAD}|{_ENERGY_PARTICIPLE}|"
+    rf"(?!(?:{_ENERGY_DETERMINER}|{_ENERGY_VERB}|de|del|a|al|en|por|con|para|desde|hasta|durante|"
+    r"entre|y|e|o|u|que|es|son|fue|eran|se|estoy|estamos|esta|estan)\b)[^\W\d_]+)"
+)
 _ENERGY_GENITIVE = re.compile(
     rf"\b{_ENERGY_MEASUREMENT_HEAD}\b"
-    rf"(?: (?:electric[oa]s?|domestic[oa]s?|instantane[oa]s?|total(?:es)?|{_ENERGY_PARTICIPLE})\b)* (?:de|del) "
+    rf"(?: (?>{_ENERGY_GENITIVE_MODIFIER}\b)(?: [ye] (?>{_ENERGY_GENITIVE_MODIFIER}\b))?)* (?:de|del) "
 )
-_ENERGY_GENITIVE_TAIL = re.compile(
-    rf"(?:{_ENERGY_PERIOD}|(?:{_ENERGY_DETERMINER} )?(?:{_ENERGY_MEASUREMENT_HEAD}|{_ENERGY_DOCUMENT}))\b"
-)
+_ENERGY_GENITIVE_TAIL = re.compile(rf"{_ENERGY_OF_SCOPE}(?: |$)")
 _ELECTRICITY_SUBJECT = re.compile(rf"\b(?:{_ELECTRICITY}|(?:consumos?|tarifas?|facturas?) electric[oa]s?)\b")
 _HOUSEHOLD_METER = re.compile(rf"\b{_METER_SCOPE}\b")
 _ENERGY_UNIT = re.compile(rf"\b{_ENERGY_UNITS}\b")
@@ -1620,7 +1645,7 @@ _ENERGY_NON_HOUSEHOLD_TARGET = re.compile(
     r"lavarropas|lavavajillas|secarropas|secadoras?|microondas|hornos?|estufas?|"
     r"calefon(?:es)?|calefactor(?:es)?|calefaccion(?:es)?|aires?|ventilador(?:es)?|bombas?|"
     r"autos?|coches?|carros?|vehiculos?|motos?|bicis?|bicicletas?|monopatin(?:es)?|"
-    r"consolas?|routers?|impresoras?|cafeteras?|licuadoras?|tostadoras?|planchas?|"
+    r"consolas?|routers?|impresoras?|cafeteras?|licuadoras?|tostadoras?|planchas?|panel(?:es)? solar(?:es)?|"
     r"aspiradoras?|cargador(?:es)?|secados?|lavados?|teclados?|livings?|cocinas?|dormitorios?)\b"
 )
 _VIDEO_DOORBELL = re.compile(r"\bvideo ?porteros?\b")
@@ -1642,8 +1667,13 @@ _LIGHT_OR_COVER = re.compile(
 )
 
 
-def _energy_object_in_scope(text: str, link: re.Match[str]) -> bool:
+def _energy_object_in_scope(text: str, link: re.Match[str], original: tuple[str, ...]) -> bool:
     """Skip measurement qualifiers and check the target after this verb."""
+    if link["expense"]:
+        # Accent folding also produces 'el gasto' for 'él gastó'.
+        gasto_index = text.count(" ", 0, link.start()) + 1
+        if original[gasto_index] != "gastó":
+            return True
     position = link.end()
     while True:
         modifier = _ENERGY_OBJECT_CONTEXT.match(text, position)
@@ -1654,14 +1684,15 @@ def _energy_object_in_scope(text: str, link: re.Match[str]) -> bool:
         position = modifier.end()
 
 
-def _energy_measurement(text: str) -> str | None:
+def _energy_measurement(utt: _Utterance) -> str | None:
+    text = utt.text
     if not _ENERGY_QUERY.search(text) or _LIGHT_OR_COVER.search(text) or _ENERGY_NON_HOUSEHOLD_TARGET.search(text):
         return None
     # Check the target of each measurement phrase even without a verb, and
     # follow nested genitives such as the meter of the neighbor's house.
     if any(not _ENERGY_GENITIVE_TAIL.match(text, noun.end()) for noun in _ENERGY_GENITIVE.finditer(text)):
         return None
-    if any(not _energy_object_in_scope(text, link) for link in _ENERGY_OBJECT_LINK.finditer(text)):
+    if any(not _energy_object_in_scope(text, link, utt.original) for link in _ENERGY_OBJECT_LINK.finditer(text)):
         return None
     energy_unit = _ENERGY_UNIT.search(text)
     power_unit = _POWER_UNIT.search(text)
@@ -1692,7 +1723,7 @@ def _integration_intent(utt: _Utterance) -> HouseholdIntent | None:
     ) and re.search(r"\b(?:calendario|agenda)\b", text):
         return HouseholdIntent(HouseholdFamily.CALENDAR, HouseholdOperation.QUERY, "P5",
                                "tomorrow" if "manana" in utt.folded else "today")
-    if kind := _energy_measurement(text):
+    if kind := _energy_measurement(utt):
         return HouseholdIntent(HouseholdFamily.ENERGY, HouseholdOperation.QUERY, "P5", kind)
     if match := _TV_QUERY.fullmatch(text):
         return HouseholdIntent(HouseholdFamily.MEDIA, HouseholdOperation.QUERY, "P5", match["room"] or "")
