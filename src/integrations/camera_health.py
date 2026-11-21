@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
-from src.home_assistant.control_policy import HomeActionDenied, HomeActor
+from src.home_assistant.control_policy import ActorKind, HomeActionDenied, HomeActor
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,11 @@ _CAMERA_AVAILABILITY = {
     "recording": CameraAvailability.ONLINE,
     "streaming": CameraAvailability.ONLINE,
     "unavailable": CameraAvailability.OFFLINE,
+}
+_TECHNICAL_STATES = {
+    CameraAvailability.ONLINE: "idle",
+    CameraAvailability.OFFLINE: "unavailable",
+    CameraAvailability.UNKNOWN: "unknown",
 }
 _BINARY_ISSUE_STATES = {
     DiagnosticKind.CONNECTIVITY: {"connectivity": "off"},
@@ -170,6 +175,12 @@ class CameraHealthScopeError(ValueError):
     """Requested operation falls outside technical health reads."""
 
 
+def technical_camera_state(state: str) -> str:
+    """Collapse recording and streaming into the same evidence as idle."""
+    availability = _CAMERA_AVAILABILITY.get(state, CameraAvailability.UNKNOWN)
+    return _TECHNICAL_STATES[availability]
+
+
 def _observation_time(value: datetime | None, now: datetime) -> datetime | None:
     if type(value) is datetime and value.utcoffset() is not None and value <= now:
         return value.astimezone(UTC)
@@ -269,8 +280,8 @@ class CameraHealthMonitor:
                 "Solo puedo consultar el estado técnico de las cámaras. "
                 "Las imágenes, capturas, grabaciones y el video quedan fuera de este servicio."
             )
-        if not isinstance(actor, HomeActor) or _HEALTH_SCOPES.isdisjoint(
-            actor.permissions
+        if not isinstance(actor, HomeActor) or (
+            actor.kind is not ActorKind.HOUSEHOLD and _HEALTH_SCOPES.isdisjoint(actor.permissions)
         ):
             raise HomeActionDenied("home_read_denied")
         actor.require_current()

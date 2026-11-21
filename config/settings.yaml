@@ -701,7 +701,24 @@ lists:
   db_path: "./data/lists.db"
   default_list_name: "compras"
   ha_sync_enabled: true
-  ha_entity_prefix: "todo.kza"
+  ha_todo_entity: ""  # Configurar explícitamente todo.<slug> para sincronizar.
+
+# Fuentes explícitas. Las selecciones vacías no consultan Home Assistant.
+integrations:
+  energy:
+    sensors: []  # Entradas con entity_id, kind (energy/power) y room/label opcionales.
+    max_staleness_s: 300.0
+  calendar:
+    ics_sources: []  # Entradas con path relativo a data_root, scope y owner_user_id si es personal.
+    ha_sources: []  # Entradas con entity_id, scope (shared/personal) y owner_user_id si es personal.
+    data_root: "./data/calendars"
+    ha_timeout_s: 5.0
+  media:
+    players: []  # Entradas con room, entity_id y remote opcional con permisos explícitos.
+    max_staleness_s: 60.0
+  camera_health:
+    cameras: {}  # Cada camera.<slug> apunta a diagnósticos técnicos con entity_id y kind.
+    max_staleness_s: 120.0
 
 reminders:
   voice_actions: true

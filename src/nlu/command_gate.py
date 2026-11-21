@@ -203,13 +203,16 @@ class CommandAcceptanceGate:
         families keep the rule. An exact "no molestar" voice request (T030-U4)
         reaches the household refusal so the user can be directed to the web.
         """
-        from src.nlu.household_intents import HouseholdFamily
+        from src.nlu.household_intents import INTEGRATION_FAMILIES, HouseholdFamily, HouseholdOperation
 
         claimed = self._household_intents.classify(text)
         if claimed is None:
             return False
-        return claimed.family in {HouseholdFamily.REMINDER, HouseholdFamily.NOTIFICATION} or (
-            claimed.family is HouseholdFamily.ROUTINE and claimed.reason == "new_routine")
+        return (
+            (claimed.family in INTEGRATION_FAMILIES and claimed.operation is HouseholdOperation.QUERY)
+            or claimed.family in {HouseholdFamily.REMINDER, HouseholdFamily.NOTIFICATION}
+            or (claimed.family is HouseholdFamily.ROUTINE and claimed.reason == "new_routine")
+        )
 
     def _routine_read(self, text: str) -> bool:
         """Whether the turn is a routine question the read always answers (T033-U1-RV1/RV2)."""

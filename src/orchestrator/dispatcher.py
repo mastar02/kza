@@ -51,13 +51,18 @@ from src.core.voice_delivery import DeliveryState, GenerationState
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement, TaskOutcome, TaskStatus, TurnOutcome,
 )
-from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActor
+from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActionDenied, HomeActor
 from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService, request_from_service
 from src.home_assistant.capability_service import HomeCapabilityService
-from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
+from src.home_assistant.ha_client import HAStatesSnapshot, ServiceCallStatus, STATE_OBSERVATION_TTL_S
 from src.home_assistant.operations import DOMAIN_OPERATIONS, compile_effect, validate_parameters
 from src.home_assistant.voice_actions import VoiceActionResult, VoiceHomeActionExecutor
 from src.intercom.intercom_system import IntercomSystem
+from src.integrations.calendar_reader import CalendarAccess
+from src.integrations.camera_health import CameraAvailability, CameraHealthScopeError, DiagnosticStatus, SourceStatus
+from src.integrations.energy_monitor import EnergyCostUnavailable, MeasurementKind
+from src.integrations.factory import IntegrationServices
+from src.integrations.media_control import MediaOperation
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.llm.error_classifier import is_consent_withdrawn
 from src.memory.fact_ledger import MemorySource
@@ -68,6 +73,7 @@ from src.nlu.command_grammar import (
 )
 from src.nlu.home_command import normalize_target, parse_home_command
 from src.nlu.household_intents import (
+    INTEGRATION_FAMILIES,
     LIST_CLEAR_VERBS,
     LIST_DELETE_VERBS,
     RING_STOP_INTENT,
@@ -733,6 +739,96 @@ class DispatchResult:
         }
 
 
+async def dispatch_voice_integration(
+    services: IntegrationServices | None, intent: HouseholdIntent, *, origin_room: str | None,
+) -> DispatchResult:
+    """Answer a deterministic integration turn under shared voice authority."""
+    def reply(text: str, status: TaskStatus = TaskStatus.COMPLETED, **evidence) -> DispatchResult:
+        outcome = TaskOutcome(status, **evidence)
+        return DispatchResult(PathType.FAST_HOUSEHOLD, Priority.HIGH, outcome.task_completed,
+                              text, intent=intent.family.value, outcome=outcome)
+
+    if services is None:
+        return reply("Esa integración no está configurada.", TaskStatus.UNSUPPORTED)
+    actor = HomeActor.household()
+
+    if intent.family is HouseholdFamily.ENERGY:
+        kind = "cost" if intent.complement == "cost" else MeasurementKind(intent.complement)
+        try:
+            summary = await services.energy_monitor.summarize(kind, actor=actor)
+        except EnergyCostUnavailable:
+            return reply("No tengo una tarifa verificada para calcular el costo o la factura.", TaskStatus.UNSUPPORTED)
+        if not summary.selected_count:
+            return reply("No hay medidores configurados para esa lectura.", TaskStatus.UNSUPPORTED)
+        if summary.total is None:
+            return reply("No tengo una lectura actual de los medidores seleccionados.", TaskStatus.FAILED)
+        description = ("La suma de las lecturas acumuladas actuales"
+                       if kind is MeasurementKind.ENERGY else "La potencia instantánea medida")
+        suffix = (" Hay medidores sin lectura disponible."
+                  if summary.available_count < summary.selected_count else "")
+        return reply(f"{description} es de {summary.total:f} {summary.unit}.{suffix}")
+
+    if intent.family is HouseholdFamily.CALENDAR:
+        read = await services.calendar_reader.get_day(
+            access=CalendarAccess(shared_only=True), tomorrow=intent.complement == "tomorrow",
+        )
+        if not read.configured:
+            return reply("No hay un calendario compartido configurado.", TaskStatus.UNSUPPORTED)
+        names = [event.summary or "Evento sin título" for event in read.events]
+        if not read.complete:
+            partial = f" Pude leer estos eventos: {', '.join(names)}." if names else ""
+            return reply(f"No pude leer todo el calendario compartido.{partial}", TaskStatus.UNCERTAIN)
+        return reply(f"En el calendario compartido: {', '.join(names)}." if names else
+                     "No hay eventos en el calendario compartido para ese día.")
+
+    if intent.family is HouseholdFamily.CAMERA_HEALTH:
+        try:
+            report = await services.camera_health.read(actor, operation=intent.complement)
+        except CameraHealthScopeError as error:
+            return reply(str(error), TaskStatus.UNSUPPORTED)
+        if report.source_status is SourceStatus.NOT_CONFIGURED:
+            return reply("No hay cámaras configuradas para diagnóstico técnico.", TaskStatus.UNSUPPORTED)
+        if report.source_status is not SourceStatus.AVAILABLE:
+            return reply("No tengo una lectura técnica actual de las cámaras.", TaskStatus.FAILED)
+        counts = {state: sum(camera.availability is state for camera in report.cameras) for state in CameraAvailability}
+        issues = sum(item.status is DiagnosticStatus.ISSUE for camera in report.cameras for item in camera.diagnostics)
+        return reply(f"Cámaras en línea: {counts[CameraAvailability.ONLINE]}. "
+                     f"Fuera de línea: {counts[CameraAvailability.OFFLINE]}. "
+                     f"Sin estado confirmado: {counts[CameraAvailability.UNKNOWN]}. "
+                     f"Alertas técnicas detectadas: {issues}.")
+
+    room = intent.complement or origin_room or None
+    players = services.media_controller.selected_players(actor, room=room)
+    if not players and intent.complement in ROOM_ALIASES:
+        players = services.media_controller.selected_players(actor, room=ROOM_ALIASES[intent.complement])
+    if not players:
+        return reply("No hay una tele configurada para ese lugar.", TaskStatus.UNSUPPORTED)
+    if len(players) != 1:
+        return reply("Hay más de una tele configurada. Indicá en qué habitación está.", TaskStatus.NEEDS_INPUT)
+    player = players[0]
+    if intent.operation is HouseholdOperation.QUERY:
+        state = await services.media_controller.read(actor, player.room, player.entity_id)
+        labels = {"playing": "reproduciendo", "paused": "en pausa", "idle": "sin reproducir", "off": "apagada",
+                  "on": "encendida", "standby": "en espera", "buffering": "cargando"}
+        if state.state not in labels:
+            return reply("No tengo un estado actual de la tele.", TaskStatus.FAILED)
+        description = " en ".join(value for value in (state.media_title, state.app_name) if value)
+        return reply(f"La tele está {labels[state.state]}{f' {description}' if description else ''}.")
+    try:
+        receipt = await services.media_controller.control(actor, player.room, player.entity_id, MediaOperation(intent.verb))
+    except HomeActionDenied:
+        return reply("La tele no está disponible para ese control.", TaskStatus.UNSUPPORTED,
+                     dispatch=DispatchState.NOT_SENT, effect=EffectState.NOT_OBSERVED)
+    if receipt.status is ServiceCallStatus.ACCEPTED:
+        return reply("Home Assistant aceptó la orden para la tele. El cambio está sin confirmar.", TaskStatus.UNCERTAIN,
+                     dispatch=DispatchState.ACCEPTED, effect=EffectState.UNCONFIRMED)
+    if receipt.status is ServiceCallStatus.UNCERTAIN:
+        return reply("La orden pudo llegar a la tele. No pude confirmar el resultado.", TaskStatus.UNCERTAIN,
+                     dispatch=DispatchState.UNCERTAIN, effect=EffectState.UNCERTAIN)
+    return reply("Home Assistant no aceptó la orden para la tele.", TaskStatus.FAILED,
+                 dispatch=DispatchState(receipt.status.value), effect=EffectState.NOT_OBSERVED)
+
+
 class RequestDispatcher:
     """
     Dispatcher que enruta peticiones al path optimo.
@@ -1037,6 +1133,7 @@ class RequestDispatcher:
         household_clock: HouseholdClock | None = None,
         room_namespace: RoomNamespace | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
+        integrations: IntegrationServices | None = None,
         timer_manager: NamedTimerManager | None = None,
         timer_fallback_zone: str | None = None,
         voice_routines: VoiceRoutineService | None = None,
@@ -1113,6 +1210,7 @@ class RequestDispatcher:
         self.vector_threshold = vector_threshold
         self.use_router = use_router_for_simple
         self.list_manager = list_manager
+        self.integrations = integrations
         self.reminder_manager = reminder_manager
         self.reminder_rooms: Mapping[str, RoomConfig] = {}
         self.response_handler = response_handler
@@ -1719,6 +1817,8 @@ class RequestDispatcher:
             memory_sources: Scope of the current turn, supplied by the router.
         """
         family, operation = household.family, household.operation
+        if family in INTEGRATION_FAMILIES:
+            return await dispatch_voice_integration(self.integrations, household, origin_room=origin_room)
         if family is HouseholdFamily.COMPOUND:
             if (operation is HouseholdOperation.EXECUTE and self.household_intents.settings.compound_execute
                     and not household.controls_routine):
@@ -2511,7 +2611,12 @@ class RequestDispatcher:
                     else:
                         created = await self.list_manager.add_item(user_id, item, name, shared_only=True)
                         outcome = committed if created is not None else TaskOutcome(TaskStatus.NEEDS_INPUT)
-                    response = f"Agregué {item}" if outcome.task_completed else "No encontré una lista compartida donde agregar el artículo."
+                    if outcome.task_completed:
+                        response = f"Agregué {item}"
+                    elif outcome.status is TaskStatus.UNCERTAIN:
+                        response = "No pude confirmar si el artículo quedó en la lista después de sincronizar."
+                    else:
+                        response = "No encontré una lista compartida donde agregar el artículo."
                 else:
                     response = "No entendí qué agregar"
             else:
@@ -3471,6 +3576,7 @@ class MultiUserOrchestrator:
         household_clock: HouseholdClock | None = None,
         room_namespace: RoomNamespace | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
+        integrations: IntegrationServices | None = None,
         timer_manager: NamedTimerManager | None = None,
         timer_fallback_zone: str | None = None,
         voice_routines: VoiceRoutineService | None = None,
@@ -3584,6 +3690,7 @@ class MultiUserOrchestrator:
             household_clock=household_clock,
             room_namespace=room_namespace,
             household_intents=household_intents,
+            integrations=integrations,
             timer_manager=timer_manager,
             timer_fallback_zone=timer_fallback_zone,
             voice_routines=voice_routines,

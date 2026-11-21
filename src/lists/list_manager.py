@@ -89,11 +89,16 @@ class ListManager:
         item = await self._add_local_item(
             lst.id, item_text, user_id, shared_only=shared_only, guard=guard, target=lst,
         )
+        return await self._finish_add(item, lst, guard)
+
+    async def _finish_add(
+        self, item: ListItem | None, target: UserList | None, guard: AuthorityGuard | None,
+    ) -> ListWriteResult:
         if item is None:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
                 persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
 
-        report = await self._replicate(lst, guard, added_item=item)
+        report = await self._replicate(target, guard, added_item=item) if target is not None else None
         item = await self._verify_added_item(item, report, guard)
         replication = self._dispatch_state(report)
         if item is None or item.completed:
@@ -251,14 +256,21 @@ class ListManager:
         guard: AuthorityGuard | None = None, shared_only: bool = False, owner: str | None = None,
     ) -> ListItem | None:
         """Return a pending item confirmed within the selected list and authority."""
+        result = await self.add_item_to_list_id_with_outcome(
+            list_id, item_text, user_id, guard=guard, shared_only=shared_only, owner=owner,
+        )
+        return result.item if result.outcome.task_completed else None
+
+    async def add_item_to_list_id_with_outcome(
+        self, list_id: str, item_text: str, user_id: str | None = None, *,
+        guard: AuthorityGuard | None = None, shared_only: bool = False, owner: str | None = None,
+    ) -> ListWriteResult:
+        """Distinguish an inaccessible list from an unverified post-sync item."""
         target = await self._sync_target(list_id, guard)
         item = await self._add_local_item(
             list_id, item_text, user_id, shared_only=shared_only, guard=guard, owner=owner, target=target,
         )
-        if item is not None and target is not None:
-            report = await self._replicate(target, guard, added_item=item)
-            item = await self._verify_added_item(item, report, guard)
-        return item if item is not None and not item.completed else None
+        return await self._finish_add(item, target, guard)
 
     async def remove_item_by_id(self, item_id: str, *, list_id: str | None = None,
                                 guard: AuthorityGuard | None = None,

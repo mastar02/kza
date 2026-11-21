@@ -107,6 +107,7 @@ from src.pipeline.wake_verification import WakeVerificationConfig, WakeVerificat
 from src.wakeword.detector import WakeWordDetector
 from src.lists.list_store import ListStore
 from src.lists.list_manager import ListManager
+from src.integrations.factory import HouseholdListReconnect, build_integrations
 from src.reminders.reminder_store import ReminderStore
 from src.reminders.reminder_manager import ReminderManager
 from src.core.household_clock import (
@@ -1116,6 +1117,10 @@ async def build_application(
     # P3-F1: one household clock for every voice and job consumer, built once
     # from routines.timezone (the key RoutineScheduler already reads).
     household_clock = HouseholdClock(config.get("routines", {}).get("timezone", SUPPORTED_HOUSEHOLD_TIMEZONE))
+    integrations = await asyncio.to_thread(
+        build_integrations, config.get("integrations", {}), ha_client, household_clock,
+        state_root=admission.state_root if admission is not None else None,
+    )
 
     # Lists & Reminders
     lists_config = config.get("lists", {})
@@ -1126,6 +1131,11 @@ async def build_application(
         await destination_registration.register_store(list_store, "lists")
     await list_store.initialize()
     list_manager = ListManager(store=list_store, ha_client=ha_client, config=lists_config)
+    if not verify_only and lists_config.get("ha_sync_enabled") and lists_config.get("ha_todo_entity"):
+        reconnect_sync = HouseholdListReconnect(list_manager)
+        ha_client.set_websocket_connected_handler(reconnect_sync.connected)
+        shutdown.push_async_callback(reconnect_sync.aclose)
+        shutdown.callback(ha_client.set_websocket_connected_handler, None)
 
     reminder_wake_event = asyncio.Event()
     reminder_store = ReminderStore(reminders_config.get("db_path", "./data/reminders.db"),
@@ -1870,6 +1880,7 @@ async def build_application(
             speaker_identifier=speaker_identifier,
             user_manager=user_manager,
             list_manager=list_manager,
+            integrations=integrations,
             reminder_manager=reminder_manager,
             # Sin esto el dispatcher del orquestador no puede avisar de un
             # fallo de HA y el comando se pierde en silencio (fix 2026-07-25).
@@ -2012,6 +2023,7 @@ async def build_application(
         household_clock=household_clock,
         household_intents=household_intents,
         voice_routines=voice_routines,
+        integrations=integrations,
         **timer_options,
     )
 
@@ -2165,6 +2177,7 @@ async def build_application(
             presence_detector=presence_detector,
             ha_client=ha_client,
             list_manager=list_manager,
+            integrations=integrations,
             reminder_manager=reminder_manager,
             health_aggregator=health_aggregator,
             reminder_scheduler=reminder_scheduler,
@@ -2289,7 +2302,7 @@ async def build_application(
         voice_registry=voice_registry, voice_services=voice_services,
         home_services=home_services, home_capabilities=home_capabilities, list_manager=list_manager,
         reminder_manager=reminder_manager, routine_scheduler=routine_scheduler,
-        household_clock=household_clock, room_namespace=room_namespace,
+        household_clock=household_clock, room_namespace=room_namespace, integrations=integrations,
         dashboard=dashboard, dashboard_authority=dashboard_authority,
         configuration_changes=configuration_changes, consent_gate=consent_gate,
         models=ApplicationModels(stt, tts, chroma, speaker_identifier, emotion_detector),

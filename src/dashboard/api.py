@@ -17,10 +17,11 @@ from typing import Literal, Self
 
 import aiosqlite
 from fastapi import Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, WebSocketException
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, model_validator
 
 from src.core.sanitize import sanitize_dict
 from src.core.observation import Observation, ObservationReason, ObservationSource
@@ -28,18 +29,24 @@ from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, Ta
 from src.audio.microphone_status import MicrophonesSnapshot
 from src.dashboard.admin import register_admin_routes
 from src.dashboard.auth import (
-    COOKIE_NAME, DashboardPrincipal, require_dashboard_access, require_dashboard_session,
+    COOKIE_NAME, DashboardPrincipal, calendar_access, require_dashboard_access, require_dashboard_session,
     routine_access_permissions, session_guard, web_session_requested,
 )
 from src.dashboard.authority import DashboardAuthority, DashboardPermission
-from src.home_assistant.control_policy import HomeActor
+from src.home_assistant.control_policy import HomeActionDenied, HomeActor
+from src.home_assistant.ha_client import ServiceCallStatus
+from src.integrations.camera_health import CameraHealthScopeError
+from src.integrations.energy_monitor import EnergyCostUnavailable, MeasurementKind
+from src.integrations.factory import IntegrationServices
+from src.integrations.media_control import MediaOperation
+from src.lists.ha_sync import SyncStatus
 from src.lists.list_store import OwnerType
 from src.dashboard.native_work import ensure_admin_work
 from src.memory import output_registration_v2 as output_registration
 from src.reminders.reminder_scheduler import NoticeDismissal
 from src.reminders.reminder_store import ReminderScope
 from src.dashboard.home_api import (
-    LegacyHomeActionBody, execute_home_action, register_home_disabled_root, register_home_frontend,
+    LegacyHomeActionBody, execute_home_action, home_actor, register_home_disabled_root, register_home_frontend,
     register_home_routes,
 )
 from src.dashboard.home_catalog import HomeCatalogService
@@ -74,6 +81,17 @@ class RoutineContractModel(BaseModel):
     """Reject unknown fields and implicit conversions at the HTTP boundary."""
 
     model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class MediaControlModel(BaseModel):
+    """A media operation directed only at a configured room and player."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    room: str = Field(min_length=1)
+    entity_id: str = Field(min_length=1)
+    operation: MediaOperation
+    value: StrictFloat | StrictBool | None = None
 
 
 class RoutineScheduleModel(RoutineContractModel):
@@ -387,6 +405,7 @@ class DashboardAPI:
         observability_use_mocks: bool = False,
         *,
         authority: DashboardAuthority | None = None,
+        integrations: IntegrationServices | None = None,
         routine_proposals: RoutineProposalTray | None = None,
         home_rooms: Mapping[str, RoomConfig] | None = None,
         home_actions: HomeActionService | None = None,
@@ -407,6 +426,7 @@ class DashboardAPI:
         self.presence = presence_detector
         self.ha = ha_client
         self.list_manager = list_manager
+        self.integrations = integrations
         self.reminder_manager = reminder_manager
         self._task_stores = tuple(manager._store for manager in (list_manager, reminder_manager)
                                   if manager is not None)
@@ -511,8 +531,120 @@ class DashboardAPI:
             return {}
         return {entity_id: room.name for room in snapshot.rooms for entity_id in room.entity_ids}
 
+    def _register_integration_routes(self) -> None:
+        def services() -> IntegrationServices:
+            if self.integrations is None:
+                raise HTTPException(503, "integrations_not_configured")
+            return self.integrations
+
+        def actor(request: Request, principal: DashboardPrincipal,
+                  permission: DashboardPermission = DashboardPermission.HOME_READ) -> HomeActor:
+            return home_actor(principal, session_guard(request, frozenset({permission}), principal))
+
+        @self.app.get("/api/integrations/energy")
+        async def energy(
+            request: Request, kind: Literal["energy", "power", "cost", "bill"] = "energy",
+            room: str | None = None, entity_id: str | None = None,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Read selected accumulated meter values or instantaneous power."""
+            try:
+                report = await services().energy_monitor.summarize(kind, actor=actor(request, principal),
+                                                                  room=room, entity_id=entity_id)
+            except EnergyCostUnavailable as error:
+                raise HTTPException(422, str(error)) from None
+            except PermissionError:
+                raise HTTPException(403, "home_read_denied") from None
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from None
+            payload = jsonable_encoder(report)
+            payload["reading_type"] = ("accumulated_meter_reading" if report.kind is MeasurementKind.ENERGY
+                                       else "instantaneous_power")
+            payload.update(selected_count=report.selected_count, available_count=report.available_count)
+            return JSONResponse(payload, headers=_NO_STORE)
+
+        @self.app.get("/api/integrations/calendar")
+        async def calendar(
+            request: Request, day: Literal["today", "tomorrow"] = "today",
+            start: datetime | None = None, end: datetime | None = None,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Read shared events and the original session person's own events."""
+            if (rejected := _query_rejection(request, "day", "start", "end")) is not None:
+                return rejected
+            guard = session_guard(request, frozenset({DashboardPermission.HOME_READ}), principal)
+            if not guard():
+                raise HTTPException(403, "calendar_read_denied")
+            access = calendar_access(request, principal)
+            reader = services().calendar_reader
+            try:
+                if start is None and end is None:
+                    report = await reader.get_day(access=access, tomorrow=day == "tomorrow")
+                else:
+                    if start is None or end is None:
+                        raise ValueError("calendar_window_requires_start_and_end")
+                    report = await reader.get_events(start, end, access=access)
+            except ValueError:
+                raise HTTPException(422, "invalid_calendar_window") from None
+            if not guard():
+                raise HTTPException(403, "calendar_read_denied")
+            return JSONResponse(jsonable_encoder(report), headers=_NO_STORE)
+
+        @self.app.get("/api/integrations/media")
+        async def media(
+            request: Request, room: str | None = None, entity_id: str | None = None,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Read the allowlisted players that match the optional selectors."""
+            controller = services().media_controller
+            reader = actor(request, principal)
+            try:
+                selections = controller.selected_players(reader, room=room)
+                players = [{"room": player.room, "entity_id": player.entity_id,
+                            **asdict(await controller.read(reader, player.room, player.entity_id))}
+                           for player in selections if entity_id is None or entity_id == player.entity_id]
+            except HomeActionDenied:
+                raise HTTPException(403, "home_read_denied") from None
+            return JSONResponse({"players": players}, headers=_NO_STORE)
+
+        @self.app.post("/api/integrations/media/control")
+        async def control_media(
+            data: MediaControlModel, request: Request,
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Attempt one selected media service and return its transport receipt."""
+            controller = services().media_controller
+            try:
+                receipt = await controller.control(actor(request, principal, DashboardPermission.HOME_CONTROL),
+                                                   data.room, data.entity_id, data.operation, value=data.value)
+            except HomeActionDenied as error:
+                raise HTTPException(403, str(error)) from None
+            except ValueError as error:
+                raise HTTPException(422, str(error)) from None
+            if receipt.status in (ServiceCallStatus.ACCEPTED, ServiceCallStatus.UNCERTAIN):
+                # The post-dispatch receipt contains no entity, state, or session data.
+                # Retiring the lease must not hide it behind a pre-dispatch denial.
+                request.scope.pop("kza.dashboard_delivery_guard", None)
+            return JSONResponse(jsonable_encoder(receipt), headers=_NO_STORE)
+
+        @self.app.get("/api/integrations/cameras/health")
+        async def camera_health(
+            request: Request, operation: str = "health",
+            principal: DashboardPrincipal = Depends(require_dashboard_session),
+        ):
+            """Return technical camera availability and selected diagnostics."""
+            try:
+                report = await services().camera_health.read(actor(request, principal), operation=operation)
+            except CameraHealthScopeError:
+                raise HTTPException(422, "camera_health_scope_error") from None
+            except HomeActionDenied:
+                raise HTTPException(403, "home_read_denied") from None
+            return JSONResponse(jsonable_encoder(report), headers=_NO_STORE)
+
     def _register_routes(self):
         """Registrar todas las rutas de la API"""
+
+        self._register_integration_routes()
 
         # ==================== Rutinas ====================
 
@@ -948,6 +1080,21 @@ class DashboardAPI:
         # ==================== Lists ====================
         # T035-U1: authority and scope come from the session, never from the client.
 
+        @self.app.post("/api/lists/sync")
+        async def sync_lists(request: Request, principal: DashboardPrincipal = Depends(require_dashboard_session)):
+            """Reconcile only the configured shared list under the original session."""
+            if (rejected := _query_rejection(request, write=True)) is not None:
+                return rejected
+            if self.list_manager is None:
+                raise HTTPException(503, "lists_not_configured")
+            guard = session_guard(request, frozenset({DashboardPermission.TASKS_WRITE}), principal)
+            if not guard():
+                raise HTTPException(403, "list_sync_denied")
+            report = await self.list_manager.sync_with_ha(guard=guard)
+            if not guard() or report.status is SyncStatus.AUTHORITY_REVOKED:
+                raise HTTPException(403, "list_sync_denied")
+            return JSONResponse(jsonable_encoder(report), headers=_NO_STORE)
+
         @self.app.get("/api/lists")
         async def get_lists(request: Request, scope: Literal["shared", "personal"] | None = None,
                             principal: DashboardPrincipal = Depends(require_dashboard_session)):
@@ -1018,15 +1165,19 @@ class DashboardAPI:
             if not self.list_manager:
                 return _task_error(503, "Lists not configured", write=True, handled=False)
             try:
-                item = await self.list_manager.add_item_to_list_id(list_id, data.text, tasks.person,
+                mutation = await self.list_manager.add_item_to_list_id_with_outcome(list_id, data.text, tasks.person,
                     shared_only=tasks.shared_only, owner=tasks.person,
                     guard=session_guard(request, tasks.permissions(write=True), principal))
             except PermissionError:
                 return _task_error(403, "list_write_denied", write=True)
-            if item is None:
+            if mutation.outcome.status is TaskStatus.UNCERTAIN:
+                return JSONResponse(status_code=503, content={
+                    "detail": "list_write_uncertain", "outcome": mutation.outcome.to_dict(),
+                }, headers=_NO_STORE)
+            if (item := mutation.item) is None:
                 return _task_error(404, "list_not_found", write=True)
             return JSONResponse(content={"id": item.id, "text": item.text, "completed": item.completed,
-                                         "list_id": item.list_id, "outcome": _committed()}, headers=_NO_STORE)
+                                         "list_id": item.list_id, "outcome": mutation.outcome.to_dict()}, headers=_NO_STORE)
 
         @self.app.delete("/api/lists/{list_id}/items/{item_id}")
         async def delete_list_item(list_id: str, item_id: str, request: Request,

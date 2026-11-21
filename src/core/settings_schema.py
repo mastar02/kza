@@ -162,6 +162,80 @@ class DashboardSettings(_Section):
     home: DashboardHomeSettings = Field(default_factory=DashboardHomeSettings)
 
 
+class _IntegrationSelection(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class EnergySensorSettings(_IntegrationSelection):
+    entity_id: str
+    kind: Literal["energy", "power"]
+    room: str | None = None
+    label: str | None = None
+
+
+class EnergySettings(_IntegrationSelection):
+    sensors: list[EnergySensorSettings] = Field(default_factory=list)
+    max_staleness_s: float = Field(default=300.0, gt=0, allow_inf_nan=False)
+
+
+class _CalendarSourceSettings(_IntegrationSelection):
+    scope: Literal["shared", "personal"]
+    owner_user_id: str | None = None
+
+
+class ICSCalendarSettings(_CalendarSourceSettings):
+    path: str = Field(min_length=1)
+
+
+class HACalendarSettings(_CalendarSourceSettings):
+    entity_id: str
+
+
+class CalendarSettings(_IntegrationSelection):
+    ics_sources: list[ICSCalendarSettings] = Field(default_factory=list)
+    ha_sources: list[HACalendarSettings] = Field(default_factory=list)
+    data_root: str = Field(default="./data/calendars", min_length=1)
+    ha_timeout_s: float = Field(default=5.0, gt=0, allow_inf_nan=False)
+
+
+class RemoteSettings(_IntegrationSelection):
+    entity_id: str
+    turn_on: bool = False
+    turn_off: bool = False
+    volume_up_command: str | None = None
+    volume_down_command: str | None = None
+
+
+class MediaPlayerSettings(_IntegrationSelection):
+    room: str
+    entity_id: str
+    remote: RemoteSettings | None = None
+
+
+class MediaSettings(_IntegrationSelection):
+    players: list[MediaPlayerSettings] = Field(default_factory=list)
+    max_staleness_s: float = Field(default=60.0, gt=0, allow_inf_nan=False)
+
+
+class CameraDiagnosticSettings(_IntegrationSelection):
+    entity_id: str
+    kind: Literal["connectivity", "power", "battery", "storage", "device_error"]
+
+
+class CameraHealthSettings(_IntegrationSelection):
+    cameras: dict[str, list[CameraDiagnosticSettings]] = Field(default_factory=dict)
+    max_staleness_s: float = Field(default=120.0, gt=0, allow_inf_nan=False)
+
+
+class IntegrationSettings(_IntegrationSelection):
+    """Explicit allowlists and bounded source settings for P5."""
+
+    energy: EnergySettings = Field(default_factory=EnergySettings)
+    calendar: CalendarSettings = Field(default_factory=CalendarSettings)
+    media: MediaSettings = Field(default_factory=MediaSettings)
+    camera_health: CameraHealthSettings = Field(default_factory=CameraHealthSettings)
+
+
 class SettingsSchema(_Section):
     """Secciones que una config sana siempre declara.
 
@@ -183,6 +257,7 @@ class SettingsSchema(_Section):
     emotion: ModelDeviceSettings
     rooms: RoomsSettings = Field(default_factory=RoomsSettings)
     dashboard: DashboardSettings = Field(default_factory=DashboardSettings)
+    integrations: IntegrationSettings = Field(default_factory=IntegrationSettings)
 
 
 def check_unresolved_env_vars(

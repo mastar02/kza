@@ -67,6 +67,15 @@ class HouseholdFamily(str, Enum):
     NOTIFICATION = "notification"
     DEFERRED_ACTION = "deferred_action"
     COMPOUND = "compound"
+    ENERGY = "energy"
+    CALENDAR = "calendar"
+    MEDIA = "media"
+    CAMERA_HEALTH = "camera_health"
+
+
+INTEGRATION_FAMILIES = frozenset({
+    HouseholdFamily.ENERGY, HouseholdFamily.CALENDAR, HouseholdFamily.MEDIA, HouseholdFamily.CAMERA_HEALTH,
+})
 
 
 class HouseholdOperation(str, Enum):
@@ -1520,6 +1529,49 @@ def _r5(utt: _Utterance, max_parts: int) -> HouseholdIntent | None:
 # Public API
 # --------------------------------------------------------------------------
 
+_TV = r"(?:tele|televisor|television|tv)"
+_TV_ROOM = r"(?:(?: del| de la| de| en el| en la| en) (?P<room>[a-z ]+))?"
+_TV_QUERY = re.compile(rf"(?:que (?:esta pasando|hay|estan dando) en|como esta|estado de) (?:la |el )?{_TV}{_TV_ROOM}")
+_TV_CONTROL = (
+    ("pause", re.compile(rf"(?:pone|pon|poneme) (?:en )?pausa (?:en |a )?(?:la |el )?{_TV}{_TV_ROOM}")),
+    ("pause", re.compile(rf"(?:pausa|pausame) (?:la |el )?{_TV}{_TV_ROOM}")),
+    ("volume_up", re.compile(rf"(?:subi|sube|subime) (?:el )?volumen (?:de |en )?(?:la |el )?{_TV}{_TV_ROOM}")),
+    ("volume_down", re.compile(rf"(?:baja|bajame) (?:el )?volumen (?:de |en )?(?:la |el )?{_TV}{_TV_ROOM}")),
+)
+
+
+def _integration_intent(utt: _Utterance) -> HouseholdIntent | None:
+    text = utt.text
+    if re.search(r"\b(?:camara|camaras)\b", text):
+        if re.match(r"(?:como (?:esta|estan|andan|funcionan)|estado (?:tecnico )?de|salud (?:tecnica )?de) ", text):
+            if not re.search(r"\b(?:video|foto|imagen|grabando|grabacion|movimiento|stream)\b", text):
+                return HouseholdIntent(HouseholdFamily.CAMERA_HEALTH, HouseholdOperation.QUERY, "P5", "health")
+        if re.match(r"(?:mostra(?:me)?|muestra(?:me)?|ver|quiero ver|dame|mandame|(?:esta|estan) grabando) ", text):
+            return HouseholdIntent(HouseholdFamily.CAMERA_HEALTH, HouseholdOperation.QUERY, "P5", "media")
+    if re.fullmatch(
+        r"(?:que (?:hay|tenemos|tengo)(?: (?:hoy|manana))?(?: en (?:el|la|mi|nuestro) (?:calendario|agenda)"
+        r"(?: (?:del hogar|compartid[oa]|personal))?)?|(?:mostrame|decime|lee) (?:el|la|mi) (?:calendario|agenda)|"
+        r"(?:calendario|agenda)(?: (?:del hogar|compartid[oa]))?)(?: (?:hoy|manana))?", text,
+    ) and re.search(r"\b(?:calendario|agenda)\b", text):
+        return HouseholdIntent(HouseholdFamily.CALENDAR, HouseholdOperation.QUERY, "P5",
+                               "tomorrow" if "manana" in utt.folded else "today")
+    if re.search(r"\b(?:energia|potencia|electricidad|luz|corriente|kwh|watts|electrica)\b", text):
+        if re.search(r"\b(?:costo|cuesta|factura|tarifa|pago|precio|sale)\b", text):
+            return HouseholdIntent(HouseholdFamily.ENERGY, HouseholdOperation.QUERY, "P5", "cost")
+        if re.match(r"(?:cuant[oa]|que|decime|mostrame|dame|consumo|potencia|energia)\b", text):
+            kind = "power" if re.search(r"\b(?:potencia|watts)\b", text) else "energy"
+            return HouseholdIntent(HouseholdFamily.ENERGY, HouseholdOperation.QUERY, "P5", kind)
+    if match := _TV_QUERY.fullmatch(text):
+        return HouseholdIntent(HouseholdFamily.MEDIA, HouseholdOperation.QUERY, "P5", match["room"] or "")
+    for operation, pattern in _TV_CONTROL:
+        if match := pattern.fullmatch(text):
+            if not has_deferral_time(text):
+                return HouseholdIntent(
+                    HouseholdFamily.MEDIA, HouseholdOperation.EXECUTE, "P5", match["room"] or "", verb=operation,
+                )
+    return None
+
+
 def classify_household_intent(text: str, *, wake_words: Iterable[str] = (),
                               max_compound_parts: int = 3) -> HouseholdIntent | None:
     """Claim a turn for a household family, or return None to leave it unclaimed.
@@ -1547,7 +1599,7 @@ def classify_household_intent(text: str, *, wake_words: Iterable[str] = (),
     found = _r5(utt, max_compound_parts)
     if found is not None:
         return found
-    for rule in (_r1, _r2, _r3a, _r4, _r6):
+    for rule in (_r1, _r2, _r3a, _r4, _r6, _integration_intent):
         found = rule(utt)
         if found is not None:
             return found
