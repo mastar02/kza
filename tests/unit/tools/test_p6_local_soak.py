@@ -87,8 +87,12 @@ def test_thermouy_queries_all_four_units_and_reports_interference(monkeypatch):
     assert soak.thermouy_status()["interference"] is None
 
 
-def test_render_user_unit(tmp_path):
-    unit = soak.render_unit(tmp_path / "sealed artifact", 259200, faults_first=True)
+def test_render_user_unit(tmp_path, monkeypatch):
+    checkout = Path("/opt/kza-%n")
+    monkeypatch.setattr(soak, "__file__", str(checkout / "tools" / "p6_local_soak.py"))
+    unit = soak.render_unit(tmp_path / "sealed %n artifact", 259200, faults_first=True)
+    assert "WorkingDirectory=/opt/kza-%%n" in unit.splitlines()
+    assert "Description=KZA P6 local soak sealed %%n artifact" in unit.splitlines()
     assert "CPUAffinity=24-47\nNice=5\nMemoryHigh=24G\nNoNewPrivileges=yes\n" in unit
     assert "UMask=0077\n" in unit
     assert "Environment=CUDA_VISIBLE_DEVICES=\n" in unit
@@ -99,6 +103,18 @@ def test_render_user_unit(tmp_path):
     assert "--duration-s 259200" in unit
     assert "ExecStopPost=" in unit and "summarize" in unit
     assert "kza-voice.service" not in unit
+
+
+@pytest.mark.parametrize("path", ["relative", "/bad path", "/bad\\path", "/bad\npath", "/bad\0path", "/bad\tpath"])
+def test_systemd_path_rejects_unsupported_paths(path):
+    with pytest.raises(ValueError):
+        soak.systemd_path(Path(path))
+
+
+@pytest.mark.parametrize("name", ["bad\nname", "bad\rname", "bad\0name", "bad\\"])
+def test_render_unit_rejects_unsafe_description(tmp_path, name):
+    with pytest.raises(ValueError, match="unit setting"):
+        soak.render_unit(tmp_path / name, 3, faults_first=False)
 
 
 def test_socket_policy_accepts_loopback_and_refuses_external_connections():
@@ -229,6 +245,11 @@ def test_real_systemd_user_unit_smoke(candidate, tmp_path):
     receipt = json.loads(unit_cli("preflight", "--archive", archive, "--review", review,
                                   "--state-root", tmp_path.resolve()))
     state = Path(receipt["state"])
+    if shutil.which("systemd-analyze"):
+        unit_file = tmp_path / f"kza-soak-verify-{os.getpid()}.service"
+        unit_file.write_text(cli("render-systemd-unit", "--state", state), encoding="utf-8")
+        verify = run_group(["systemd-analyze", "--user", "verify", str(unit_file)], timeout=30)
+        assert verify.returncode == 0, verify.stdout + verify.stderr
     unit_cli("run-soak", "--state", state, "--require-user-unit", "--duration-s", 3)
     unit_cli("inject-faults", "--state", state, "--require-user-unit")
     unit_cli("summarize", "--state", state)

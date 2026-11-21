@@ -289,6 +289,21 @@ def systemd_quote(value: Path | str) -> str:
     return json.dumps(str(value).replace("%", "%%").replace("$", "$$"), ensure_ascii=False)
 
 
+def systemd_text(value: str) -> str:
+    """Escape specifiers in a single-line unit setting."""
+    if not value.isprintable() or value.endswith("\\"):
+        raise ValueError("unit setting requires printable text without a trailing backslash")
+    return value.replace("%", "%%")
+
+
+def systemd_path(value: Path) -> str:
+    """Render a literal absolute WorkingDirectory setting."""
+    path = str(value)
+    if not value.is_absolute() or " " in path or "\\" in path:
+        raise ValueError("WorkingDirectory requires an absolute path without spaces or backslashes")
+    return systemd_text(path)
+
+
 def render_unit(state: Path, duration: int, faults_first: bool) -> str:
     """Render both phases in one user cgroup and summarize even on exit failure."""
     commands = ["run-soak", "inject-faults"]
@@ -296,8 +311,8 @@ def render_unit(state: Path, duration: int, faults_first: bool) -> str:
         commands.reverse()
     prefix = " ".join(map(systemd_quote, (Path(sys.executable), "-B", "-m", "tools.p6_local_soak")))
     lines = [
-        "[Unit]", f"Description=KZA P6 local soak {state.name}", "", "[Service]",
-        "Type=oneshot", f"WorkingDirectory={systemd_quote(Path(__file__).resolve().parents[1])}",
+        "[Unit]", f"Description={systemd_text(f'KZA P6 local soak {state.name}')}", "", "[Service]",
+        "Type=oneshot", f"WorkingDirectory={systemd_path(Path(__file__).resolve().parents[1])}",
         *UNIT_PROPERTIES, "TimeoutStartSec=infinity", "TimeoutStopSec=30s", "Restart=no",
     ]
     for command in commands:
