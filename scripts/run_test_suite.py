@@ -19,6 +19,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -30,6 +31,21 @@ from typing import TextIO
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIN_SHM_FREE_BYTES = 16 * 1024**3  # 16 GiB safety margin on /dev/shm
 DEFAULT_SOLO_WINDOW_FILE = Path("/home/yo/projects/runs/SOLO_WINDOW")
+TIER2_STEP_NAMES = {
+    "node": "frontend-node",
+    "a": "lane-a-core",
+    "b-linux": "lane-b-linux",
+    "b-sc6b1": "lane-b-sc6b1",
+    "b-sc6b2": "lane-b-sc6b2",
+    "c": "lane-c-compiled-solo",
+}
+TIER2_B_LANES = ("b-linux", "b-sc6b1", "b-sc6b2")
+HOST_INTERFERENCE_UNITS = (
+    "thermouy-tier2-nightly.service",
+    "thermouy-tier2-nightly.timer",
+    "thermouy-ci-prune.service",
+    "thermouy-ci-prune.timer",
+)
 INHERITED_OVERRIDE_VARS: tuple[str, ...] = (
     "PYTEST_ADDOPTS",
     "KZA_SC6B_MEASURE",
@@ -335,18 +351,82 @@ def build_pytest_command(
 def journald_nrestarts() -> int | None:
     if not sys.platform.startswith("linux"):
         return None
-    res = subprocess.run(
-        ["systemctl", "show", "systemd-journald", "-p", "NRestarts", "--value"],
-        capture_output=True,
-        text=True,
-        timeout=15,
-    )
+    try:
+        res = subprocess.run(
+            ["systemctl", "show", "systemd-journald", "-p", "NRestarts", "--value"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
     if res.returncode != 0:
         return None
     raw = res.stdout.strip()
     if not raw.isdigit():
         return None
     return int(raw)
+
+
+def check_host_interference(quiet_window_minutes: int) -> list[str]:
+    """Report ThermoUY work that overlaps the Linux preflight window."""
+    if not sys.platform.startswith("linux"):
+        return []
+
+    # systemctl formats this D-Bus property as a local wall-clock timestamp.
+    env = dict(os.environ, LC_ALL="C", TZ="UTC")
+    now = dt.datetime.now(dt.UTC)
+    interference: list[str] = []
+    for unit in HOST_INTERFERENCE_UNITS:
+        try:
+            result = subprocess.run(
+                ["systemctl", "show", unit, "-p", "ActiveState,SubState,NextElapseUSecRealtime"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                env=env,
+            )
+        except OSError:
+            break
+        except subprocess.TimeoutExpired:
+            continue
+        if result.returncode != 0:
+            continue
+
+        properties = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        active_state = properties.get("ActiveState", "")
+        if unit.endswith(".service"):
+            if active_state in {"active", "activating", "deactivating"}:
+                sub_state = properties.get("SubState", "unknown")
+                interference.append(f"{unit} is {active_state} ({sub_state})")
+            continue
+
+        timestamp = properties.get("NextElapseUSecRealtime", "")
+        try:
+            next_elapse = dt.datetime.strptime(timestamp.partition(" ")[2], "%Y-%m-%d %H:%M:%S UTC").replace(
+                tzinfo=dt.UTC
+            )
+        except ValueError:
+            continue
+        if 0 <= (next_elapse - now).total_seconds() <= quiet_window_minutes * 60:
+            interference.append(f"{unit} is scheduled for {timestamp} within {quiet_window_minutes} minutes")
+    return interference
+
+
+def read_git_commit(repo: Path) -> str | None:
+    """Read the checked-out SHA for the run summary when Git is available."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    sha = result.stdout.strip()
+    return sha if result.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
 
 
 def _run_subprocess(
@@ -426,12 +506,13 @@ def run_tier2_lanes(
     has_xdist: bool,
     run_node: bool,
     solo_workers: int | None = None,
+    selected_lanes: tuple[str, ...] = tuple(TIER2_STEP_NAMES),
 ) -> list[dict]:
-    """Run Node, Lane A (xdist core) and Lane B (serial real-systemd) concurrently, then Lane C quietly.
+    """Run selected Tier 2 steps, with Lane C after the parallel group.
 
     Lane B stays strictly serial (``use_xdist=False``) to preserve ``daemon-reload``
     ordering and ``before_NRestarts == after_NRestarts`` on ``systemd-journald``.
-    Lane C runs only after both Lane A and Lane B exit, using ``--solo-workers``
+    Lane C runs only after the selected Node, A and B steps exit, using ``--solo-workers``
     (default 2 when xdist is available and ``workers >= 2``, else 1) with
     ``--dist=load`` so compiled rehearsals retain quiet CPU/disk budgets.
     """
@@ -453,72 +534,62 @@ def run_tier2_lanes(
             deselects=COMPILED_SOLO_TESTS,
             use_xdist=has_xdist,
         )
-        return _run_subprocess("lane-a-core", cmd_a, cwd=repo, env=env, log_path=out_dir / "lane-a-core.log")
+        name = TIER2_STEP_NAMES["a"]
+        return _run_subprocess(name, cmd_a, cwd=repo, env=env, log_path=out_dir / f"{name}.log")
 
     def run_lane_b() -> list[dict]:
         lane_steps = []
-        linux_non_sc6b = [m for m in LINUX_SYSTEMD_MODULES if not m.endswith("test_linux_sc6b_release_rehearsal.py")]
-        cmd_b0 = build_pytest_command(
-            python_exe,
-            targets=linux_non_sc6b,
-            workers=1,
-            basetemp=basetemp_root / "lane-b-linux",
-            junit_xml=out_dir / "tier2-linux.xml",
-            use_xdist=False,
+        sc6b_module = "tests/integration/test_linux_sc6b_release_rehearsal.py"
+        linux_modules = [module for module in LINUX_SYSTEMD_MODULES if module != sc6b_module]
+        first_phase = "test_01 or test_02 or test_03 or test_04 or test_05 or test_06"
+        phase_specs = (
+            ("b-linux", linux_modules, "tier2-linux.xml", None),
+            ("b-sc6b1", [sc6b_module], "tier2-sc6b1.xml", first_phase),
+            ("b-sc6b2", [sc6b_module], "tier2-sc6b2.xml", f"not ({first_phase})"),
         )
-        lane_steps.append(_run_subprocess("lane-b-linux", cmd_b0, cwd=repo, env=env_systemd, log_path=out_dir / "lane-b-linux.log"))
-
-        sc6b_mod = ["tests/integration/test_linux_sc6b_release_rehearsal.py"]
-        k1 = "test_01 or test_02 or test_03 or test_04 or test_05 or test_06"
-        cmd_b1 = build_pytest_command(
-            python_exe,
-            targets=sc6b_mod,
-            workers=1,
-            basetemp=basetemp_root / "lane-b-sc6b1",
-            junit_xml=out_dir / "tier2-sc6b1.xml",
-            k_expr=k1,
-            use_xdist=False,
-        )
-        lane_steps.append(_run_subprocess("lane-b-sc6b1", cmd_b1, cwd=repo, env=env_systemd, log_path=out_dir / "lane-b-sc6b1.log"))
-
-        k2 = f"not ({k1})"
-        cmd_b2 = build_pytest_command(
-            python_exe,
-            targets=sc6b_mod,
-            workers=1,
-            basetemp=basetemp_root / "lane-b-sc6b2",
-            junit_xml=out_dir / "tier2-sc6b2.xml",
-            k_expr=k2,
-            use_xdist=False,
-        )
-        lane_steps.append(_run_subprocess("lane-b-sc6b2", cmd_b2, cwd=repo, env=env_systemd, log_path=out_dir / "lane-b-sc6b2.log"))
+        for lane, targets, xml_name, k_expr in phase_specs:
+            if lane not in selected_lanes:
+                continue
+            name = TIER2_STEP_NAMES[lane]
+            cmd = build_pytest_command(
+                python_exe,
+                targets=targets,
+                workers=1,
+                basetemp=basetemp_root / name,
+                junit_xml=out_dir / xml_name,
+                k_expr=k_expr,
+                use_xdist=False,
+            )
+            lane_steps.append(
+                _run_subprocess(name, cmd, cwd=repo, env=env_systemd, log_path=out_dir / f"{name}.log")
+            )
         return lane_steps
 
     steps: list[dict] = []
     with ThreadPoolExecutor(max_workers=3) as pool:
-        fut_node = pool.submit(_run_node_frontend, repo, out_dir, env) if run_node else None
-        fut_a = pool.submit(run_lane_a)
-        fut_b = pool.submit(run_lane_b)
+        fut_node = pool.submit(_run_node_frontend, repo, out_dir, env) if run_node and "node" in selected_lanes else None
+        fut_a = pool.submit(run_lane_a) if "a" in selected_lanes else None
+        fut_b = pool.submit(run_lane_b) if any(lane in selected_lanes for lane in TIER2_B_LANES) else None
         if fut_node is not None:
             steps.append(fut_node.result())
-        res_a = fut_a.result()
-        res_b_list = fut_b.result()
-    steps.append(res_a)
-    steps.extend(res_b_list)
+        if fut_a is not None:
+            steps.append(fut_a.result())
+        if fut_b is not None:
+            steps.extend(fut_b.result())
 
-    # Start Lane C only after BOTH Lane A and Lane B have exited so CPU/I/O are completely quiet.
-    cmd_c = build_pytest_command(
-        python_exe,
-        targets=list(COMPILED_SOLO_TESTS),
-        workers=effective_solo_workers,
-        basetemp=basetemp_root / "lane-c-compiled",
-        junit_xml=out_dir / "tier2-compiled-solo.xml",
-        use_xdist=has_xdist and effective_solo_workers > 1,
-        dist_mode="load",
-        extra_args=("-q",),
-    )
-    res_c = _run_subprocess("lane-c-compiled-solo", cmd_c, cwd=repo, env=env, log_path=out_dir / "lane-c-compiled-solo.log")
-    steps.append(res_c)
+    if "c" in selected_lanes:
+        cmd_c = build_pytest_command(
+            python_exe,
+            targets=list(COMPILED_SOLO_TESTS),
+            workers=effective_solo_workers,
+            basetemp=basetemp_root / "lane-c-compiled",
+            junit_xml=out_dir / "tier2-compiled-solo.xml",
+            use_xdist=has_xdist and effective_solo_workers > 1,
+            dist_mode="load",
+            extra_args=("-q",),
+        )
+        name = TIER2_STEP_NAMES["c"]
+        steps.append(_run_subprocess(name, cmd_c, cwd=repo, env=env, log_path=out_dir / f"{name}.log"))
     return steps
 
 
@@ -539,6 +610,24 @@ def main(argv: list[str] | None = None) -> int:
     prebuild_group = parser.add_mutually_exclusive_group()
     prebuild_group.add_argument("--prebuild", action="store_true", help="Prebuild runtime artifacts cache before running (default for Tiers 1 and 2)")
     prebuild_group.add_argument("--no-prebuild", action="store_true", help="Skip prebuilding runtime artifacts cache (default lazy cache for Tier 0)")
+    parser.add_argument(
+        "--lanes",
+        nargs="+",
+        default=["all"],
+        metavar="LANE",
+        help="Tier 2 steps, separated by commas or spaces: all (default), node, a, b, b-linux, b-sc6b1, b-sc6b2, c",
+    )
+    parser.add_argument(
+        "--quiet-window-minutes",
+        type=int,
+        default=45,
+        help="Look ahead this many minutes for ThermoUY timers before Tier 2 B/C steps (default: 45)",
+    )
+    parser.add_argument(
+        "--ignore-host-timers",
+        action="store_true",
+        help="Skip the Tier 2 ThermoUY service and timer preflight",
+    )
     parser.add_argument("--no-node", action="store_true", help="Skip node --test tests/frontend/*.cjs")
     parser.add_argument("--json", action="store_true", help="Print JSON summary to stdout")
     args = parser.parse_args(argv)
@@ -548,10 +637,33 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--workers must be >= 1")
     if args.solo_workers is not None and args.solo_workers < 1:
         parser.error("--solo-workers must be >= 1")
+    if args.quiet_window_minutes < 0:
+        parser.error("--quiet-window-minutes must be >= 0")
+    lane_tokens = " ".join(args.lanes).replace(",", " ").split()
+    if not lane_tokens:
+        parser.error("--lanes requires at least one lane")
+    invalid_lanes = set(lane_tokens) - TIER2_STEP_NAMES.keys() - {"all", "b"}
+    if invalid_lanes:
+        parser.error(f"unknown --lanes token(s): {', '.join(sorted(invalid_lanes))}")
+    if args.tier != 2 and lane_tokens != ["all"]:
+        parser.error("--lanes selection requires --tier 2")
     if args.tier == 0 and not args.targets:
         parser.error("--tier 0 requires at least one path in --targets")
     if args.tier == 2 and not sys.platform.startswith("linux"):
         parser.error("--tier 2 (Linux real systemd gate) must run on Linux (kza-yo)")
+
+    lanes = set(TIER2_STEP_NAMES if "all" in lane_tokens else lane_tokens)
+    if "b" in lanes:
+        lanes.update(TIER2_B_LANES)
+    if args.no_node:
+        lanes.discard("node")
+    selected_lanes = tuple(lane for lane in TIER2_STEP_NAMES if lane in lanes)
+    if args.tier == 2:
+        selected_steps = [TIER2_STEP_NAMES[lane] for lane in selected_lanes]
+    else:
+        selected_steps = [] if args.no_node else ["frontend-node"]
+        selected_steps.append("tier0-pytest" if args.tier == 0 else "tier1-core")
+    git_commit = read_git_commit(repo)
 
     run_stamp = time.strftime("%Y%m%d-%H%M%S")
     if args.out_dir is not None:
@@ -583,67 +695,78 @@ def main(argv: list[str] | None = None) -> int:
     before_nr: int | None = None
     after_nr: int | None = None
     steps: list[dict] = []
+    host_interference: list[str] = []
 
     try:
         solo_guard = acquire_solo_window(tier=args.tier)
-        basetemp_root, cleanup_basetemp = choose_basetemp_root(args.basetemp, out_dir, tier=args.tier)
-        before_nr = journald_nrestarts() if args.tier == 2 else None
-
-        if should_prebuild(args.tier, prebuild=args.prebuild, no_prebuild=args.no_prebuild):
-            if str(repo) not in sys.path:
-                sys.path.insert(0, str(repo))
-            from tests.mocks.runtime_artifact_cache import prebuild_standard_artifacts
-
-            t_pre = time.monotonic()
-            cache_env = prebuild_standard_artifacts(repo, cache_dir)
-            prebuild_s = round(time.monotonic() - t_pre, 2)
-            env.update(cache_env)
-        else:
-            env["KZA_RUNTIME_ARTIFACT_CACHE_DIR"] = str(cache_dir)
-
-        if args.tier == 0:
-            if not args.no_node:
-                steps.append(_run_node_frontend(repo, out_dir, env))
-            cmd = build_pytest_command(
-                python_exe,
-                targets=list(args.targets),
-                workers=args.workers,
-                basetemp=basetemp_root / "tier0",
-                junit_xml=out_dir / "tier0.xml",
-                use_xdist=has_xdist,
+        if args.tier == 2 and not args.ignore_host_timers and lanes.intersection((*TIER2_B_LANES, "c")):
+            host_interference = check_host_interference(args.quiet_window_minutes)
+        if host_interference:
+            print(
+                "Tier 2 aborted before pytest due to ThermoUY host interference: "
+                + ", ".join(host_interference),
+                file=sys.stderr,
             )
-            steps.append(_run_subprocess("tier0-pytest", cmd, cwd=repo, env=env, log_path=out_dir / "tier0.log"))
-
-        elif args.tier == 1:
-            if not args.no_node:
-                steps.append(_run_node_frontend(repo, out_dir, env))
-            cmd = build_pytest_command(
-                python_exe,
-                targets=["tests"],
-                workers=args.workers,
-                basetemp=basetemp_root / "tier1",
-                junit_xml=out_dir / "tier1.xml",
-                ignores=LINUX_SYSTEMD_MODULES,
-                deselects=COMPILED_SOLO_TESTS,
-                use_xdist=has_xdist,
-            )
-            steps.append(_run_subprocess("tier1-core", cmd, cwd=repo, env=env, log_path=out_dir / "tier1-core.log"))
-
         else:
-            steps.extend(
-                run_tier2_lanes(
-                    repo=repo,
-                    python_exe=python_exe,
-                    env=env,
-                    basetemp_root=basetemp_root,
-                    out_dir=out_dir,
+            basetemp_root, cleanup_basetemp = choose_basetemp_root(args.basetemp, out_dir, tier=args.tier)
+            before_nr = journald_nrestarts() if args.tier == 2 else None
+
+            if should_prebuild(args.tier, prebuild=args.prebuild, no_prebuild=args.no_prebuild):
+                if str(repo) not in sys.path:
+                    sys.path.insert(0, str(repo))
+                from tests.mocks.runtime_artifact_cache import prebuild_standard_artifacts
+
+                t_pre = time.monotonic()
+                cache_env = prebuild_standard_artifacts(repo, cache_dir)
+                prebuild_s = round(time.monotonic() - t_pre, 2)
+                env.update(cache_env)
+            else:
+                env["KZA_RUNTIME_ARTIFACT_CACHE_DIR"] = str(cache_dir)
+
+            if args.tier == 0:
+                if not args.no_node:
+                    steps.append(_run_node_frontend(repo, out_dir, env))
+                cmd = build_pytest_command(
+                    python_exe,
+                    targets=list(args.targets),
                     workers=args.workers,
-                    has_xdist=has_xdist,
-                    run_node=not args.no_node,
-                    solo_workers=solo_workers,
+                    basetemp=basetemp_root / "tier0",
+                    junit_xml=out_dir / "tier0.xml",
+                    use_xdist=has_xdist,
                 )
-            )
-            after_nr = journald_nrestarts()
+                steps.append(_run_subprocess("tier0-pytest", cmd, cwd=repo, env=env, log_path=out_dir / "tier0.log"))
+
+            elif args.tier == 1:
+                if not args.no_node:
+                    steps.append(_run_node_frontend(repo, out_dir, env))
+                cmd = build_pytest_command(
+                    python_exe,
+                    targets=["tests"],
+                    workers=args.workers,
+                    basetemp=basetemp_root / "tier1",
+                    junit_xml=out_dir / "tier1.xml",
+                    ignores=LINUX_SYSTEMD_MODULES,
+                    deselects=COMPILED_SOLO_TESTS,
+                    use_xdist=has_xdist,
+                )
+                steps.append(_run_subprocess("tier1-core", cmd, cwd=repo, env=env, log_path=out_dir / "tier1-core.log"))
+
+            else:
+                steps.extend(
+                    run_tier2_lanes(
+                        repo=repo,
+                        python_exe=python_exe,
+                        env=env,
+                        basetemp_root=basetemp_root,
+                        out_dir=out_dir,
+                        workers=args.workers,
+                        has_xdist=has_xdist,
+                        run_node=not args.no_node,
+                        selected_lanes=selected_lanes,
+                        solo_workers=solo_workers,
+                    )
+                )
+                after_nr = journald_nrestarts()
     finally:
         try:
             if cleanup_basetemp and basetemp_root is not None:
@@ -657,8 +780,13 @@ def main(argv: list[str] | None = None) -> int:
         after_nrestarts=after_nr,
         require_nrestarts=(args.tier == 2),
     )
+    if host_interference:
+        overall_exit = 2
     summary = {
         "tier": args.tier,
+        "git_commit": git_commit,
+        "selected_lanes": selected_steps,
+        "host_interference": host_interference,
         "platform": sys.platform,
         "workers": args.workers if has_xdist else 1,
         "solo_workers": solo_workers,
