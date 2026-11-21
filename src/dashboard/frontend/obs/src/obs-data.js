@@ -20,6 +20,25 @@
     ['SERVICES', '/api/system/services', 'Servicios'],
   ]);
 
+  const COLLECTION_PATHS = Object.freeze(Object.fromEntries(COLLECTIONS.map(([key, path]) => [key, path])));
+
+  // Collections displayed by each /obs/ view; inactive views are never polled.
+  const VIEW_COLLECTIONS = Object.freeze({
+    live: Object.freeze(['ZONES', 'LLM_ENDPOINTS']),
+    conversations: Object.freeze([]),
+    privacy: Object.freeze([]),
+    alerts: Object.freeze(['ALERTS']),
+    ha: Object.freeze(['HA_ENTITIES', 'HA_ACTIONS']),
+    llm: Object.freeze(['LLM_ENDPOINTS']),
+    users: Object.freeze([]),
+    system: Object.freeze(['GPUS', 'SERVICES']),
+    admin: Object.freeze([]),
+  });
+
+  // Bounded retry interval when an active-view observation is degraded or
+  // returned already expired by the server, avoiding tight retry loops.
+  const DEGRADED_RETRY_MS = 10000;
+
   // Mirror of RESTARTABLE_SERVICES in src/dashboard/admin.py. The server
   // remains authoritative and rejects any other name.
   const RESTARTABLE_SERVICES = Object.freeze(['kza-voice', 'kza-llm-ik', 'kza-llm-fast', 'chromadb']);
@@ -57,6 +76,7 @@
     const clearTimer = options.clearTimer || (handle => clearTimeout(handle));
     let expiryTimer = null;
     const entries = new Map();
+    const received = new Map();
     const sources = {};
     const channels = new Map();
     const operations = new Map();
@@ -80,7 +100,7 @@
     }
     function reset() {
       if (expiryTimer !== null) { clearTimer(expiryTimer); expiryTimer = null; }
-      entries.clear(); channels.clear(); operations.clear(); permissions = new Set(); notice = null;
+      entries.clear(); received.clear(); channels.clear(); operations.clear(); permissions = new Set(); notice = null;
       for (const key of Object.keys(sources)) delete sources[key];
       for (const [key] of COLLECTIONS) sources[key] = STATUS.PENDING;
     }
@@ -90,6 +110,7 @@
       sources,
       get(key) { return entries.get(key)?.data || []; },
       entry(key) { return entries.get(key) || { data: [], status: sources[key] || STATUS.PENDING, unobserved: [] }; },
+      receivedAt(key) { return received.has(key) ? received.get(key) : null; },
       status(key) { return sources[key] || STATUS.PENDING; },
       available(key) { const status = sources[key]; return status === STATUS.REAL || status === STATUS.DEMO; },
       unobserved(key, field) { return (entries.get(key)?.unobserved || []).includes(field); },
@@ -102,6 +123,7 @@
           : observation.source === 'mock' ? STATUS.DEMO : STATUS.DEGRADED;
         const kept = status === STATUS.DEGRADED ? [] : data;
         entries.set(key, { ...observation, data: kept, status });
+        received.set(key, now().getTime());
         sources[key] = status;
         if (status === STATUS.REAL && (!observation.expiresAt || freshness(observation, now()) === 'vigente')) {
           for (const [id, attempt] of operations) {
@@ -116,6 +138,7 @@
       },
       fail(key, status = STATUS.DEGRADED, reason = null) {
         entries.set(key, { data: [], status, reason, unobserved: [] });
+        received.set(key, now().getTime());
         sources[key] = status;
         scheduleExpiry();
         notify();
@@ -179,9 +202,196 @@
     if (!signal?.aborted) store.setPermissions(body?.permissions);
   }
 
+  async function readCollections({ fetch, store, keys, signal }) {
+    const unique = [...new Set(keys)].filter(key => Object.hasOwn(COLLECTION_PATHS, key));
+    if (!unique.length) return [];
+    return await Promise.all(unique.map(key => readCollection({
+      fetch, store, key, path: COLLECTION_PATHS[key], signal,
+    })));
+  }
+
   async function hydrate({ fetch, store, signal }) {
     await readPermissions({ fetch, store, signal });
     await Promise.all(COLLECTIONS.map(([key, path]) => readCollection({ fetch, store, key, path, signal })));
+  }
+
+  function defaultVisible() {
+    if (typeof document === 'undefined') return true;
+    return document.visibilityState === 'visible' && !document.hidden;
+  }
+
+  function wsDisconnected(state) {
+    return state !== 'sin conectar' && state !== 'conectando' && state !== 'conectado';
+  }
+
+  // Deadline-driven poller for the active /obs/ view only. Never extends
+  // server-emitted expires_at locally, pauses while the tab is hidden, stops
+  // immediately on 401 or session abort, and rehydrates active/expired
+  // inventories when /ws/live returns to 'conectado' after a disconnect.
+  function createObservationPoller({
+    fetch,
+    store,
+    view = null,
+    signal = null,
+    isVisible = defaultVisible,
+    setTimer = (callback, ms) => setTimeout(callback, ms),
+    clearTimer = handle => clearTimeout(handle),
+    onUnauthorized = () => {},
+    retryMs = DEGRADED_RETRY_MS,
+  }) {
+    let activeView = view;
+    let stopped = Boolean(signal?.aborted);
+    let timer = null;
+    let sawDisconnect = wsDisconnected(store.channel('ws'));
+    let pendingReconnect = false;
+    const inFlight = new Map();
+
+    function activeKeys() {
+      return Object.hasOwn(VIEW_COLLECTIONS, activeView) ? VIEW_COLLECTIONS[activeView] : [];
+    }
+
+    function reconnectKeys() {
+      const keys = new Set(activeKeys());
+      for (const [key] of COLLECTIONS) {
+        if (store.freshness(key) === 'vencida') keys.add(key);
+      }
+      return [...keys];
+    }
+
+    function clearScheduled() {
+      if (timer !== null) {
+        clearTimer(timer);
+        timer = null;
+      }
+    }
+
+    function abortKeys(filter = () => true) {
+      for (const [key, controller] of [...inFlight.entries()]) {
+        if (!filter(key)) continue;
+        inFlight.delete(key);
+        controller.abort();
+      }
+    }
+
+    function dueAt(key, currentMs) {
+      const entry = store.entry(key);
+      const status = entry.status;
+      const receivedAt = store.receivedAt(key);
+      if (status === STATUS.PENDING) {
+        return receivedAt === null ? currentMs : receivedAt + retryMs;
+      }
+      if (status === STATUS.REAL) {
+        const expiry = Date.parse(entry.expiresAt || '');
+        if (!Number.isFinite(expiry)) return null;
+        if (expiry > currentMs) return expiry + 1;
+        // Expired: read immediately unless a read already landed at/after
+        // expiry (e.g. server clock skew or already-stale cache).
+        if (receivedAt === null || receivedAt < expiry) return currentMs;
+        return receivedAt + retryMs;
+      }
+      if (status === STATUS.DEGRADED) {
+        return receivedAt === null ? currentMs : receivedAt + retryMs;
+      }
+      return null;
+    }
+
+    function fetchKeys(keys) {
+      if (stopped || !isVisible()) return;
+      for (const key of keys) {
+        if (!Object.hasOwn(COLLECTION_PATHS, key) || inFlight.has(key)) continue;
+        const controller = new AbortController();
+        inFlight.set(key, controller);
+        const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
+        readCollection({ fetch, store, key, path: COLLECTION_PATHS[key], signal: requestSignal })
+          .catch(error => {
+            if (error instanceof AuthRequired) {
+              const wasRunning = !stopped;
+              stop();
+              if (wasRunning) onUnauthorized(error);
+            }
+          })
+          .finally(() => {
+            if (inFlight.get(key) === controller) inFlight.delete(key);
+            if (!stopped) schedule();
+          });
+      }
+    }
+
+    function schedule() {
+      clearScheduled();
+      if (stopped) return;
+      if (!isVisible()) {
+        abortKeys();
+        return;
+      }
+      if (pendingReconnect) {
+        pendingReconnect = false;
+        fetchKeys(reconnectKeys());
+      }
+      const current = store.now().getTime();
+      const dueNow = [];
+      let nextAt = Infinity;
+      for (const key of activeKeys()) {
+        if (inFlight.has(key)) continue;
+        const at = dueAt(key, current);
+        if (at === null) continue;
+        if (at <= current) dueNow.push(key);
+        else if (at < nextAt) nextAt = at;
+      }
+      if (dueNow.length) fetchKeys(dueNow);
+      if (!stopped && isVisible() && Number.isFinite(nextAt)) {
+        timer = setTimer(() => {
+          timer = null;
+          schedule();
+        }, Math.max(1, nextAt - store.now().getTime()));
+      }
+    }
+
+    function onStoreChange() {
+      if (stopped) return;
+      const ws = store.channel('ws');
+      if (wsDisconnected(ws)) {
+        sawDisconnect = true;
+      } else if (ws === 'conectado' && sawDisconnect) {
+        sawDisconnect = false;
+        pendingReconnect = true;
+      }
+      schedule();
+    }
+
+    function setView(nextView) {
+      if (stopped || activeView === nextView) return;
+      activeView = nextView;
+      const keep = new Set(activeKeys());
+      abortKeys(key => !keep.has(key));
+      schedule();
+    }
+
+    function stop() {
+      if (stopped) return;
+      stopped = true;
+      pendingReconnect = false;
+      clearScheduled();
+      abortKeys();
+      unsubscribe();
+      signal?.removeEventListener('abort', stop);
+    }
+
+    const unsubscribe = store.subscribe(onStoreChange);
+    if (stopped) unsubscribe();
+    else {
+      signal?.addEventListener('abort', stop, { once: true });
+      schedule();
+    }
+
+    return {
+      setView,
+      sync: schedule,
+      stop,
+      activeKeys,
+      running: () => !stopped,
+      pendingKeys: () => [...inFlight.keys()],
+    };
   }
 
   const enc = value => encodeURIComponent(String(value));
@@ -307,8 +517,8 @@
   }
 
   const api = {
-    COLLECTIONS, RESTARTABLE_SERVICES, STATUS, OPERATIONS, AuthRequired,
-    parseObservation, createObservationStore, readCollection, hydrate,
+    COLLECTIONS, VIEW_COLLECTIONS, DEGRADED_RETRY_MS, RESTARTABLE_SERVICES, STATUS, OPERATIONS, AuthRequired,
+    parseObservation, createObservationStore, readCollection, readCollections, hydrate, createObservationPoller,
     OPERATION_TIMEOUT_MS, availability, runOperation, remainingUntil, formatInstant, freshness,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

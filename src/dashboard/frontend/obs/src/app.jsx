@@ -80,8 +80,11 @@ function Topbar({ activeNav, onRefresh, refreshing }) {
       <div className="crumbs">kza · <b>{item.label}</b></div>
       <div className="topbar-spacer" />
       <div className="pulse-group">
-        <div className={`pulse ${healthy ? '' : 'warn'}`}><i className="led" /> datos · {summary.real.length}/{summary.total} reales</div>
-        <div className={`pulse ${ws === 'conectado' ? '' : 'warn'}`}><i className="led" /> WS · {ws}</div>
+        <div className={`pulse ${healthy ? '' : 'warn'}`}><i className="led" /> datos REST · {summary.real.length}/{summary.total} reales</div>
+        <div className={`pulse ${ws === 'conectado' ? '' : 'warn'}`}
+             title="WebSocket /ws/live solo para eventos en vivo, conversaciones y voces; los inventarios REST se renuevan por vencimiento">
+          <i className="led" /> WS en vivo (live/conv/voces) · {ws}
+        </div>
       </div>
       <button type="button" className="btn" disabled={refreshing} onClick={onRefresh}>{refreshing ? 'Actualizando…' : 'Actualizar datos'}</button>
     </header>
@@ -185,6 +188,32 @@ function App({ afterLogin, sessionSignal }) {
     mainRef.current?.focus();
   }, [active]);
   const [refreshing, setRefreshing] = useState(false);
+  const pollerRef = useRef(null);
+  useEffect(() => {
+    const poller = window.KzaObsData.createObservationPoller({
+      fetch: window.fetch.bind(window),
+      store: window.__kzaObs,
+      view: activeRef.current,
+      signal: sessionSignal,
+      onUnauthorized: failure => {
+        if (!sessionSignal.aborted) session.fail(failure);
+      },
+    });
+    pollerRef.current = poller;
+    const onVisibility = () => poller.sync();
+    const onAuthRequired = () => poller.stop();
+    document.addEventListener('visibilitychange', onVisibility);
+    window.addEventListener('kza:auth-required', onAuthRequired);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility);
+      window.removeEventListener('kza:auth-required', onAuthRequired);
+      poller.stop();
+      if (pollerRef.current === poller) pollerRef.current = null;
+    };
+  }, [sessionSignal]);
+  useEffect(() => {
+    pollerRef.current?.setView(active);
+  }, [active]);
   React.useLayoutEffect(() => {
     if (afterLogin) mainRef.current?.focus();
     return () => refreshRequest.current?.abort();

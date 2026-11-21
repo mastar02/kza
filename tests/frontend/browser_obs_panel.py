@@ -33,6 +33,8 @@ from websockets.asyncio.client import connect
 from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import DashboardAuthority
 from src.dashboard.live_event_bus import LiveEventBus
+from src.dashboard.live_receipts import LiveReceiptStore
+from src.memory.privacy_services import PrivacyServices
 from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_support import (Page, _press_tab, browser_binary, browser_profile_root, evidence_directory,
                                             press_enter)
@@ -154,8 +156,12 @@ LAYOUT_CONVERSATION = r"""(() => {
 LAYOUT_VOICE = r"""(async () => {
   const wav = await encodeWav(new Int16Array(16000), 16000).arrayBuffer();
   const audio_base64 = btoa(String.fromCharCode(...new Uint8Array(wav)));
-  await window.__kzaVoiceController.settled();
-  const state = window.__kzaVoiceState, wall = Date.now(), now = wall / 1000;
+  const state = window.__kzaVoiceState;
+  for (let i = 0; i < 4; i++) {
+    await window.__kzaVoiceController.settled();
+    if (state.profiles.status() !== 'loading' && state.captures.status() !== 'loading') break;
+  }
+  const wall = Date.now(), now = wall / 1000;
   const started = {wall, mono: performance.now()};
   const id = 'vf_' + 'a'.repeat(64);
   const timing = {observed_at: now, expires_at: now + 60};
@@ -466,6 +472,7 @@ async def main() -> None:
     os.environ['KZA_DASHBOARD_TOKEN'] = TOKEN
     requests, checks = [], []
     faults = {}
+    alerts_hold: tuple[asyncio.Event, asyncio.Event] | None = None
     login_release = asyncio.Event()
     alerts = SyntheticAlerts()
     binary = browser_binary()
@@ -477,13 +484,22 @@ async def main() -> None:
         users.add_user('Synthetic account', permission_level=PermissionLevel.ADULT)
         # A long cell places the enrolment column beyond the narrow viewport.
         users.add_user('Synthetic' + 'W' * 48, permission_level=PermissionLevel.ADULT)
-        bus = LiveEventBus()
+        privacy = PrivacyServices(str(directory / 'privacy.db'))
+        await privacy.acall(privacy.initialize)
+        receipts = LiveReceiptStore(privacy.ledger)
+        bus = LiveEventBus(source_policy=privacy.ledger, clock=privacy.ledger.clock, receipts=receipts)
+        privacy.add_borrower(bus.begin_close)
+        bus.start()
         dashboard = DashboardAPI(authority=authority, alert_manager=alerts, user_manager=users, event_bus=bus)
 
         @dashboard.app.middleware('http')
         async def record(request, call_next):
             if request.url.path == '/api/admin/auth/login':
                 await login_release.wait()
+            if request.method == 'GET' and request.url.path == '/api/alerts' and alerts_hold is not None:
+                started, release = alerts_hold
+                started.set()
+                await release.wait()
             status = faults.get(request.url.path)
             response = JSONResponse({}, status_code=status) if status else await call_next(request)
             requests.append({'method': request.method, 'path': request.url.path, 'status': response.status_code})
@@ -550,7 +566,8 @@ async def main() -> None:
                     text = await visit('Live', 'view-live')
                     assert 'Zonas no disponibles' in text and 'Latencia' in text and 'No disponible' in text
                     assert 'Fuentes no disponibles' in text
-                    checks.append('Live shows unavailable zones/router/latency instead of examples')
+                    assert 'WS en vivo (live/conv/voces)' in text
+                    checks.append('Live shows unavailable zones/router/latency instead of examples and scopes WS pulse')
 
                     text = await visit('Alertas', 'view-alerts')
                     assert 'Synthetic device alert' in text
@@ -571,11 +588,62 @@ async def main() -> None:
                     assert {'method': 'POST', 'path': ack_path, 'status': 200} in requests
                     assert await page.evaluate("document.body.innerText.includes('atendidas · 1')")
                     checks.append('ack runs POST /api/admin/alerts/{id}/ack and shows the server-confirmed result')
-                    reads = sum(item['path'] == '/api/alerts' for item in requests)
-                    await asyncio.sleep(7)  # past the 6 s observation TTL, with no new read
-                    assert await page.evaluate("document.querySelector('#view-alerts').innerText.includes('vencida')")
-                    assert sum(item['path'] == '/api/alerts' for item in requests) == reads
-                    checks.append('expired observation is relabelled vencida without a new read')
+
+                    # WEB-09: expiry marks vencida without extending expires_at locally,
+                    # polls ONLY the active view (/api/alerts), and renews to vigente on server reply.
+                    await page.wait_for("!document.querySelector('.topbar button').disabled")
+                    before_expires = await page.evaluate("window.__kzaObs.entry('ALERTS').expiresAt")
+                    assert before_expires
+                    before_requests = len(requests)
+                    poll_started, poll_release = asyncio.Event(), asyncio.Event()
+                    alerts_hold = (poll_started, poll_release)
+                    try:
+                        await asyncio.wait_for(poll_started.wait(), timeout=10)
+                        await page.wait_for("document.querySelector('#view-alerts').innerText.includes('vencida')")
+                        assert await page.evaluate("window.__kzaObs.freshness('ALERTS')") == 'vencida'
+                        assert await page.evaluate("window.__kzaObs.entry('ALERTS').expiresAt") == before_expires
+                        inactive_paths = {'/api/zones', '/api/llm/endpoints', '/api/ha/entities',
+                                          '/api/ha/actions', '/api/system/gpus', '/api/system/services'}
+                        inactive_hits = [item for item in requests[before_requests:] if item['path'] in inactive_paths]
+                        assert not inactive_hits, inactive_hits
+                    finally:
+                        alerts_hold = None
+                        poll_release.set()
+                    await page.wait_for(
+                        "document.querySelector('#view-alerts').innerText.includes('vigente') && "
+                        f"window.__kzaObs.entry('ALERTS').expiresAt !== {json.dumps(before_expires)}"
+                    )
+                    after_expires = await page.evaluate("window.__kzaObs.entry('ALERTS').expiresAt")
+                    assert after_expires > before_expires
+                    checks.append('expired active-view observation marks vencida without extending expires_at and renews end-to-end')
+
+                    # WEB-09: hiding the tab stops the poller (relabels vencida with zero fetches)
+                    # and returning to visible immediately revalidates.
+                    hidden_expires = after_expires
+                    reads_before_hide = sum(item['path'] == '/api/alerts' for item in requests)
+                    await page.evaluate("""(() => {
+                        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+                        Object.defineProperty(document, 'hidden', { configurable: true, get: () => true });
+                        document.dispatchEvent(new Event('visibilitychange'));
+                    })()""")
+                    try:
+                        await asyncio.sleep(6.5)  # past the 6 s observation TTL while hidden
+                        assert await page.evaluate("document.querySelector('#view-alerts').innerText.includes('vencida')")
+                        assert await page.evaluate("window.__kzaObs.entry('ALERTS').expiresAt") == hidden_expires
+                        assert sum(item['path'] == '/api/alerts' for item in requests) == reads_before_hide
+                    finally:
+                        await page.evaluate("""(() => {
+                            delete document.visibilityState;
+                            delete document.hidden;
+                            document.dispatchEvent(new Event('visibilitychange'));
+                        })()""")
+                    await page.wait_for(
+                        "document.querySelector('#view-alerts').innerText.includes('vigente') && "
+                        f"window.__kzaObs.entry('ALERTS').expiresAt !== {json.dumps(hidden_expires)}"
+                    )
+                    assert sum(item['path'] == '/api/alerts' for item in requests) == reads_before_hide + 1
+                    checks.append('hidden tab stops polling without extending expires_at and resumes revalidation when visible')
+
                     await page.evaluate("[...document.querySelectorAll('button')].find(b=>b.textContent==='Descartar').click()")
                     await page.wait_for("document.body.innerText.includes('El servidor descartó la alerta.')")
                     assert alerts.marked[-1] == ('synthetic-alert-2', False)
@@ -592,6 +660,12 @@ async def main() -> None:
                     assert 'Entidades no disponibles' in text
                     text = await visit('Sistema', 'view-system')
                     assert 'Registros no disponibles' in text
+                    assert await page.evaluate("""(() => {
+                        const bars = Object.fromEntries([...document.querySelectorAll('#view-system .h-bar')]
+                            .map(bar => [bar.querySelector('h2')?.textContent, bar.querySelector('.meta')?.textContent || '']));
+                        return bars.GPUs?.includes('fuente ') && bars.Servicios?.includes('fuente ');
+                    })()""")
+                    checks.append('System view shows SourceNote provenance for both GPUs and Services')
                     text = await visit('Privacidad', 'view-privacy')
                     text = await visit('Conversaciones', 'view-conversations')
                     text = await visit('Voces', 'view-users')
@@ -688,6 +762,41 @@ async def main() -> None:
                                         "'La autoridad de acceso no está disponible.'")
                     assert not await page.evaluate("!!document.querySelector('dialog:modal')")
                     checks.append('503 on the Admin session check reports unavailable without opening login')
+
+                    # WEB-09: WS reconnect to 'conectado' after disconnect rehydrates active/expired inventories.
+                    del faults['/api/admin/auth/whoami']
+                    del faults['/api/zones']
+                    await page.evaluate("location.hash='alerts'")
+                    await page.wait_for(NAV[3][2])
+                    await page.wait_for("window.__kzaObs.channel('ws') === 'conectado'")
+                    alerts_before_ws = sum(item['path'] == '/api/alerts' for item in requests)
+                    zones_before_ws = sum(item['path'] == '/api/zones' for item in requests)
+                    # Mark ZONES as an expired real observation so reconnect reconciles both active (ALERTS) and expired (ZONES).
+                    await page.evaluate(
+                        "window.__kzaObs.accept('ZONES', {source:'real', expiresAt:'2026-01-01T00:00:00Z'}, "
+                        "[{id:'stale'}], window.__kzaObs.beginRead())"
+                    )
+                    assert await page.evaluate("window.__kzaObs.freshness('ZONES')") == 'vencida'
+                    await page.evaluate("window.__kzaLiveWs.close()")
+                    await page.wait_for("window.__kzaObs.channel('ws') !== 'conectado'")
+                    await page.wait_for("window.__kzaObs.channel('ws') === 'conectado'")
+                    async with asyncio.timeout(5):
+                        while (sum(item['path'] == '/api/alerts' for item in requests) <= alerts_before_ws
+                               or sum(item['path'] == '/api/zones' for item in requests) <= zones_before_ws):
+                            await asyncio.sleep(.05)
+                    checks.append('WS reconnection to conectado rehydrates active and expired inventories')
+
+                    # WEB-09: 401 during deadline polling opens login and stops all further polling.
+                    faults['/api/alerts'] = 401
+                    async with asyncio.timeout(10):
+                        while not await page.evaluate("!!document.querySelector('dialog:modal input[type=password]')"):
+                            await asyncio.sleep(.05)
+                    del faults['/api/alerts']
+                    alerts_after_401 = sum(item['path'] == '/api/alerts' for item in requests)
+                    await asyncio.sleep(1.5)
+                    assert sum(item['path'] == '/api/alerts' for item in requests) == alerts_after_401
+                    checks.append('401 during polling opens login and stops further polling')
+
                     assert not page.errors, page.errors
                     checks.append('no runtime exceptions')
         finally:
@@ -697,6 +806,7 @@ async def main() -> None:
             server.should_exit = True
             await serving
             await bus.aclose()
+            await privacy.aclose()
             await authority.aclose()
     result = {'passed': True, 'synthetic_fixture': True, 'checks': checks, 'keyboard': keyboard,
               'responsive': {width: {'login': login[width], **responsive[width]} for width in WIDTHS},

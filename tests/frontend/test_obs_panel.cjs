@@ -897,3 +897,286 @@ test('each React data table is inside a named, tabbable scroll region', () => {
     assert.equal(tables, expected, view);
   }
 });
+
+// ---- Freshness poller and WS reconnect reconciliation (T046-U2 / WEB-09) ----
+
+async function flushMicrotasks(turns = 6) {
+  for (let i = 0; i < turns; i++) await Promise.resolve();
+}
+
+test('VIEW_COLLECTIONS covers every /obs/ view and collection, and topbar/system provenance are explicit', () => {
+  assert.deepEqual(Object.keys(data.VIEW_COLLECTIONS).sort(), [...NAV_IDS].sort());
+  const covered = new Set(Object.values(data.VIEW_COLLECTIONS).flat());
+  for (const [key] of data.COLLECTIONS) assert.ok(covered.has(key), key);
+  for (const emptyView of ['conversations', 'privacy', 'users', 'admin']) {
+    assert.deepEqual(data.VIEW_COLLECTIONS[emptyView], [], emptyView);
+  }
+  assert.match(APP, /WS en vivo \(live\/conv\/voces\) · \{ws\}/);
+  assert.doesNotMatch(APP, /> WS · \{ws\}/);
+  assert.match(APP, /createObservationPoller/);
+  assert.match(APP, /document\.addEventListener\('visibilitychange', onVisibility\)/);
+  assert.match(APP, /window\.addEventListener\('kza:auth-required', onAuthRequired\)/);
+  const system = fs.readFileSync(path.join(OBS, 'src/views/system.jsx'), 'utf8');
+  assert.match(system, /<SectionBar title="GPUs"[^\n]*<SourceNote k="GPUS" \/>/);
+  assert.match(system, /<SectionBar title="Servicios"[^\n]*<SourceNote k="SERVICES" \/>/);
+});
+
+test('WEB-09 poller polls only the active view at deadline, never extends expires_at locally, and renews on response', async () => {
+  const clock = fakeClock('2026-11-10T12:00:00Z');
+  const store = data.createObservationStore(clock);
+  for (const [key] of data.COLLECTIONS) {
+    store.accept(key, data.parseObservation(headers(realHeaders())), [{ id: key.toLowerCase() }], store.beginRead());
+  }
+  const requested = [];
+  let finishAlerts;
+  const fetch = async url => {
+    requested.push(url);
+    if (url === '/api/alerts') {
+      return await new Promise(resolve => { finishAlerts = resolve; });
+    }
+    return reply(200, [{ id: 'renewed' }], realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:25+00:00' }));
+  };
+  const poller = data.createObservationPoller({
+    fetch, store, view: 'alerts', isVisible: () => true,
+    setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+  });
+
+  clock.advance(5000);
+  await flushMicrotasks();
+  assert.deepEqual(requested, []);
+  assert.equal(store.freshness('ALERTS'), 'vigente');
+
+  clock.advance(1002);
+  await flushMicrotasks();
+  // Expired while fetch is in flight: marked vencida and expires_at is never extended locally.
+  assert.deepEqual(requested, ['/api/alerts']);
+  assert.equal(store.freshness('ALERTS'), 'vencida');
+  assert.equal(store.entry('ALERTS').expiresAt, '2026-11-10T12:00:06+00:00');
+
+  finishAlerts(reply(200, [{ id: 'a-fresh' }], realHeaders({
+    'X-KZA-Observed-At': '2026-11-10T12:00:06+00:00',
+    'X-KZA-Expires-At': '2026-11-10T12:00:12+00:00',
+  })));
+  await flushMicrotasks();
+  assert.equal(store.freshness('ALERTS'), 'vigente');
+  assert.equal(store.entry('ALERTS').expiresAt, '2026-11-10T12:00:12+00:00');
+  assert.deepEqual(store.get('ALERTS'), [{ id: 'a-fresh' }]);
+
+  // Views without REST inventories trigger zero polling.
+  poller.setView('conversations');
+  clock.advance(10000);
+  await flushMicrotasks();
+  assert.deepEqual(requested, ['/api/alerts']);
+
+  // Switching to system immediately revalidates only GPUS and SERVICES (expired while away).
+  poller.setView('system');
+  await flushMicrotasks();
+  assert.deepEqual(requested.slice(1).sort(), ['/api/system/gpus', '/api/system/services']);
+  poller.stop();
+  store.clear();
+});
+
+test('WEB-09 hidden tab stops polling, aborts in-flight reads without degrading, and revalidates on return', async () => {
+  const clock = fakeClock('2026-11-10T12:00:00Z');
+  const store = data.createObservationStore(clock);
+  store.accept('ALERTS', data.parseObservation(headers(realHeaders())), [{ id: 'a1' }], store.beginRead());
+  let visible = true;
+  const requested = [];
+  const aborted = [];
+  const fetch = (url, options = {}) => {
+    requested.push(url);
+    return new Promise((resolve, reject) => {
+      if (requested.length === 1) {
+        options.signal?.addEventListener('abort', () => {
+          aborted.push(url);
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+        return;
+      }
+      resolve(reply(200, [{ id: 'a2' }], realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:30+00:00' })));
+    });
+  };
+  const poller = data.createObservationPoller({
+    fetch, store, view: 'alerts', isVisible: () => visible,
+    setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+  });
+
+  // Hide before expiry: expiry relabels vencida with zero network calls and expires_at untouched.
+  visible = false;
+  poller.sync();
+  clock.advance(7000);
+  await flushMicrotasks();
+  assert.deepEqual(requested, []);
+  assert.equal(store.freshness('ALERTS'), 'vencida');
+  assert.equal(store.entry('ALERTS').expiresAt, '2026-11-10T12:00:06+00:00');
+
+  // Become visible: revalidation starts immediately; hiding mid-flight aborts cleanly without degrading.
+  visible = true;
+  poller.sync();
+  await flushMicrotasks();
+  assert.deepEqual(requested, ['/api/alerts']);
+  visible = false;
+  poller.sync();
+  await flushMicrotasks();
+  assert.deepEqual(aborted, ['/api/alerts']);
+  assert.equal(store.status('ALERTS'), 'real');
+  assert.equal(store.freshness('ALERTS'), 'vencida');
+
+  // Visible again: second real fetch completes and renews.
+  visible = true;
+  poller.sync();
+  await flushMicrotasks();
+  assert.deepEqual(requested, ['/api/alerts', '/api/alerts']);
+  assert.equal(store.freshness('ALERTS'), 'vigente');
+  assert.deepEqual(store.get('ALERTS'), [{ id: 'a2' }]);
+  poller.stop();
+  store.clear();
+});
+
+test('WEB-09 WS reconnect rehydrates active and expired inventories, respecting visibility', async () => {
+  const clock = fakeClock('2026-11-10T12:00:00Z');
+  const store = data.createObservationStore(clock);
+  store.accept('ZONES', data.parseObservation(headers(realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:30+00:00' }))), [{ id: 'z1' }], store.beginRead());
+  store.accept('LLM_ENDPOINTS', data.parseObservation(headers(realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:30+00:00' }))), [{ id: 'l1' }], store.beginRead());
+  store.accept('ALERTS', data.parseObservation(headers(realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:05+00:00' }))), [{ id: 'a1' }], store.beginRead());
+  store.accept('HA_ENTITIES', data.parseObservation(headers(realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:30+00:00' }))), [{ id: 'h1' }], store.beginRead());
+  store.accept('HA_ACTIONS', data.parseObservation(headers(realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:30+00:00' }))), [{ id: 'ha1' }], store.beginRead());
+  store.accept('GPUS', data.parseObservation(headers(realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:30+00:00' }))), [{ id: 0 }], store.beginRead());
+  store.accept('SERVICES', data.parseObservation(headers(realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:30+00:00' }))), [{ name: 'kza-voice' }], store.beginRead());
+
+  let visible = true;
+  const requested = [];
+  const poller = data.createObservationPoller({
+    fetch: async url => {
+      requested.push(url);
+      return reply(200, [{ id: 'rehydrated' }], realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:40+00:00' }));
+    },
+    store, view: 'live', isVisible: () => visible,
+    setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+  });
+
+  // Initial connection does not trigger a redundant rehydration.
+  store.setChannel('ws', 'conectando');
+  store.setChannel('ws', 'conectado');
+  await flushMicrotasks();
+  assert.deepEqual(requested, []);
+
+  // Disconnect while tab is hidden and let ALERTS expire; reconnecting while hidden defers until visible.
+  visible = false;
+  poller.sync();
+  store.setChannel('ws', 'desconectado');
+  clock.advance(6000);
+  store.setChannel('ws', 'conectando');
+  store.setChannel('ws', 'conectado');
+  await flushMicrotasks();
+  assert.deepEqual(requested, []);
+
+  visible = true;
+  poller.sync();
+  await flushMicrotasks();
+  // Active view (ZONES, LLM_ENDPOINTS) + expired background collection (ALERTS), not still-vigente HA/System.
+  assert.deepEqual([...requested].sort(), ['/api/alerts', '/api/llm/endpoints', '/api/zones']);
+  poller.stop();
+  store.clear();
+});
+
+test('WEB-09 401 and session abort immediately stop polling permanently', async () => {
+  const clock = fakeClock('2026-11-10T12:00:00Z');
+  const store = data.createObservationStore(clock);
+  store.accept('ALERTS', data.parseObservation(headers(realHeaders())), [{ id: 'a1' }], store.beginRead());
+  const requested = [];
+  const unauthorized = [];
+  const poller = data.createObservationPoller({
+    fetch: async url => { requested.push(url); return reply(401, {}); },
+    store, view: 'alerts', isVisible: () => true,
+    setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+    onUnauthorized: error => unauthorized.push(error),
+  });
+
+  clock.advance(6002);
+  await flushMicrotasks();
+  assert.deepEqual(requested, ['/api/alerts']);
+  assert.equal(unauthorized.length, 1);
+  assert.ok(unauthorized[0] instanceof data.AuthRequired);
+  assert.equal(poller.running(), false);
+
+  store.setChannel('ws', 'desconectado');
+  store.setChannel('ws', 'conectado');
+  poller.setView('live');
+  poller.sync();
+  clock.advance(30000);
+  await flushMicrotasks();
+  assert.deepEqual(requested, ['/api/alerts']);
+
+  // Session AbortSignal also stops polling immediately.
+  const controller = new AbortController();
+  const future = realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:45+00:00' });
+  store.accept('ZONES', data.parseObservation(headers(future)), [{ id: 'z1' }], store.beginRead());
+  store.accept('LLM_ENDPOINTS', data.parseObservation(headers(future)), [{ id: 'l1' }], store.beginRead());
+  const second = data.createObservationPoller({
+    fetch: async url => { requested.push(url); return reply(200, [], realHeaders()); },
+    store, view: 'live', signal: controller.signal, isVisible: () => true,
+    setTimer: clock.setTimer, clearTimer: clock.clearTimer,
+  });
+  controller.abort();
+  assert.equal(second.running(), false);
+  clock.advance(30000);
+  await flushMicrotasks();
+  assert.deepEqual(requested, ['/api/alerts']);
+  store.clear();
+});
+
+test('WEB-09 poller never spins on already-expired server responses and preserves W-OBS-3 uncertain holds', async () => {
+  const clock = fakeClock('2026-11-10T12:00:00Z');
+  const store = data.createObservationStore(clock);
+  store.setPermissions(['admin:manage']);
+  store.accept('ALERTS', data.parseObservation(headers(realHeaders())), [{ id: 'a1' }], store.beginRead());
+
+  const calls = [];
+  let finishPoll = null;
+  let mode = 'defer';
+  const poller = data.createObservationPoller({
+    fetch: async url => {
+      calls.push(url);
+      if (mode === 'defer') return await new Promise(resolve => { finishPoll = resolve; });
+      if (mode === 'stale') return reply(200, [{ id: 'a1' }], realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:01+00:00' }));
+      return reply(200, [{ id: 'a1' }], realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:30+00:00' }));
+    },
+    store, view: 'alerts', isVisible: () => true,
+    setTimer: clock.setTimer, clearTimer: clock.clearTimer, retryMs: 5000,
+  });
+
+  // 1. Trigger a deadline poll before an uncertain write finishes (readId <= afterRead).
+  clock.advance(6002);
+  await flushMicrotasks();
+  assert.equal(calls.length, 1);
+  const uncertain = await data.runOperation({
+    fetch: async () => reply(504, {}), store, kind: 'ackAlert', target: 'a1',
+  });
+  assert.equal(uncertain.state, 'uncertain');
+  // The pre-write poll resolves with real vigente data -> must NOT clear the uncertain hold.
+  finishPoll(reply(200, [{ id: 'a1' }], realHeaders({ 'X-KZA-Expires-At': '2026-11-10T12:00:12+00:00' })));
+  await flushMicrotasks();
+  assert.equal(store.operationOutcome('ackAlert', 'a1')?.state, 'uncertain');
+
+  // 2. Next poll starts after the write, but server returns already-expired expires_at -> hold stays and poller backs off.
+  mode = 'stale';
+  clock.advance(6002);
+  await flushMicrotasks();
+  assert.equal(calls.length, 2);
+  assert.equal(store.freshness('ALERTS'), 'vencida');
+  assert.equal(store.operationOutcome('ackAlert', 'a1')?.state, 'uncertain');
+  clock.advance(4000);
+  await flushMicrotasks();
+  assert.equal(calls.length, 2, 'bounded backoff prevents tight retry loops');
+
+  // 3. After retryMs, a fresh real vigente read (readId > afterRead) clears the uncertain hold.
+  mode = 'fresh';
+  clock.advance(1002);
+  await flushMicrotasks();
+  assert.equal(calls.length, 3);
+  assert.equal(store.freshness('ALERTS'), 'vigente');
+  assert.equal(store.operationOutcome('ackAlert', 'a1'), undefined);
+  poller.stop();
+  store.clear();
+});

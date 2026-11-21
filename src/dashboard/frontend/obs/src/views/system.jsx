@@ -51,10 +51,10 @@ function SystemView() {
       <PageHead
         title="Sistema"
         subtitle="GPUs y servicios según las sondas del servidor"
-        meta={<SourceNote k="SERVICES" />}
+        meta={<><SourceNote k="GPUS" /> · <SourceNote k="SERVICES" /></>}
       />
 
-      <SectionBar title="GPUs" meta={obs.available('GPUS') ? `${gpus.length} observadas` : null} />
+      <SectionBar title="GPUs" meta={obs.available('GPUS') ? <><span>{gpus.length} observadas</span> · <SourceNote k="GPUS" /></> : <SourceNote k="GPUS" />} />
       {obs.available('GPUS') && gpus.length > 0 ? (
         <div className="grid grid-2">
           {gpus.map(g => <GpuCard key={g.id} g={g} roleObserved={!obs.unobserved('GPUS', 'role_assignment')} />)}
