@@ -217,6 +217,10 @@ _REMINDER_ROOM_QUESTION = ("¿En qué habitación querés que te avise? Decime d
 _REMINDER_NO_ROOMS_QUESTION = ("Por ahora no elijo en qué habitación suena un recordatorio. Decímelo de nuevo sin "
                                "nombrar la habitación.")
 _REMINDER_ROOM_ARTICLE = re.compile(r"^(?:el|la|los|las)\s+")
+_REMINDER_ROOM_WORDS = frozenset(ROOM_ALIASES) | {
+    "garaje", "garage", "cochera", "terraza", "patio", "quincho", "lavadero", "comedor",
+    "sotano", "atico", "balcon", "jardin", "galeria", "vestidor", "pieza",
+}
 _REMINDER_HEAD_QUESTION = "No entendí el recordatorio. Decímelo completo, por ejemplo: {example}."
 # The reminder text is a home command (a grammar intent, or a lock, door, gate or alarm order voice control never
 # executes, review T031-U2-RV4): it is only announced, never executed (T031-U2 text-only; T031-U5 adds actions;
@@ -619,43 +623,54 @@ def _reminder_grant_names(grant: EntityGrant) -> set[str]:
     aliases = (grant.entity_id.partition(".")[2].replace("_", " "), grant.display_name, *grant.aliases)
     return {re.sub(r"^(?:el|la|los|las)\s+", "", normalize_target(alias)) for alias in aliases if alias}
 
-def _room_qualifies_reminder_action(request: VoiceReminderRequest) -> bool:
-    """Keep a room immediately following an action; other room phrases name notice destinations."""
-    assert request.zone_phrase is not None
-    prefix, _, _ = normalize_target(request.complement).rpartition(normalize_target(request.zone_phrase))
-    return prefix.rstrip(" ").endswith(normalize_target(request.text)) and (
-        parse_default_light_target(request.text) is not None
-        or parse_home_command(request.text) is not None
-        or forbidden_home_order(request.text) is not None
-    )
+def _room_qualifies_reminder_action(clause: str) -> bool:
+    """Whether a grammatical home action can take its target from a room."""
+    if (simple := parse_default_light_target(clause)) is not None:
+        return simple.room is None
+    extended = parse_home_command(clause)
+    return extended is not None and extended.reason is None and not extended.target
 
 
 def _reminder_room_alias(value: str) -> str:
+    """Normalize a configured room name or its spoken form for exact matching."""
     words = re.sub(r"[\W_]+", " ", normalize_target(value)).strip()
     return _REMINDER_ROOM_ARTICLE.sub("", words)
 
 
-def _unresolved_reminder_room(request: VoiceReminderRequest, aliases: Mapping[str, set[str]]) -> bool:
-    """Recognize unsolved leading, trailing, or coordinated delivery phrases."""
+def _reminder_room_action_parts(clause: str, aliases: Mapping[str, set[str]]) -> tuple[tuple[str, str], ...]:
+    """Expand one action with explicitly named, configured rooms in spoken order."""
+    for marker in re.finditer(r"\s+en\s+", clause, flags=re.IGNORECASE):
+        action = clause[:marker.start()]
+        target = normalize_target(clause[marker.end():])
+        names = (target,) if _reminder_room_alias(target) in aliases else re.split(r"\s+y\s+(?:en\s+)?", target)
+        rooms = [aliases.get(_reminder_room_alias(name), set()) for name in names]
+        if all(len(matches) == 1 for matches in rooms) and _room_qualifies_reminder_action(action):
+            return tuple((action, room) for room in dict.fromkeys(next(iter(matches)) for matches in rooms))
+    return ()
+
+
+def _unresolved_reminder_room(request: VoiceReminderRequest, aliases: Mapping[str, set[str]],
+                             *, trailing_action_room: bool) -> bool:
+    """Find room vocabulary in delivery positions while preserving ordinary locatives."""
+    room_words = _REMINDER_ROOM_WORDS | aliases.keys()
+
+    def names_room(phrase: str) -> bool:
+        value = _reminder_room_alias(phrase.removeprefix("en "))
+        return any(value == room or value.startswith(room + " ") for room in room_words)
+
     body = normalize_target(request.text)
-    if body.startswith("en "):
+    if body.startswith("en ") and names_room(body):
         return True
-    _, marker, tail = body.rpartition(" en ")
-    if marker:
-        parts = re.split(r"\s+[yo]\s+", tail)
-        if len(parts) == 1 and " que " not in tail:
-            return True
-        if len(parts) > 1 and all(_reminder_room_alias(part) in aliases or _REMINDER_ROOM_ARTICLE.match(part)
-                                  for part in parts):
+    prefix, marker, tail = body.rpartition(" en ")
+    if marker and not trailing_action_room and " que " not in tail:
+        # An attached laundry location can describe the chore itself.
+        laundry = prefix == "sacar la ropa" and _reminder_room_alias(tail) == "patio"
+        if not laundry and all(names_room(part) for part in re.split(r"\s+[yo]\s+", tail)):
             return True
     if request.zone_phrase is not None:
         _, _, after = request.complement.partition(request.zone_phrase)
         joined = re.match(r"^[\s,]*(?:y|o)\s+(.+)", normalize_target(after))
-        if joined:
-            if _REMINDER_ROOM_ARTICLE.match(joined[1]):
-                return True
-            rest = _reminder_room_alias(joined[1])
-            return any(rest == alias or rest.startswith(alias + " ") for alias in aliases)
+        return joined is not None and names_room(joined[1])
     return False
 
 
@@ -2600,7 +2615,8 @@ class RequestDispatcher:
                     complement = (trimmed.complement if trimmed is not None and trimmed.rule == "R3a"
                                   else household.complement)
                     heard = f"recordame {_alarm_noun(text)} {complement}"
-                request = parse_reminder_request(heard, self.household_clock.now_local(), zone_aliases=room_aliases,
+                now = self.household_clock.now_local()
+                request = parse_reminder_request(heard, now, zone_aliases=room_aliases,
                                                  wake_words=self._clock_wake_words)
         except ValueError:
             logger.warning("[Reminder] voice create refused: household clock unusable; nothing written")
@@ -2612,18 +2628,37 @@ class RequestDispatcher:
             return self._household_refusal(PathType.FAST_REMINDER, intent, question, TaskStatus.NEEDS_INPUT)
         assert request is not None and request.trigger_at is not None
         if isinstance(request, VoiceReminderRequest):
+            literal = request.complement.lstrip().startswith(('"', "'", "«", "“"))
+            trailing_action_room = False
+            if self.voice_reminder_actions is True and not alarm and not literal:
+                full = request
+                if request.zone_phrase is not None:
+                    full = parse_reminder_request(heard, now, wake_words=self._clock_wake_words) or request
+                clause = split_reminder_actions(full.text)[-1]
+                raw = normalize_target(full.complement)
+                trailing_action_room = (normalize_target(clause) in raw
+                                        and bool(_reminder_room_action_parts(clause, room_aliases)))
+                if request.zone_phrase is not None and full.ok:
+                    phrase = normalize_target(request.zone_phrase)
+                    if (trailing_action_room and normalize_target(clause).endswith(" " + phrase)
+                            and not normalize_target(request.text).endswith(" " + phrase)):
+                        request = full
+                    elif forbidden_home_order(request.text) is not None:
+                        prefix, _, _ = raw.rpartition(phrase)
+                        target = _reminder_room_alias(request.zone_phrase[3:])
+                        if (prefix.rstrip().endswith(normalize_target(request.text))
+                                and len(room_aliases.get(target, ())) == 1):
+                            request = full
+                            trailing_action_room = True
             rooms = (room_aliases.get(_reminder_room_alias(request.zone_phrase[3:]), set())
                      if request.zone_phrase is not None else set())
-            literal = request.complement.lstrip().startswith(('"', "'", "«", "“"))
-            if ((not literal and _unresolved_reminder_room(request, room_aliases))
+            if ((not literal and _unresolved_reminder_room(request, room_aliases,
+                                                            trailing_action_room=trailing_action_room))
                     or (request.zone_phrase is not None and len(rooms) != 1)):
                 question = _REMINDER_ROOM_QUESTION if room_aliases else _REMINDER_NO_ROOMS_QUESTION
                 return self._household_refusal(PathType.FAST_REMINDER, intent, question, TaskStatus.NEEDS_INPUT)
             if request.zone_phrase is not None:
-                if self.voice_reminder_actions is True and not alarm and _room_qualifies_reminder_action(request):
-                    request = replace(request, text=f"{request.text} {request.zone_phrase}", zone_phrase=None)
-                else:
-                    delivery_room, = rooms
+                delivery_room, = rooms
         if isinstance(request, DeferredClause) and len(split_reminder_actions(request.clause)) > 1:
             timed = normalize_target(heard)
             when = normalize_target(request.time_phrase or "")
@@ -2636,7 +2671,7 @@ class RequestDispatcher:
             return await self._commit_voice_reminder(request.text, request.trigger_at, request.recurrence,
                                                      None, intent, after_readback=False, delivery_room=delivery_room)
         return await self._prepare_reminder_readback(request, intent, origin_room=origin_room,
-                                                     delivery_room=delivery_room)
+                                                     delivery_room=delivery_room, room_aliases=room_aliases)
 
     def _reminder_delivery_aliases(self) -> dict[str, set[str]]:
         """Index spoken forms from the configured rooms, keeping ambiguous aliases visible."""
@@ -2658,7 +2693,8 @@ class RequestDispatcher:
 
     async def _prepare_reminder_readback(self, request: VoiceReminderRequest | DeferredClause,
                                          intent: str, *, origin_room: str | None,
-                                         delivery_room: str | None) -> DispatchResult:
+                                         delivery_room: str | None,
+                                         room_aliases: Mapping[str, set[str]]) -> DispatchResult:
         deferred = isinstance(request, DeferredClause)
         text = request.clause if deferred else request.text
         literal = not deferred and request.complement.lstrip().startswith(('"', "'", "«", "“"))
@@ -2668,15 +2704,22 @@ class RequestDispatcher:
             if compound is not None and compound.family is HouseholdFamily.COMPOUND and compound.parts:
                 parts = tuple(part.segment for part in compound.parts)
 
+        raw = normalize_target(request.complement) if not deferred else ""
+        targets: list[tuple[str, str | None]] = []
+        for part in parts:
+            explicit = (_reminder_room_action_parts(part, room_aliases)
+                        if normalize_target(part) in raw else ())
+            targets.extend(explicit or ((part, origin_room),))
+
         actions: list[dict] = []
         read_parts: list[str] = []
         refused: list[str] = []
-        if len(parts) > self.household_intents.settings.compound_max_parts:
+        if len(targets) > self.household_intents.settings.compound_max_parts:
             refused.append(text)
         else:
-            for part in parts:
+            for part, room_id in targets:
                 try:
-                    action, room = await self._reminder_home_action(part, origin_room)
+                    action, room = await self._reminder_home_action(part, room_id)
                 except ValueError:
                     refused.append(part)
                     continue
@@ -2691,7 +2734,7 @@ class RequestDispatcher:
 
         # A reminder can carry the complete set of spoken actions or carry only text.
         # An unknown clause next to an admitted action must never be silently omitted.
-        if actions and len(actions) + len(refused) < len(parts):
+        if actions and len(actions) + len(refused) < len(targets):
             refused = [text]
         if deferred and (refused or len(actions) != len(parts)):
             detail = " y ".join(refused) if refused else text

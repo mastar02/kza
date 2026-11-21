@@ -221,6 +221,7 @@ class NoticeClaim:
     request_id: str
     claimed_at: float
     late: bool
+    zone: str
     outcomes: tuple[LateActionOutcome, ...] = ()
 
 
@@ -451,9 +452,13 @@ class ReminderScheduler:
         by_zone: dict[str | None, list[Reminder]] = {}
         for reminder in due:
             self._open_successor_round(reminder, now)
-            by_zone.setdefault(self._announcement_zone(reminder), []).append(reminder)
+            zone = self._announcement_zone(reminder)
+            key = zone.removeprefix(ZONE_PREFIX) if zone is not None else None
+            by_zone.setdefault(key, []).append(reminder)
         for reminders in by_zone.values():
-            await self._deliver_batch(reminders, raise_errors=False)
+            preferred_zone = next((ZONE_PREFIX + r.delivery_room for r in reminders if r.delivery_room is not None),
+                                  None)
+            await self._deliver_batch(reminders, raise_errors=False, preferred_zone=preferred_zone)
 
     def _open_successor_round(self, reminder: Reminder, now: float) -> None:
         """A held recurring occurrence gets one new round when a later occurrence becomes due.
@@ -707,7 +712,8 @@ class ReminderScheduler:
         """
         return reminder.id in await self._deliver_batch([reminder], raise_errors=True)
 
-    async def _deliver_batch(self, candidates: list[Reminder], *, raise_errors: bool) -> set[str]:
+    async def _deliver_batch(self, candidates: list[Reminder], *, raise_errors: bool,
+                             preferred_zone: str | None = None) -> set[str]:
         """Claim deliverable occurrences for one zone, speak, and finish every claim.
 
         Single flight is keyed by the reminder id rather than (id, trigger_at):
@@ -727,7 +733,7 @@ class ReminderScheduler:
             claims: list[NoticeClaim] = []
             for reminder in owned:
                 try:
-                    claim = await self._prepare(reminder)
+                    claim = await self._prepare(reminder, preferred_zone=preferred_zone)
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
@@ -740,9 +746,7 @@ class ReminderScheduler:
                     claims.append(claim)
             if not claims:
                 return confirmed
-            zone = self._announcement_zone(claims[0].occurrence)
-            assert zone is not None  # _prepare only claims occurrences with a zone
-            status, reason, contended = await self._announce(self._summary(claims), zone)
+            status, reason, contended = await self._announce(self._summary(claims), claims[0].zone)
             for claim in claims:
                 try:
                     if await self._finish(claim, status, reason, contended):
@@ -761,7 +765,7 @@ class ReminderScheduler:
             if owned and asyncio.current_task() is not self._runner_task:
                 self._wake_event.set()
 
-    async def _prepare(self, reminder: Reminder) -> NoticeClaim | None:
+    async def _prepare(self, reminder: Reminder, *, preferred_zone: str | None = None) -> NoticeClaim | None:
         """Resolve, collapse, bar late actions and claim the next notice attempt of one occurrence."""
         current = await self._shared_occurrence(reminder)
         if current is None or self._backing_off(current, self._clock()):
@@ -797,6 +801,8 @@ class ReminderScheduler:
         if zone is None or getattr(self._tts, "aspeak", None) is None:
             # CORE-06: no room or no voice output, no claim; the occurrence stays pending.
             return None
+        if preferred_zone == ZONE_PREFIX + zone:
+            zone = preferred_zone
         attempts = await self._attempts(current)
         if any(row.status in _TERMINAL or row.status is ReminderActionStatus.SENDING for row in attempts):
             self._park(current, "notice_changed_while_preparing")
@@ -812,7 +818,7 @@ class ReminderScheduler:
             # Another claimant owns this attempt: never speak it here.
             self._park(current, "notice_claimed_elsewhere")
             return None
-        return NoticeClaim(current, attempt, request_id, claimed_at, late, tuple(outcomes))
+        return NoticeClaim(current, attempt, request_id, claimed_at, late, zone, tuple(outcomes))
 
     async def _open_for_claim(self, occurrence: Reminder) -> bool:
         """False when the occurrence already ended (advance it now) or another attempt is in flight."""
@@ -922,7 +928,7 @@ class ReminderScheduler:
         occurrence = claim.occurrence
         await self._store.finish_home_action(claim.request_id, status.value, reason)
         logger.info("Reminder %s notice attempt %d in zone %s: %s (%s, late=%s)", occurrence.id, claim.attempt,
-                    self._announcement_zone(occurrence), status.value, reason, claim.late)
+                    claim.zone, status.value, reason, claim.late)
         if status is ReminderActionStatus.FAILED:
             self._hold_after_failure(occurrence, reason or status.value, claim.claimed_at, refused=not contended)
             return False

@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import AsyncExitStack, closing
 from dataclasses import replace
+import json
 import sqlite3
 import time
 from types import SimpleNamespace
@@ -255,10 +256,14 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
         wake_detector=OfflineWake, amplifier=lambda **kw: amp)
     transport = TaskTransport()
     async with transport.serve() as url:
-        config, _ = configuration(tmp_path, url)
+        config, selection = configuration(tmp_path, url)
+        grants = json.loads(selection.read_text())
+        grants['allowed_entities'].append({
+            **grants['allowed_entities'][0], 'entity_id': 'light.cocina'})
+        selection.write_text(json.dumps(grants))
         config['rooms'].update(enabled=True, living={'name': 'Living', 'mic_device_index': 0,
             'capture_channel': 1, 'ma1260_zone': 1, 'default_light': 'light.living'},
-            cocina={'name': 'Cocina', 'aliases': ['fogón'], 'ma1260_zone': 2})
+            cocina={'name': 'Cocina', 'aliases': ['fogón'], 'ma1260_zone': 2, 'default_light': 'light.cocina'})
         config['presence'] = {'enabled': False}
         config['tts']['streaming']['default_output_zone'] = 'living'
         config['reminders'].update(output_zone='zone_living', voice_actions=True)
@@ -298,6 +303,18 @@ async def test_actual_factory_voice_reminder_journey_create_list_restart_fire_on
                 assert projected['ha_actions'] == [
                     {'domain': 'light', 'service': 'turn_off', 'entity_id': 'light.living', 'room': 'Living'}]
                 deleted = await client.delete(f'/api/reminders/{action_row.id}')
+                assert deleted.status_code == 200 and deleted.json()['status'] == 'cancelled'
+                coordinated = await command(graph, 'Nexa recordame apagar las luces en la cocina y el living en diez minutos')
+                assert coordinated['task_completed'] and coordinated['response'] == 'Anotado.'
+                row, = await graph.reminder_manager.get_active(None, shared_only=True)
+                assert row.text == 'apagar las luces en la cocina y el living'
+                assert row.delivery_room == 'living'
+                assert row.ha_actions == [
+                    {'domain': 'light', 'service': 'turn_off', 'entity_id': 'light.cocina', 'data': None},
+                    {'domain': 'light', 'service': 'turn_off', 'entity_id': 'light.living', 'data': None},
+                ]
+                assert transport.sends == []
+                deleted = await client.delete(f'/api/reminders/{row.id}')
                 assert deleted.status_code == 200 and deleted.json()['status'] == 'cancelled'
             created = await command(graph, 'Nexa recordame en el fogón en 3 segundos regar las plantas')
             assert created['task_completed'] and created['outcome']['persistence'] == 'committed'
@@ -425,7 +442,6 @@ async def test_actual_factory_restart_after_three_days_gives_one_late_notice_and
 # ---------------------------------------------------------------------------
 
 from contextlib import asynccontextmanager  # noqa: E402
-import json  # noqa: E402
 
 from src.core.voice_delivery import LocalVoiceDelivery  # noqa: E402
 from src.pipeline.response_handler import ResponseHandler  # noqa: E402
