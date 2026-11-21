@@ -1,15 +1,98 @@
 """Application-owned local voice output and feature producer construction."""
 
 import asyncio
+import time
 from collections.abc import Callable
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from src.core.household_clock import HouseholdClock
+from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
 from src.core.voice_delivery import ResponseBudgets
+from src.nlu.household_intents import HouseholdOperation
 from src.pipeline.feature_manager import FeatureManager, build_feature_manager
+from src.pipeline.request_router import RequestRouter
 from src.pipeline.response_handler import ResponseHandler
 from src.reminders.reminder_scheduler import ReminderScheduler
+from src.timers.named_timers import TimerWriteError
+from src.timers.timer_store import TimerStore
+from src.timers.voice_commands import NO_RING_ROUTE, TIMERS_UNAVAILABLE, TimerVoiceCommands, TimerVoiceReply
+
+
+class DurableTimerVoiceCommands(TimerVoiceCommands):
+    """Let the existing timer command logic prepare replies before SQLite commits."""
+
+    async def execute(self, operation: HouseholdOperation, complement: str, *, text: str,
+                      zone_id: str | None) -> TimerVoiceReply:
+        """Return a mutation confirmation only after the timer transaction commits."""
+        if self.manager is None:
+            return await super().execute(operation, complement, text=text, zone_id=zone_id)
+        if not self.manager.running:
+            if self.manager.persistence is PersistenceState.UNCERTAIN:
+                return self._write_failure(PersistenceState.UNCERTAIN)
+            return await super().execute(operation, complement, text=text, zone_id=zone_id)
+        try:
+            reply = await self.manager.commit_command(
+                lambda view: TimerVoiceCommands(view).execute(operation, complement, text=text, zone_id=zone_id)
+            )
+        except TimerWriteError as error:
+            return self._write_failure(error.state)
+        return replace(reply, outcome=self._committed(reply.outcome))
+
+    async def execute_legacy(self, text: str, zone_id: str | None) -> TimerVoiceReply | None:
+        """Use the legacy timer grammar at an async delivery boundary."""
+        manager = self.manager
+        if manager is None or not manager.claims_legacy_command(text):
+            return None
+        if zone_id is None and manager._is_create_command(text.lower().strip()):
+            return TimerVoiceReply(NO_RING_ROUTE, TaskOutcome(TaskStatus.UNSUPPORTED))
+        try:
+            result = await manager.commit_command(lambda view: view.handle_voice_command(text, zone_id=zone_id))
+        except TimerWriteError as error:
+            return self._write_failure(error.state)
+        return TimerVoiceReply(result["response"], self._committed(result["outcome"]))
+
+    @staticmethod
+    def _committed(outcome: TaskOutcome) -> TaskOutcome:
+        if outcome.persistence is PersistenceState.VOLATILE:
+            return replace(outcome, persistence=PersistenceState.COMMITTED)
+        return outcome
+
+    @staticmethod
+    def _write_failure(state: PersistenceState) -> TimerVoiceReply:
+        uncertain = state is PersistenceState.UNCERTAIN
+        outcome = TaskOutcome(TaskStatus.UNCERTAIN if uncertain else TaskStatus.FAILED,
+                              persistence=state,
+                              effect=EffectState.UNCERTAIN if uncertain else EffectState.NOT_OBSERVED)
+        response = ("No puedo confirmar que se haya guardado el cambio del temporizador."
+                    if uncertain else TIMERS_UNAVAILABLE)
+        return TimerVoiceReply(response, outcome)
+
+
+class LegacyTimerRequestRouter(RequestRouter):
+    """Route admitted legacy timer turns through the same durable voice service."""
+
+    def __init__(self, *, timer_commands: DurableTimerVoiceCommands, timer_zone: str | None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._timer_commands = timer_commands
+        self._timer_zone = timer_zone
+
+    async def _try_home_command(self, text: str, result: dict, *, room_id: str | None,
+                                pipeline_start: float, extra_gate: bool) -> bool:
+        # Preserve the legacy order: extended home controls keep first claim.
+        if await super()._try_home_command(
+            text, result, room_id=room_id, pipeline_start=pipeline_start, extra_gate=extra_gate,
+        ):
+            return True
+        zone_id = self._response_zone.get() or self._timer_zone
+        reply = await self._timer_commands.execute_legacy(text, zone_id)
+        if reply is None:
+            return False
+        result.update(intent="timer", response=reply.response, success=reply.outcome.task_completed,
+                      _task_outcome=reply.outcome)
+        await self._speak_response(reply.response)
+        result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+        return True
 
 
 @dataclass
@@ -18,6 +101,7 @@ class VoiceServices:
 
     responses: ResponseHandler
     features: FeatureManager
+    timer_commands: TimerVoiceCommands
     reminders: ReminderScheduler | None = None
     reminder_task: asyncio.Task | None = field(default=None, repr=False)
 
@@ -122,7 +206,11 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
     if alert_muted is not None:
         features.bind_alert_mute(alert_muted)
     shutdown.push_async_callback(features.stop)
-    services = VoiceServices(response, features)
+    timer_commands = TimerVoiceCommands(features.timer_manager)
+    if reminder_store is not None and features.timer_manager is not None:
+        features.timer_manager.bind_store(TimerStore(reminder_store))
+        timer_commands = DurableTimerVoiceCommands(features.timer_manager)
+    services = VoiceServices(response, features, timer_commands)
     if config.get("rooms", {}).get("enabled", False) and reminder_store is not None:
         reminder_config = dict(config.get("reminders", {}))
         reminder_config["output_zone"] = shared_output_zone(config)

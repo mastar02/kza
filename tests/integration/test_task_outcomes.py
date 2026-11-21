@@ -282,12 +282,13 @@ async def test_timer_recognition_and_duplicate_name_are_not_operation_completion
         config["orchestrator"]["enabled"] = False
         async with AsyncExitStack() as stack:
             graph = await build_application(config, shutdown=stack, factories=factories)
+            await graph.voice_services.features.start()
             graph.models.stt.text = "pon un timer de cero minutos"
             invalid = await graph.pipeline.process_command(event())
             assert invalid["handled"] and not invalid["task_completed"]
             graph.models.stt.text = "timer pasta 5 minutos"
             created = await graph.pipeline.process_command(event())
-            assert created["task_completed"] and created["outcome"]["persistence"] == "volatile"
+            assert created["task_completed"] and created["outcome"]["persistence"] == "committed"
             duplicate = await graph.pipeline.process_command(event())
             assert duplicate["handled"] and not duplicate["task_completed"]
             assert len(graph.voice_services.features.timer_manager.get_active_timers()) == 1

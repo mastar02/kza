@@ -220,7 +220,7 @@ async def visit(voice: VoiceHarness, dashboard_auth: dict[str, str]) -> None:
 async def test_visitor_shared_task_lifecycle(tmp_path: Path, offline_audio: AudioBackend,
                                             monkeypatch: pytest.MonkeyPatch, dashboard_auth: dict[str, str],
                                             require_known: bool) -> None:
-    """Lists, reminders and routines persist while timers have a volatile receipt."""
+    """Visitors can manage shared durable lists, reminders, timers and routines."""
     transport = TaskTransport()
     async with transport.serve() as url:
         config, _ = configuration(tmp_path, url)
@@ -253,9 +253,9 @@ async def test_visitor_shared_task_lifecycle(tmp_path: Path, offline_audio: Audi
                          "Cancelé el recordatorio", persistence="committed")
 
             for name in ("pasta", "salsa"):
-                await say_ok(voice, f"poné un timer de 20 minutos para la {name}", "timer", name, persistence="volatile")
+                await say_ok(voice, f"poné un timer de 20 minutos para la {name}", "timer", name, persistence="committed")
             await say_ok(voice, "qué timers hay", "timer", "pasta")
-            await say_ok(voice, "cancelá el timer de la pasta", "timer", "Cancelé el temporizador", persistence="volatile")
+            await say_ok(voice, "cancelá el timer de la pasta", "timer", "Cancelé el temporizador", persistence="committed")
             timers = voice.graph.voice_services.features.timer_manager
             assert {t.name: (t.user_id, t.state) for t in timers.get_all_timers()} == {
                 "pasta": ("household", TimerState.CANCELLED), "salsa": ("household", TimerState.RUNNING),
@@ -302,8 +302,12 @@ async def test_visitor_shared_task_lifecycle(tmp_path: Path, offline_audio: Audi
             assert "ordenar el patio" not in reminders["response"]
             removed = await restarted.graph.reminder_manager._store.get_by_id(cancelled)
             assert removed is not None and removed.state is ReminderState.CANCELLED
-            await say_ok(restarted, "qué timers hay", "timer", "No hay temporizadores activos.")
-            assert restarted.graph.voice_services.features.timer_manager.get_all_timers() == []
+            timer_reply = await say_ok(restarted, "qué timers hay", "timer", "salsa")
+            assert "pasta" not in timer_reply["response"]
+            timers = restarted.graph.voice_services.features.timer_manager
+            assert {t.name: (t.user_id, t.state) for t in timers.get_all_timers()} == {
+                "salsa": ("household", TimerState.RUNNING),
+            }
             await say_ok(restarted, "qué rutinas hay", "routine", "Mañana")
             scheduler = restarted.graph.routine_scheduler
             assert await scheduler.get_latest_run(routine_id) == run
@@ -354,7 +358,7 @@ async def seed_matrix(voice: VoiceHarness, dashboard_auth: dict[str, str]) -> Pr
     created = await voice.client.post("/api/routines", json=ROUTINE, headers=dashboard_auth)
     assert created.status_code == 200, created.text
     for name in ("pasta", "salsa"):
-        await say_ok(voice, f"poné un timer de 20 minutos para la {name}", "timer", name, persistence="volatile")
+        await say_ok(voice, f"poné un timer de 20 minutos para la {name}", "timer", name, persistence="committed")
     return PrivateScope(account, private.id, private_reminder.id)
 
 
@@ -454,10 +458,10 @@ async def test_negative_visitor_matrix_with_live_retired_and_restarted_sessions(
             assert await authority.revoke_credential(authority.resolve(dashboard_auth["Authorization"]), grant_id)
             await assert_cookie_retired(voice, scope, revoked)
             await run_probes(voice, scope, "sesion_retirada", transport, variant="revoke")
-            persisted = (await snapshot(voice.graph, scope))[:-1]
+            persisted = await snapshot(voice.graph, scope)
 
         async with voice_graph(config, monkeypatch) as restarted:
-            assert (await snapshot(restarted.graph, scope)) == (*persisted, [])
+            assert await snapshot(restarted.graph, scope) == persisted
             await assert_cookie_retired(restarted, scope, logged_out)
             await assert_cookie_retired(restarted, scope, revoked)
             await run_probes(restarted, scope, "reinicio", transport)

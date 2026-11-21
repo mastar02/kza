@@ -57,7 +57,6 @@ from src.routines.proposals import RoutineProposalTray
 from src.routines.routine_scheduler import RoutineScheduler
 from src.routines.voice_proposal_extractor import VoiceProposalExtractor
 from src.routines.voice_routines import VoiceRoutineService
-from src.timers.voice_commands import TimerVoiceCommands
 from src.home_assistant.home_actions import HomeActionService
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.voice_resolver import HomeVoiceResolver
@@ -66,7 +65,7 @@ from src.pipeline.voice_pipeline import VoicePipeline
 from src.pipeline.audio_loop import AudioLoop
 from src.pipeline.audio_manager import AudioManager
 from src.pipeline.command_processor import CommandProcessor
-from src.pipeline.voice_services import build_voice_services, timer_fallback_zone
+from src.pipeline.voice_services import LegacyTimerRequestRouter, build_voice_services, timer_fallback_zone
 from src.pipeline.request_router import RequestRouter
 from src.memory.services import build_memory_services
 from src.memory.privacy_services import build_privacy_services
@@ -1860,6 +1859,7 @@ async def build_application(
     # Multi-user orchestrator (optional)
     orchestrator = None
     orchestrator_enabled = config.get("orchestrator", {}).get("enabled", True)
+    timer_zone = timer_fallback_zone(config, getattr(voice_services.features, "voice_delivery", None))
     if orchestrator_enabled:
         orchestrator = MultiUserOrchestrator(
             chroma_sync=chroma,
@@ -1885,7 +1885,7 @@ async def build_application(
             # T030-U1: the one timer manager the FeatureManager starts and stops.
             timer_manager=voice_services.features.timer_manager,
             # T030-U1 R1: ring zone of a timer without an origin room (shared-notice zone).
-            timer_fallback_zone=timer_fallback_zone(config, getattr(voice_services.features, "voice_delivery", None)),
+            timer_fallback_zone=timer_zone,
             intercom=voice_services.features.intercom,
             voice_routines=voice_routines,
             # Plan #2 OpenClaw
@@ -1908,6 +1908,8 @@ async def build_application(
                 "weather_entity", DEFAULT_WEATHER_ENTITY
             ),
         )
+        # Keep the dispatcher's existing precedence and replace only its timer command adapter.
+        orchestrator.dispatcher._timers = voice_services.timer_commands
 
         shutdown.push_async_callback(orchestrator.stop)
         if isinstance(orchestrator.context_manager, ContextManager):
@@ -1956,13 +1958,17 @@ async def build_application(
         voice_routines=voice_routines,
         # T030-U2b: a bare "listo" passes only while a timer rings or is in its stop
         # follow-up; the in-memory check reads the same timer manager the dispatcher uses.
-        ring_stop_open=TimerVoiceCommands(voice_services.features.timer_manager).ring_stop_open,
+        ring_stop_open=voice_services.timer_commands.ring_stop_open,
     )
     home_voice_resolver = HomeVoiceResolver(
         home_action_service, room_context_manager.get_all_rooms() if room_context_manager else {},
         capabilities=home_capabilities,
     )
-    request_router = RequestRouter(
+    router_factory = RequestRouter if orchestrator_enabled else LegacyTimerRequestRouter
+    timer_options = {} if orchestrator_enabled else {
+        "timer_commands": voice_services.timer_commands, "timer_zone": timer_zone,
+    }
+    request_router = router_factory(
         features=voice_services.features,
         home_voice_resolver=home_voice_resolver,
         before_handler_warn_ms=self_warn_ms,
@@ -2006,6 +2012,7 @@ async def build_application(
         household_clock=household_clock,
         household_intents=household_intents,
         voice_routines=voice_routines,
+        **timer_options,
     )
 
     shutdown.push_async_callback(request_router.aclose)
