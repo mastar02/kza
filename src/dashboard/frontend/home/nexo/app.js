@@ -519,7 +519,7 @@ async function activate(view, push = true, force = false) {
       byId('map-loading').hidden = false;
       house = createHouse({ container: byId('house-canvas'), onReady(ready) {
         byId('map-loading').hidden = true;
-        for (const id of ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'reset-view']) byId(id).disabled = !ready;
+        for (const id of ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'rotate-left', 'rotate-right', 'reset-view']) byId(id).disabled = !ready;
       } });
       cameraView('3d', false);
     }
@@ -628,7 +628,8 @@ for (const control of byId('layer-tabs').querySelectorAll('[data-layer]')) contr
 });
 for (const [id, callback] of [
   ['view-3d', () => cameraView('3d')], ['view-top', () => cameraView('top')],
-  ['zoom-in', () => house?.zoom(.12)], ['zoom-out', () => house?.zoom(-.12)], ['reset-view', () => { house?.reset(); cameraView('3d', false); }]
+  ['zoom-in', () => house?.zoom(.12)], ['zoom-out', () => house?.zoom(-.12)],
+  ['rotate-left', () => house?.rotate(-1)], ['rotate-right', () => house?.rotate(1)], ['reset-view', () => { house?.reset(); cameraView('3d', false); }]
 ]) byId(id).addEventListener('click', callback);
 byId('expand-map').addEventListener('click', () => { const expanded = document.body.classList.toggle('map-expanded'); byId('expand-map').setAttribute('aria-expanded', String(expanded)); });
 // On phones the view group scrolls inside the bottom rail: edge fades show there is more, the

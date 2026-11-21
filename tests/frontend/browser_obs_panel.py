@@ -102,7 +102,21 @@ LAYOUT_PROBE = r"""(() => {
   const fields = 'input:not([type=checkbox]):not([type=radio]), select, textarea';
   const review = '#view-users section[aria-label="Escuchar muestra"]';
   const reviewCard = document.querySelector(review);
+  // T042-U5 Q24: visible informative text (decorative aria-hidden glyphs excluded) is at least 11 px; sizes only, never text.
+  const smallText = () => {
+    const found = [], walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    for (let node; (node = walker.nextNode());) {
+      const el = node.parentElement;
+      if (!el || !node.textContent.trim() || el.closest('script, style, noscript, svg, [aria-hidden=true]')
+          || !el.getClientRects().length || !el.checkVisibility({visibilityProperty: true, opacityProperty: true})) continue;
+      const size = parseFloat(getComputedStyle(el).fontSize);
+      if (size < 11) found.push(`${el.localName}${el.className ? '.' + String(el.className).trim().split(/\s+/).join('.') : ''} ${size}px`);
+    }
+    return found.slice(0, 10);
+  };
   return {
+    smallText: smallText(),
+    viewportCover: /viewport-fit=cover/.test(document.querySelector('meta[name=viewport]')?.content || ''),
     width: window.innerWidth, client: root.clientWidth,
     page: Math.max(root.scrollWidth, document.body.scrollWidth),
     targets: visible(`button, ${fields}`).filter(el => bounds(el).width < 44 || bounds(el).height < 44)
@@ -232,6 +246,8 @@ async def check_layout(page: Page, width: int, view: str, *, names=(), overlay: 
     probe = await page.evaluate(LAYOUT_PROBE)
     assert probe['width'] == width and probe['page'] <= probe['client'], (width, view, probe)
     assert not probe['targets'] and not probe['fields'], (width, view, probe)
+    assert not probe['smallText'], f'Q24 /obs/ {view} {width}px text below 11px: {probe["smallText"]}'
+    assert probe['viewportCover'], 'The /obs/ viewport must use viewport-fit=cover'
     assert all(actual == (1 if width < 768 else configured) for configured, actual in probe['grids']), (width, view, probe)
     assert len(probe['overlays']) == int(overlay), (width, view, probe)
     assert all(0 <= left < right <= probe['client'] for left, right in probe['overlays']), (width, view, probe)

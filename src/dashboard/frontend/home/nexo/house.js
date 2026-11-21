@@ -1,5 +1,7 @@
 // Geometry adapted from approved NEXO reference d686fcde; illustrative only.
 import * as THREE from './vendor/three.module.min.js';
+const ROTATE_STEP = Math.PI / 12; // WCAG 2.5.7: a fixed 15 degree step that stands in for the drag gesture.
+const DEFAULT_YAW = .68;
 const ROOM_LAYOUT = {
   living:{x:-2.6,z:2.05,w:6.5,d:3.75,pin:[-2.9,1.25,2.4]},
   kitchen:{x:-4.05,z:-2.05,w:3.7,d:3.7,pin:[-4,1.25,-2.0]},
@@ -15,7 +17,7 @@ export function createHouse({container,onReady=()=>{}}) {
   const listeners=new AbortController();
   function destroy(){
     if(destroyed)return;
-    destroyed=true;cancelAnimationFrame(rafId);observer?.disconnect();listeners.abort();
+    destroyed=true;cancelAnimationFrame(rafId);observer?.disconnect();listeners.abort();delete container.dataset.yaw;
     const canvas=renderer?.domElement;
     if(pointerId!==null&&canvas?.hasPointerCapture?.(pointerId))canvas.releasePointerCapture(pointerId);
     const geometries=new Set(),allMaterials=new Set(Object.values(materials)),textures=new Set();
@@ -43,7 +45,7 @@ export function createHouse({container,onReady=()=>{}}) {
   const house=new THREE.Group();scene.add(house);
   const camera=new THREE.OrthographicCamera(-12,12,8,-8,.1,100);
   const target=new THREE.Vector3(.7,.1,0);
-  let yaw=.68,tilt=.78,zoom=1.1,currentYaw=yaw,currentTilt=tilt,currentZoom=zoom;
+  let yaw=DEFAULT_YAW,tilt=.78,zoom=1.1,currentYaw=yaw,currentTilt=tilt,currentZoom=zoom;
   let width=0,height=0,dirty=true,dragging=false,startX=0,startY=0;
   const hemisphere=new THREE.HemisphereLight(0xc9ddff,0x243137,1.25);scene.add(hemisphere);
   const keyLight=new THREE.DirectionalLight(0xe0ecff,1.8);keyLight.position.set(-4,14,8);keyLight.castShadow=true;
@@ -169,7 +171,10 @@ export function createHouse({container,onReady=()=>{}}) {
   const boundsCorners=[];
   for(const x of [-7.25,9.25])for(const y of [-.5,2.2])for(const z of [-5.3,5.3])boundsCorners.push(new THREE.Vector3(x,y,z));
   const cameraPoint=new THREE.Vector3();
-  const reducedMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const motionQuery=matchMedia('(prefers-reduced-motion: reduce)');
+  const reducedMotion=motionQuery.matches;
+  const publishYaw=()=>{container.dataset.yaw=yaw.toFixed(4);};
+  publishYaw();
   function cameraUpdate(){
     const a=width/height;
     camera.position.set(target.x+26*Math.sin(currentTilt)*Math.sin(currentYaw),26*Math.cos(currentTilt),target.z+26*Math.sin(currentTilt)*Math.cos(currentYaw));camera.lookAt(target);camera.updateMatrixWorld();
@@ -186,14 +191,14 @@ export function createHouse({container,onReady=()=>{}}) {
     if(document.hidden||time-lastTime<30)return;
     lastTime=time;
     const diff=Math.abs(currentYaw-yaw)+Math.abs(currentTilt-tilt)+Math.abs(currentZoom-zoom);
-    if(diff>.0001){const ease=reducedMotion?1:.13;currentYaw+=(yaw-currentYaw)*ease;currentTilt+=(tilt-currentTilt)*ease;currentZoom+=(zoom-currentZoom)*ease;dirty=true;}
+    if(diff>.0001){const ease=reducedMotion||motionQuery.matches?1:.13;currentYaw+=(yaw-currentYaw)*ease;currentTilt+=(tilt-currentTilt)*ease;currentZoom+=(zoom-currentZoom)*ease;dirty=true;}
     if(!dirty)return;cameraUpdate();renderer.render(scene,camera);dirty=false;
   }
   rafId=requestAnimationFrame(frame);
   const canvas=renderer.domElement;
   const listen=(event,callback,options={})=>canvas.addEventListener(event,callback,{...options,signal:listeners.signal});
   listen('pointerdown',event=>{if(event.button!==0)return;pointerId=event.pointerId;dragging=true;startX=event.clientX;startY=event.clientY;canvas.setPointerCapture(pointerId);});
-  listen('pointermove',event=>{if(!dragging)return;const dx=event.clientX-startX,dy=event.clientY-startY;yaw-=dx*.006;tilt=THREE.MathUtils.clamp(tilt+dy*.003,.12,1.18);startX=event.clientX;startY=event.clientY;dirty=true;});
+  listen('pointermove',event=>{if(!dragging)return;const dx=event.clientX-startX,dy=event.clientY-startY;yaw-=dx*.006;publishYaw();tilt=THREE.MathUtils.clamp(tilt+dy*.003,.12,1.18);startX=event.clientX;startY=event.clientY;dirty=true;});
   const stopDrag=()=>{dragging=false;if(pointerId!==null&&canvas.hasPointerCapture(pointerId))canvas.releasePointerCapture(pointerId);pointerId=null;};
   listen('pointerup',stopDrag);listen('pointercancel',stopDrag);listen('lostpointercapture',()=>{dragging=false;pointerId=null;});
   listen('wheel',event=>{if(event.ctrlKey||event.metaKey){event.preventDefault();zoom=THREE.MathUtils.clamp(zoom-event.deltaY*.002,.65,1.65);dirty=true;}},{passive:false});
@@ -201,15 +206,18 @@ export function createHouse({container,onReady=()=>{}}) {
   listen('webglcontextrestored',()=>{dirty=true;onReady(true);});
   onReady(true);
   return {
-    setView(view){if(destroyed)return;tilt=view==='top'?.025:.78;yaw=.68;zoom=1.1;dirty=true;},
+    setView(view){if(destroyed)return;tilt=view==='top'?.025:.78;yaw=DEFAULT_YAW;publishYaw();zoom=1.1;dirty=true;},
+    /** Turn the model by one fixed step (+1 right, -1 left); under reduced motion the step lands without easing. */
+    rotate(direction){if(destroyed)return;yaw+=(direction<0?1:-1)*ROTATE_STEP;if(motionQuery.matches)currentYaw=yaw;publishYaw();dirty=true;},
+    yaw(){return destroyed?null:yaw;},
     zoom(delta){if(destroyed)return;zoom=THREE.MathUtils.clamp(zoom+delta,.65,1.65);dirty=true;},
-    reset(){if(destroyed)return;yaw=.68;tilt=.78;zoom=1.1;dirty=true;},destroy
+    reset(){if(destroyed)return;yaw=DEFAULT_YAW;publishYaw();tilt=.78;zoom=1.1;dirty=true;},destroy
   };
   } catch {
     destroy();
     const fallback=document.createElement('div');fallback.className='house-fallback';
     fallback.innerHTML='<svg viewBox="0 0 800 480" aria-hidden="true"><g transform="translate(390 220) scale(1 .58) rotate(30)"><rect x="-260" y="-180" width="520" height="360" rx="5" fill="#233545" stroke="#62e8cd" stroke-width="2"/><path d="M-260-180h520v360M-260-180v360M-260 0h520M20-180v360M150 0v180M-100-180V0" fill="none" stroke="#9caabc" stroke-width="14"/><rect x="-220" y="50" width="160" height="60" rx="9" fill="#7c8fb0"/><rect x="60" y="-130" width="140" height="95" rx="7" fill="#c4b89a"/></g></svg>';
     container.append(fallback);onReady(false);
-    return {setView(){},zoom(){},reset(){},destroy(){fallback.remove();}};
+    return {setView(){},zoom(){},rotate(){},yaw(){return null;},reset(){},destroy(){fallback.remove();}};
   }
 }
