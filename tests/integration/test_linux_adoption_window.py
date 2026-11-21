@@ -51,9 +51,8 @@ by ``install-controller`` at W3 and after W9; (iii) the compiled dry run
 refuses an epoch-5 and that epoch-3 archive (``read_r1_archive``); (iv) the
 runbook's pinned-sha block, run as written (tests/mocks/r1_runbook.py), stops
 on the stale epoch-3 archive and on a rebuilt-but-different R1; and, last,
-the AUTHZ3-1 residual: a stage_runtime copy built from b0c322d~1 still
-prepares, grants and activates another slot on the adopted epoch-4 root
-(pinned as found; the operating rule and SC-6a's cleanup are the barrier).
+the AUTHZ3-1 rehearsal: the b0c322d~1 copy prepares an unbound slot.
+Delegation refuses on the adopted schema contract 2 and leaves r1 selected.
 
 Run test_linux_managed_launcher.py and test_linux_adoption_window.py one
 pytest at a time, never side by side: they share this account's user manager, and any
@@ -86,6 +85,7 @@ from scripts import adoption
 from scripts import adoption_commands as commands
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
+from tests.integration.test_sc6a_r1_rehearsal import assert_authz3_1_schema_refusal
 from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
 from tests.mocks import adoption_legacy as fixture
 from tests.mocks import launcher_rehearsal as rehearsal
@@ -1014,27 +1014,9 @@ def test_the_window_in_runbook_order_under_real_systemd(tmp_path, tree, built, s
     assert w.stop_managed()[0].returncode == 0 and w.head()["status"] == "closed"
     evidence["restore_after_crash"] = variants
 
-    # SC-6a / AUTHZ3-1, last (it moves the head): a stage_runtime copy from 69a79e6..b0c322d~1 does not read
-    # the epoch. On this adopted epoch-4 root it still prepares, grants and activates another slot, which
-    # becomes the head. Pinned as found: the barrier is the operating rule (only controller/current) and
-    # SC-6a's removal of every such copy; SC-1 owns the structural guard (DEPLOYMENT).
-    head = w.head()
-    assert head["status"] == "closed"
-    prepared_p = w.compiled(built["early_stage"], "prepare", str(built["early"]), "p", "--state-source", str(state))
-    assert prepared_p.returncode == 0, prepared_p.stderr[-3000:]
-    granted = w.compiled(built["early_stage"], "delegate", "p")
-    assert granted.returncode == 0, granted.stderr[-3000:]
-    grant = json.loads(granted.stdout.splitlines()[-1])
-    assert grant["slot"] == "p" and grant["source_binding"] == head["binding_id"]
-    assert list((w.root / "admission" / "delegations").iterdir())
-    moved = w.compiled(built["early_stage"], "activate", "p")
-    assert moved.returncode == 0, moved.stderr[-3000:]
-    assert stage.read_binding(w.root, w.head()["binding_id"])["slot"] == "p"
-    assert os.readlink(w.root / "current") == "slots/p/runtime"
-    assert json.loads((w.root / "admission" / "controller.json").read_text())["controller_epoch"] == 4
-    evidence["sc6a_authz3_1_residual"] = {"copy": EARLY_COPY, "prepare_exit": prepared_p.returncode,
-                                          "delegate_exit": granted.returncode, "activate_exit": moved.returncode,
-                                          "head_slot_after": "p"}
+    # SC-6a / AUTHZ3-1: the early copy leaves an unbound slot for the fixture's cleanup.
+    evidence["sc6a_authz3_1_residual"] = assert_authz3_1_schema_refusal(
+        w.root, state, built["early"], lambda *args: w.compiled(built["early_stage"], *args))
     evidence["timings"] = w.timings
     real_systemd.record("window", evidence)
 
