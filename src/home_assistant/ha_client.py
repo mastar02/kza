@@ -807,11 +807,14 @@ class HomeAssistantClient:
         else:
             self._avg_latency_ms = 0.7 * self._avg_latency_ms + 0.3 * latency_ms
 
-    def _record_error(self, error: Exception, context: str, *, channel: str = 'rest') -> None:
+    def _record_error(self, error: Exception, context: str, *, channel: str = 'rest',
+                      transport_current: bool = True) -> None:
         """Record a failed HA call for health tracking."""
         if self._closed:
             return
         self._error_count += 1
+        if not transport_current:
+            return
         self._last_error_ts = time.time()
         self._last_error_message = f"{context}: {error}"
         if isinstance(error, aiohttp.ClientResponseError) and error.status in (401, 403):
@@ -1808,19 +1811,16 @@ class HomeAssistantClient:
         entity_id: str,
         data: dict | None = None
     ) -> bool:
-        """Llamar servicio via WebSocket (mas rapido que REST).
+        """Llamar un servicio por WebSocket con entrega incierta sin reenvío.
 
-        Latencia tipica: 10-20ms vs 50-100ms de REST.
-        Falls back to REST automatically on WS failure.
-
-        Si la conexión tuvo que abrirse dentro de esta misma llamada (primer
-        comando después de un hueco idle, incidente 2026-07-25), un único
-        fallo no es evidencia confiable: se reintenta una vez sobre el socket
-        nuevo antes de darlo por perdido. Sobre una conexión ya establecida NO
-        se reintenta — ahí el fallo es real y un retry dispararía el servicio
-        dos veces.
+        Usa REST si falla la conexión antes de enviar por WebSocket. Después de
+        intentar el envío, un timeout, cierre o relevo devuelve False porque HA
+        pudo ejecutar el servicio. Un rechazo explícito de HA en una conexión
+        recién abierta conserva el reintento histórico sobre ese mismo socket.
         """
         async with self._ws_call_lock:
+            if self._closed:
+                return self._calls_socket_current(self._ws_calls)
             # ¿La conexión ya estaba viva antes de esta llamada?
             was_established = (
                 self._ws_connected
@@ -1830,34 +1830,32 @@ class HomeAssistantClient:
 
             # Asegurar conexion WebSocket
             if not await self.ensure_websocket_connected():
+                if self._closed:
+                    return self._calls_socket_current(self._ws_calls)
                 logger.debug("WebSocket no disponible, usando REST")
                 return await self.call_service(domain, service, entity_id, data)
 
             ws = self._ws_calls
-            result = await self._send_ws_call(domain, service, entity_id, data)
-            if self._closed or self._ws_calls is not ws:
-                return False
-
-            if result is True:
-                return result
-            if result is False:
-                if was_established:
-                    return False
+            result = await self._send_ws_call(ws, domain, service, entity_id, data)
+            if result is False and not was_established:
                 logger.info(
                     f"[WS-RETRY] {domain}.{service}@{entity_id} falló sobre una "
                     f"conexión recién abierta — un reintento"
                 )
-                retry = await self._send_ws_call(domain, service, entity_id, data)
-                if self._closed or self._ws_calls is not ws:
-                    return False
-                if retry is not None:
-                    return retry
+                result = await self._send_ws_call(ws, domain, service, entity_id, data)
+            return result is True
 
-            # result is None (o el retry también fue None) → WS inutilizable.
-            if ws is not None and is_native_websocket(ws) and ws.closed:
-                # This request may already have reached HA before retirement.
-                return False
-            return await self.call_service(domain, service, entity_id, data)
+    def _calls_socket_current(self, ws: aiohttp.ClientWebSocketResponse | None) -> bool:
+        current = self._ws_calls is ws
+        if not self._closed and current and ws is not None and not ws.closed:
+            return True
+        if current and not self._closed:
+            self._ws_connected = False
+        reason = 'ha_calls_socket_closed' if current or self._closed else 'ha_calls_socket_replaced'
+        logger.warning("HA WebSocket service outcome unavailable: %s", reason)
+        self._record_error(aiohttp.ClientConnectionError(reason), "call_service_ws", channel="calls",
+                           transport_current=current)
+        return False
 
     async def _receive_ws_result(
         self,
@@ -1900,6 +1898,7 @@ class HomeAssistantClient:
 
     async def _send_ws_call(
         self,
+        ws: aiohttp.ClientWebSocketResponse | None,
         domain: str,
         service: str,
         entity_id: str,
@@ -1908,11 +1907,10 @@ class HomeAssistantClient:
         """Un intento de call_service por el canal WS de calls.
 
         Returns:
-            True/False según el `success` del result de HA, o None si el WS
-            quedó inutilizable y el caller debe caer a REST.
+            True o False para una respuesta explícita de HA. None si no se
+            pudo confirmar el resultado sobre el socket original.
         """
-        ws = self._ws_calls
-        if ws is None:
+        if not self._calls_socket_current(ws):
             return None
 
         t_start = time.perf_counter()
@@ -1934,11 +1932,13 @@ class HomeAssistantClient:
             })
 
             response = await self._receive_ws_result(ws, msg_id)
-            if self._closed or self._ws_calls is not ws:
-                return False
+            if not self._calls_socket_current(ws):
+                return None
 
             elapsed = (time.perf_counter() - t_start) * 1000
-            success = response.get("success", False)
+            success = response.get("success")
+            if response.get("type") != "result" or type(success) is not bool:
+                raise ValueError("ha_ws_service_response_invalid")
             if success:
                 self._record_success(elapsed, channel="calls")
                 logger.debug(f"WS: {domain}.{service} -> {entity_id} ({elapsed:.0f}ms)")
@@ -1952,8 +1952,8 @@ class HomeAssistantClient:
             return success
 
         except asyncio.TimeoutError:
-            if self._closed or self._ws_calls is not ws:
-                return False
+            if not self._calls_socket_current(ws):
+                return None
             elapsed = (time.perf_counter() - t_start) * 1000
             logger.warning(
                 f"WebSocket timeout for {domain}.{service} on {entity_id} "
@@ -1963,8 +1963,8 @@ class HomeAssistantClient:
             return None
 
         except Exception as e:
-            if self._closed or self._ws_calls is not ws:
-                return False
+            if not self._calls_socket_current(ws):
+                return None
             logger.error(f"Error WebSocket: {e}")
             self._ws_connected = False  # Marcar para reconexion
             self._record_error(e, f"call_service_ws({domain}.{service})", channel="calls")

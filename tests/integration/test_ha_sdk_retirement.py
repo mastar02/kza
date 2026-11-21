@@ -16,7 +16,7 @@ pytestmark = pytest.mark.asyncio
 
 
 @asynccontextmanager
-async def local_ha(*, close_release=None, subscriptions=None, effects=None):
+async def local_ha(*, close_release=None, subscriptions=None, effects=None, service_reply="close"):
     connections = []
 
     async def websocket(request):
@@ -51,8 +51,12 @@ async def local_ha(*, close_release=None, subscriptions=None, effects=None):
                 continue
             if effects is not None and body["type"] == "call_service":
                 effects.append("ws")
-                await ws.close()
-                break
+                if service_reply == "close":
+                    await ws.close()
+                    break
+                if service_reply == "ack":
+                    await ws.send_json({"type": "result", "id": body["id"], "success": True})
+                continue
             assert body == {"type": "ping", "id": 7}
             await ws.send_json({"type": "pong", "id": 7})
         return ws
@@ -317,7 +321,7 @@ async def test_failed_sdk_ping_is_already_done_when_heartbeat_cleanup_captures_i
 
 
 @pytest.mark.parametrize("purpose", ["calls", "events"])
-async def test_resistant_sdk_close_is_quarantined_and_baseline_recovers_within_60s(monkeypatch, purpose):
+async def test_resistant_sdk_close_is_quarantined_and_baseline_recovers_within_60s(monkeypatch, caplog, purpose):
     subscriptions, effects, callbacks = [], [], []
     async with (local_ha(subscriptions=subscriptions, effects=effects) as (url, connections),
                 aiohttp.ClientSession(connector=aiohttp.TCPConnector(limit_per_host=2)) as session):
@@ -398,6 +402,8 @@ async def test_resistant_sdk_close_is_quarantined_and_baseline_recovers_within_6
             if effect is not None:
                 assert await effect is False
                 assert effects == ["ws"]
+                assert "ha_calls_socket_closed" in caplog.text
+                assert "ha_calls_socket_closed" in client.get_health_status().last_error_message
 
             elapsed = 61.
             assert loop.time() - started > 60. and not owner.done()
@@ -423,3 +429,102 @@ async def test_resistant_sdk_close_is_quarantined_and_baseline_recovers_within_6
                                  return_exceptions=True)
             await client.close()
             assert not session.closed
+
+
+async def test_abort_without_connection_loss_refuses_successor_and_quarantine(monkeypatch):
+    effects = []
+    async with local_ha(effects=effects) as (url, connections), aiohttp.ClientSession() as session:
+        client = HomeAssistantClient(url, "synthetic-only", session=session)
+        loop = asyncio.get_running_loop()
+        now = loop.time
+        advance = 0.
+        monkeypatch.setattr(loop, "time", lambda: now() + advance)
+        entered, attempted_abort, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        observer = owner = None
+        try:
+            assert await client.connect_websocket()
+            old = client._ws_calls
+            protocol = old._response.connection.protocol
+            lost = protocol.closed
+            descriptor = old.get_extra_info("socket")
+            native_close = old._writer.close
+
+            async def hold_native_close(*args, **kwargs):
+                entered.set()
+                await release.wait()
+                return await native_close(*args, **kwargs)
+
+            monkeypatch.setattr(old._writer, "close", hold_native_close)
+            monkeypatch.setattr(protocol, "abort", attempted_abort.set)
+            observer = asyncio.create_task(client._retire_socket("calls"))
+            await asyncio.wait_for(entered.wait(), 3)
+            owner = client._sdk_retirements[id(old)]._task
+            advance = ha_module.STATE_CLOSE_OBSERVATION_TIMEOUT_S + .01
+            await asyncio.wait_for(attempted_abort.wait(), 3)
+            assert not protocol._connection_lost_called and not lost.done()
+            assert descriptor.fileno() >= 0 and not owner.done() and not observer.done()
+
+            advance += ha_module.STATE_CLOSE_ABORT_JOIN_TIMEOUT_S + .01
+            with pytest.raises(aiohttp.ClientConnectionError, match="ha_socket_abort_unconfirmed"):
+                await asyncio.wait_for(observer, 3)
+            with pytest.raises(aiohttp.ClientConnectionError, match="ha_socket_abort_unconfirmed"):
+                await client.connect_websocket()
+            with pytest.raises(aiohttp.ClientConnectionError, match="ha_socket_abort_unconfirmed"):
+                await client.call_service_ws("light", "turn_on", "light.synthetic")
+            assert effects == []
+            assert len(connections) == 1 and client._ws_calls is None and not lost.done()
+            assert id(old) in client._owned_sockets and owner in client._transport_tasks
+            health = client.get_health_status()
+            assert health.retirements_pending == 1
+            assert health.retirements_quarantined == health.retirements_quarantined_total == 0
+        finally:
+            release.set()
+            await asyncio.gather(*(task for task in (owner, observer) if task is not None),
+                                 return_exceptions=True)
+            try:
+                await client.close()
+            except aiohttp.ClientConnectionError as error:
+                assert str(error) == "ha_socket_abort_unconfirmed"
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "replaced"])
+async def test_inflight_calls_outcome_is_observed_without_replaying(monkeypatch, caplog, outcome):
+    effects = []
+    reply = "hold" if outcome == "timeout" else "ack"
+    async with local_ha(effects=effects, service_reply=reply) as (url, connections), aiohttp.ClientSession() as session:
+        client = HomeAssistantClient(url, "synthetic-only", session=session)
+        release, ack_received = asyncio.Event(), asyncio.Event()
+        call = None
+        try:
+            assert await client.connect_websocket()
+            if outcome == "timeout":
+                monkeypatch.setattr(ha_module, "WS_CALL_TIMEOUT", .02)
+            else:
+                receive = client._receive_ws_result
+
+                async def hold_ack(*args):
+                    result = await receive(*args)
+                    ack_received.set()
+                    await release.wait()
+                    return result
+
+                monkeypatch.setattr(client, "_receive_ws_result", hold_ack)
+            call = asyncio.create_task(client.call_service_ws("light", "turn_on", "light.synthetic"))
+            if outcome == "replaced":
+                await asyncio.wait_for(ack_received.wait(), 3)
+                await client._retire_socket("calls")
+                assert await client.connect_websocket() and len(connections) == 2
+                successor = client.get_health_status().calls
+                release.set()
+            assert await asyncio.wait_for(call, 3) is False
+            assert effects == ["ws"] and client.get_health_status().error_count == 1
+            if outcome == "replaced":
+                assert "ha_calls_socket_replaced" in caplog.text
+                assert client.get_health_status().calls == successor
+            else:
+                assert "WebSocket timeout for light.turn_on" in caplog.text
+        finally:
+            release.set()
+            if call is not None:
+                await asyncio.gather(call, return_exceptions=True)
+            await client.close()

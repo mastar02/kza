@@ -44,12 +44,19 @@ class WebSocketRetirement:
             raise aiohttp.ClientConnectionError("ha_sdk_retirement_unavailable")
         self._protocol = protocol
         self._lost = protocol.closed
-        if self._lost is None and not protocol._connection_lost_called:
+        connection_lost = protocol._connection_lost_called
+        self._original_close = ws.close
+        self._cancel_heartbeat = ws._cancel_heartbeat
+        self._set_closed = ws._set_closed
+        ping = ws._ping_task
+        if (type(connection_lost) is not bool
+                or (not connection_lost if self._lost is None else not isinstance(self._lost, asyncio.Future))
+                or ping is not None and not isinstance(ping, asyncio.Task)
+                or not all(map(callable, (protocol.abort, self._set_closed, self._cancel_heartbeat,
+                                          self._original_close, self._response.close, self._response.wait_for_close)))):
             raise aiohttp.ClientConnectionError("ha_sdk_retirement_unavailable")
         if self._lost is not None:
             self._lost.add_done_callback(_observe_done, context=Context())
-        self._original_close = ws.close
-        self._cancel_heartbeat = ws._cancel_heartbeat
         # No await separates capture from installation: SDK callbacks cannot
         # begin a close or discard a cancelled ping between these steps.
         ws._cancel_heartbeat = self._track_heartbeat_cancel
@@ -101,7 +108,7 @@ class WebSocketRetirement:
 
             # Fence SDK callbacks and detach the old response from the
             # connector before admitting any successor in the same session.
-            self._ws._set_closed()
+            self._set_closed()
             self._response.close()
             self._isolate(owner)
             owner.cancel()
