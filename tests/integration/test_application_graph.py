@@ -313,9 +313,11 @@ async def test_phrase_reaches_actual_main_feature_and_shared_pcm_output(leaves, 
         config["orchestrator"]["enabled"] = False
         async with AsyncExitStack() as stack:
             graph = await build_application(config, shutdown=stack, factories=leaves)
+            await graph.voice_services.features.start()
             event = CommandEvent(np.full(16000, 0.1, dtype=np.float32), room_id="")
             result = await graph.pipeline.process_command(event)
             assert result["intent"] == "timer" and result["success"]
+            assert result["outcome"]["persistence"] == "committed"
             assert graph.models.stt.calls == 1
             assert graph.models.tts.texts
             assert len(backend.heard()) > 0
@@ -516,7 +518,7 @@ async def test_orchestrated_twin_reaches_the_main_timer_and_shared_pcm_output(le
 
             created = await graph.pipeline.process_command(_timer_turn())  # "pon un timer de 5 minutos"
             assert (created["intent"], created["path"], created["success"]) == ("timer", "fast_timer", True)
-            assert created["task_completed"] and created["outcome"]["persistence"] == "volatile"
+            assert created["task_completed"] and created["outcome"]["persistence"] == "committed"
             (timer,) = timers.get_all_timers()
             # No zone routes in this graph: "default" is the one local output (R1: deliverable, not a null zone).
             assert features.voice_delivery.require_zone is False
@@ -534,6 +536,8 @@ async def test_orchestrated_twin_reaches_the_main_timer_and_shared_pcm_output(le
                 graph.models.stt.text = text
                 result = await graph.pipeline.process_command(_timer_turn())
                 assert (result["intent"], result["path"], result["task_completed"]) == ("timer", "fast_timer", True)
+                if text != journey[0][0]:
+                    assert result["outcome"]["persistence"] == "committed"
                 assert timer.state is state
                 assert graph.models.tts.texts[-1].startswith(spoken)
             assert len(timers.get_all_timers()) == 1
@@ -579,6 +583,68 @@ async def test_stop_by_voice_while_the_timer_rings_on_the_shared_output(leaves, 
             assert observations["service_calls"] == 0
 
 
+async def test_timer_voice_create_query_and_cancel_across_graph_restarts(leaves, monkeypatch, tmp_path):
+    async with offline_home() as (url, observations):
+        config = offline_config(tmp_path, url)
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            await graph.voice_services.features.start()
+            graph.models.stt.text = "poné un temporizador de 5 minutos para la pasta"
+            created = await graph.pipeline.process_command(_timer_turn())
+            assert created["task_completed"] and created["outcome"]["persistence"] == "committed"
+            (original,) = graph.voice_services.features.timer_manager.get_all_timers()
+
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            features = graph.voice_services.features
+            timers = features.timer_manager
+            monkeypatch.setattr(timers, "_wall_clock", lambda: time.time() + 30)
+            await features.start()
+            (restored,) = timers.get_all_timers()
+            assert (restored.timer_id, restored.ends_at) == (original.timer_id, original.ends_at)
+            assert 0 < restored.remaining_seconds <= 270
+            assert features.get_status()["timers"]["status"]["durable_active"] == 1
+            graph.models.stt.text = "¿cuánto le falta al timer de pasta?"
+            queried = await graph.pipeline.process_command(_timer_turn())
+            assert queried["task_completed"] and "Al temporizador de pasta, faltan" in queried["response"]
+
+            graph.models.stt.text = "cancelá el timer de pasta"
+            cancelled = await graph.pipeline.process_command(_timer_turn())
+            assert cancelled["task_completed"] and cancelled["outcome"]["persistence"] == "committed"
+
+        async with AsyncExitStack() as stack:
+            graph = await build_application(config, shutdown=stack, factories=leaves)
+            await graph.voice_services.features.start()
+            assert graph.voice_services.features.timer_manager.get_all_timers() == []
+            graph.models.stt.text = "¿cuánto le falta al timer de pasta?"
+            queried = await graph.pipeline.process_command(_timer_turn())
+            assert not queried["task_completed"] and queried["response"] == "No encontré un temporizador de pasta."
+            assert observations["service_calls"] == 0
+
+
+async def test_timer_store_failure_speaks_no_success_and_leaves_no_timer(leaves, tmp_path):
+    async with offline_home() as (url, _):
+        async with AsyncExitStack() as stack:
+            graph = await build_application(offline_config(tmp_path, url), shutdown=stack, factories=leaves)
+            await graph.voice_services.features.start()
+            store = graph.reminder_manager._store
+
+            def reject_insert(db):
+                db.execute("CREATE TRIGGER reject_timer BEFORE INSERT ON timers "
+                           "BEGIN SELECT RAISE(ABORT, 'synthetic storage failure'); END")
+
+            await store._work.write(reject_insert)
+            graph.models.stt.text = "poné un temporizador de 5 minutos para la pasta"
+            result = await graph.pipeline.process_command(_timer_turn())
+            assert not result["task_completed"] and not result["success"]
+            assert (result["outcome"]["status"], result["outcome"]["persistence"]) == ("uncertain", "uncertain")
+            assert graph.models.tts.texts == ["No puedo confirmar que se haya guardado el cambio del temporizador."]
+            timers = graph.voice_services.features.timer_manager
+            assert timers.get_all_timers() == []
+            assert timers.get_status()["persistence"] == "uncertain"
+            assert await store._work.read(lambda db: db.execute("SELECT count(*) FROM timers").fetchone()[0]) == 0
+
+
 async def test_listo_stops_the_ring_only_while_it_sounds_on_the_real_graph(leaves, monkeypatch, tmp_path):
     """T030-U2b (user answer morning_questions_20261119) on the graph main builds: the command gate gets the
     timer manager's ring check, so 'listo' is noise while a timer only runs and stops the ring when it sounds,
@@ -599,13 +665,13 @@ async def test_listo_stops_the_ring_only_while_it_sounds_on_the_real_graph(leave
             created = await graph.pipeline.process_command(_timer_turn())
             assert (created["path"], created["success"]) == ("fast_timer", True)
             (timer,) = timers.get_all_timers()
-            assert timers.pause_timer(timer.timer_id)  # held before its ring while 'listo' is heard
+            assert await timers.commit_command(lambda view: view.pause_timer(timer.timer_id))
             spoken = len(graph.models.tts.texts)
             graph.models.stt.text = "listo"
             early = await graph.pipeline.process_command(_timer_turn())
             assert early["intent"] == "gate_rejected:noise_phrase:'listo'"
             assert timer.state is TimerState.PAUSED and len(graph.models.tts.texts) == spoken
-            assert timers.resume_timer(timer.timer_id)
+            assert await timers.commit_command(lambda view: view.resume_timer(timer.timer_id))
             ring = "¡Terminó el temporizador de 1 segundo!"
             for _ in range(100):
                 if ring in graph.models.tts.texts:

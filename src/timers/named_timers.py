@@ -16,7 +16,7 @@ speaks for seconds never delays another timer. A ring stops when the household
 silences it (voice stop or barge-in), and its outcome is a delivery receipt
 (``RingDelivery``) beside the unchanged ``TimerState`` (design schema_v2_draft:
 ring delivery is not a timer state). ``stop()`` cancels and awaits every
-delivery task. Timers stay volatile until SCHEMA-V2 (T030-U3).
+delivery task. A bound SCHEMA-V2 store owns timer mutations and recovery.
 """
 
 import asyncio
@@ -24,6 +24,7 @@ import inspect
 import logging
 import re
 import time
+from copy import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable
@@ -32,6 +33,9 @@ import uuid
 
 from src.core.voice_delivery import DeliveryState, ResponseResult, ResponseStage, VoiceDeliveryError, invoke_voice_callback
 from src.core.task_outcome import EffectState, PersistenceState, TaskOutcome, TaskStatus
+from src.reminders.reminder_scheduler import notice_outcome
+from src.reminders.reminder_store import ReminderActionStatus, TimerState
+from src.timers.timer_store import TimerConflict, TimerRecord, TimerStore
 from src.timers.voice_request import format_duration
 
 logger = logging.getLogger(__name__)
@@ -51,6 +55,8 @@ WARNING_STALE_S = 5.0
 # A stop command this soon after the household cut a ring (barge-in, receipt STOPPED) still names
 # that ring, so it never falls through to cancelling another running timer (voice_commands).
 RING_FOLLOW_UP_S = 30.0
+NOTICE_RETRY_S = 30.0
+RETENTION_INTERVAL_S = 6 * 3600.0
 
 
 def warning_thresholds(
@@ -68,13 +74,6 @@ def warning_thresholds(
     if duration_seconds <= NO_WARNING_UP_TO_S:
         return []
     return list(intervals)
-
-
-class TimerState(StrEnum):
-    RUNNING = "running"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
 
 
 class RingDelivery(StrEnum):
@@ -99,6 +98,14 @@ class RingDelivery(StrEnum):
 RING_NOT_HEARD = frozenset({RingDelivery.RING_FAILED, RingDelivery.UNDELIVERED})
 
 
+class TimerWriteError(RuntimeError):
+    """A timer mutation lacks a committed receipt."""
+
+    def __init__(self, state: PersistenceState) -> None:
+        super().__init__(state.value)
+        self.state = state
+
+
 @dataclass
 class NamedTimer:
     """Un timer con nombre.
@@ -110,9 +117,9 @@ class NamedTimer:
     """
     timer_id: str
     name: str                          # "pasta", "salsa", "huevos"
-    duration_seconds: int              # Duración total
+    duration_seconds: float            # Duración total
     created_at: datetime
-    zone_id: str = "default"           # Zona donde se creó
+    zone_id: str | None = "default"    # Zona donde se creó
     user_id: str | None = None      # Usuario que lo creó
 
     # Estado
@@ -135,6 +142,7 @@ class NamedTimer:
     ring_ended_at: float | None = field(default=None, repr=False, compare=False)
     created_mono: float = field(default=0.0, init=False, repr=False, compare=False)  # on ``clock``
     _left: float = field(default=0.0, init=False, repr=False, compare=False)
+    revision: int = field(default=0, repr=False, compare=False)
 
     def __post_init__(self):
         if self.started_at is None:
@@ -265,6 +273,12 @@ class NamedTimerManager:
         # Task de actualización
         self._update_task: asyncio.Task | None = None
         self._running = False
+        self._store: TimerStore | None = None
+        self._persistence = PersistenceState.VOLATILE
+        self._mutation_lock = asyncio.Lock()
+        self._staged: dict[str, NamedTimer] | None = None
+        self._notice_task: asyncio.Task | None = None
+        self._pending_notices = 0
 
         # Owned delivery tasks: warnings and rings, by timer id (T030-U2).
         self._deliveries: dict[asyncio.Task, str] = {}
@@ -283,13 +297,36 @@ class NamedTimerManager:
         """
         return self._running and self._update_task is not None and not self._update_task.done()
 
-    async def start(self):
-        """Iniciar el manager de timers"""
-        if self._running:
-            return
-        self._running = True
-        self._update_task = asyncio.create_task(self._update_loop())
-        logger.info("Timer manager iniciado")
+    @property
+    def persistence(self) -> PersistenceState:
+        """The last observed state of the timer store."""
+        return self._persistence
+
+    def bind_store(self, store: TimerStore) -> None:
+        """Bind the application-owned store before starting the manager."""
+        if self._running or self._timers or self._store is not None:
+            raise RuntimeError("timer_store_binding_requires_new_manager")
+        self._store = store
+        self._persistence = PersistenceState.UNKNOWN
+
+    async def start(self) -> None:
+        """Recover durable timers before admitting any voice command."""
+        async with self._mutation_lock:
+            if self._running:
+                return
+            if self._store is not None:
+                try:
+                    records = await self._store.recover(self._wall_clock())
+                    self._timers = {row.id: self._restore(row) for row in records}
+                    self._pending_notices = len(await self._store.pending_notices())
+                except Exception:
+                    self._persistence = PersistenceState.UNCERTAIN
+                    raise
+                self._persistence = PersistenceState.COMMITTED
+                self._notice_task = asyncio.create_task(self._maintain_notices())
+            self._running = True
+            self._update_task = asyncio.create_task(self._update_loop())
+            logger.info("Timer manager iniciado")
 
     async def stop(self):
         """Stop ticking, then cancel and await every warning and ring task.
@@ -298,10 +335,16 @@ class NamedTimerManager:
         is spoken.
         """
         self._running = False
-        task = self._update_task  # kept, done, after stop (lifecycle checks read it)
+        async with self._mutation_lock:
+            self._running = False
+            task = self._update_task  # kept, done, after stop (lifecycle checks read it)
+            notice = self._notice_task
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        if notice is not None:
+            notice.cancel()
+            await asyncio.gather(notice, return_exceptions=True)
         deliveries = list(self._deliveries)
         for delivery in deliveries:
             delivery.cancel()
@@ -314,7 +357,10 @@ class NamedTimerManager:
         while self._running:
             wait = TICK_S
             try:
-                wait = self._tick()
+                if self._store is None:
+                    wait = self._tick()
+                else:
+                    wait = await self._tick_durable()
             except Exception as error:
                 logger.error("Timer tick failed: %s", type(error).__name__)
             await self._sleep(wait)
@@ -325,7 +371,14 @@ class NamedTimerManager:
         Nothing here awaits: warnings and rings start as owned tasks, so a
         ring never delays the deadlines of the other timers.
         """
+        for timer in self._find_due():
+            self._complete(timer)
+        return self._next_wait(self._clock())
+
+    def _find_due(self) -> list[NamedTimer]:
+        """Issue due warnings and select expirations on the monotonic clock."""
         now = self._clock()
+        due = []
         for timer in list(self._timers.values()):
             if timer.state is not TimerState.RUNNING or timer.deadline is None:
                 continue
@@ -339,8 +392,177 @@ class NamedTimerManager:
                     continue
                 self._spawn(timer, self._warn(timer, mark))
             if left <= 0:
-                self._complete(timer)
-        return self._next_wait(self._clock())
+                due.append(timer)
+        return due
+
+    async def _tick_durable(self) -> float:
+        """Serialize expiry with commands and start rings only after the commit."""
+        async with self._mutation_lock:
+            for timer in self._find_due():
+                try:
+                    await self._persist(
+                        [self._record(timer, state=TimerState.COMPLETED)],
+                        lambda timer=timer: self._publish_expiry(timer),
+                    )
+                except TimerWriteError:
+                    return TICK_S
+            return self._next_wait(self._clock())
+
+    def _publish_expiry(self, timer: NamedTimer) -> None:
+        timer.revision += 1
+        self._complete(timer)
+
+    def _restore(self, row: TimerRecord) -> NamedTimer:
+        wall_now = self._wall_clock()
+        mono_now = self._clock()
+        remaining = (max(0.0, row.ends_at - wall_now)
+                     if row.state is TimerState.RUNNING else row.remaining_s or 0.0)
+        timer = NamedTimer(
+            row.id, row.label, row.duration_s, datetime.fromtimestamp(row.created_at),
+            zone_id=row.delivery_room, user_id=row.actor, state=row.state,
+            announce_at=warning_thresholds(row.duration_s, self.default_announce),
+            deadline=mono_now + remaining if row.state is TimerState.RUNNING else None,
+            ends_at=row.ends_at, clock=self._clock, wall_clock=self._wall_clock, revision=row.revision,
+        )
+        timer.created_mono = mono_now - (wall_now - row.created_at)
+        timer._left = remaining
+        timer.warned.update(mark for mark in timer.announce_at if mark > remaining + WARNING_STALE_S)
+        return timer
+
+    def _record(self, timer: NamedTimer, *, state: TimerState | None = None) -> TimerRecord:
+        state = state or timer.state
+        return TimerRecord(
+            timer.timer_id, timer.name, timer.user_id or "household", timer.zone_id,
+            state, timer.duration_seconds, timer.ends_at,
+            None if state is TimerState.RUNNING else timer.remaining_seconds,
+            timer.created_at.timestamp(), self._wall_clock(), timer.revision,
+        )
+
+    async def _persist(self, records: list[TimerRecord], publish: Callable[[], None]) -> None:
+        """Keep the mutation lock through SQLite commit and in-memory publication."""
+        pending = asyncio.create_task(self._store.save(records))
+        cancelled = False
+        try:
+            while not pending.done():
+                try:
+                    await asyncio.shield(pending)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break
+            pending.result()
+        except TimerConflict:
+            # A second manager may have won the revision. Drop stale active
+            # copies rather than retrying a mutation against an old selection.
+            for row in records:
+                try:
+                    current = await self._store.get(row.id)
+                except Exception as error:
+                    self._persistence = PersistenceState.UNCERTAIN
+                    logger.warning("Timer store conflict refresh failed: %s", type(error).__name__)
+                    break
+                if current is None or current.state in (TimerState.COMPLETED, TimerState.CANCELLED):
+                    self._timers.pop(row.id, None)
+                    self._cancel_deliveries(row.id)
+                elif current.revision != row.revision:
+                    self._timers[row.id] = self._restore(current)
+            raise TimerWriteError(PersistenceState.FAILED) from None
+        except Exception as error:
+            self._persistence = PersistenceState.UNCERTAIN
+            logger.warning("Timer store write unverified: %s", type(error).__name__)
+            raise TimerWriteError(PersistenceState.UNCERTAIN) from None
+        else:
+            self._persistence = PersistenceState.COMMITTED
+            publish()
+        finally:
+            if cancelled:
+                raise asyncio.CancelledError
+
+    async def commit_command[T](
+        self, command: Callable[["NamedTimerManager"], T | Awaitable[T]],
+    ) -> T:
+        """Prepare a command on a copy-on-write view and publish after its commit.
+
+        The existing command handlers may still select timers and format their
+        replies synchronously. Their provisional mutations never reach a live
+        timer or start deliveries.
+        """
+        async with self._mutation_lock:
+            view = self
+            if self._store is not None:
+                if not self.running:
+                    raise TimerWriteError(PersistenceState.UNCERTAIN if self.persistence is PersistenceState.UNCERTAIN
+                                          else PersistenceState.FAILED)
+                view = copy(self)
+                view._timers = self._timers.copy()
+                view._staged = {}
+            reply = command(view)
+            if inspect.isawaitable(reply):
+                reply = await reply
+            if view._staged:
+                await self._persist([self._record(timer) for timer in view._staged.values()],
+                                    lambda: self._publish_changes(view._staged))
+            return reply
+
+    def _publish_changes(self, changes: dict[str, NamedTimer]) -> None:
+        for timer_id, change in changes.items():
+            change.revision += 1
+            timer = self._timers.get(timer_id)
+            if timer is None:
+                self._timers[timer_id] = change
+            else:
+                timer.state = change.state
+                timer.deadline = change.deadline
+                timer.ends_at = change.ends_at
+                timer._left = change._left
+                timer.started_at = change.started_at
+                timer.revision = change.revision
+                if timer.state is TimerState.CANCELLED:
+                    self._cancel_deliveries(timer_id)
+
+    async def _maintain_notices(self) -> None:
+        """Deliver a short recovery notice and retry only when no audio started."""
+        next_cleanup = self._clock() + RETENTION_INTERVAL_S  # initial cleanup is part of recovery
+        while self._running:
+            try:
+                if self._clock() >= next_cleanup:
+                    async with self._mutation_lock:
+                        for timer_id in await self._store.cleanup(self._wall_clock()):
+                            self._timers.pop(timer_id, None)
+                    next_cleanup = self._clock() + RETENTION_INTERVAL_S
+                if self.tts is not None:
+                    notices = await self._store.pending_notices()
+                    self._pending_notices = len(notices)
+                    for row in notices:
+                        await self._deliver_notice(row)
+                    if notices:
+                        self._pending_notices = len(await self._store.pending_notices())
+            except Exception as error:
+                logger.warning("Timer notice maintenance failed: %s", type(error).__name__)
+            await self._sleep(NOTICE_RETRY_S)
+
+    async def _deliver_notice(self, row: TimerRecord) -> None:
+        if not await self._store.claim_notice(row.id):
+            return
+        try:
+            description = f"de {row.label or format_duration(row.duration_s)}"
+            result = await invoke_voice_callback(
+                self.tts, f"El temporizador {description} terminó mientras el sistema estaba apagado.",
+                row.delivery_room,
+            )
+            status, reason = notice_outcome(result)
+        except VoiceDeliveryError as error:
+            if error.result is not None:
+                status, reason = notice_outcome(error.result)
+            else:
+                status, reason = ReminderActionStatus.FAILED, "delivery_not_started:route"
+        except asyncio.CancelledError:
+            await self._store.finish_notice(row.id, ReminderActionStatus.UNCERTAIN, "interrupted_send")
+            raise
+        except Exception as error:
+            logger.warning("Timer recovery notice unverified: %s", type(error).__name__)
+            status, reason = ReminderActionStatus.UNCERTAIN, "delivery_unverified"
+        await self._store.finish_notice(row.id, status, reason)
 
     def _next_wait(self, now: float) -> float:
         wait = TICK_S
@@ -371,7 +593,7 @@ class NamedTimerManager:
                 self._on_timer_complete(timer)
             except Exception as error:
                 logger.error("Timer completion callback failed: %s", type(error).__name__)
-        if timer.repeat:
+        if timer.repeat and self._store is None:
             # Next round from the old deadline, so a repeating timer never drifts.
             timer.state = TimerState.RUNNING
             timer.started_at = datetime.now()
@@ -411,9 +633,22 @@ class NamedTimerManager:
 
     # ==================== Comandos de Voz ====================
 
+    def claims_legacy_command(self, text: str) -> bool:
+        """Whether the legacy timer grammar recognizes an admitted turn."""
+        text = text.lower().strip()
+        return any(check(text) for check in (
+            self._is_create_command, self._is_query_command, self._is_list_command,
+            self._is_cancel_command, self._is_pause_command, self._is_resume_command,
+        ))
+
     def handle_voice_command(self, text: str, user_id: str = None, zone_id: str = "default") -> dict:
         """Distinguish a recognized timer request from an observed mutation."""
         text_lower = text.lower().strip()
+        if (self._store is not None and self._staged is None and (
+                self._is_create_command(text_lower) or self._is_cancel_command(text_lower)
+                or self._is_pause_command(text_lower) or self._is_resume_command(text_lower))):
+            return {"handled": True, "response": "Ahora no puedo manejar temporizadores.", "timer": None,
+                    "outcome": TaskOutcome(TaskStatus.FAILED, persistence=PersistenceState.FAILED)}
         if self._is_create_command(text_lower):
             result = self._handle_create(text_lower, user_id, zone_id)
             done = result.get("timer") is not None
@@ -522,20 +757,7 @@ class NamedTimerManager:
                 "timer": None
             }
 
-        # Crear timer
-        timer = NamedTimer(
-            timer_id=f"timer_{uuid.uuid4().hex[:8]}",
-            name=name,
-            duration_seconds=duration,
-            created_at=datetime.now(),
-            zone_id=zone_id,
-            user_id=user_id,
-            announce_at=warning_thresholds(duration, self.default_announce),
-            clock=self._clock,
-            wall_clock=self._wall_clock,
-        )
-
-        self._timers[timer.timer_id] = timer
+        timer = self.create_timer(name, duration, user_id, zone_id)
 
         response = f"Timer {name} configurado para {timer.format_remaining()}"
         # Labels are household content: never above DEBUG (design household_conventions.logging).
@@ -893,20 +1115,34 @@ class NamedTimerManager:
         user_id: str = None,
         zone_id: str = "default"
     ) -> NamedTimer:
-        """Crear timer programáticamente"""
+        """Create a timer in memory or stage it inside a durable command."""
+        self._require_write_view()
         timer = NamedTimer(
-            timer_id=f"timer_{uuid.uuid4().hex[:8]}",
+            timer_id=f"timer_{uuid.uuid4().hex}",
             name=name,
             duration_seconds=duration_seconds,
-            created_at=datetime.now(),
+            created_at=datetime.fromtimestamp(self._wall_clock()),
             zone_id=zone_id,
-            user_id=user_id,
+            user_id=(user_id or "household") if self._store is not None else user_id,
             announce_at=warning_thresholds(duration_seconds, self.default_announce),
             clock=self._clock,
             wall_clock=self._wall_clock,
         )
         self._timers[timer.timer_id] = timer
+        if self._staged is not None:
+            self._staged[timer.timer_id] = timer
         return timer
+
+    def _require_write_view(self) -> None:
+        if self._store is not None and self._staged is None:
+            raise RuntimeError("durable_timer_write_requires_commit_command")
+
+    def _edit(self, timer: NamedTimer) -> NamedTimer:
+        if self._staged is None or timer.timer_id in self._staged:
+            return timer
+        change = copy(timer)
+        self._timers[timer.timer_id] = self._staged[timer.timer_id] = change
+        return change
 
     def get_timer(self, timer_id: str) -> NamedTimer | None:
         """Obtener timer por ID"""
@@ -926,28 +1162,35 @@ class NamedTimerManager:
         Returns:
             True only when the timer existed and changed to CANCELLED.
         """
+        self._require_write_view()
         timer = self._timers.get(timer_id)
         if timer is None or timer.state not in (TimerState.RUNNING, TimerState.PAUSED):
             return False
+        timer = self._edit(timer)
         timer._freeze()
         timer.state = TimerState.CANCELLED
-        self._cancel_deliveries(timer_id)
+        if self._staged is None:
+            self._cancel_deliveries(timer_id)
         return True
 
     def pause_timer(self, timer_id: str) -> bool:
         """Pause a running timer by id; True only when it changed to PAUSED."""
+        self._require_write_view()
         timer = self._timers.get(timer_id)
         if timer is None or timer.state is not TimerState.RUNNING:
             return False
+        timer = self._edit(timer)
         timer._freeze()
         timer.state = TimerState.PAUSED
         return True
 
     def resume_timer(self, timer_id: str) -> bool:
         """Resume a paused timer by id; True only when it changed to RUNNING."""
+        self._require_write_view()
         timer = self._timers.get(timer_id)
         if timer is None or timer.state is not TimerState.PAUSED:
             return False
+        timer = self._edit(timer)
         timer._arm(timer._left)
         timer.state = TimerState.RUNNING
         timer.started_at = datetime.now()
@@ -980,8 +1223,10 @@ class NamedTimerManager:
         """Obtener estado del manager"""
         return {
             "running": self.running,
-            # Timers do not survive a restart until SCHEMA-V2 (T030-U3).
-            "persistence": PersistenceState.VOLATILE.value,
+            "persistence": self._persistence.value,
+            "durable_active": sum(t.revision > 0 and t.state in (TimerState.RUNNING, TimerState.PAUSED)
+                                  for t in self._timers.values()),
+            "pending_notices": self._pending_notices,
             "total_timers": len(self._timers),
             "active": sum(1 for t in self._timers.values() if t.state == TimerState.RUNNING),
             "paused": sum(1 for t in self._timers.values() if t.state == TimerState.PAUSED),
