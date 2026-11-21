@@ -307,7 +307,20 @@ def _assert_restored(ordinary, latest, restored: Path, saved: dict, readback: Pa
     assert dead | kept <= {record["id"] for record in old_index["records"]}
     new_records = {record["id"]: record for record in new_index["records"]}
     assert not dead & new_records.keys() and kept <= new_records.keys()
-    shutil.copytree(restored / new_index["relative_path"], readback)
+    restored_index = restored / new_index["relative_path"]
+    database = restored_index / "chroma.sqlite3"
+    with closing(sqlite3.connect(database.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
+        # _chroma_ids treats a queued ID as live unless its latest operation is DELETE.
+        for identity in sorted(dead):
+            latest_operation = db.execute(
+                "SELECT operation FROM embeddings_queue WHERE id = ? ORDER BY seq_id DESC LIMIT 1",
+                (identity,),
+            ).fetchone()
+            assert latest_operation == (3,), (identity, latest_operation)
+            assert db.execute(
+                "SELECT embedding_id FROM embeddings WHERE embedding_id = ?", (identity,),
+            ).fetchone() is None, identity
+    shutil.copytree(restored_index, readback)
     client = chromadb.PersistentClient(path=str(readback), settings=Settings(anonymized_telemetry=False))
     try:
         collection = client.get_collection(new_index["collection"], embedding_function=None)

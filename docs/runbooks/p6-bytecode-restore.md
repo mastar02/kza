@@ -1,16 +1,17 @@
 # P6 · Bytecode reproducible y restauración compatible
 
-Ejecutar antes de P7 como `yo` desde el checkout de desarrollo
-`/home/yo/projects/kza`, con el entorno de dependencias del candidato en
-`.venv` y CPython 3.13 (ABI `cp313`). En Mac, usar la cuenta y el checkout de
+El bloque Bash corresponde al host Linux `kza-yo`. Ejecutarlo antes de P7
+como `yo` desde el checkout de desarrollo `/home/yo/projects/kza`, con las
+dependencias del candidato en `.venv` y CPython 3.13 (ABI `cp313`). En Mac,
+adaptar las comprobaciones de usuario y ruta a la cuenta y al checkout de
 desarrollo autorizados. Seleccionar el commit completo del candidato y
-confirmar que el árbol de trabajo está limpio.
+confirmar que el árbol versionado está limpio.
 
 ```bash
 set -eu
 test "$(id -un)" = yo
 test "$(git rev-parse --show-toplevel)" = /home/yo/projects/kza
-test -z "$(git status --porcelain)"
+test -z "$(git status --porcelain --untracked-files=no)"
 COMMIT="$(git rev-parse --verify HEAD^{commit})"
 PY="$PWD/.venv/bin/python"
 EVIDENCE="$(mktemp -d /tmp/kza-p6-t063.XXXXXXXX)"
@@ -38,11 +39,19 @@ del CLI de preparación.
 La prueba usa datos sintéticos bajo `--basetemp`. El controlador compilado
 cierra el estado original O, retira una conversación y cierra el estado N.
 Con ambos snapshots cerrados, `materialize_derived_state` prepara la copia
-en un slot aparte bajo la autoridad de N. El ensayo comprueba la ausencia de
-filas y blobs retirados y de contenido de memorias y preferencias eliminadas en
-SQLite y Chroma, la preservación de los datos testigo vigentes y la igualdad
-byte por byte de la base de N que contiene `reminders`, `timers` y
-`alert_preferences`. La copia permanece fuera de servicio y el head sigue en N.
+en un slot aparte bajo la autoridad de N. El ensayo verifica que las filas y
+blobs retirados están ausentes, que el contenido de los hechos y preferencias
+borrados es nulo (`content IS NULL`) en `privacy.db` y que los identificadores
+retirados están ausentes de la tabla `embeddings` y de la lectura con el SDK de
+Chroma. Los datos testigo vigentes se conservan y la base de N que contiene
+`reminders`, `timers` y `alert_preferences` coincide byte por byte con la de
+la copia. La copia permanece fuera de servicio y el head sigue en N.
+
+En el almacén Chroma copiado, las entradas anteriores de `embeddings_queue`
+y los segmentos pueden conservar físicamente texto y vectores hasta la
+reconstrucción del almacén en la compactación SC-4c. El último registro de
+cada identificador retirado en la cola es `DELETE` (`op=3`), por lo que esos
+residuos no vuelven a formar parte del índice lógico.
 
 Para la revisión, conservar `tier0.log`, `tier0.xml`, `summary.json`,
 `build-proof.json`, `boot.log` y `restore-proof.json`. El informe de
