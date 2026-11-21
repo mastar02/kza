@@ -9,7 +9,7 @@ import pytest_asyncio
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from src.core.task_outcome import DispatchState
+from src.core.task_outcome import DispatchState, PersistenceState, TaskStatus
 from src.home_assistant.ha_client import HomeAssistantClient
 from src.lists.ha_sync import ConflictReason, ConflictWinner, SyncStatus, TodoStatus
 from src.lists.list_manager import ListManager
@@ -241,6 +241,106 @@ async def test_readding_completed_item_reopens_without_ha_entity(store, shared, 
     assert await store.get_items(shared.id) == [result.item]
     assert result.sync_report.status is SyncStatus.INVALID_CONFIGURATION
     assert ha.calls == []
+
+
+async def _tick_in_ha_then_readd(store, shared, ha, *, with_snapshot):
+    manager = ListManager(store, ha.client, CONFIG)
+    item = await manager.add_item(None, "leche", shared_only=True)
+    uid, = ha.items
+    assert ha.items[uid]["status"] == TodoStatus.PENDING
+    ha.items[uid]["status"] = TodoStatus.COMPLETED
+    ha.calls.clear()
+    if not with_snapshot:
+        manager = ListManager(store, ha.client, CONFIG)
+
+    result = await manager.add_item_with_outcome(None, "Leche", shared_only=True)
+    assert result.outcome.task_completed
+    assert result.item.id == item.id and not result.item.completed
+    assert await store.get_items(shared.id) == [result.item]
+    assert ha.items[uid]["status"] == TodoStatus.PENDING
+    assert ha.writes == [("update_item", {"entity_id": ENTITY, "item": uid, "status": TodoStatus.PENDING})]
+    conflict, = result.sync_report.conflicts
+    assert (conflict.winner, conflict.reason) == (ConflictWinner.LOCAL, ConflictReason.EXPLICIT_LOCAL_ADD)
+
+    ha.calls.clear()
+    assert (await manager.sync_with_ha()).status is SyncStatus.COMPLETE
+    assert ha.writes == []
+
+    # Once the explicit add converges, a new completion is a remote change.
+    ha.items[uid]["status"] = TodoStatus.COMPLETED
+    assert (await manager.sync_with_ha()).status is SyncStatus.COMPLETE
+    assert (await store.get_items(shared.id))[0].completed
+    assert ha.writes == []
+
+
+@pytest.mark.asyncio
+async def test_ha_tick_without_intermediate_sync_then_readd_with_snapshot(store, shared, ha):
+    await _tick_in_ha_then_readd(store, shared, ha, with_snapshot=True)
+
+
+@pytest.mark.asyncio
+async def test_ha_tick_without_intermediate_sync_then_readd_without_snapshot(store, shared, ha):
+    await _tick_in_ha_then_readd(store, shared, ha, with_snapshot=False)
+
+
+@pytest.mark.asyncio
+async def test_ha_clear_completed_without_sync_then_readd(store, shared, ha):
+    manager = ListManager(store, ha.client, CONFIG)
+    uid = ha.put("leche", TodoStatus.COMPLETED)
+    assert (await manager.sync_with_ha()).status is SyncStatus.COMPLETE
+    completed, = await store.get_items(shared.id)
+    assert completed.completed
+    del ha.items[uid]
+    ha.calls.clear()
+
+    result = await manager.add_item_with_outcome(None, "Leche", shared_only=True)
+    assert result.outcome.task_completed
+    assert result.item.id == completed.id and not result.item.completed
+    assert await store.get_items(shared.id) == [result.item]
+    assert [item["status"] for item in ha.items.values()] == [TodoStatus.PENDING]
+    assert ha.writes == [("add_item", {"entity_id": ENTITY, "item": "leche"})]
+    conflict, = result.sync_report.conflicts
+    assert (conflict.winner, conflict.reason) == (ConflictWinner.LOCAL, ConflictReason.EXPLICIT_LOCAL_ADD)
+
+    ha.calls.clear()
+    assert (await manager.sync_with_ha()).status is SyncStatus.COMPLETE
+    assert ha.writes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("remote_status", [TodoStatus.COMPLETED, TodoStatus.REMOVED])
+async def test_add_outcome_reflects_a_newer_remote_mutation(store, shared, ha, remote_status):
+    manager = ListManager(store, ha.client, CONFIG)
+    initial = await manager.add_item(None, "leche", shared_only=True)
+    remote, = ha.items.values()
+    remote["status"] = remote_status.value
+    remote["updated_at"] = datetime.now(UTC).timestamp() + 60
+
+    result = await manager.add_item_with_outcome(None, "Leche", shared_only=True)
+    assert not result.outcome.task_completed
+    assert result.outcome.status is TaskStatus.UNCERTAIN
+    assert result.outcome.persistence is PersistenceState.UNCERTAIN
+    conflict, = result.sync_report.conflicts
+    assert (conflict.winner, conflict.reason) == (ConflictWinner.HA, ConflictReason.TIMESTAMP)
+    items = await store.get_items(shared.id)
+    if remote_status is TodoStatus.COMPLETED:
+        assert result.item.id == initial.id and result.item.completed
+        assert items == [result.item]
+    else:
+        assert result.item is None and items == []
+
+
+@pytest.mark.asyncio
+async def test_add_by_id_returns_only_a_pending_post_sync_item(store, shared, ha):
+    manager = ListManager(store, ha.client, CONFIG)
+    item = await manager.add_item_to_list_id(shared.id, "leche", shared_only=True)
+    remote, = ha.items.values()
+    remote["status"] = TodoStatus.COMPLETED.value
+    remote["updated_at"] = datetime.now(UTC).timestamp() + 60
+
+    assert await manager.add_item_to_list_id(shared.id, "Leche", shared_only=True) is None
+    effective, = await store.get_items(shared.id)
+    assert effective.id == item.id and effective.completed
 
 
 @pytest.mark.asyncio

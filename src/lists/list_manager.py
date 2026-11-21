@@ -73,15 +73,15 @@ class ListManager:
 
     async def add_item(self, user_id: str | None, item_text: str, list_name: str | None = None, *,
                        shared_only: bool = False, guard: AuthorityGuard | None = None) -> ListItem | None:
-        """Add locally only after an eligible list and committed item are selected."""
+        """Return a confirmed pending item for the requested add."""
         result = await self.add_item_with_outcome(user_id, item_text, list_name,
             shared_only=shared_only, guard=guard)
-        return result.item
+        return result.item if result.outcome.task_completed else None
 
     async def add_item_with_outcome(self, user_id: str | None, item_text: str,
                                     list_name: str | None = None, *, shared_only: bool = False,
                                     guard: AuthorityGuard | None = None) -> ListWriteResult:
-        """Keep scope rejection separate from a committed local write and replication."""
+        """Report the effective local item after optional HA reconciliation."""
         lst = await self._resolve_list(user_id, list_name, shared_only=shared_only, guard=guard)
         if lst is None:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
@@ -92,10 +92,17 @@ class ListManager:
         if item is None:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
                 persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
+
         report = await self._replicate(lst, guard)
+        item = await self._verify_added_item(item, report, guard)
+        replication = self._dispatch_state(report)
+        if item is None or item.completed:
+            return ListWriteResult(item, TaskOutcome(TaskStatus.UNCERTAIN,
+                persistence=PersistenceState.UNCERTAIN, effect=EffectState.UNCERTAIN,
+                replication=replication), report)
         return ListWriteResult(item, TaskOutcome(TaskStatus.COMPLETED,
             persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
-            observation_scope="software_state", replication=self._dispatch_state(report)), report)
+            observation_scope="software_state", replication=replication), report)
 
     async def _replicate(self, lst: UserList, guard: AuthorityGuard | None) -> SyncReport | None:
         if self._ha_sync is None or not _is_shared_target(lst, self._default_list_name):
@@ -105,6 +112,20 @@ class ListManager:
         except Exception:
             logger.warning("List committed locally; HA reconciliation remains incomplete")
             return SyncReport(SyncStatus.INCOMPLETE)
+
+    async def _verify_added_item(
+        self, item: ListItem, report: SyncReport | None, guard: AuthorityGuard | None,
+    ) -> ListItem | None:
+        if report is None:
+            return item
+        try:
+            items = await self._store.get_items_in_scope(item.list_id, shared_only=True, guard=guard)
+        except PermissionError:
+            return None
+        except Exception:
+            logger.warning("Could not verify the added list item after HA reconciliation")
+            return None
+        return next((current for current in items or () if current.id == item.id), None)
 
     @staticmethod
     def _dispatch_state(report: SyncReport | None) -> DispatchState:
@@ -225,14 +246,15 @@ class ListManager:
         self, list_id: str, item_text: str, user_id: str | None = None, *,
         guard: AuthorityGuard | None = None, shared_only: bool = False, owner: str | None = None,
     ) -> ListItem | None:
-        """Check the parent and add an item by ID under original authority."""
+        """Return a pending item confirmed within the selected list and authority."""
         target = await self._sync_target(list_id, guard)
         item = await self._add_local_item(
             list_id, item_text, user_id, shared_only=shared_only, guard=guard, owner=owner, target=target,
         )
         if item is not None and target is not None:
-            await self._replicate(target, guard)
-        return item
+            report = await self._replicate(target, guard)
+            item = await self._verify_added_item(item, report, guard)
+        return item if item is not None and not item.completed else None
 
     async def remove_item_by_id(self, item_id: str, *, list_id: str | None = None,
                                 guard: AuthorityGuard | None = None,

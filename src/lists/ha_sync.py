@@ -43,6 +43,7 @@ class ConflictWinner(StrEnum):
 class ConflictReason(StrEnum):
     TIMESTAMP = "timestamp"
     HA_FALLBACK = "ha_fallback"
+    EXPLICIT_LOCAL_ADD = "explicit_local_add"
 
 
 @dataclass(frozen=True)
@@ -122,8 +123,8 @@ def _timestamp(value: object) -> float | None:
     return None
 
 
-def _local_state(item: ListItem, reopened_at: float | None = None) -> _ItemState:
-    pending_since = reopened_at if reopened_at is not None else item.created_at
+def _local_state(item: ListItem, added_at: float | None = None) -> _ItemState:
+    pending_since = added_at if added_at is not None else item.created_at
     return _ItemState(
         item.text, TodoStatus.COMPLETED if item.completed else TodoStatus.PENDING,
         item.completed_at if item.completed else pending_since, item.id,
@@ -151,18 +152,25 @@ def _changed(current: _ItemState, previous: _ItemState) -> bool:
 
 def _resolve(
     local: _ItemState, remote: _ItemState, prior_local: _ItemState, prior_remote: _ItemState,
+    *, explicit_add: bool,
 ) -> _Resolution:
-    local_changed = _changed(local, prior_local)
-    remote_changed = _changed(remote, prior_remote)
+    local_changed = explicit_add or _changed(local, prior_local)
     if local.status is remote.status or not local_changed:
         return _Resolution(local, remote, ConflictWinner.HA, None)
+
+    comparable = local.changed_at is not None and remote.changed_at is not None
+    newer_remote = comparable and remote.changed_at > local.changed_at
+    remote_changed = _changed(remote, prior_remote) or (explicit_add and newer_remote)
     if not remote_changed:
         return _Resolution(local, remote, ConflictWinner.LOCAL, None)
 
-    comparable = local.changed_at is not None and remote.changed_at is not None
-    newer_local = comparable and local.changed_at > remote.changed_at
-    winner = ConflictWinner.LOCAL if newer_local else ConflictWinner.HA
-    reason = ConflictReason.TIMESTAMP if comparable else ConflictReason.HA_FALLBACK
+    if comparable:
+        winner = ConflictWinner.LOCAL if local.changed_at > remote.changed_at else ConflictWinner.HA
+        reason = ConflictReason.TIMESTAMP
+    elif explicit_add:
+        winner, reason = ConflictWinner.LOCAL, ConflictReason.EXPLICIT_LOCAL_ADD
+    else:
+        winner, reason = ConflictWinner.HA, ConflictReason.HA_FALLBACK
     return _Resolution(local, remote, winner, SyncConflict(
         local.text or remote.text, local.status, remote.status, winner, reason,
     ))
@@ -185,9 +193,12 @@ class _IncompleteSync(Exception):
 class HASyncManager:
     """Reconcile one configured shared list with its explicit HA todo entity.
 
-    The reconciliation snapshot and reopen timestamps live in process memory.
-    After restart, the first sync has no previous snapshot for change detection.
-    List storage keeps the schema pinned by SCHEMA_CONTRACT_EPOCH.
+    The reconciliation snapshot and unpropagated add intents live in process
+    memory. After restart, KZA uploads an item again if HA deleted it while
+    KZA was down and only its absence is observable. If a reopen never reached
+    HA and HA still reports an untimed completion, the first sync restores
+    that completion locally. List storage keeps the schema pinned by
+    SCHEMA_CONTRACT_EPOCH.
 
     The legacy one-way methods remain available to callers that explicitly
     supply an entity prefix without a store. ListManager uses reconciliation.
@@ -210,12 +221,11 @@ class HASyncManager:
         self._lock = asyncio.Lock()
         self._local_add_lock = asyncio.Lock()
         self._list_id: str | None = None
-        self._has_snapshot = False
         self._last_local: dict[str, _ItemState] = {}
         self._last_remote: dict[str, _ItemState] = {}
         self._outgoing: dict[str, set[_ItemState]] = defaultdict(set)
         self._deletions: dict[tuple[str, str], _ItemState] = {}
-        self._reopened_at: dict[str, dict[str, float]] = defaultdict(dict)
+        self._local_add_at: dict[str, dict[str, float]] = defaultdict(dict)
 
     def targets(self, lst: UserList) -> bool:
         """Check whether a local list is eligible for the configured sync."""
@@ -245,7 +255,7 @@ class HASyncManager:
                 return True, None, None
             item = self._store._row_to_item(match)
             if not item.completed:
-                return True, item, None
+                return True, item, time.time()
 
             db.execute(
                 "UPDATE list_items SET completed = 0, completed_at = NULL WHERE id = ? AND list_id = ?",
@@ -254,9 +264,9 @@ class HASyncManager:
             return True, replace(item, completed=False, completed_at=None), time.time()
 
         def publish(result: tuple[bool, ListItem | None, float | None]) -> None:
-            _, item, reopened_at = result
-            if item is not None and reopened_at is not None and self._entity is not None:
-                self._reopened_at[lst.id][item.id] = reopened_at
+            _, item, added_at = result
+            if item is not None and added_at is not None and self._entity is not None:
+                self._local_add_at[lst.id][item.id] = added_at
 
         async with self._local_add_lock:
             eligible, item, _ = await self._store._work.write(
@@ -280,9 +290,8 @@ class HASyncManager:
     def _select_snapshot(self, lst: UserList) -> None:
         if self._list_id != lst.id:
             if self._list_id is not None:
-                self._reopened_at.pop(self._list_id, None)
+                self._local_add_at.pop(self._list_id, None)
             self._list_id = lst.id
-            self._has_snapshot = False
             self._last_local.clear()
             self._last_remote.clear()
             self._outgoing.clear()
@@ -321,11 +330,11 @@ class HASyncManager:
         items = await self._store.get_items_in_scope(lst.id, shared_only=True, guard=guard)
         if items is None:
             raise _IncompleteSync
-        reopen_times = self._reopened_at.get(lst.id, {}).copy()
+        add_times = self._local_add_at.get(lst.id, {}).copy()
         local = defaultdict(list)
         for item in items:
             if key := _normalize(item.text):
-                local[key].append(_local_state(item, reopen_times.get(item.id)))
+                local[key].append(_local_state(item, add_times.get(item.id)))
 
         deletions = {key: state for (list_id, key), state in self._deletions.items() if lst.id == list_id}
         desired = {}
@@ -335,16 +344,14 @@ class HASyncManager:
             active = [state for state in states if state.status is not TodoStatus.REMOVED]
             remote_state = _representative(active or states)
             prior_remote = self._last_remote.get(key, _ABSENT)
-            if (not self._has_snapshot and local_state.status is TodoStatus.PENDING
-                    and local_state.ref in reopen_times and remote_state.status is TodoStatus.COMPLETED
-                    and remote_state.changed_at is None):
-                # On the first sync, treat an untimed matching completion as
-                # the state the local add observed and reopened.
-                prior_remote = remote_state
             if any(state.status is remote_state.status and (state.ref is None or state.ref == remote_state.ref)
                    for state in self._outgoing.get(key, ())):
                 prior_remote = remote_state
-            resolution = _resolve(local_state, remote_state, self._last_local.get(key, _ABSENT), prior_remote)
+            explicit_add = local_state.status is TodoStatus.PENDING and local_state.ref in add_times
+            resolution = _resolve(
+                local_state, remote_state, self._last_local.get(key, _ABSENT), prior_remote,
+                explicit_add=explicit_add,
+            )
             desired[key] = resolution
 
         remote_snapshot = {}
@@ -357,17 +364,17 @@ class HASyncManager:
             )
 
         async with self._local_add_lock:
-            if self._reopened_at.get(lst.id, {}) != reopen_times:
+            if self._local_add_at.get(lst.id, {}) != add_times:
                 raise _IncompleteSync
             local_snapshot, report.added_local = await self._apply_local(lst, items, local, desired, guard)
-            pending = {item.id for item in local_snapshot if not item.completed}
-            self._reopened_at[lst.id] = {item.id: reopen_times[item.id] for item in items
-                                         if not item.completed and item.id in pending and item.id in reopen_times}
-        self._last_local = {_normalize(item.text): _local_state(item, self._reopened_at[lst.id].get(item.id))
-                            for item in local_snapshot
+            # Consume intents only once both sides have been reconciled.
+            current_adds = self._local_add_at.get(lst.id, {})
+            for item_id, added_at in add_times.items():
+                if current_adds.get(item_id) == added_at:
+                    del current_adds[item_id]
+        self._last_local = {_normalize(item.text): _local_state(item) for item in local_snapshot
                             if _normalize(item.text)}
         self._last_remote = {key: state for key, state in remote_snapshot.items() if state is not _ABSENT}
-        self._has_snapshot = True
         self._outgoing.clear()
         for key, deletion in deletions.items():
             if self._deletions.get((lst.id, key)) is deletion:
