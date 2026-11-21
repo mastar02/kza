@@ -110,27 +110,83 @@
   }
   function createApi({ fetch: fetcher = root.fetch.bind(root), onDemo = () => {}, onUnauthorized = () => {}, timeoutMs = 12000 } = {}) {
     let sessionGeneration = 0;
+    function httpError(status, detail) {
+      if (status === 401) return Object.assign(new Error('La sesión no está autorizada.'), { status, kind: 'unauthorized', detail });
+      if (status === 403) return Object.assign(new Error('La sesión no tiene permiso para esta operación.'), { status, kind: 'forbidden', detail });
+      if (status === 409) return Object.assign(new Error('Conflicto: el estado cambió. Actualizá antes de reintentar.'), { status, kind: 'conflict', detail });
+      if (status === 503) return Object.assign(new Error('El servicio no está disponible en este momento.'), { status, kind: 'unavailable', detail });
+      return Object.assign(new Error(`El servicio no respondió correctamente (${status}).`), { status, kind: 'http', detail });
+    }
+    function transportError(kind) {
+      if (kind === 'aborted') return Object.assign(new Error('La solicitud fue cancelada.'), { name: 'AbortError', status: null, kind: 'aborted', detail: undefined });
+      if (kind === 'timeout') return Object.assign(new Error('El servidor no respondió a tiempo.'), { name: 'TimeoutError', status: null, kind: 'timeout', detail: undefined });
+      return Object.assign(new TypeError('No se pudo conectar con el servidor.'), { status: null, kind: 'network', detail: undefined });
+    }
+    function classifyFailure(error, callerAborted, timedOut) {
+      if (callerAborted) return transportError('aborted');
+      if (timedOut || error?.name === 'TimeoutError') return transportError('timeout');
+      if (error?.name === 'AbortError') return transportError('aborted');
+      return transportError('network');
+    }
     async function api(path, options = {}) {
       const requestGeneration = sessionGeneration;
       const controller = new AbortController();
-      const abort = () => controller.abort();
-      if (options.signal?.aborted) abort();
-      options.signal?.addEventListener('abort', abort, { once: true });
-      const timeout = setTimeout(abort, timeoutMs);
+      let callerAborted = false, timedOut = false;
+      const abortCaller = () => { if (!timedOut) callerAborted = true; controller.abort(); };
+      const abortTimeout = () => { if (!callerAborted) timedOut = true; controller.abort(); };
+      if (options.signal?.aborted) abortCaller();
+      else options.signal?.addEventListener('abort', abortCaller, { once: true });
+      const timeout = callerAborted ? null : setTimeout(abortTimeout, timeoutMs);
       try {
+        if (callerAborted) throw transportError('aborted');
         const { body, decode, ...rest } = options;
-        const response = await fetcher(path, { ...rest, credentials: 'same-origin', signal: controller.signal, cache: 'no-store', headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+        let response;
+        try {
+          response = await fetcher(path, { ...rest, credentials: 'same-origin', signal: controller.signal, cache: 'no-store', headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...options.headers }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+        } catch (error) {
+          throw classifyFailure(error, callerAborted, timedOut);
+        }
+        if (callerAborted) throw transportError('aborted');
+        if (timedOut) throw transportError('timeout');
         if (response.headers?.get('X-KZA-Demo')?.toLowerCase() === 'true') onDemo();
         if (!response.ok) {
           let detail;
           try { detail = (await response.json())?.detail; } catch (_) { /* Non-JSON errors still carry their HTTP status. */ }
+          if (callerAborted) throw transportError('aborted');
+          if (timedOut) throw transportError('timeout');
           if (response.status === 401 && requestGeneration === sessionGeneration && !controller.signal.aborted) onUnauthorized();
-          throw Object.assign(new Error(response.status === 401 ? 'La sesión no está autorizada.' : response.status === 403 ? 'La sesión no tiene permiso para esta operación.' : `El servicio no respondió correctamente (${response.status}).`), { status: response.status, detail });
+          throw httpError(response.status, detail);
         }
-        return decode ? await decode(response) : response.status === 204 ? null : await response.json();
+        if (decode) {
+          try {
+            const decoded = await decode(response);
+            if (callerAborted) throw transportError('aborted');
+            if (timedOut) throw transportError('timeout');
+            return decoded;
+          } catch (error) {
+            // A TypeError raised by the caller's own decode() is a decoder fault, not a network failure.
+            if (callerAborted || timedOut || error?.name === 'TimeoutError' || error?.name === 'AbortError') {
+              throw classifyFailure(error, callerAborted, timedOut);
+            }
+            throw error;
+          }
+        }
+        if (response.status === 204) return null;
+        try {
+          const data = await response.json();
+          if (callerAborted) throw transportError('aborted');
+          if (timedOut) throw transportError('timeout');
+          return data;
+        } catch (error) {
+          if (callerAborted || timedOut || error?.name === 'TimeoutError' || error?.name === 'AbortError' || error instanceof TypeError) {
+            throw classifyFailure(error, callerAborted, timedOut);
+          }
+          // A 2xx whose body cannot be read may still have applied a write: no integer status, so writers reconcile.
+          throw Object.assign(new Error('El servicio devolvió una respuesta inválida.'), { status: null, kind: 'invalid_response', detail: undefined });
+        }
       } finally {
-        clearTimeout(timeout);
-        options.signal?.removeEventListener('abort', abort);
+        if (timeout !== null) clearTimeout(timeout);
+        options.signal?.removeEventListener('abort', abortCaller);
       }
     }
     // Includes callers without their own AbortSignal, such as Casa actions.

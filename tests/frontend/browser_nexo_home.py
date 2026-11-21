@@ -33,8 +33,13 @@ from tests.integration.test_typed_home_operations import typed_graph
 INSTRUMENT = """(() => {
   const fetcher=window.fetch.bind(window);
   window.__qaDropNext=false;window.__qaDelayReceipt=false;window.__qaFailLogout=false;window.__qaHoldLogout=false;
+  window.__qaLogin503=false;window.__qaLogin403=false;window.__qaLoginNetwork=false;window.__qaLoginTimeout=false;
   window.fetch=async(input,options={})=>{
     const path=String(input);
+    if(path==='/api/admin/auth/login'&&window.__qaLogin503){window.__qaLogin503=false;return new Response(JSON.stringify({ok:false,detail:'dashboard_authority_unavailable'}),{status:503,headers:{'Content-Type':'application/json'}});}
+    if(path==='/api/admin/auth/login'&&window.__qaLogin403){window.__qaLogin403=false;return new Response(JSON.stringify({detail:'origin denied'}),{status:403,headers:{'Content-Type':'application/json'}});}
+    if(path==='/api/admin/auth/login'&&window.__qaLoginNetwork){window.__qaLoginNetwork=false;throw new TypeError('Failed to fetch');}
+    if(path==='/api/admin/auth/login'&&window.__qaLoginTimeout){window.__qaLoginTimeout=false;throw new DOMException('The operation timed out.','TimeoutError');}
     if(path==='/api/admin/auth/logout'&&window.__qaFailLogout)throw new TypeError('Synthetic offline logout');
     if(path==='/api/admin/auth/logout'&&window.__qaHoldLogout)await new Promise(resolve=>window.__qaReleaseLogout=resolve);
     if(path==='/api/home/catalog'&&window.__qaHoldCatalog){window.__qaHoldCatalog=false;await new Promise(resolve=>window.__qaReleaseCatalog=resolve);}
@@ -292,6 +297,30 @@ async def main() -> None:
                     assert await page.evaluate("document.querySelector('#token').getAttribute('aria-describedby')==='login-guidance' && document.querySelector('#login-guidance').textContent.includes('administrador del hogar') && document.querySelector('#login-guidance').textContent.includes('evaluación temporal') && document.querySelector('#login-guidance').textContent.includes('Home Assistant no funciona')")
                     await screenshot(page, evidence / 'login-guidance.png')
 
+                    # T045-U3: login error classification in real Chromium (401, 403, 503, timeout, network).
+                    login_error_checks = {}
+                    raw_english = ("Failed to fetch", "AbortError", "TimeoutError", "NetworkError", "TypeError", "origin denied")
+                    for label, hook, token_value, required_terms, forbidden_terms in [
+                        ("401", "", "synthetic-invalid-credential", ("credencial", "válida"), ()),
+                        ("503", "window.__qaLogin503=true;", home.token, ("no está disponible",), ("credencial", "inválida")),
+                        ("403", "window.__qaLogin403=true;", home.token, ("origen",), ("credencial", "inválida")),
+                        ("timeout", "window.__qaLoginTimeout=true;", home.token, ("tiempo",), ("credencial", "inválida")),
+                        ("network", "window.__qaLoginNetwork=true;", home.token, ("conectar",), ("credencial", "inválida")),
+                    ]:
+                        await page.evaluate(
+                            f"document.querySelector('#login-error').textContent='';{hook}"
+                            f"document.querySelector('#token').value={json.dumps(token_value)};"
+                            f"document.querySelector('#login-form').requestSubmit()"
+                        )
+                        await page.wait_for("document.querySelector('#login-error').textContent.length>0 && !document.querySelector('#token').disabled")
+                        msg = await page.evaluate("document.querySelector('#login-error').textContent")
+                        assert await page.evaluate("document.querySelector('#nexo-workspace').hidden && !document.querySelector('#login-panel').hidden && document.querySelector('#token').value===''"), label
+                        for term in required_terms:
+                            assert term in msg.lower(), f"login {label} missing {term!r}: {msg!r}"
+                        for term in (*forbidden_terms, *raw_english):
+                            assert term.lower() not in msg.lower(), f"login {label} leaked {term!r}: {msg!r}"
+                        login_error_checks[label] = msg
+
                     marker = len(requests)
                     await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,get:()=>true})")
                     await login(page, home.token, "Acceso de hogar")
@@ -301,7 +330,7 @@ async def main() -> None:
                     await page.evaluate("delete document.hidden;document.dispatchEvent(new Event('visibilitychange'))")
                     await page.wait_for("document.querySelector('#room-list [data-room-id=living]') && document.querySelector('#room-controls [data-operation=turn_on]')")
                     await page.wait_for("document.querySelector('#map-loading').hidden")
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,actions,routines'")
+                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,actions,routines,tasks'")
                     assert not any(request["path"] in {"/api/users", "/api/voices", "/api/home/microphones", "/api/conversations"} for request in requests[marker:])
                     await screenshot(page, evidence / "home-desktop.png")
                     webgl = await page.evaluate("!!document.querySelector('#house-canvas canvas')")
@@ -438,7 +467,7 @@ async def main() -> None:
                     await login(page, operator.token, "Administración")
                     await page.wait_for("document.querySelector('#app-nav [data-view=voices]') && document.querySelector('#room-list').children.length>0")
                     await page.wait_for(f"{NOTICES_READY} && !!document.querySelector('{PENDING_DISMISS}')")
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions,routines,memory,access'")
+                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions,routines,tasks,memory,access'")
                     assert not any(request['path'] == '/api/admin/users' for request in requests)
                     # D1: the technical panel stays reachable only by direct URL, never linked from NEXO.
                     assert await page.evaluate("document.querySelectorAll('a[href^=\"/obs\"], a[href*=\"//\"][href*=\"/obs\"], #technical-link').length===0")
@@ -564,13 +593,18 @@ async def main() -> None:
                                               ":focus-visible with a visible indicator, not obscured", "44x44 CSS px touch targets at 320/390",
                                               "html lang es", "prefers-reduced-motion settles the 3D camera at once"],
                               "a11y_evidence": [f'a11y-{view}.json' for view in audits], "reduced_motion": motion,
+                              "login_error_checks": login_error_checks,
                               "legacy_links": legacy_links}
                     (evidence / "browser-result.json").write_text(json.dumps(result, indent=2) + '\n')
                     print(json.dumps(result))
         finally:
             if browser is not None and browser.poll() is None:
                 browser.terminate()
-                await asyncio.to_thread(browser.wait, 10)
+                try:
+                    await asyncio.to_thread(browser.wait, 10)
+                except subprocess.TimeoutExpired:
+                    browser.kill()
+                    await asyncio.to_thread(browser.wait, 5)
             await dashboard.stop()
             await serving
             await authority.aclose()

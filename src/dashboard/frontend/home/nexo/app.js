@@ -576,14 +576,34 @@ async function bootstrap() {
   }
 }
 
+function loginErrorMessage(error) {
+  if (error?.localMessage && typeof error.message === 'string') return error.message;
+  if (error?.status === 401 || error?.kind === 'unauthorized') return 'La credencial no es válida o venció.';
+  if (error?.status === 403 || error?.kind === 'forbidden') {
+    return error?.detail === 'origin denied'
+      ? 'Este origen no está autorizado para iniciar sesión.'
+      : 'El acceso fue rechazado por origen o permisos.';
+  }
+  if (error?.status === 503 || error?.kind === 'unavailable') return 'El servicio no está disponible temporalmente. Probá de nuevo en unos instantes.';
+  if (error?.kind === 'timeout' || error?.name === 'TimeoutError') return 'El servidor no respondió a tiempo. Probá de nuevo en unos instantes.';
+  if (error?.kind === 'network' || error instanceof TypeError) return 'No se pudo conectar con el servidor. Revisá la red y probá de nuevo.';
+  if (error?.kind === 'aborted' || error?.name === 'AbortError') return 'Se canceló el inicio de sesión.';
+  if (Number.isInteger(error?.status)) return `No se pudo iniciar sesión (${error.status}).`;
+  return 'No se pudo iniciar sesión. Probá de nuevo en unos instantes.';
+}
+
 byId('login-form').addEventListener('submit', async event => {
   event.preventDefault(); if (authBusy) { byId('token').value = ''; return; } lockAuthentication(true);
   let token = byId('token').value; retire(); pendingLogout(false); const started = epoch;
   try {
-    if (!await viewDrain || started !== epoch) throw Error('La vista anterior todavía no terminó de cerrar.');
+    if (!await viewDrain || started !== epoch) throw Object.assign(new Error('La vista anterior todavía no terminó de cerrar.'), { localMessage: true });
     await api('/api/admin/auth/login', { method: 'POST', body: { token } }); if (started === epoch) await bootstrap();
   }
-  catch (error) { if (started === epoch || error.status === 401 && !session.active()) byId('login-error').textContent = error.status === 401 ? 'La credencial no es válida.' : error.message; }
+  catch (error) {
+    if (started === epoch || !session.active() && (error?.status === 401 || state.sessionRetired(error))) {
+      byId('login-error').textContent = loginErrorMessage(error);
+    }
+  }
   finally { token = null; lockAuthentication(false); }
 });
 async function logout() {
