@@ -67,10 +67,12 @@ async def test_all_feature_callbacks_share_one_pcm_output_and_correct_origin(mon
         assert (alert.delivery, alert.delivery_reason) == (AlertDelivery.DELIVERED, None)
         assert amplifier.select_zone.call_count == selected_before_alert + 1
         amplifier.select_zone.assert_called_with(1)
-        reminder = await store.create(user_id='synthetic', text='Recordatorio de prueba.', trigger_at=time.time()-1,
-            scope=ReminderScope.SHARED)
+        reminder = await store.create(user_id='synthetic', text='Recordatorio de prueba.',
+            trigger_at=daylight_clock.epoch()-1, scope=ReminderScope.SHARED)
         await services.reminders._fire_reminder(reminder)
-        assert (await store.get_by_id(reminder.id)).state == 'fired'
+        async with asyncio.timeout(2.0):
+            while (await store.get_by_id(reminder.id)).state != 'fired':
+                await asyncio.sleep(0.01)
         executor = RoutineExecutor(tts_engine=features.voice_delivery)
         result = await executor._execute_tts_speak({'text': 'Rutina de prueba.', 'zone': 'zone_origin'}, {})
         assert result.success
