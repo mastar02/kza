@@ -1539,10 +1539,11 @@ _TV_CONTROL = (
     ("volume_down", re.compile(rf"(?:baja|bajame) (?:el )?volumen (?:de |en )?(?:la |el )?{_TV}{_TV_ROOM}")),
 )
 _ELECTRICITY = r"(?:energia|electricidad|luz|luces|corriente)"
-_METER_SCOPE = (
-    r"(?:casas?|hogar(?:es)?|medidor(?:es)?|red(?:es)?|instalacion(?:es)?|"
-    r"apartamentos?|departamentos?|viviendas?|domicilios?|propiedad(?:es)?)"
+_ENERGY_RESIDENCE = (
+    r"(?:casas?|hogar(?:es)?|instalacion(?:es)?|"
+    r"apartamentos?|departamentos?|viviendas?|domicilios?)"
 )
+_METER_SCOPE = rf"(?:{_ENERGY_RESIDENCE}|medidor(?:es)?|red(?:es)?)"
 _ENERGY_UNITS = r"(?:kwh|kilowatts? hora|kilovatios? hora)"
 _ENERGY_TIME_UNIT = r"(?:mes(?:es)?|dias?|semanas?|anos?|bimestres?|periodos?|horas?)"
 _ENERGY_READING_PERIOD = (
@@ -1584,7 +1585,8 @@ _ENERGY_PERIOD = (
     rf"(?:{_ENERGY_TIME_POINT}|lo que va (?:del|de la) (?:{_ENERGY_TIME_UNIT}|{_ENERGY_READING_PERIOD})|"
     rf"(?:cada |{_ENERGY_NP_DETERMINER})(?:{_ENERGY_PERIOD_MODIFIER} )*"
     rf"(?:{_ENERGY_DATE}|(?:{_NUMBER} )?"
-    rf"(?:{_ENERGY_TARIFF_BAND}|dia de hoy|principio (?:de|del) mes|{_ENERGY_TIME_UNIT}|"
+    rf"(?:{_ENERGY_TARIFF_BAND}|dia de hoy|(?:fin|principio|comienzo|mitad) (?:de|del) {_ENERGY_TIME_UNIT}|"
+    rf"{_ENERGY_TIME_UNIT}|"
     rf"{_ENERGY_READING_PERIOD}|{_ENERGY_MONTH}|lunes|martes|miercoles|jueves|viernes|sabado|domingo|"
     rf"{_ENERGY_TIME_POINT}|minutos?|segundos?|momento|fecha|total|promedio|general|standby|pico|punta|valle)"
     rf"{_ENERGY_PERIOD_ENDING}))"
@@ -1608,6 +1610,7 @@ _ENERGY_FINITE_VERB = rf"(?:{_ENERGY_EXISTENTIAL}|tuv\w*|ten\w*|llev\w*|vin\w*)"
 _ENERGY_EXPENSE_INTRO = re.compile(rf"(?:{_ENERGY_DETERMINER}|del|de|en|por|para|con|sobre|al)")
 _ENERGY_EXPENSE_QUESTION = re.compile(r"cuant[oa]?|que")
 _ENERGY_FINITE_UTTERANCE = re.compile(rf"\b{_ENERGY_FINITE_VERB}\b")
+_ENERGY_SUBORDINATE = re.compile(r"\bque\b")
 _ENERGY_EXPENSE_WORD = re.compile(r"\bgastos?\b")
 _ENERGY_CONNECTOR = r"(?:de|del|en|con|sin|por|para|a|al|desde|hasta|durante|entre|sobre|si)"
 _ENERGY_CLAUSE = rf"(?:{_ENERGY_VERB}|{_ENERGY_FINITE_VERB}|que|pero|se|estoy|estamos|esta|estan)"
@@ -1623,22 +1626,38 @@ _ENERGY_OF_SCOPE = (
     rf"(?:{_METER_SCOPE}(?: enter[oa]s?)?|{_ENERGY_DOCUMENT}{_ENERGY_PERIOD_ENDING}|"
     rf"{_ENERGY_MEASUREMENT_HEAD}|gastos?|ute))"
 )
-_ENERGY_STATE_OR_UNIT = r"(?:standby|funcionamiento|reposo|espera|uso|carga|ciclo|pesos?|dinero|kw)"
+_ENERGY_MEANS = r"(?:contador(?:es)?|tableros?|apps?|aplicacion(?:es)?|panel(?:es)?|pantallas?|sistemas?|plataformas?)"
+_ENERGY_STATE_OR_UNIT = (
+    r"(?:standby|funcionamiento|reposo|espera|uso|carga|ciclo|pesos?|dinero|dolares?|euros?|plata|uyu|guita|kw)"
+)
+_ENERGY_RESIDENCE_MODIFIER = (
+    rf"(?!(?:{_ENERGY_PERIOD}|{_ENERGY_NOMINAL_HEAD}|{_ENERGY_STATE_OR_UNIT})\b){_ENERGY_PRENOMINAL}"
+)
+_ENERGY_ALTERITY = r"(?:otr[oa]s?|cualquier(?:a)?|ajen[oa]s?|vecin[oa]s?|antigu[oa]s?|viej[oa]s?|anterior(?:es)?)"
+_ENERGY_OTHER_RESIDENCE = re.compile(
+    rf"\b(?:(?:{_ENERGY_ALTERITY}|cada)(?: {_ENERGY_RESIDENCE_MODIFIER})* {_ENERGY_RESIDENCE}|"
+    rf"{_ENERGY_RESIDENCE}(?: {_ENERGY_RESIDENCE_MODIFIER})* {_ENERGY_ALTERITY})\b"
+)
 _ENERGY_IN_SCOPE = (
-    rf"(?:{_ENERGY_TIME_ENDPOINT}|{_ENERGY_NP_PREFIX}(?:{_ENERGY_NOMINAL_HEAD}|{_ENERGY_STATE_OR_UNIT}))"
+    rf"(?:{_ENERGY_TIME_ENDPOINT}|"
+    rf"{_ENERGY_NP_PREFIX}(?:{_ENERGY_NOMINAL_HEAD}|{_ENERGY_STATE_OR_UNIT}|{_ENERGY_MEANS}))"
 )
 _ENERGY_TARIFF_TYPE = (
     r"(?:simple|(?:doble|triple)(?: horario)?|(?:bi|tri)?horaria|residencial|social|plana|nocturna|diurna|"
     r"inteligente|estacional|variable|fija|reducida|(?:de )?(?:pico|punta|valle))"
 )
 _ENERGY_TARIFF = rf"(?:la )?tarifa(?: {_ENERGY_TARIFF_TYPE})?"
+_ENERGY_FISCAL = (
+    rf"{_ENERGY_NP_DETERMINER}(?:iva|impuestos?|descuentos?|recargos?|aumentos?|"
+    r"bonificacion\w*|subsidios?|cargos? fijos?)"
+)
 _ENERGY_OBJECT_CONTEXT = re.compile(
     rf"(?:{_ENERGY_ADVERB}|{_ENERGY_PERIOD}|"
     rf"en {_ENERGY_IN_SCOPE}|"
     rf"(?:desde|durante|por|a|al|hasta|para|hace) "
     rf"(?:{_ENERGY_TIME_ENDPOINT}|(?:{_ENERGY_DETERMINER} )?{_ENERGY_DOCUMENT})|"
     rf"entre (?:semana|{_ENERGY_TIME_ENDPOINT} y {_ENERGY_TIME_ENDPOINT})|fuera de {_ENERGY_TARIFF_BAND}|"
-    rf"con {_ENERGY_TARIFF}|"
+    rf"con {_ENERGY_TARIFF}|(?:con|sin) {_ENERGY_FISCAL}|"
     rf"(?:de|del) {_ENERGY_OF_SCOPE})(?: |$)"
 )
 _ENERGY_OBJECT_LINK = re.compile(
@@ -1656,8 +1675,9 @@ _ENERGY_NOMINAL_EVENT = re.compile(
 _ENERGY_OF_TAIL = re.compile(rf" {_ENERGY_OF_SCOPE}(?: |$)")
 _ENERGY_EXCESS_TAIL = re.compile(r" mas(?: |$)")
 _ENERGY_IN_TAIL = re.compile(rf" {_ENERGY_IN_SCOPE}(?: |$)")
+_ENERGY_IN_DETERMINER = re.compile(rf" (?:tod[oa]s? )?(?:{_ENERGY_DETERMINER}|cada|cualquier(?:a)?)\b")
 _ENERGY_EXPENSE_TAIL = re.compile(
-    rf" (?:{_ENERGY_IN_SCOPE}|{_ENERGY_TARIFF}|{_ENERGY_DATED_QUALIFIER})(?: |$)"
+    rf" (?:{_ENERGY_IN_SCOPE}|{_ENERGY_TARIFF}|{_ENERGY_FISCAL}|{_ENERGY_DATED_QUALIFIER})(?: |$)"
 )
 _ELECTRICITY_SUBJECT = re.compile(rf"\b(?:{_ELECTRICITY}|(?:consumos?|tarifas?|facturas?) electric[oa]s?)\b")
 _HOUSEHOLD_METER = re.compile(rf"\b{_METER_SCOPE}\b")
@@ -1695,6 +1715,9 @@ _LIGHT_OR_COVER = re.compile(
 
 def _nominal_expenses(text: str, utt: _Utterance) -> set[int]:
     """Identify expense nouns by grammatical position before checking their targets."""
+    # An initial 'qué' introduces the question. A later 'que' starts a subordinate clause.
+    subordinate = _ENERGY_SUBORDINATE.search(text, 1)
+    main_end = subordinate.start() if subordinate else len(text)
     positions = set()
     for match in _ENERGY_EXPENSE_WORD.finditer(text):
         index = text.count(" ", 0, match.start())
@@ -1702,7 +1725,8 @@ def _nominal_expenses(text: str, utt: _Utterance) -> set[int]:
             continue
         previous = utt.at(index - 1)
         if (match[0] == "gastos" or index == 0 or _ENERGY_EXPENSE_INTRO.fullmatch(previous)
-                or (_ENERGY_EXPENSE_QUESTION.fullmatch(previous) and _ENERGY_FINITE_UTTERANCE.search(text))):
+                or (_ENERGY_EXPENSE_QUESTION.fullmatch(previous)
+                    and _ENERGY_FINITE_UTTERANCE.search(text, 0, main_end))):
             positions.add(match.start())
     return positions
 
@@ -1740,6 +1764,10 @@ def _energy_nominals_in_scope(text: str, expenses: set[int]) -> bool:
                 continue
             complement = matcher.match(text, position)
             if complement is None:
+                if connector == "en" and position + 1 < len(text) and not _ENERGY_IN_DETERMINER.match(text, position):
+                    # Bare adjuncts can name a mode or source. Keep scanning
+                    # their tokens so a later 'de' or 'del' still gets checked.
+                    continue
                 return False
             expense = expense or any(position <= start < complement.end() for start in expenses)
             position = complement.end()
@@ -1761,6 +1789,8 @@ def _energy_object_in_scope(text: str, link: re.Match[str]) -> bool:
 def _energy_measurement(utt: _Utterance) -> str | None:
     text = utt.text
     if not _ENERGY_QUERY.search(text) or _LIGHT_OR_COVER.search(text) or _ENERGY_NON_HOUSEHOLD_TARGET.search(text):
+        return None
+    if _ENERGY_OTHER_RESIDENCE.search(text):
         return None
     expenses = _nominal_expenses(text, utt)
     if not _energy_nominals_in_scope(text, expenses):
