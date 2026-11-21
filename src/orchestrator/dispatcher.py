@@ -37,6 +37,7 @@ import math
 import re
 import time
 import unicodedata
+from collections.abc import Awaitable, Mapping
 from contextlib import aclosing
 from dataclasses import asdict, dataclass, field, replace
 from enum import StrEnum
@@ -50,17 +51,22 @@ from src.core.voice_delivery import DeliveryState, GenerationState
 from src.core.task_outcome import (
     CURRENT_REQUEST_ID, DeliveryOutcome, DispatchState, EffectState, PersistenceState, ResponseRequirement, TaskOutcome, TaskStatus, TurnOutcome,
 )
-from src.home_assistant.control_policy import HomeActor
-from src.home_assistant.home_actions import HomeActionResult, HomeActionService
+from src.home_assistant.control_policy import ActionOrigin, EntityGrant, HomeActor
+from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult, HomeActionService, request_from_service
 from src.home_assistant.capability_service import HomeCapabilityService
 from src.home_assistant.ha_client import HAStatesSnapshot, STATE_OBSERVATION_TTL_S
+from src.home_assistant.operations import DOMAIN_OPERATIONS, compile_effect, validate_parameters
 from src.home_assistant.voice_actions import VoiceActionResult, VoiceHomeActionExecutor
 from src.intercom.intercom_system import IntercomSystem
 from src.llm.generation_stream import GenerationStream, GuardedGeneration
 from src.llm.error_classifier import is_consent_withdrawn
 from src.memory.fact_ledger import MemorySource
 from src.memory.producer_scopes import ProducerScopes, current_producer_scope
-from src.nlu.command_grammar import ROOM_ALIASES, WAKE_TERMS, parse_command, security_order
+from src.nlu.command_grammar import (
+    ROOM_ALIASES, WAKE_TERMS, has_deferral_time, has_unresolved_light_location, match_intent_rules, non_immediate_action_reason,
+    parse_command, parse_default_light_target, security_order,
+)
+from src.nlu.home_command import normalize_target, parse_home_command
 from src.nlu.household_intents import (
     LIST_CLEAR_VERBS,
     LIST_DELETE_VERBS,
@@ -83,7 +89,8 @@ from src.orchestrator.priority_queue import (
     PriorityRequestQueue
 )
 from src.reminders.reminder_manager import CancelMatch, CancelResolution
-from src.reminders.reminder_store import ReminderScope
+from src.reminders.reminder_store import Reminder, ReminderScope
+from src.rooms.room_context import RoomConfig
 from src.routines.voice_routines import (
     ROUTINE_CREATE_REFUSAL,
     RoutineReadKind,
@@ -96,11 +103,14 @@ from src.timers.named_timers import NamedTimerManager
 from src.timers.voice_commands import TimerVoiceCommands
 from src.world.household_time import CLOCK_UNAVAILABLE, describe_clock, parse_clock_query
 from src.reminders.voice_request import (
+    DeferredClause,
     ReminderAmbiguity,
     VoiceReminderRequest,
     VoiceRequestParser,
+    deferred_action_text,
     forbidden_home_order,
     period_hours,
+    split_reminder_actions,
 )
 from src.world.weather import DEFAULT_ENTITY as DEFAULT_WEATHER_ENTITY
 from src.world.weather import INDOOR_TEMPERATURE_UNSUPPORTED, is_indoor_temperature_question, names_indoor_place
@@ -580,6 +590,42 @@ class PathType(StrEnum):
     FAST_CLOCK = "fast_clock"              # Hora/fecha del reloj del hogar, sin LLM (T037-U3)
 
 
+def classify_voice_schedule(text: str, claimed: HouseholdIntent | None,
+                            classifier: HouseholdIntentClassifier) -> HouseholdIntent | None:
+    """Claim deferred orders the household classifier cannot route by itself."""
+    if claimed is not None:
+        if not (claimed.family is HouseholdFamily.COMPOUND and claimed.operation is HouseholdOperation.CLARIFY
+                and claimed.reason in {"deferred_part", "too_many_parts", "unparsed_part"}):
+            return claimed
+    start, end = filler_span(text, classifier.settings.wake_words, paused_trails=_REQUEST_PAUSED_TRAILS)
+    heard = text[start:end]
+    if not has_deferral_time(heard):
+        return claimed
+    reason = non_immediate_action_reason(heard)
+    head = heard.partition(" ")[0]
+    if reason == "non_immediate:deferred" or (
+        reason is None and (forbidden_home_order(heard, at_head=True) is not None
+                            or has_domotics_action_verb(deferred_action_text(head)))
+    ):
+        return HouseholdIntent(HouseholdFamily.DEFERRED_ACTION, HouseholdOperation.CREATE, "R4", heard)
+    return claimed
+
+
+def _reminder_grant_names(grant: EntityGrant) -> set[str]:
+    aliases = (grant.entity_id.partition(".")[2].replace("_", " "), grant.display_name, *grant.aliases)
+    return {re.sub(r"^(?:el|la|los|las)\s+", "", normalize_target(alias)) for alias in aliases if alias}
+
+def _room_qualifies_reminder_action(request: VoiceReminderRequest) -> bool:
+    """Keep a room immediately following an action; other room phrases name notice destinations."""
+    assert request.zone_phrase is not None
+    prefix, _, _ = normalize_target(request.complement).rpartition(normalize_target(request.zone_phrase))
+    return prefix.rstrip(" ").endswith(normalize_target(request.text)) and (
+        parse_default_light_target(request.text) is not None
+        or parse_home_command(request.text) is not None
+        or forbidden_home_order(request.text) is not None
+    )
+
+
 @dataclass
 class DispatchResult:
     """Resultado del dispatch"""
@@ -609,6 +655,7 @@ class DispatchResult:
     # Compound turn (T037-U6): content-free summary of each part, in spoken order.
     compound_parts: tuple[dict, ...] | None = field(default=None, repr=False)
     intercom_receipt: dict | None = None
+    reminder_commit: Callable[[], Awaitable["DispatchResult"]] | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.outcome is None and self.intent in {"simple_query", "conversation"}:
@@ -1019,6 +1066,7 @@ class RequestDispatcher:
         self.use_router = use_router_for_simple
         self.list_manager = list_manager
         self.reminder_manager = reminder_manager
+        self.reminder_rooms: Mapping[str, RoomConfig] = {}
         self.response_handler = response_handler
         self.weather_entity = weather_entity
         self.home_capabilities = home_capabilities
@@ -1167,6 +1215,8 @@ class RequestDispatcher:
         # path. Special commands, _classify_request and the caller's
         # service_filter/query_slots/target never apply to it.
         household = self.household_intents.classify(text) if answer is None else None
+        if answer is None and self.voice_reminder_actions is not None:
+            household = classify_voice_schedule(text, household, self.household_intents)
         if household is None and answer is None and is_bare_ring_stop(text, self.household_intents.settings.wake_words):
             # T030-U2b: a bare "listo" passes the command gate only while a ring is open (ring_stop_open);
             # it stops only a ring, never reaching a conversation or domotics path.
@@ -1650,7 +1700,7 @@ class RequestDispatcher:
                                                "Con los recordatorios puedo consultarlos o cancelarlos. ¿Cuál querés?",
                                                TaskStatus.NEEDS_INPUT)
             if operation is HouseholdOperation.CREATE:
-                return await self._create_reminder_by_voice(household, text)
+                return await self._create_reminder_by_voice(household, text, origin_room=origin_room)
             if household.reason == "clock_alarm":
                 return await self._clock_alarm_path(household, text, choice_key)
             return await self._fast_reminder_path(text, user_id, zone_id, operation=operation,
@@ -1707,7 +1757,9 @@ class RequestDispatcher:
                                   outcome=outcome, intercom_receipt=announcement.receipt() if announcement else None)
         if family is HouseholdFamily.NOTIFICATION:
             return notification_dnd_refusal()
-        # DEFERRED_ACTION: interim refusal until T031-U5 (reminders with home actions).
+        if family is HouseholdFamily.DEFERRED_ACTION and self.voice_reminder_actions is True:
+            return await self._create_reminder_by_voice(household, text, origin_room=origin_room)
+        # Keep the interim R4 reply when voice actions are disabled.
         return self._household_refusal(PathType.FAST_HOUSEHOLD, "deferred_action",
                                        "Todavía no programo acciones de la casa por voz; podés crear una rutina en la web.",
                                        TaskStatus.UNSUPPORTED)
@@ -2493,70 +2545,232 @@ class RequestDispatcher:
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Hubo un error con el recordatorio",
                 intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN, persistence=PersistenceState.UNCERTAIN))
 
-    async def _create_reminder_by_voice(self, household: HouseholdIntent, text: str) -> DispatchResult:
-        """Create one shared household reminder from a claimed turn (T031-U2).
-
-        The request is read by the T031-U1 parser on the household clock.
-        Anything it cannot schedule without guessing (missing text or time,
-        a day or a meridiem that reads two ways, a time already passed,
-        an unread date) and a spoken room (until T031-U3) answer NEEDS_INPUT
-        with a question that asks for the whole request again, and nothing is
-        written (single turn, user answers Q7/Q8). An "alarma"/"despertador"
-        with a clock time (R3a) is a reminder whose text starts with that noun.
-        The request is read without the fillers the classifier ignored
-        (:func:`filler_span`: "bueno, recordame ...", "no, recordame ...") and
-        without a trailing "dale" after a pause (unit BFR1-Q1).
-
-        The row is always ``user_id='household'``, scope shared and without
-        home actions (T031-U5 adds them), whatever acoustic label spoke.
-        Success is reported only from the store's committed insert; an
-        exception from the store is UNCERTAIN (the row may exist), and the
-        reply asks to check before repeating it.
-
-        Args:
-            household: The claimed REMINDER CREATE (rule R3 or R3a).
-            text: Dispatch text.
-        """
+    async def _create_reminder_by_voice(self, household: HouseholdIntent, text: str, *,
+                                        origin_room: str | None) -> DispatchResult:
+        """Parse a shared R3/R4 request and prepare its readback when enabled."""
+        deferred = household.family is HouseholdFamily.DEFERRED_ACTION
+        intent = "deferred_action" if deferred else "reminder"
         if not self.reminder_manager:
-            return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, "Recordatorios no configurados",
-                                  intent="reminder", outcome=TaskOutcome(TaskStatus.UNSUPPORTED))
+            return self._household_refusal(PathType.FAST_REMINDER, intent, "Recordatorios no configurados",
+                                           TaskStatus.UNSUPPORTED)
         alarm = household.rule == "R3a"
         example = _ALARM_EXAMPLE if alarm else _REMINDER_EXAMPLE
         minutes_example = _ALARM_MINUTES_EXAMPLE if alarm else _REMINDER_MINUTES_EXAMPLE
         start, end = filler_span(text, self.household_intents.settings.wake_words,
                                  paused_trails=_REQUEST_PAUSED_TRAILS)
         heard = text[start:end]
-        if alarm:
-            # The R3a complement of the heard words: the same words after the alarm noun, without a paused "dale".
-            trimmed = self.household_intents.classify(heard) if heard != text else household
-            complement = trimmed.complement if trimmed is not None and trimmed.rule == "R3a" else household.complement
-            spoken = f"recordame {_alarm_noun(text)} {complement}"
-        else:
-            spoken = heard
         try:
-            request = self._reminder_requests.parse_reminder(spoken)
+            if deferred:
+                request = self._reminder_requests.parse_deferred(heard)
+                example = minutes_example = "apagá la luz del living en diez minutos"
+            elif alarm:
+                trimmed = self.household_intents.classify(heard) if heard != text else household
+                complement = trimmed.complement if trimmed is not None and trimmed.rule == "R3a" else household.complement
+                request = self._reminder_requests.parse_reminder(f"recordame {_alarm_noun(text)} {complement}")
+            else:
+                request = self._reminder_requests.parse_reminder(heard)
+                if (self.voice_reminder_actions is True and request is not None and request.ok
+                        and request.zone_phrase is not None and _room_qualifies_reminder_action(request)):
+                    request = replace(request, text=f"{request.text} {request.zone_phrase}", zone_phrase=None)
         except ValueError:
             logger.warning("[Reminder] voice create refused: household clock unusable; nothing written")
-            return self._household_refusal(PathType.FAST_REMINDER, "reminder",
+            return self._household_refusal(PathType.FAST_REMINDER, intent,
                                            "No pude leer el reloj de la casa. No guardé nada.", TaskStatus.FAILED)
+
         question = self._reminder_question(request, example, minutes_example)
         if question is not None:
-            return self._household_refusal(PathType.FAST_REMINDER, "reminder", question, TaskStatus.NEEDS_INPUT)
+            return self._household_refusal(PathType.FAST_REMINDER, intent, question, TaskStatus.NEEDS_INPUT)
+        assert request is not None and request.trigger_at is not None
+        if isinstance(request, DeferredClause) and len(split_reminder_actions(request.clause)) > 1:
+            timed = normalize_target(heard)
+            when = normalize_target(request.time_phrase or "")
+            if not (timed.startswith(when) or timed.rstrip(" .,!").endswith(when)):
+                return self._household_refusal(
+                    PathType.FAST_REMINDER, intent,
+                    "Decime las acciones juntas y al final cuándo querés que las haga.", TaskStatus.NEEDS_INPUT)
+        if self.voice_reminder_actions is not True or alarm:
+            assert isinstance(request, VoiceReminderRequest)
+            return await self._commit_voice_reminder(request.text, request.trigger_at, request.recurrence,
+                                                     None, intent, after_readback=False)
+        return await self._prepare_reminder_readback(request, intent, origin_room=origin_room)
+
+    @property
+    def voice_reminder_actions(self) -> bool | None:
+        """Return the configured voice switch, or None for callers predating R4 admission."""
+        config = getattr(self.reminder_manager, "_config", None)
+        value = config.get("voice_actions") if isinstance(config, Mapping) else None
+        return value if type(value) is bool else None
+
+    async def _prepare_reminder_readback(self, request: VoiceReminderRequest | DeferredClause,
+                                         intent: str, *, origin_room: str | None) -> DispatchResult:
+        deferred = isinstance(request, DeferredClause)
+        text = request.clause if deferred else request.text
+        literal = not deferred and request.complement.lstrip().startswith(('"', "'", "«", "“"))
+        parts = () if literal else split_reminder_actions(text)
+        if len(parts) == 1:
+            compound = self.household_intents.classify(text)
+            if compound is not None and compound.family is HouseholdFamily.COMPOUND and compound.parts:
+                parts = tuple(part.segment for part in compound.parts)
+
+        actions: list[dict] = []
+        read_parts: list[str] = []
+        refused: list[str] = []
+        if len(parts) > self.household_intents.settings.compound_max_parts:
+            refused.append(text)
+        else:
+            for part in parts:
+                try:
+                    action, room = await self._reminder_home_action(part, origin_room)
+                except ValueError:
+                    refused.append(part)
+                    continue
+                if action is None:
+                    continue
+                actions.append(action)
+                spoken = deferred_action_text(part) if deferred else part
+                if room and not any(re.search(rf"\b{re.escape(normalize_target(alias))}\b", normalize_target(spoken))
+                                    for alias in (room.room_id, room.name, *room.aliases) if alias):
+                    spoken = f"{spoken}, en {room.display_name}"
+                read_parts.append(spoken)
+
+        # A reminder can carry the complete set of spoken actions or carry only text.
+        # An unknown clause next to an admitted action must never be silently omitted.
+        if actions and len(actions) + len(refused) < len(parts):
+            refused = [text]
+        if deferred and (refused or len(actions) != len(parts)):
+            detail = " y ".join(refused) if refused else text
+            return self._household_refusal(PathType.FAST_REMINDER, intent,
+                                           f"No puedo programar por voz: {detail}.", TaskStatus.UNSUPPORTED)
+
+        scheduled = actions if actions and not refused else None
+        if deferred:
+            text = " y ".join(deferred_action_text(part) for part in parts)
+        assert request.trigger_at is not None
+        trigger_at = request.trigger_at
+        draft = Reminder(id="", user_id=HomeActor.household().subject, text=text, trigger_at=trigger_at,
+                         created_at=0.0, recurrence=request.recurrence, scope=ReminderScope.SHARED)
+        schedule = self.reminder_manager.spoken_schedule(draft)
+        if scheduled:
+            readback = f"Voy a {' y '.join(read_parts)}, {schedule}."
+        else:
+            readback = f"Te voy a recordar {text}, {schedule}."
+            if refused:
+                readback += f" Solo te lo voy a recordar. No puedo ejecutar por voz: {' y '.join(refused)}."
+
+        async def commit() -> DispatchResult:
+            return await self._commit_voice_reminder(text, trigger_at, request.recurrence, scheduled, intent,
+                                                     after_readback=True)
+
+        return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, readback, intent=intent,
+                              reminder_commit=commit)
+
+    async def _reminder_home_action(self, part: str, origin_room: str | None) -> tuple[dict | None, RoomConfig | None]:
+        """Resolve one grammatical action from configured rooms and reviewed grants.
+
+        Scheduling uses the on-disk selection and validates the full effect plan.
+        The scheduler checks live capabilities and selection at execution.
+        """
+        if forbidden_home_order(part) is not None:
+            raise ValueError("security_device")
+        if non_immediate_action_reason(part) is not None:
+            return None, None
+        parsed = parse_home_command(part)
+        simple = parse_default_light_target(part) if parsed is None else None
+        room = None
+        if parsed is not None:
+            domain, operation, parameters = parsed.domain, parsed.operation, parsed.parameters
+            if parsed.reason is not None:
+                raise ValueError(parsed.reason)
+            if domain == "scene":
+                entity_id = await self._selected_reminder_entity(parsed.target, domains={"scene"})
+            else:
+                room = self._reminder_target_room(parsed.target, origin_room)
+                entity_id = getattr(room, f"default_{domain}", None)
+        elif simple is not None:
+            domain, parameters = "light", simple.slots
+            operation = "brightness" if simple.intent == "set" else simple.intent
+            room = self.reminder_rooms.get(simple.room or origin_room)
+            entity_id = room.default_light if room else None
+        else:
+            # A named light or switch requires an exact reviewed name. A
+            # permissive grammar match alone cannot substitute a room default.
+            head, _, target = normalize_target(part).partition(" ")
+            grammar = parse_command(part)
+            if self.household_intents.classify(part) is not None or grammar.domain == "media_player":
+                return None, None
+            domain = grammar.domain
+            if domain == "light" and has_unresolved_light_location(part):
+                raise ValueError("unresolved_light_location")
+            if domain in {None, "light"} and target and match_intent_rules(head, "light") is not None:
+                domains = {"light", "switch"} if domain is None else {"light"}
+                entity_id = await self._selected_reminder_entity(target, domains=domains)
+                if entity_id is not None:
+                    domain = entity_id.partition(".")[0]
+                    operation = match_intent_rules(head, domain).intent
+                    parameters = grammar.slots
+                    if operation == "turn_on" and parameters.keys() == {"brightness_pct"}:
+                        operation = "brightness"
+                    room = next((config for config in self.reminder_rooms.values()
+                                 if getattr(config, f"default_{domain}", None) == entity_id), None)
+                elif domain is None and not re.match(
+                        r"(?:(?:el|la|los|las)\s+)?(?:enchufes?|interruptor(?:es)?|tomacorrientes?)\b", target):
+                    return None, None
+                else:
+                    raise ValueError("action_target_not_selected")
+            elif domain in DOMAIN_OPERATIONS and (grammar.intent or has_domotics_action_verb(head)):
+                raise ValueError("action_not_supported")
+            else:
+                return None, None
+
+        if entity_id is None or operation not in DOMAIN_OPERATIONS[domain]:
+            raise ValueError("action_not_selected")
+        validate_parameters(entity_id, operation, parameters)
+        action = HomeActionRequest(entity_id, operation, "voice-reminder", origin=ActionOrigin.REMINDER, **parameters)
+        actor = HomeActor.household()
+        await self.home_actions.policy.require_allowed(action, actor)
+        effect = compile_effect(action)
+        stored = request_from_service(effect.domain, effect.service, entity_id, effect.data,
+                                      request_id=action.request_id, origin=action.origin)
+        await self.home_actions.validate_selection(stored, actor=actor)
+        return {"domain": effect.domain, "service": effect.service, "entity_id": entity_id, "data": effect.data}, room
+
+    def _reminder_target_room(self, target: str, origin_room: str | None) -> RoomConfig | None:
+        if not target:
+            return self.reminder_rooms.get(origin_room)
+        target = re.sub(r"^(?:del|de la|de los|de las|de|en el|en la|en|el|la|los|las)\s+", "",
+                        normalize_target(target))
+        matches = [config for config in self.reminder_rooms.values()
+                   if target in {re.sub(r"^(?:el|la|los|las)\s+", "", normalize_target(alias))
+                                 for alias in (config.room_id, config.name, config.display_name, *config.aliases)}]
+        return matches[0] if len(matches) == 1 else None
+
+    async def _selected_reminder_entity(self, target: str, *, domains: set[str]) -> str | None:
+        target = re.sub(r"^(?:el|la|los|las)\s+", "", normalize_target(target))
+        grants = await self.home_actions.policy.snapshot_grants()
+        matches = [grant.entity_id for grant in grants
+                   if grant.direct_control and grant.entity_id.partition(".")[0] in domains
+                   and target in _reminder_grant_names(grant)]
+        return matches[0] if len(matches) == 1 else None
+
+    async def _commit_voice_reminder(self, text: str, trigger_at: float, recurrence: str | None,
+                                     actions: list[dict] | None, intent: str, *, after_readback: bool) -> DispatchResult:
         try:
             reminder = await self.reminder_manager.create(
-                HomeActor.household().subject, request.text, request.trigger_at, recurrence=request.recurrence,
-                ha_actions=None, scope=ReminderScope.SHARED)
+                HomeActor.household().subject, text, trigger_at, recurrence=recurrence,
+                ha_actions=actions, scope=ReminderScope.SHARED)
         except Exception:
             logger.warning("[Reminder] voice create unconfirmed; no completion receipt")
             return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, False, _REMINDER_CREATE_UNCERTAIN,
-                                  intent="reminder", outcome=TaskOutcome(TaskStatus.UNCERTAIN,
-                                                                         persistence=PersistenceState.UNCERTAIN))
-        response = f"Anotado: {reminder.text}, {self.reminder_manager.spoken_schedule(reminder)}."
-        if parse_command(reminder.text).intent is not None or forbidden_home_order(reminder.text) is not None:
-            response += _REMINDER_NOTICE_ONLY
-        logger.info("[Reminder] voice create committed id=%s recurrence=%s alarm=%s", reminder.id,
-                    reminder.recurrence, alarm)
-        return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, True, response, intent="reminder",
+                                  intent=intent, outcome=TaskOutcome(TaskStatus.UNCERTAIN,
+                                                                    persistence=PersistenceState.UNCERTAIN))
+        if after_readback:
+            response = "Anotado."
+        else:
+            response = f"Anotado: {reminder.text}, {self.reminder_manager.spoken_schedule(reminder)}."
+            if parse_command(reminder.text).intent is not None or forbidden_home_order(reminder.text) is not None:
+                response += _REMINDER_NOTICE_ONLY
+        logger.info("[Reminder] voice create committed id=%s recurrence=%s", reminder.id, reminder.recurrence)
+        return DispatchResult(PathType.FAST_REMINDER, Priority.HIGH, True, response, intent=intent,
                               outcome=TaskOutcome(TaskStatus.COMPLETED, persistence=PersistenceState.COMMITTED,
                                                   effect=EffectState.OBSERVED, observation_scope="software_state"))
 
@@ -2595,7 +2809,7 @@ class RequestDispatcher:
                               intent="reminder", outcome=outcome)
 
     @staticmethod
-    def _reminder_question(request: VoiceReminderRequest | None, example: str,
+    def _reminder_question(request: VoiceReminderRequest | DeferredClause | None, example: str,
                            minutes_example: str = _REMINDER_MINUTES_EXAMPLE) -> str | None:
         """The question that asks again for a voice reminder, or None when it can be created as heard."""
         if request is None:
@@ -2607,7 +2821,7 @@ class RequestDispatcher:
                 return _REMINDER_DETAIL_QUESTIONS[request.detail].format(example=example,
                                                                          minutes_example=minutes_example)
             return _REMINDER_QUESTIONS[request.ambiguity].format(example=example)
-        if request.zone_phrase is not None:
+        if isinstance(request, VoiceReminderRequest) and request.zone_phrase is not None:
             logger.info("[Reminder] voice create needs input: room named")
             return _REMINDER_ROOM_QUESTION
         return None
