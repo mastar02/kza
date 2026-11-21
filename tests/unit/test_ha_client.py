@@ -466,5 +466,6 @@ class TestHAHealthStatus:
             "state", "last_success_ts", "last_error_ts", "error_count",
             "success_count", "avg_latency_ms", "ws_connected", "last_error_message",
             "rest", "calls", "events", "registry",
+            "retirements_pending", "retirements_quarantined", "retirements_quarantined_total",
         }
         assert expected == field_names

@@ -1538,11 +1538,29 @@ _TV_CONTROL = (
     ("volume_up", re.compile(rf"(?:subi|sube|subime) (?:el )?volumen (?:de |en )?(?:la |el )?{_TV}{_TV_ROOM}")),
     ("volume_down", re.compile(rf"(?:baja|bajame) (?:el )?volumen (?:de |en )?(?:la |el )?{_TV}{_TV_ROOM}")),
 )
-_ENERGY_SUBJECT = re.compile(r"\b(?:energia|electricidad|luz|luces|corriente|electric[oa]s?)\b")
-_ENERGY_UNIT = re.compile(r"\b(?:kwh|kilowatts? hora|kilovatios? hora)\b")
+_ELECTRICITY = r"(?:energia|electricidad|luz|luces|corriente)"
+_METER_SCOPE = r"(?:casa|hogar|medidor(?:es)?|red|instalacion)"
+_ENERGY_UNITS = r"(?:kwh|kilowatts? hora|kilovatios? hora)"
+_ELECTRICITY_SUBJECT = re.compile(rf"\b(?:{_ELECTRICITY}|(?:consumos?|tarifas?|facturas?) electric[oa]s?)\b")
+_HOUSEHOLD_METER = re.compile(rf"\b{_METER_SCOPE}\b")
+_ENERGY_UNIT = re.compile(rf"\b{_ENERGY_UNITS}\b")
 _POWER_UNIT = re.compile(r"\b(?:potencia|watts?|vatios?|kilowatts?|kilovatios?)\b")
-_METER_READING = re.compile(r"\b(?:consum\w*|medidor(?:es)?)\b")
-_ENERGY_COST = re.compile(r"\b(?:costos?|cuesta|facturas?|tarifas?|pag\w*|gast\w*|precio|sale)\b")
+_ELECTRIC_VEHICLE = re.compile(
+    r"\b(?:autos?|coches?|carros?|vehiculos?|motos?|bicis?|bicicletas?|monopatin(?:es)?) electric[oa]s?\b"
+)
+_ENERGY_OBJECT_LINK = re.compile(r"\b(?:consum[ei]\w*|usa\w*|gast\w*|de las?|del) ")
+_ENERGY_SCOPE_OR_QUALIFIER = re.compile(
+    rf"(?:(?:el|la|los|las|mi|tu|su|nuestro|nuestra|un|una) )?"
+    rf"(?:{_METER_SCOPE}|{_ELECTRICITY}|{_ENERGY_UNITS}|potencia|watts?|vatios?|pesos?|dinero|"
+    r"hoy|ayer|ahora|actualmente|este|esta|mes|semana|dia|ano|al|a|de|en|por|desde|durante)\b"
+)
+_VIDEO_DOORBELL = re.compile(r"\bvideo ?porteros?\b")
+_METER_READING = re.compile(r"\b(?:consum\w*|gast\w*|usam\w*|medidor(?:es)?)\b")
+_ENERGY_COST = re.compile(
+    r"\b(?:cost\w*|cuest\w*|facturas?|tarifas?|pag\w*|pesos?|dinero|precios?|sale|val(?:e|en|er))\b"
+)
+_ENERGY_SPEND = re.compile(r"\bgast\w* (?:de|en) (?:la )?(?:luz|electricidad)\b")
+_ENERGY_QUANTITY = re.compile(r"^(?:cuanta|que) energia\b")
 _ENERGY_QUERY = re.compile(
     r"^(?:cuant[oa]s?|que|cual|decime|mostrame|dame|consumo|potencia|energia|factura|tarifa|precio|costo|gasto|pago)\b"
 )
@@ -1551,9 +1569,27 @@ _LIGHT_OR_COVER = re.compile(
 )
 
 
+def _energy_measurement(text: str) -> str | None:
+    if not _ENERGY_QUERY.search(text) or _LIGHT_OR_COVER.search(text) or _ELECTRIC_VEHICLE.search(text):
+        return None
+    if any(not _ENERGY_SCOPE_OR_QUALIFIER.match(text, link.end()) for link in _ENERGY_OBJECT_LINK.finditer(text)):
+        return None
+    energy_unit = _ENERGY_UNIT.search(text)
+    power_unit = _POWER_UNIT.search(text)
+    electricity = _ELECTRICITY_SUBJECT.search(text)
+    household = _HOUSEHOLD_METER.search(text)
+    if (electricity or energy_unit or (household and power_unit)) and _ENERGY_COST.search(text):
+        return "cost"
+    if not (energy_unit or power_unit or _ENERGY_QUANTITY.match(text)) and _ENERGY_SPEND.search(text):
+        return "cost"
+    if energy_unit or power_unit or ((electricity or household) and _METER_READING.search(text)):
+        return "power" if power_unit and not energy_unit else "energy"
+    return None
+
+
 def _integration_intent(utt: _Utterance) -> HouseholdIntent | None:
     text = utt.text
-    if re.search(r"\b(?:camara|camaras)\b", text):
+    if re.search(r"\b(?:camara|camaras)\b", text) and not _VIDEO_DOORBELL.search(text):
         if re.match(r"(?:como (?:esta|estan|andan|funcionan)|estado (?:tecnico )?de|salud (?:tecnica )?de) ", text):
             operation = "media" if re.search(r"\b(?:video|foto|imagen|grabando|grabacion|movimiento|stream)\b", text) else "health"
             return HouseholdIntent(HouseholdFamily.CAMERA_HEALTH, HouseholdOperation.QUERY, "P5", operation)
@@ -1566,14 +1602,8 @@ def _integration_intent(utt: _Utterance) -> HouseholdIntent | None:
     ) and re.search(r"\b(?:calendario|agenda)\b", text):
         return HouseholdIntent(HouseholdFamily.CALENDAR, HouseholdOperation.QUERY, "P5",
                                "tomorrow" if "manana" in utt.folded else "today")
-    if _ENERGY_QUERY.search(text) and not _LIGHT_OR_COVER.search(text):
-        energy_unit, power_unit = _ENERGY_UNIT.search(text), _POWER_UNIT.search(text)
-        electricity = _ENERGY_SUBJECT.search(text)
-        if (electricity or energy_unit or power_unit) and _ENERGY_COST.search(text):
-            return HouseholdIntent(HouseholdFamily.ENERGY, HouseholdOperation.QUERY, "P5", "cost")
-        if energy_unit or power_unit or (electricity and _METER_READING.search(text)):
-            kind = "power" if power_unit and not energy_unit else "energy"
-            return HouseholdIntent(HouseholdFamily.ENERGY, HouseholdOperation.QUERY, "P5", kind)
+    if kind := _energy_measurement(text):
+        return HouseholdIntent(HouseholdFamily.ENERGY, HouseholdOperation.QUERY, "P5", kind)
     if match := _TV_QUERY.fullmatch(text):
         return HouseholdIntent(HouseholdFamily.MEDIA, HouseholdOperation.QUERY, "P5", match["room"] or "")
     for operation, pattern in _TV_CONTROL:
