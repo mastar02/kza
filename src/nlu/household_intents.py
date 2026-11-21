@@ -1548,7 +1548,10 @@ _POWER_UNIT = re.compile(r"\b(?:potencia|watts?|vatios?|kilowatts?|kilovatios?)\
 _ELECTRIC_VEHICLE = re.compile(
     r"\b(?:autos?|coches?|carros?|vehiculos?|motos?|bicis?|bicicletas?|monopatin(?:es)?) electric[oa]s?\b"
 )
-_ENERGY_OBJECT_LINK = re.compile(r"\b(?:consum[ei]\w*|usa\w*|gast\w*|de las?|del) ")
+_ENERGY_OBJECT_LINK = re.compile(
+    r"\b(?:consum[ei]\w*|usa\w*|gast\w*|tien\w*|tira\w*|necesit\w*|"
+    r"requier\w*|llev\w*|demand\w*|de las?|del) "
+)
 _ENERGY_SCOPE_OR_QUALIFIER = re.compile(
     rf"(?:(?:el|la|los|las|mi|tu|su|nuestro|nuestra|un|una) )?"
     rf"(?:{_METER_SCOPE}|{_ELECTRICITY}|{_ENERGY_UNITS}|potencia|watts?|vatios?|pesos?|dinero|"
