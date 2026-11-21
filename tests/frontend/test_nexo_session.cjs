@@ -460,3 +460,24 @@ test('createApi classifies 401/403/409/503/http, timeout, caller abort and netwo
     assert.equal(retired, 1);
   }
 });
+
+test('createApi: HTTP 2xx with a non-JSON body carries status null (never an integer below 500) and decoder TypeErrors are not network failures', async () => {
+  const reply = (status, json) => ({ ok: true, status, headers: { get: () => null }, json });
+  for (const status of [200, 201]) {
+    const api = home.createApi({ fetch: async () => reply(status, async () => { throw new SyntaxError('Unexpected token < in JSON'); }) });
+    await assert.rejects(api('/api/routines/r1/disable', { method: 'POST', body: {} }), error => {
+      assert.equal(error.status, null);
+      assert.notEqual(error.kind, 'network');
+      assert.match(error.message, /respuesta inválida/);
+      assert.doesNotMatch(error.message, /Unexpected token|SyntaxError/);
+      return true;
+    });
+  }
+  // A genuine body-read network failure stays a network error.
+  const dropped = home.createApi({ fetch: async () => reply(200, async () => { throw new TypeError('terminated'); }) });
+  await assert.rejects(dropped('/x'), error => error.kind === 'network' && error.status === null);
+  // A TypeError raised by the caller's decode() is a decoder fault, not 'network'.
+  const decoderFault = new TypeError('decoder bug');
+  const api = home.createApi({ fetch: async () => reply(200, async () => ({})) });
+  await assert.rejects(api('/x', { decode: () => { throw decoderFault; } }), error => error === decoderFault && error.kind !== 'network');
+});

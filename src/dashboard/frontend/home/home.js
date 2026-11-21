@@ -164,7 +164,8 @@
             if (timedOut) throw transportError('timeout');
             return decoded;
           } catch (error) {
-            if (callerAborted || timedOut || error?.name === 'TimeoutError' || error?.name === 'AbortError' || error instanceof TypeError) {
+            // A TypeError raised by the caller's own decode() is a decoder fault, not a network failure.
+            if (callerAborted || timedOut || error?.name === 'TimeoutError' || error?.name === 'AbortError') {
               throw classifyFailure(error, callerAborted, timedOut);
             }
             throw error;
@@ -180,7 +181,8 @@
           if (callerAborted || timedOut || error?.name === 'TimeoutError' || error?.name === 'AbortError' || error instanceof TypeError) {
             throw classifyFailure(error, callerAborted, timedOut);
           }
-          throw Object.assign(new Error('El servicio devolvió una respuesta inválida.'), { status: response.status, kind: 'http', detail: undefined });
+          // A 2xx whose body cannot be read may still have applied a write: no integer status, so writers reconcile.
+          throw Object.assign(new Error('El servicio devolvió una respuesta inválida.'), { status: null, kind: 'invalid_response', detail: undefined });
         }
       } finally {
         if (timeout !== null) clearTimeout(timeout);

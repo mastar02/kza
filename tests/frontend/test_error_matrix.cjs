@@ -437,6 +437,49 @@ test('C06 [nexo-people]: 401, 403, 409, 503, timeout, partial-uncertain', async 
   assertCleanSpanish(partialNull, 'nexo-people/partial-null');
 });
 
+test('C06 [nexo-routine-owner]: HTTP 200 with non-JSON body on setEnabled is unknown and reconciles via GET /api/routines', async () => {
+  const grant = { ok: true, role: 'operator', subject: 'sub-r', routine_actor: 'actor-r',
+    permissions: ['home:read', 'home:control', 'routines:manage'], expires_at: EPOCH / 1000 + 120 };
+  const session = state.createSession({ wall: () => EPOCH, monotonic: () => 0 });
+  session.accept(grant);
+  const routine = { routine_id: 'r1', revision: 1, name: 'Noche', description: '', enabled: true, timezone: 'America/Montevideo',
+    schedule: null, conditions: [], actions: [{ entity_id: 'light.test_lamp', operation: 'turn_on' }], created_by: 'sub-r',
+    created_at: '2026-11-10T00:00:00Z', latest_run: null };
+  const calls = [];
+  let applied = false;
+  const lamp = { entity_id: 'light.test_lamp', name: 'Luz', domain: 'light', capabilities: ['turn_on', 'turn_off'], control_limits: {} };
+  const scoped = state.createScopedApi({
+    session,
+    transport: home.createApi({
+      fetch: async (url, opts = {}) => {
+        const method = opts.method || 'GET';
+        calls.push(method + ' ' + url);
+        if (url === WHOAMI) return jsonReply(200, grant);
+        if (url === '/api/home/catalog') return jsonReply(200, { rooms: [], entities: [lamp], unassigned_entities: [] });
+        if (url === '/api/routines' && method === 'GET') return jsonReply(200, [applied ? { ...routine, enabled: false, revision: 2 } : routine]);
+        if (method === 'POST' && url === '/api/routines/r1/disable') {
+          applied = true;
+          return { ...jsonReply(200, null), json: async () => { throw new SyntaxError('Unexpected token < in JSON'); } };
+        }
+        return jsonReply(200, []);
+      },
+    }),
+  });
+  const instance = routines.createRoutineOwner({ api: scoped, session, storage: memoryStorage(), now: () => EPOCH });
+  await instance.open();
+  await instance.refresh();
+  await flush();
+  assert.equal(instance.getState().routines.length, 1);
+  calls.length = 0;
+  const result = await instance.setEnabled('r1', false);
+  await flush();
+  assert.equal(result.unknown, true);
+  assert.equal(instance.getState().routines[0].enabled, false, 'reconciliation reads the applied state');
+  assert.ok(calls.includes('GET /api/routines'), 'reconciliation GET /api/routines must fire: ' + calls.join(', '));
+  const err = await (async () => { try { await home.createApi({ fetch: async () => ({ ...jsonReply(200, null), json: async () => { throw new SyntaxError('x'); } }) })('/w', { method: 'POST' }); } catch (e) { return e; } })();
+  assert.equal(routines.writeOutcome(err), 'unknown');
+});
+
 // ---------------------------------------------------------------------------
 // 5. nexo-routine-owner (7 C06 classes)
 // ---------------------------------------------------------------------------
