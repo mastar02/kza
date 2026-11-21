@@ -343,10 +343,12 @@ async def bind_features_family_publishers(
     """
     base._require(plans.keys() == set(FEATURES_PRODUCERS), "features_plan")
     selection = features_family_selection(plans)
-    header = {"selected": selection}
+    header = {"selected": coordinator._selected}
     validated = {}
     for spec in FEATURES_GRAMMAR_SPECS:
         producer = spec.producer
+        base._require(coordinator._selected.get(producer) is selection[producer]
+                      and coordinator._writer_grammars.get(producer) == spec.grammar_id, "features_selection")
         phase = "intent" if selection[producer] else "disabled"
         event = {"kind": spec.event_kind, "phase": phase, "plan": plans[producer]}
         validated[producer] = spec.decode_event(event, None, selection[producer], header)["plan"]

@@ -163,9 +163,9 @@ def test_terminal_codec_rejects_a_shared_instance_digest_for_two_owners():
                           {"phase": "opening", "plan": plan}, True, {"selected": {spec.producer: True}})
 
 
-@pytest.mark.parametrize("reject_admission", [False, True])
+@pytest.mark.parametrize("scenario", ["success", "admission_rejection", "selection_mismatch"])
 async def test_feature_grammars_round_trip_through_the_coordinator(
-    monkeypatch, decoder, local_grammar_table, reject_admission,  # noqa: F811
+    monkeypatch, decoder, local_grammar_table, scenario,  # noqa: F811
 ):
     config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
     ticket = dict(decoder["header"], admission_root=str(decoder["root"]), run_id=uuid4().hex, generation=3)
@@ -185,24 +185,34 @@ async def test_feature_grammars_round_trip_through_the_coordinator(
 
     def revalidate():
         revalidations.append(True)
-        if reject_admission:
+        if scenario == "admission_rejection":
             raise RuntimeError("admission_revalidation_rejected")
 
     monkeypatch.setattr(admission, "revalidate", revalidate)
+    selection = features_family_selection(plans)
+    if scenario == "selection_mismatch":
+        selection["latency"] = False
     async with AsyncExitStack() as stack:
         admission.install_on(stack)
         writer = v2.OutputRegistrationV2(admission, config, key=base._KEY, journal_format=v4.V4_FORMAT,
-            extra_grammars=FEATURES_GRAMMAR_SPECS, publisher_selection=features_family_selection(plans))
+            extra_grammars=FEATURES_GRAMMAR_SPECS, publisher_selection=selection)
         admission._output_registration = writer
         await writer._run(writer._start)
         try:
             _compose_legacy_fixture(writer)
             before = v4.chain(writer._directory)
+            if scenario == "selection_mismatch":
+                with pytest.raises(RuntimeError, match="^output_registration_features_selection$"):
+                    await bind_features_family_publishers(writer, plans)
+                assert v4.chain(writer._directory) == before and not revalidations and not writer._failed
+                corrected = dict(plans, latency=latency_plan(selected_roles=()))
+                assert set(await bind_features_family_publishers(writer, corrected)) == {"home_integrations"}
+                return
             invalid = dict(plans, dashboard_transport=dict(plans["dashboard_transport"], unreviewed="invalid"))
             with pytest.raises(RuntimeError, match="features_plan"):
                 await bind_features_family_publishers(writer, invalid)
             assert v4.chain(writer._directory) == before and not revalidations
-            if reject_admission:
+            if scenario == "admission_rejection":
                 with pytest.raises(RuntimeError, match="admission_revalidation_rejected"):
                     await bind_features_family_publishers(writer, plans)
                 assert v4.chain(writer._directory) == before and len(revalidations) == 1

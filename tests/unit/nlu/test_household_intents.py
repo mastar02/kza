@@ -64,6 +64,17 @@ def test_p5_energy_keeps_light_and_cover_phrases_unclaimed(text):
     "cuánta energía gasta el amplificador de la casa",
     "cuál es el consumo de la heladera",
     "qué potencia tiene el amplificador del living",
+    "cuántos watts tiene la heladera",
+    "qué potencia tiene el televisor",
+    "cuánta potencia tiene la computadora",
+    "qué potencia tiene el amplificador",
+    "cuántos kwh tiene la heladera",
+    "cuántos watts tira la tele",
+    "cuántos watts necesita la tele",
+    "qué potencia requiere el lavarropas",
+    "cuánta potencia tiene el auto",
+    "cuántos watts lleva el amplificador",
+    "qué potencia demanda el televisor",
     "cuánto cuesta una casa",
     "cuánto cuesta la factura del gas",
     "cuánto sale la factura",
@@ -105,6 +116,8 @@ def test_p5_camera_keeps_home_camera_health_query(text):
     ("cuánta energía gastamos hoy en pesos", "cost"),
     ("cuántos watts usa la instalación", "power"),
     ("qué potencia consume la red", "power"),
+    ("qué potencia tiene el medidor", "power"),
+    ("cuántos watts necesita la instalación", "power"),
 ])
 def test_p5_energy_requires_electrical_measurement_or_cost(text, kind):
     intent = classify_household_intent(text)
