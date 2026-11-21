@@ -9,13 +9,14 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol, TYPE_CHECKING
 
-from src.alerts.alert_manager import AlertCondition, AlertManager, AlertPriority, AlertType
+from src.alerts.alert_manager import AlertCondition, AlertManager, AlertPriority, AlertProducerStatus, AlertType
 from src.alerts.device_alerts import BATTERY_LOW, OFFLINE
 from src.alerts.security_alerts import DOOR_OPEN_UNEXPECTED
+from src.core.observation import Observation, ObservationReason, ObservationSource, ObservationState
 
 if TYPE_CHECKING:
     from src.conversation.command_turns import CommandTurns
@@ -39,6 +40,10 @@ class _RuleType(StrEnum):
     OPEN = DOOR_OPEN_UNEXPECTED
     BATTERY = BATTERY_LOW
     UNAVAILABLE = OFFLINE
+
+
+def _instant(epoch: float | None) -> datetime | None:
+    return None if epoch is None else datetime.fromtimestamp(epoch, UTC)
 
 
 @dataclass(frozen=True)
@@ -133,6 +138,14 @@ class HAAlertSource:
         self._started_at: float | None = None
         self._latest: dict[str, _Evidence] = {}
         self._evidence: dict[tuple[str, _RuleType], _Evidence] = {}
+        self._last_known: dict[tuple[str, _RuleType], _Evidence] = {}
+        self._last_check: dict[_RuleType, float] = {}
+        self._last_rest_expiry: float | None = None
+        self._rest_failed = False
+        self._producer_rules = {
+            kind: tuple((entity, kind) for entity, rules in self._rules.items() if any(rule.kind is kind for rule in rules))
+            for kind in _RuleType
+        }
         self._notice_ready: set[tuple[str, _RuleType]] = set()
         self._baseline: set[tuple[str, _RuleType]] = set()
 
@@ -160,6 +173,45 @@ class HAAlertSource:
                  if self.running and not self.uncertain else 0)
         return {"running": self.running, "uncertain": self.uncertain, "overflow": self._overflow,
                 "known": known, "unknown": count - known}
+
+    def get_producer_status(self) -> tuple[AlertProducerStatus, ...]:
+        """Project each configured check family from its real HA observations."""
+        now = self._clock()
+        generation = self._ha.current_state_stream_generation()
+        running = self.running
+        connected = running and (generation is not None or (
+            self._last_rest_expiry is not None and now < self._last_rest_expiry
+        ))
+        producers = []
+        for kind, keys in self._producer_rules.items():
+            if not keys:
+                continue
+            current = [self._evidence[key] for key in keys if key in self._evidence
+                       and self._evidence[key].current(now, generation) and running and not self.uncertain]
+            previous = [self._last_known[key] for key in keys if key in self._last_known]
+            known, unknown = len(current), len(keys) - len(current)
+            state, reason = ObservationState.UNKNOWN, ObservationReason.UNKNOWN_TIME
+            if not running:
+                state = ObservationState.UNAVAILABLE
+                reason = ObservationReason.CLOSED if self._started_at is not None else ObservationReason.UNCONFIGURED
+            elif self.uncertain:
+                reason = ObservationReason.CHANGED
+            elif known:
+                state, reason = (ObservationState.PARTIAL if unknown else ObservationState.FRESH), None
+            elif not connected and (self._rest_failed or any(item.stream_generation is not None for item in previous)):
+                state, reason = ObservationState.UNAVAILABLE, ObservationReason.UNAVAILABLE
+            elif previous and all(item.expires_at <= now for item in previous):
+                state, reason = ObservationState.STALE, ObservationReason.EXPIRED
+            evidence = current or previous
+            observation = Observation(
+                ObservationSource.HA_ALERTS, state,
+                _instant(min(item.observed_at for item in evidence)) if evidence else None,
+                _instant(min(item.expires_at for item in evidence)) if evidence else None,
+                _instant(self._last_check.get(kind)), reason,
+            )
+            producers.append(AlertProducerStatus(kind.value, observation, connected, known, unknown,
+                                                 self._overflow, self.uncertain or unknown > 0))
+        return tuple(producers)
 
     async def start(self, command_turns: CommandTurns | None = None) -> None:
         """Subscribe and start the worker without waiting on HA or voice output."""
@@ -216,6 +268,8 @@ class HAAlertSource:
                             or observation.generation != self._ha.current_state_stream_generation()):
                         continue
                     now = self._clock()
+                    for rule in self._rules[entity_id]:
+                        self._last_check[rule.kind] = now
                     if not observation.current(now):
                         self._mark_unknown(entity_id)
                     else:
@@ -238,7 +292,14 @@ class HAAlertSource:
             return
         task, overflow = self._task, self._overflow
         read_started = self._clock()
+        for kind, keys in self._producer_rules.items():
+            if keys:
+                self._last_check[kind] = read_started
         snapshot = await self._ha.get_state_snapshot()
+        if self._task is not task:
+            return
+        self._rest_failed = not snapshot.available
+        self._last_rest_expiry = snapshot.expires_at.timestamp() if snapshot.available and snapshot.expires_at else None
         if not self.uncertain:
             await self._queue.join()
         async with self._evaluate:
@@ -335,6 +396,7 @@ class HAAlertSource:
             due_at = changed_at + rule.threshold if active else None
 
         self._evidence[key] = evidence
+        self._last_known[key] = evidence
         at_start = active and key not in self._baseline and (
             due_at is None or due_at <= self._started_at)
         self._baseline.add(key)

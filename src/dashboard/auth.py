@@ -176,6 +176,8 @@ def _route_permissions(
         return frozenset({DashboardPermission.DIAGNOSTICS_READ if read else DashboardPermission.ADMIN_MANAGE})
     if path.startswith("/api/home/"):
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.HOME_CONTROL})
+    if path in {"/api/alerts", "/api/alerts/zones"}:
+        return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.ADMIN_MANAGE})
     if not read and path.startswith("/api/entities/") and path.endswith("/call") and path.count("/") == 4:
         return frozenset({DashboardPermission.HOME_CONTROL})
     if path == "/api/routines/proposals" or path.startswith("/api/routines/proposals/"):

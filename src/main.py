@@ -2131,6 +2131,7 @@ async def build_application(
         shutdown=shutdown, verify_only=verify_only,
     )
     request_router.bind_routine_capture_gate(lambda: capture_control.capture_allowed)
+    feature_manager.bind_alert_mute(lambda: not capture_control.capture_allowed)
 
     if dashboard_config.get("enabled", True):
         health_aggregator = HealthAggregator(

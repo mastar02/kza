@@ -112,22 +112,34 @@
       entry(key) { return entries.get(key) || { data: [], status: sources[key] || STATUS.PENDING, unobserved: [] }; },
       receivedAt(key) { return received.has(key) ? received.get(key) : null; },
       status(key) { return sources[key] || STATUS.PENDING; },
-      available(key) { const status = sources[key]; return status === STATUS.REAL || status === STATUS.DEMO; },
+      available(key) {
+        const entry = entries.get(key);
+        if (entry?.alertStatus) return entry.alertStatus.available && freshness(entry, now()) === 'vigente';
+        const status = sources[key];
+        return status === STATUS.REAL || status === STATUS.DEMO;
+      },
       unobserved(key, field) { return (entries.get(key)?.unobserved || []).includes(field); },
       freshness(key) { return freshness(this.entry(key), now()); },
       now() { return now(); },
       beginRead() { return ++readSequence; },
       accept(key, observation, data, readId) {
+        if (key === 'ALERTS' && readId < entries.get(key)?.readId) return this.status(key);
+        const alertStatus = key === 'ALERTS' && ['real', 'degraded'].includes(observation.source)
+          && typeof data?.available === 'boolean' && Array.isArray(data?.producers) && Array.isArray(data?.alerts)
+          ? { available: data.available, producers: data.producers, output: data.output } : null;
+        if (alertStatus) data = data.alerts;
         const status = data === null || data === undefined || !Array.isArray(data) ? STATUS.DEGRADED
           : observation.source === 'real' ? STATUS.REAL
           : observation.source === 'mock' ? STATUS.DEMO : STATUS.DEGRADED;
-        const kept = status === STATUS.DEGRADED ? [] : data;
-        entries.set(key, { ...observation, data: kept, status });
+        const kept = status === STATUS.DEGRADED && !alertStatus ? [] : data;
+        entries.set(key, { ...observation, data: kept, status, alertStatus, readId });
         received.set(key, now().getTime());
         sources[key] = status;
-        if (status === STATUS.REAL && (!observation.expiresAt || freshness(observation, now()) === 'vigente')) {
+        const current = status === STATUS.REAL && (!observation.expiresAt || freshness(observation, now()) === 'vigente');
+        if (current || alertStatus) {
           for (const [id, attempt] of operations) {
-            if (attempt.refresh === key && attempt.outcome.state === 'uncertain' && readId > attempt.afterRead) {
+            const verified = attempt.kind === 'setAlertZones' ? alertStatus?.output?.available === true : current;
+            if (verified && attempt.refresh === key && attempt.outcome.state === 'uncertain' && readId > attempt.afterRead) {
               operations.delete(id);
             }
           }
@@ -136,12 +148,14 @@
         notify();
         return status;
       },
-      fail(key, status = STATUS.DEGRADED, reason = null) {
-        entries.set(key, { data: [], status, reason, unobserved: [] });
+      fail(key, status = STATUS.DEGRADED, reason = null, readId) {
+        if (key === 'ALERTS' && readId < entries.get(key)?.readId) return this.status(key);
+        entries.set(key, { data: [], status, reason, unobserved: [], readId });
         received.set(key, now().getTime());
         sources[key] = status;
         scheduleExpiry();
         notify();
+        return status;
       },
       setSource(key, value) { sources[key] = value; notify(); },
       setPermissions(list) { permissions = new Set(Array.isArray(list) ? list : []); notify(); },
@@ -153,7 +167,7 @@
       operationOutcome(kind, target) { return operations.get(operationKey(kind, target))?.outcome; },
       beginOperation(kind, target, refresh) {
         const id = operationKey(kind, target);
-        const attempt = { id, refresh, outcome: { state: 'pending', message: 'Hay una solicitud en curso.' } };
+        const attempt = { id, kind, refresh, outcome: { state: 'pending', message: 'Hay una solicitud en curso.' } };
         operations.set(id, attempt);
         this.setNotice(null);
         return attempt;
@@ -190,8 +204,7 @@
     } catch (error) {
       if (signal?.aborted || error instanceof AuthRequired) throw error;
       const status = error.kind === 'forbidden' ? STATUS.FORBIDDEN : STATUS.DEGRADED;
-      store.fail(key, status, error.message);
-      return status;
+      return store.fail(key, status, error.message, readId);
     }
     if (signal?.aborted) return store.status(key);
     return store.accept(key, result.observation, result.data, readId);
@@ -400,6 +413,8 @@
       done: 'El servidor marcó la alerta como atendida.' }),
     dismissAlert: id => ({ method: 'DELETE', path: `/api/admin/alerts/${enc(id)}`, refresh: 'ALERTS',
       done: 'El servidor descartó la alerta.' }),
+    setAlertZones: () => ({ method: 'PUT', path: '/api/alerts/zones', refresh: 'ALERTS',
+      done: 'El servidor guardó las zonas de avisos hablados.' }),
     restartService: name => ({ method: 'POST', path: `/api/admin/services/${enc(name)}/restart`, refresh: 'SERVICES',
       done: `systemctl completó el reinicio de ${name}. Revisá su estado en la tabla.` }),
     clearCooldown: id => ({ method: 'POST', path: `/api/llm/endpoints/${enc(id)}/clear-cooldown`, refresh: 'LLM_ENDPOINTS',
@@ -412,6 +427,9 @@
       return { enabled: false, reason: 'No disponible en modo demostración: los datos mostrados son de ejemplo.' };
     }
     if (!store.can(ADMIN)) return { enabled: false, reason: 'Requiere permiso de administración.' };
+    if (kind === 'setAlertZones' && store.entry('ALERTS').alertStatus?.output?.writable !== true) {
+      return { enabled: false, reason: 'La configuración de zonas no está disponible.' };
+    }
     if (kind === 'restartService' && !RESTARTABLE_SERVICES.includes(target)) {
       return { enabled: false, reason: 'Este servicio no se reinicia desde el panel.' };
     }
@@ -442,8 +460,12 @@
     const timer = setTimer(() => { timedOut = true; controller.abort(); }, timeoutMs);
     let response, body;
     try {
-      response = await fetch(operation.path, { method: operation.method, credentials: 'same-origin',
-        cache: 'no-store', signal: controller.signal });
+      const request = { method: operation.method, credentials: 'same-origin', cache: 'no-store', signal: controller.signal };
+      if (operation.payload !== undefined) {
+        request.headers = { 'Content-Type': 'application/json' };
+        request.body = JSON.stringify(operation.payload);
+      }
+      response = await fetch(operation.path, request);
       if (response.status === 401 || response.status === 403) return failure(response.status);
       body = await response.json().catch(error => {
         if (timedOut) throw error;
@@ -464,6 +486,9 @@
     let refreshed;
     try {
       refreshed = await readCollection({ fetch, store, key: operation.refresh, path });
+      if (operation.payload !== undefined && refreshed !== STATUS.FORBIDDEN) {
+        refreshed = store.entry('ALERTS').alertStatus?.output?.available === true ? STATUS.REAL : STATUS.DEGRADED;
+      }
     } catch (error) {
       if (error instanceof AuthRequired) {
         return { state: 'confirmed', sessionExpired: true,
@@ -476,7 +501,7 @@
     return { state: 'confirmed', message: operation.done + refreshMessage };
   }
 
-  async function runOperation({ fetch, store, kind, target, ...options }) {
+  async function runOperation({ fetch, store, kind, target, payload, ...options }) {
     const held = store.operationOutcome(kind, target);
     if (held) return held;
     const allowed = availability(store, kind, target);
@@ -485,7 +510,7 @@
       store.setNotice(outcome);
       return outcome;
     }
-    const operation = OPERATIONS[kind](target);
+    const operation = { ...OPERATIONS[kind](target), payload };
     const attempt = store.beginOperation(kind, target, operation.refresh);
     const outcome = await sendOperation({ ...options, fetch, store, operation });
     if (!store.finishOperation(attempt, outcome)) return { state: 'retired' };
@@ -516,9 +541,20 @@
     return expiry > now.getTime() ? 'vigente' : 'vencida';
   }
 
+  function alertProducerLabel(producer, now = new Date()) {
+    if (producer.state === 'stale' || (['fresh', 'partial'].includes(producer.state)
+        && freshness({ expiresAt: producer.expires_at }, now) === 'vencida')) return 'vencida';
+    if (producer.reason === 'source_unconfigured') return 'sin iniciar';
+    if (producer.reason === 'source_closed') return 'detenida';
+    if (producer.connected === false) return 'desconectada';
+    if (producer.available) return 'disponible';
+    if (producer.state === 'partial') return 'parcial';
+    return 'incierta';
+  }
+
   const api = {
     COLLECTIONS, VIEW_COLLECTIONS, DEGRADED_RETRY_MS, RESTARTABLE_SERVICES, STATUS, OPERATIONS, AuthRequired,
-    parseObservation, createObservationStore, readCollection, readCollections, hydrate, createObservationPoller,
+    parseObservation, createObservationStore, readCollection, readCollections, hydrate, createObservationPoller, alertProducerLabel,
     OPERATION_TIMEOUT_MS, availability, runOperation, remainingUntil, formatInstant, freshness,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

@@ -83,12 +83,14 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
                          reminder_store=None, presence_detector=None,
                          reminder_wake_event: asyncio.Event | None = None,
                          register_output: Callable[[Callable[[], asyncio.Task]], None] | None = None,
-                         household_clock: HouseholdClock | None = None) -> VoiceServices:
+                         household_clock: HouseholdClock | None = None,
+                         alert_muted: Callable[[], bool] | None = None) -> VoiceServices:
     """Build the same local delivery graph used by main and register cleanup.
 
     Producers close before the shared output owner, including construction or
-    warmup failures before the application starts listening. The reminder
-    scheduler receives the application's ``household_clock`` (P3-F1).
+    warmup failures before the application starts listening. Alerts and reminders
+    share the store and household clock. Alerts remain muted until an owner's
+    mute check is bound here or after the capture control is built.
     """
     streaming = config.get("tts", {}).get("streaming", {})
     buffering = config.get("llm", {}).get("buffering", {})
@@ -115,7 +117,10 @@ def build_voice_services(config: dict, *, tts, shutdown: AsyncExitStack, zone_ma
     features = build_feature_manager(
         config, response_handler=response, zone_manager=zone_manager,
         user_manager=user_manager, ha_client=ha_client,
+        reminder_store=reminder_store, household_clock=household_clock,
     )
+    if alert_muted is not None:
+        features.bind_alert_mute(alert_muted)
     shutdown.push_async_callback(features.stop)
     services = VoiceServices(response, features)
     if config.get("rooms", {}).get("enabled", False) and reminder_store is not None:

@@ -1,5 +1,6 @@
 """Tests para adapters reales (use_mocks=False)."""
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -11,7 +12,10 @@ from fastapi.testclient import TestClient
 from src.dashboard.observability import register_observability_routes
 from src.audio.zone_manager import Zone, ZoneState
 from src.users.user_manager import User, PermissionLevel
-from src.alerts.alert_manager import Alert, AlertType, AlertPriority
+from src.alerts.alert_manager import AlertManager, AlertPriority, AlertType
+from src.alerts.ha_alert_source import HAAlertSource
+from src.home_assistant.ha_client import HAStatesSnapshot
+from tests.unit.alerts.test_ha_alert_source import BATTERY, DOOR, Reader, state
 
 
 @pytest.fixture
@@ -33,16 +37,6 @@ def fake_user_manager():
     from src.core.account_metadata import AccountMetadata
     um.project_accounts.return_value = (AccountMetadata(u.user_id, u.name, 'adult', True),)
     return um
-
-
-@pytest.fixture
-def fake_alert_manager():
-    a = Alert(alert_id="al_1", alert_type=AlertType.SECURITY,
-              priority=AlertPriority.CRITICAL, message="movimiento patio",
-              details={"zone": "patio", "body": "cámara nada"})
-    am = MagicMock()
-    am.get_history.return_value = [a]
-    return am
 
 
 @pytest.fixture
@@ -85,21 +79,80 @@ def test_users_adapter_real_data(fake_user_manager, dashboard_auth):
     assert "effective_permissions" in r.headers["X-KZA-Unobserved-Fields"]
 
 
-def test_alerts_adapter_real_data(fake_alert_manager, dashboard_auth):
-    c = _client(dashboard_auth, alert_manager=fake_alert_manager)
-    r = c.get("/api/alerts")
-    assert r.status_code == 200
-    [a] = r.json()
-    assert a["id"] == "al_1"
-    assert a["priority"] == "critical"
-    assert a["zone"] == "patio"
-
-
-def test_alerts_adapter_filter_active(fake_alert_manager, dashboard_auth):
-    c = _client(dashboard_auth, alert_manager=fake_alert_manager)
+async def test_alerts_adapter_keeps_history_with_no_producer(dashboard_auth):
+    manager = AlertManager()
+    alert = await manager.create_alert(AlertType.SECURITY, AlertPriority.CRITICAL, "movimiento patio",
+                                       {"zone": "patio", "body": "cámara nada"})
+    c = _client(dashboard_auth, alert_manager=manager)
     r = c.get("/api/alerts", params={"status": "active"})
     assert r.status_code == 200
-    assert len(r.json()) == 1
+    assert r.headers["X-KZA-Source"] == "degraded"
+    data = r.json()
+    assert data["available"] is False and data["producers"] == []
+    [a] = data["alerts"]
+    assert a["id"] == alert.alert_id
+    assert a["priority"] == "critical"
+    assert a["zone"] == "patio"
+    assert c.get("/api/alerts", params={"status": "acked"}).json()["alerts"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["disconnected", "stale", "partial", "overflow"])
+async def test_alerts_adapter_projects_live_producer_evidence(dashboard_auth, failure):
+    manager, reader = AlertManager(), Reader()
+    reader.now = datetime.now(UTC).timestamp() - (30 if failure == "stale" else 1)
+    source = HAAlertSource(reader, manager, {
+        "door_window": {DOOR: {}}, "battery": {BATTERY: {}}, "queue_maxsize": 1,
+    }, clock=lambda: reader.now)
+    manager.producer_status = source.get_producer_status
+    client = _client(dashboard_auth, alert_manager=manager)
+    before = client.get("/api/alerts").json()
+    assert before["available"] is False
+    assert all(row["last_check_at"] is None and not row["connected"] for row in before["producers"])
+
+    await source.start()
+    try:
+        reader.rest(state(DOOR, "off", reader.now), state(BATTERY, "95", reader.now))
+        await source.reconcile()
+        if failure != "stale":
+            healthy = client.get("/api/alerts").json()
+            assert healthy["available"] is True and healthy["alerts"] == []
+            assert all(row["connected"] and row["last_check_at"] and row["observed_at"] and row["expires_at"]
+                       for row in healthy["producers"])
+        if failure == "partial":
+            reader.rest(state(DOOR, "off", reader.now))
+            await source.reconcile()
+        elif failure == "disconnected":
+            reader.generation = None
+            reader.now += 1
+            reader.snapshot = HAStatesSnapshot(False, None, "ha_states_unavailable")
+            await source.reconcile()
+        elif failure == "stale":
+            reader.now += 30
+        else:
+            reader.publish(DOOR, "off")
+            reader.publish(BATTERY, "95")
+
+        response = client.get("/api/alerts")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["available"] is False and data["alerts"] == []
+        rows = {row["id"]: row for row in data["producers"]}
+        door, battery = rows["door_open_unexpected"], rows["battery_low"]
+        assert DOOR not in response.text and BATTERY not in response.text
+        if failure == "partial":
+            assert response.headers["X-KZA-Observation-State"] == "partial"
+            assert door["available"] is True and battery["available"] is False and battery["uncertain"]
+        elif failure == "stale":
+            assert response.headers["X-KZA-Observation-State"] == "stale"
+            assert all(row["state"] == "stale" and row["expires_at"] for row in rows.values())
+        elif failure == "disconnected":
+            assert all(not row["connected"] and row["state"] == "unavailable" and row["observed_at"]
+                       and row["last_check_at"] > row["observed_at"] for row in rows.values())
+        else:
+            assert all(row["overflow"] == 1 and row["uncertain"] for row in rows.values())
+    finally:
+        await source.stop()
 
 
 def test_llm_endpoints_adapter_real(fake_llm_router, dashboard_auth):
@@ -173,14 +226,11 @@ def test_warn_logged_when_use_mocks_with_real_services_injected(caplog, dashboar
     assert any("use_mocks=True con servicios reales" in m for m in caplog.messages)
 
 
-def test_alert_instant_is_explicit_utc_for_naive_alert_manager_timestamps():
+async def test_alert_instant_is_explicit_utc_for_naive_alert_manager_timestamps():
     """AlertManager stores naive UTC; clients receive an offset-bearing instant."""
-    from datetime import datetime
     from src.dashboard.observability import _alerts_adapter
-    alert = Alert(alert_id="al_z", alert_type=AlertType.SECURITY, priority=AlertPriority.LOW,
-                  message="m", details={}, timestamp=datetime(2026, 11, 10, 13, 39, 43))
-    manager = MagicMock()
-    manager.get_history.return_value = [alert]
+    manager = AlertManager(now=lambda: datetime(2026, 11, 10, 13, 39, 43))
+    await manager.create_alert(AlertType.SECURITY, AlertPriority.LOW, "m")
     [row] = _alerts_adapter(manager, None)
     assert row["at"] == "2026-11-10T13:39:43+00:00"
     assert row["ts"] == "13:39:43"
