@@ -163,7 +163,11 @@ async def test_factory_maintenance_expires_catalog_and_index(tmp_path):
         source = MemorySource(str(uuid4()), str(uuid4()), now, now+48*3600, MemoryOrigin.VOICE)
         fact_id = await services.manager.long_term.astore_fact('Un hecho muy breve.', 'fact', sources=(source,))
         async with asyncio.timeout(3):
-            while services.manager.long_term.ledger.get(fact_id) is not None or services.manager.long_term._collection.count():
+            while (
+                services.manager.long_term.ledger.get(fact_id) is not None
+                or services.manager.long_term._collection.count()
+                or services.manager.long_term.ledger.status()['pending_index']
+            ):
                 await asyncio.sleep(.01)
         assert services.manager.long_term.ledger.status()['pending_index'] == 0
 
