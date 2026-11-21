@@ -1539,8 +1539,27 @@ _TV_CONTROL = (
     ("volume_down", re.compile(rf"(?:baja|bajame) (?:el )?volumen (?:de |en )?(?:la |el )?{_TV}{_TV_ROOM}")),
 )
 _ELECTRICITY = r"(?:energia|electricidad|luz|luces|corriente)"
-_METER_SCOPE = r"(?:casa|hogar|medidor(?:es)?|red|instalacion)"
+_METER_SCOPE = r"(?:casas?|hogar(?:es)?|medidor(?:es)?|red(?:es)?|instalacion(?:es)?)"
 _ENERGY_UNITS = r"(?:kwh|kilowatts? hora|kilovatios? hora)"
+_ENERGY_TIME_UNIT = r"(?:mes(?:es)?|dias?|semanas?|anos?|bimestres?|periodos?|horas?)"
+_ENERGY_NOUN = (
+    rf"(?:{_ELECTRICITY}|{_METER_SCOPE}|{_ENERGY_TIME_UNIT}|kwh|(?:kilo)?(?:watts?|vatios?)|"
+    r"potencias?|tarifas?|facturas?|cuentas?|consumos?|gastos?|total(?:es)?|momentos?)"
+)
+_ENERGY_DETERMINER = r"(?:el|la|los|las|un|una|mis?|tus?|sus?|nuestr[oa]s?|del)"
+_ENERGY_NOMINAL = re.compile(
+    rf"\b{_ENERGY_DETERMINER} (?:(?:ultim[oa]s?|proxim[oa]s?) )?(?P<head>\w+)"
+)
+_ENERGY_NOMINAL_HEAD = re.compile(_ENERGY_NOUN)
+_ENERGY_TEMPORAL = (
+    rf"(?:hoy|ayer|ahora|actualmente|est[ea] {_ENERGY_TIME_UNIT}|"
+    rf"(?:por|al) {_ENERGY_TIME_UNIT}|en (?:total|standby))"
+)
+_ENERGY_PARTICIPLE = (
+    r"(?:\w+(?:ad|id)|abiert|cubiert|dich|escrit|hech|impres|muert|puest|"
+    r"resuelt|rot|(?:pre)?vist|vuelt)[oa]s?"
+)
+_ENERGY_ACCUMULATION_VERB = r"(?:llev\w*|tien\w*|ten(?:go|es|emos|eis|ia\w*)|tuv\w*)"
 _ELECTRICITY_SUBJECT = re.compile(rf"\b(?:{_ELECTRICITY}|(?:consumos?|tarifas?|facturas?) electric[oa]s?)\b")
 _HOUSEHOLD_METER = re.compile(rf"\b{_METER_SCOPE}\b")
 _ENERGY_UNIT = re.compile(rf"\b{_ENERGY_UNITS}\b")
@@ -1549,20 +1568,22 @@ _ELECTRIC_VEHICLE = re.compile(
     r"\b(?:autos?|coches?|carros?|vehiculos?|motos?|bicis?|bicicletas?|monopatin(?:es)?) electric[oa]s?\b"
 )
 _ENERGY_OBJECT_LINK = re.compile(
-    r"\b(?:consum[ei]\w*|usa\w*|gast\w*|tien\w*|tira\w*|necesit\w*|"
-    r"requier\w*|llev\w*|demand\w*|de las?|del) "
+    rf"\b(?:consum[ei]\w*|usa\w*|gast\w*|tira\w*|necesit\w*|requier\w*|demand\w*|"
+    rf"{_ENERGY_ACCUMULATION_VERB})"
+    rf"\b(?: (?:{_ENERGY_PARTICIPLE}|{_ENERGY_TEMPORAL})\b)*(?: |$)"
 )
-_ENERGY_SCOPE_OR_QUALIFIER = re.compile(
-    rf"(?:(?:el|la|los|las|mi|tu|su|nuestro|nuestra|un|una) )?"
-    rf"(?:{_METER_SCOPE}|{_ELECTRICITY}|{_ENERGY_UNITS}|potencia|watts?|vatios?|pesos?|dinero|"
-    r"hoy|ayer|ahora|actualmente|este|esta|mes|semana|dia|ano|al|a|de|en|por|desde|durante)\b"
+_ENERGY_OBJECT_TAIL = re.compile(
+    rf"(?:{_ENERGY_DETERMINER}|{_ENERGY_NOUN}|pesos?|dinero|al|a|de|en|por|desde|durante)\b|$"
 )
 _VIDEO_DOORBELL = re.compile(r"\bvideo ?porteros?\b")
 _METER_READING = re.compile(r"\b(?:consum\w*|gast\w*|usam\w*|medidor(?:es)?)\b")
+_ACCUMULATED_READING = re.compile(
+    rf"\b{_ENERGY_ACCUMULATION_VERB} (?:{_ENERGY_TEMPORAL} )*{_ENERGY_PARTICIPLE}\b"
+)
 _ENERGY_COST = re.compile(
     r"\b(?:cost\w*|cuest\w*|facturas?|tarifas?|pag\w*|pesos?|dinero|precios?|sale|val(?:e|en|er))\b"
 )
-_ENERGY_SPEND = re.compile(r"\bgast\w* (?:de|en) (?:la )?(?:luz|electricidad)\b")
+_ENERGY_SPEND = re.compile(rf"\bgast\w* (?:{_ENERGY_TEMPORAL} )*(?:de|en) (?:la )?(?:luz|electricidad)\b")
 _ENERGY_QUANTITY = re.compile(r"^(?:cuanta|que) energia\b")
 _ENERGY_QUERY = re.compile(
     r"^(?:cuant[oa]s?|que|cual|decime|mostrame|dame|consumo|potencia|energia|factura|tarifa|precio|costo|gasto|pago)\b"
@@ -1575,7 +1596,11 @@ _LIGHT_OR_COVER = re.compile(
 def _energy_measurement(text: str) -> str | None:
     if not _ENERGY_QUERY.search(text) or _LIGHT_OR_COVER.search(text) or _ELECTRIC_VEHICLE.search(text):
         return None
-    if any(not _ENERGY_SCOPE_OR_QUALIFIER.match(text, link.end()) for link in _ENERGY_OBJECT_LINK.finditer(text)):
+    if any(not _ENERGY_NOMINAL_HEAD.fullmatch(noun["head"]) for noun in _ENERGY_NOMINAL.finditer(text)):
+        return None
+    # Known verbs also tell us where a bare noun can occur. A participle or
+    # a time qualifier before that position does not supply the object.
+    if any(not _ENERGY_OBJECT_TAIL.match(text, link.end()) for link in _ENERGY_OBJECT_LINK.finditer(text)):
         return None
     energy_unit = _ENERGY_UNIT.search(text)
     power_unit = _POWER_UNIT.search(text)
@@ -1585,7 +1610,8 @@ def _energy_measurement(text: str) -> str | None:
         return "cost"
     if not (energy_unit or power_unit or _ENERGY_QUANTITY.match(text)) and _ENERGY_SPEND.search(text):
         return "cost"
-    if energy_unit or power_unit or ((electricity or household) and _METER_READING.search(text)):
+    reading = _METER_READING.search(text) or _ACCUMULATED_READING.search(text)
+    if energy_unit or power_unit or ((electricity or household) and reading):
         return "power" if power_unit and not energy_unit else "energy"
     return None
 
