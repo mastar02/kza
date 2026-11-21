@@ -195,8 +195,9 @@ def test_every_task_route_is_a_household_task_not_an_operator_default():
                    if path.startswith(("/api/lists", "/api/reminders"))
                    and path not in {"/api/reminders/status"} and not path.startswith("/api/reminders/notices")]
     assert {path for _, path in task_routes} == {"/api/lists", "/api/lists/example/items",
-                                                 "/api/lists/example/items/example", "/api/reminders",
-                                                 "/api/reminders/example"}
+                                                 "/api/lists/example/items/example", "/api/lists/sync",
+                                                 "/api/reminders", "/api/reminders/example"}
+    assert {method for method, path in task_routes if path == "/api/lists/sync"} == {"POST"}
     for method, path in task_routes:
         needed = _route_permissions(Request({"type": "http", "method": method, "path": path,
                                              "query_string": b"", "headers": []}))

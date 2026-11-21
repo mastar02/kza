@@ -134,6 +134,9 @@ IMMUTABLE_CLASSES = frozenset({'interaction_trace', 'navigate', 'load_wait', 'ev
                                'wait_preview', 'wait_other', 'leave'})
 # instrumentation.cdp_deadlines.harness_only_formula.
 HARNESS_ONLY_CLASSES = frozenset({'setup', 'collect', 'version', 'window_state'})
+DEFAULT_HARNESS_DEADLINES = {name: DEADLINE_MS[name] for name in HARNESS_ONLY_CLASSES}
+FRAME_EVENT_CANDIDATES = ('PipelineReporter', 'Display::FrameDisplayed', 'DrawFrame')
+FIXTURE_LIFETIME_S = 10 * 3600
 QUIET_PERIOD_MS = 500
 LCP_CAP_MS = 10000
 EVENT_DURATION_THRESHOLD_MS = 16
@@ -1125,7 +1128,7 @@ def invalid_batch_reasons(batch: dict) -> list:
     header_version = batch.get('browser_version')
     if any(run.get('browser_version') not in (None, header_version) for run in batch['runs']):
         reasons.append('browser_version_changed')
-    if batch.get('elapsed_since_fixture_s', 0) > 10 * 3600:
+    if batch.get('elapsed_since_fixture_s', 0) >= FIXTURE_LIFETIME_S:
         reasons.append('fixture_lifetime')
     invalid = sum(1 for run in batch['runs'] if run['outcome'] == Outcome.INVALID and not run.get('warm_up'))
     if invalid > 0.1 * batch['planned']:
@@ -1303,7 +1306,9 @@ def overhead(arms: dict, metrics: tuple = ('inp', 'raf_feedback')) -> dict:
                           'tracing': component(median['b'], median['c']), 'medians': median}
         unevaluable += [f'{metric}:{name}' for name in ('screencast', 'tracing')
                         if not result[metric][name]['evaluable']]
-    exceeds = lambda item: item['evaluable'] and item['low'] > 8
+    def exceeds(item):
+        return item['evaluable'] and item['low'] > 8
+
     result['consequences'] = {
         'screencast_limited_to_contrast': any(exceeds(result[metric]['screencast']) for metric in metrics),
         'untraced_inp': 'inp' in metrics and exceeds(result['inp']['tracing']),
@@ -1339,9 +1344,9 @@ def reconfirmation_arm(metric: str) -> str:
 def frame_event_choice(phases: list) -> dict:
     """smoke_gate.frame_event (R5-6): first candidate present in every phase and passing on >= 95%."""
     shares = {}
-    for candidate in ('PipelineReporter', 'Display::FrameDisplayed', 'DrawFrame'):
+    for candidate in FRAME_EVENT_CANDIDATES:
         present = all(candidate in phase['present'] for phase in phases)
-        checks = [check[candidate] for phase in phases for check in phase['interactions'] if candidate in check]
+        checks = [check.get(candidate, False) for phase in phases for check in phase['interactions']]
         share = sum(1 for value in checks if value) / len(checks) if checks else 0.0
         shares[candidate] = {'present_everywhere': present, 'share': share}
         if present and share >= 0.95:
@@ -1388,7 +1393,10 @@ def file_sha256(path: Path) -> str:
 
 
 def _verified_preregistration_bytes(path: Path, expected: str) -> bytes:
-    content = Path(path).read_bytes()
+    try:
+        content = Path(path).read_bytes()
+    except OSError as error:
+        raise SystemExit(f'preregistration_unreadable:{path}:{error.strerror}') from None
     actual = hashlib.sha256(content).hexdigest()
     if not re.fullmatch(r'[0-9a-f]{64}', expected or '') or actual != expected:
         raise SystemExit(f'preregistration_hash_mismatch: expected {expected}, found {actual}')
@@ -1409,10 +1417,21 @@ def output_root(mode: str) -> Path:
     return OUTPUT_ROOT / 'u1' / 'baseline'
 
 
-def _measurement_preregistration(mode: str, sha: str) -> tuple[dict, Path, bool]:
+def _measurement_preregistration(mode: str, sha: str, path: Path | None = None) -> tuple[dict, Path, bool]:
     """Resolve the method and evidence location from the exact reviewed or frozen bytes."""
-    preregistration = json.loads(_verified_preregistration_bytes(PREREGISTRATION, sha))
+    content = _verified_preregistration_bytes(path or PREREGISTRATION, sha)
+    try:
+        preregistration = json.loads(content)
+    except ValueError:
+        raise SystemExit('preregistration_invalid_json') from None
+    if not isinstance(preregistration, dict):
+        raise SystemExit('preregistration_invalid_json')
     retry = preregistration.get('setup_timeout_retry') is True
+    if mode == 'baseline':
+        if preregistration.get('schema') != 't046-preregistration/v1' or preregistration.get('status') != 'frozen':
+            raise SystemExit('preregistration_not_frozen')
+        if not retry:
+            raise SystemExit('setup_timeout_retry_opt_in_required')
     root = output_root(mode)
     return preregistration, root / f'prereg-{sha}' if retry else root, retry
 
@@ -1628,18 +1647,43 @@ def cell_settings(mode: str, fill_ins: dict, record: SmokeRecord | None = None) 
                 'play_control_rule_source': 'smoke_record:fixture_pages', 'smoke_inputs': smoke_inputs(record),
                 'background_branch': smoke_background_branch(record), 'composition': dict(BATCH_COMPOSITION['smoke']),
                 'warm_rule': False, 'frame_event': None, 'untraced_inp': False, 'overhead': None}
-    missing = [key for key in ('idle_load', 'post_batch_load', 'play_control_rule', 'background_branch', 'frame_event')
+    missing = [key for key in ('idle_load', 'post_batch_load', 'play_control_rule', 'background_branch', 'frame_event',
+                               'lock_read', 'warm_cache', 'overhead', 'harness_only_deadlines_ms')
                if fill_ins.get(key) is None]
     if missing:
         raise SystemExit(f'fill_ins_missing:{",".join(missing)}: the smoke fill-ins are not in the frozen file')
-    frame_event = fill_ins.get('frame_event')
-    frame_event = frame_event.get('candidate') if isinstance(frame_event, dict) else frame_event
+    frame = fill_ins['frame_event']
+    play_rule = fill_ins['play_control_rule']
+    lock = fill_ins['lock_read']
+    warm = fill_ins['warm_cache']
+    overhead = fill_ins['overhead']
+    if (not isinstance(frame, dict) or frame.get('candidate') not in FRAME_EVENT_CANDIDATES
+            or frame.get('method_change')):
+        raise SystemExit('fill_in_invalid:frame_event')
+    if play_rule not in PLAY_RULE_CANDIDATES:
+        raise SystemExit('fill_in_invalid:play_control_rule')
+    if not isinstance(lock, dict) or lock.get('read') not in ('read1', 'read2'):
+        raise SystemExit('fill_in_invalid:lock_read')
+    if (not isinstance(warm, dict) or not finite_number(warm.get('share')) or not 0 <= warm['share'] <= 1
+            or warm.get('reached') is not (warm['share'] >= 0.9)):
+        raise SystemExit('fill_in_invalid:warm_cache')
+    if (not isinstance(overhead, dict) or overhead.get('method_change') or overhead.get('unevaluable')
+            or any(type(overhead.get(key)) is not bool for key in ('untraced_inp', 'screencast_limited_to_contrast'))):
+        raise SystemExit('fill_in_invalid:overhead')
+    if fill_ins['background_branch'] not in ('none', 'netlog'):
+        raise SystemExit('fill_in_invalid:background_branch')
+    for key in ('idle_load', 'post_batch_load'):
+        if not finite_number(fill_ins[key]) or fill_ins[key] < 0:
+            raise SystemExit(f'fill_in_invalid:{key}')
     return {'idle': fill_ins['idle_load'], 'post_batch': fill_ins['post_batch_load'],
-            'play_control_rule': fill_ins['play_control_rule'], 'play_control_rule_source': 'fill_ins',
+            'play_control_rule': play_rule, 'play_control_rule_source': 'fill_ins',
             'background_branch': fill_ins['background_branch'], 'composition': dict(BATCH_COMPOSITION['baseline']),
-            'warm_rule': warm_rule_active(fill_ins), 'frame_event': frame_event,
-            'untraced_inp': bool((fill_ins.get('overhead') or {}).get('untraced_inp')),
-            'overhead': fill_ins.get('overhead')}
+            'warm_rule': warm_rule_active(fill_ins), 'frame_event': frame['candidate'],
+            'untraced_inp': overhead['untraced_inp'], 'overhead': overhead}
+
+
+def finite_number(value: Any) -> bool:
+    return type(value) in (int, float) and math.isfinite(value)
 
 
 def write_json_atomic(path: Path, value) -> None:
@@ -2638,6 +2682,7 @@ class Run:
         self.activation_polls = None
         self.leave_ok = False
         self.retryable_setup_timeout = False
+        self.interaction_traced = False
         self.browser_version = None
         self.flush_sent = None
         self.play_click_wall = None
@@ -2895,6 +2940,7 @@ class Run:
         if steps:
             if spec.trace_interactions and not getattr(self, 'tracing', False):
                 await self._start_tracing('interaction_trace')
+            self.interaction_traced = spec.trace_interactions
             if spec.screencast:
                 await self.page.send('Page.startScreencast', {'format': 'jpeg', 'quality': 40, 'everyNthFrame': 1},
                                      klass='interaction_trace')
@@ -2935,14 +2981,16 @@ class Run:
                     return
                 log_start = len(self.page.log)
                 self.play_click_wall = time.time()
+                play_step = {'step': step['step'], 'status': 'dispatch_unconfirmed', 'target': ready['target'],
+                             'ready_record': ready['type']}
+                self.steps.append(play_step)
                 await dispatch_click(self.page, ready['target']['point'], mobile)
                 self._sample_window(f'interaction_start:{index}')
                 sent = next((entry['sent'] for entry in self.page.log[log_start:]
                              if entry['method'].startswith('Input.')), None)
                 # F6: probe-side wait from receiving the ready record to sending the first input event.
                 delay = (sent - ready['_received']) * 1000 if sent is not None and '_received' in ready else None
-                self.steps.append({'step': step['step'], 'status': 'dispatched', 'target': ready['target'],
-                                   'ready_record': ready['type'], 'probe_dispatch_delay_ms': delay})
+                play_step.update(status='dispatched', dispatch_sent=sent, probe_dispatch_delay_ms=delay)
                 try:
                     await self.records.wait(lambda record: record['type'] == 'media' and record['event'] == 'playing',
                                             self.preview_until)
@@ -2971,11 +3019,15 @@ class Run:
             self._sample_window(f'interaction_start:{index}')
             self.steps.append({'step': step['step'], 'status': 'dispatched', 'rect': ready['rect']})
             wait_until = dispatched + DEADLINE_MS[step['wait']] / 1000
-            if step['end']['kind'] == 'control_attached':
+            wait_for_control = step['end']['kind'] == 'control_attached'
+            if wait_for_control:
                 self.preview_until = wait_until
-                predicate = lambda record: record['type'] == 'control_attached'
-            else:
-                predicate = lambda record, i=index: record['type'] == 'step_next_frame' and record['index'] == i
+
+            def predicate(record):
+                if wait_for_control:
+                    return record['type'] == 'control_attached'
+                return record['type'] == 'step_next_frame' and record['index'] == index
+
             try:
                 await self.records.wait(predicate, wait_until)
             except asyncio.TimeoutError:
@@ -3127,7 +3179,7 @@ class Run:
             'trace_candidates_present': sorted(name for name, values in frame_candidates(self.trace_events).items()
                                                if values),
             'script_identifier': self.script_identifier,
-            'interaction_traced': bool(steps) and spec.trace_interactions,
+            'interaction_traced': self.interaction_traced,
             'play_rule': self.config.get('play_rule') if hasattr(self, 'config') else None,
             'frame_event': spec.frame_event, 'play_click_frame': self.play_click_frame,
         }
@@ -3159,7 +3211,9 @@ class Run:
         anchor = monotonic_anchor(self.filter.accepted)
         if offset is None or anchor is None:
             return None
-        to_trace = lambda mono: (mono - anchor) * 1000 + offset
+        def to_trace(mono):
+            return (mono - anchor) * 1000 + offset
+
         return renderer_busy_across(self.trace_events, to_trace(command['sent']), to_trace(command['deadline']))
 
     def _c11(self, typed: dict, interactions: list, steps: list) -> dict:
@@ -3295,6 +3349,7 @@ class BatchEnvironment:
     sweep: Callable = lambda: []
     loadavgs: Callable = lambda: {}
     events: list = field(default_factory=list)
+    record_slot: Callable[[dict], None] = lambda result: None
 
 
 async def maybe_await(value):
@@ -3372,8 +3427,11 @@ async def run_batch(plan: dict, environment: BatchEnvironment, *, idle: float | 
         if fixture is not None:
             batch['fixture'] = {key: fixture.get(key) for key in ('digest', 'started_at', 'seed')}
             batch['served'] = environment.served_state()
+            fixture_started = fixture.get('started_at') or time.time()
             index = 0
             while index < len(plan['slots']):
+                if time.time() - fixture_started >= FIXTURE_LIFETIME_S:
+                    break
                 slot = plan['slots'][index]
                 index += 1
                 if slot['role'] == 'warm':
@@ -3393,8 +3451,9 @@ async def run_batch(plan: dict, environment: BatchEnvironment, *, idle: float | 
                         await environment.close_browser()
                 result.update({key: slot.get(key) for key in ('pair', 'trace_contrast', 'untraced_inp', 'warm_up',
                                                               'primer', 'replaces')})
-                result['role'] = slot['role']
+                result.update(role=slot['role'], viewport=plan['cell']['viewport'], view=plan['cell']['view'])
                 batch['runs'].append(result)
+                environment.record_slot(result)
                 if result['outcome'] == Outcome.INVALID:
                     replacement_slots(plan, slot)
             batch['caffeinate_assertion_end'] = bool(await maybe_await(environment.assertion_held(caffeinate)))
@@ -3624,16 +3683,22 @@ def load_fill_ins(preregistration: dict) -> dict:
     background_branch, overhead (consequences), play_control_rule, frame_event, lock_read and
     harness_only_deadlines_ms.
     """
-    return preregistration.get('fill_ins', {})
+    fill_ins = preregistration.get('fill_ins', {})
+    if not isinstance(fill_ins, dict):
+        raise SystemExit('fill_in_invalid:fill_ins')
+    return fill_ins
 
 
 def apply_fill_ins(fill_ins: dict) -> dict:
     """Apply harness-only deadline fill-ins; an immutable class can never change (R5-5)."""
-    deadlines = fill_ins.get('harness_only_deadlines_ms') or {}
+    deadlines = fill_ins.get('harness_only_deadlines_ms', {})
+    if not isinstance(deadlines, dict):
+        raise SystemExit('fill_in_invalid:harness_only_deadlines_ms')
     for klass, value in deadlines.items():
-        if klass not in HARNESS_ONLY_CLASSES or value < DEADLINE_MS[klass]:
+        if (klass not in HARNESS_ONLY_CLASSES or type(value) is not int
+                or value < DEFAULT_HARNESS_DEADLINES[klass] or value % 1000):
             raise SystemExit(f'fill_in_refused_for_deadline_class:{klass}')
-        DEADLINE_MS[klass] = int(value)
+    DEADLINE_MS.update(DEFAULT_HARNESS_DEADLINES | deadlines)
     return fill_ins
 
 
@@ -3642,11 +3707,12 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
     from tests.frontend.browser_support import browser_binary
     if sys.platform != 'darwin':
         raise SystemExit('measurement_runs_only_on_the_mac')
-    preregistration, root, retry = _measurement_preregistration(mode, sha)
-    fill_ins = apply_fill_ins(load_fill_ins(preregistration))
+    preregistration, root, retry = _measurement_preregistration(mode, sha, getattr(args, 'preregistration', None))
     smoke = mode == 'smoke'
+    fill_ins = {} if smoke else load_fill_ins(preregistration)
     # R6-1, R6-2, R6-9: every per-mode input comes from cell_settings (smoke record or fill-ins), never the CLI.
     settings = cell_settings(mode, fill_ins, SmokeRecord(root / 'smoke-record.json') if smoke else None)
+    apply_fill_ins(fill_ins)
     idle, post_batch = settings['idle'], settings['post_batch']
     plan = plan_batch(sha, 'mac-chrome', args.viewport, args.view, args.attempt, smoke=smoke,
                       **settings['composition'],
@@ -3674,15 +3740,16 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
     async def run_slot(slot):
         spec = slot_spec(slot, plan, state['ready'], state['positions'], settings['overhead'],
                          play_rule=settings['play_control_rule'], frame_event=settings['frame_event'])
-        result = await session.execute(spec, fixture)
+        return await session.execute(spec, fixture)
+
+    def record_slot(result):
         result['mode'] = mode
         # V14c: every result file names the full method_identity it was produced under.
         language = (result.get('document_start') or {})
         result['method_identity'] = {**identity, 'fixture_digest': state['ready'].get('digest'),
                                      'browser_version': result.get('browser_version'),
                                      'ui_locale_navigator': [language.get('language'), language.get('languages')]}
-        write_json_atomic(out_dir / f'run-{slot["ordinal"]:05d}.json', json_safe(result))
-        return result
+        write_json_atomic(out_dir / f'run-{result["ordinal"]:05d}.json', json_safe(result))
 
     lock_choice = (fill_ins.get('lock_read') or {}).get('read') if isinstance(fill_ins.get('lock_read'), dict) \
         else fill_ins.get('lock_read')
@@ -3692,7 +3759,7 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
                                    caffeinate=start_caffeinate, served_state=served_state,
                                    machine_state=lambda: machine_state(lock_choice),
                                    assertion_held=caffeinate_assertion_wait, sweep=sweep_probe_browsers,
-                                   loadavgs=loadavgs)
+                                   loadavgs=loadavgs, record_slot=record_slot)
     header = {'mode': mode, 'preregistration_sha256': sha, 'script_id': script_id(), 'plan_seed': plan['seed'],
               'launch_flags': list(LAUNCH_FLAGS), 'launch_mechanism': LAUNCH_MECHANISM,
               'environment': environment_facts, 'method_identity': identity, 'label': LOCAL_LABEL,
@@ -3701,6 +3768,10 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
               'play_control_rule': settings['play_control_rule'], 'composition': settings['composition']}
     batch = await run_batch(plan, environment, idle=idle, post_batch=post_batch,
                             warm_rule=settings['warm_rule'], smoke=smoke)
+    first_document = next((run['document_start'] for run in batch['runs'] if run.get('document_start')), {})
+    identity.update(fixture_digest=(batch.get('fixture') or {}).get('digest'),
+                    browser_version=batch.get('browser_version'),
+                    ui_locale_navigator=[first_document.get('language'), first_document.get('languages')])
     header['closure'] = recorded_closure(json.loads((out_dir / 'fixture-modules.json').read_text())
                                          if (out_dir / 'fixture-modules.json').exists() else [])
     batch_record = {**header, **{key: value for key, value in batch.items() if key != 'runs'},
@@ -3709,7 +3780,10 @@ async def measure_cell(args, mode: str, sha: str) -> dict:
                     'events': environment.events, 'directory': str(out_dir)}
     batch_record['faults'] = sorted(batch_faults(batch_record))
     write_json_atomic(out_dir / 'batch.json', json_safe(batch_record))
-    print(json.dumps({'batch': str(out_dir), 'discarded': batch.get('discarded'), 'reasons': batch.get('reasons')}))
+    summary_path = out_dir / 'summary.json'
+    write_json_atomic(summary_path, batch_summary(batch['runs'], mode, batch_record))
+    print(json.dumps({'batch': str(out_dir), 'summary': str(summary_path),
+                      'discarded': batch.get('discarded'), 'reasons': batch.get('reasons')}))
     return batch_record
 
 
@@ -3749,9 +3823,9 @@ async def caffeinate_assertion_wait(process, attempts: int = 10) -> bool:
 # --------------------------------------------------------------------------------------------
 
 async def run_sequence(mode: str, specs: list, out_dir: Path, fixture: FixtureProcess | None, *,
-                       binary: str, profile_root: Path | None) -> list:
+                       binary: str, profile_root: Path | None, setup_timeout_retry: bool = False) -> list:
     """Run specs in order: a cold spec launches a browser; following warm specs reuse its target."""
-    session = BrowserSession(mode, binary, out_dir, profile_root)
+    session = BrowserSession(mode, binary, out_dir, profile_root, setup_timeout_retry=setup_timeout_retry)
     results = []
     try:
         for spec in specs:
@@ -3980,6 +4054,11 @@ async def measure_client(args, mode: str, sha: str, *, smoke_root: Path | None =
     if smoke:
         # R6-1: refuse before any entry is written (order, play rule, background branch, idle).
         cell_settings('smoke', {}, record)
+    else:
+        preregistration, _, _ = _measurement_preregistration(mode, sha, getattr(args, 'preregistration', None))
+        fill_ins = load_fill_ins(preregistration)
+        cell_settings(mode, fill_ins)
+        apply_fill_ins(fill_ins)
     order = cell_order(sha, 'mac-chrome', 1, cells, smoke=smoke)
     queue = list(order)
     while queue:
@@ -4066,35 +4145,125 @@ PLAY_RULE_CANDIDATES = (PLAY_CONTROL_RULE,) + tuple(
 
 
 def dialog_variant_summary(runs: list, rule: dict) -> dict:
-    """R6-6: per run of the dialog variant: playing, attach/ready targets (rect, point, element hit) and the kept
-    screencast frame; 'plays' is True only when every run reached 'playing' after control_ready."""
+    """R6-6: require five eligible gestures and five plays for passing fixture evidence."""
     rows = []
     for run in runs:
-        ready = (accepted(run, 'control_ready') or accepted(run, 'control_attached') or [{}])[0]
+        records = (run.get('records') or {}).get('accepted', [])
+        ready = next((record for record in records if record['type'] == 'control_ready'), None)
+        ready = ready or next((record for record in records if record['type'] == 'control_attached'), {})
+        facts = run.get('facts') or {}
         rows.append({'ordinal': run['ordinal'], 'outcome': run['outcome'], 'reason': run['reason'],
-                     'playing': bool([r for r in accepted(run, 'media') if r['event'] == 'playing']),
+                     'playing': any(r['type'] == 'media' and r.get('event') == 'playing' for r in records),
+                     'playback': f7_playback_status(run),
                      'target': ready.get('target'), 'play_click_frame': run.get('play_click_frame'),
-                     'failures': run['facts']['product_failures'],
-                     'environment_faults': run['facts']['environment_faults']})
-    return {'rule': rule, 'runs': rows, 'plays': bool(rows) and all(row['playing'] for row in rows)}
+                     'failures': facts.get('product_failures', []),
+                     'environment_faults': facts.get('environment_faults', [])})
+    counts = Counter(row['playback'] for row in rows)
+    playing = counts['playing']
+    return {'rule': rule, 'runs': rows, 'n_valid': playing + counts['no_playing'], 'n_playing': playing,
+            'plays': len(rows) == playing == 5}
+
+
+def f7_playback_status(run: dict) -> str:
+    """Read a playback diagnostic without altering the latency outcome of the run."""
+    if run['outcome'] == Outcome.INVALID:
+        return 'invalid'
+    step = next((step for step in run.get('steps', []) if step['step'] == 'reproducir'), {})
+    if step.get('status') == 'dispatch_unconfirmed':
+        return 'dispatch_unconfirmed'
+    if step.get('status') != 'dispatched':
+        if (run.get('reason') or '').startswith('cdp_timeout:'):
+            return 'pre_gesture_cdp_timeout'
+        return 'pre_gesture'
+    records = (run.get('records') or {}).get('accepted', [])
+    ready = next((record.get('time') for record in records if record['type'] == step.get('ready_record')), None)
+    sent = step.get('dispatch_sent')
+    for record in records:
+        if record['type'] != 'media' or record.get('event') != 'playing':
+            continue
+        if ready is not None and record.get('timeStamp', -math.inf) >= ready \
+                and (sent is None or record.get('_received', -math.inf) >= sent):
+            return 'playing'
+    return 'no_playing'
 
 
 def play_rule_choice(trials: list) -> dict:
     """First rule (in the preregistered order) whose 5 native-control runs all reached 'playing'."""
     for trial in trials:
-        if trial['runs'] and all(trial['playing']):
+        if trial['runs'] != 5 or trial['n_valid'] != 5:
+            break
+        if trial['n_playing'] == 5:
             return {'rule': trial['rule'], 'trials': trials, 'method_change': False}
     return {'rule': None, 'trials': trials, 'method_change': True}
 
 
-async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_root: Path | None) -> dict:
+def f7_cell_report(record: SmokeRecord, item: str, sha: str, rule: dict | None) -> dict:
+    """R8-1: use a complete cell or the invalid-share-only exception, exclusively for F7."""
+    entries = [entry for entry in record.previous(item) if entry['item'] == item
+               and entry.get('reviewed_sha256') == sha and entry.get('machine_state') == MACHINE_STATE]
+    complete = next((entry for entry in entries if entry['status'] == 'complete'), None)
+    entry = complete or (entries[-1] if entries else {})
+    result = entry.get('result') or {}
+    if entry.get('status') == 'discarded':
+        faults = sorted(set(entry.get('faults', [])) & set(SMOKE_REPEAT_CAUSES))
+        if faults:
+            return {'decision': 'd1_repeat', 'recorded_causes': faults}
+        if result.get('reasons') != ['invalid_runs_over_10_percent']:
+            return {'decision': 'd3_method_change'}
+    elif complete is None:
+        return {'decision': 'pending'}
+    if rule is None or result.get('play_control_rule') != rule or not result.get('directory'):
+        return {'decision': 'd3_method_change'}
+    directory = Path(result['directory'])
+    runs = []
+    for path in sorted(directory.glob('run-*.json')):
+        run = json.loads(path.read_text())
+        if (run.get('mode') != 'smoke' or document_machine_state(run) != MACHINE_STATE
+                or (run.get('method_identity') or {}).get('preregistration_sha256') != sha):
+            raise SystemExit(f'f7_evidence_identity_mismatch:{path}')
+        if run.get('play_rule') == rule and run['outcome'] != Outcome.INVALID:
+            runs.append(run)
+    statuses = [(run, f7_playback_status(run)) for run in runs]
+    playback = Counter(status for _, status in statuses)
+    if playback['no_playing']:
+        decision = 'a_product_defect'
+    elif playback['playing']:
+        decision = 'c_no_playback_defect_observed'
+    else:
+        decision = 'd3_method_change'
+    return {'decision': decision, 'source': 'complete' if complete else 'd2_invalid_share_only',
+            'n_healthy': len(runs), 'playback': dict(playback),
+            'diagnostics': [{'ordinal': run['ordinal'], 'reason': run.get('reason'), 'playback': status}
+                            for run, status in statuses if status != 'playing']}
+
+
+def f7_report(record: SmokeRecord, sha: str) -> dict:
+    """Read the deciding smoke evidence, retaining pre-gesture and invalid attempts as diagnostics."""
+    entry = deciding_entry(record, 'fixture_pages')
+    if entry is None or entry.get('reviewed_sha256') != sha:
+        raise SystemExit('f7_fixture_pages_missing_for_reviewed_sha')
+    observations = entry['result']['observations']
+    rule = observations['play_control_rule']['rule']
+    dialog = dialog_variant_summary([], rule)
+    if entry['result'].get('directory') and rule is not None:
+        directory = Path(entry['result']['directory'])
+        runs = [json.loads(path.read_text()) for path in sorted(directory.glob('preview_dialog-*.json'))]
+        dialog = dialog_variant_summary(runs, rule)
+    cells = {item: f7_cell_report(record, item, sha, rule) for item in F7_CELLS}
+    return {'reviewed_sha256': sha, 'dialog': dialog, 'cells': cells,
+            'decision': cells[F7_CELLS[0]]['decision'] if dialog.get('plays') else 'b_method_change'}
+
+
+async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_root: Path | None,
+                              setup_timeout_retry: bool = False) -> dict:
     """Run the fixture-page scenarios and evaluate their preregistered expectations (fixture pages only)."""
     fixture = FixtureProcess(out_dir, harness_pages=True)
     checks, observations, raw = {}, {}, {}
     try:
         ready = await fixture.start()
         async def sequence(name, specs):
-            results = await run_sequence(mode, specs, out_dir, None, binary=binary, profile_root=profile_root)
+            results = await run_sequence(mode, specs, out_dir, None, binary=binary, profile_root=profile_root,
+                                         setup_timeout_retry=setup_timeout_retry)
             raw[name] = results
             return results
 
@@ -4240,10 +4409,11 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
             specs = [fixture_spec(100 + 5 * number + index, 'cold', ready, 'preview', FIXTURE_STEPS['preview'], '',
                                   play_rule=rule) for index in range(5)]
             results = await sequence(f'play_rule_{number}', specs)
-            trials.append({'rule': rule, 'runs': len(results),
-                           'playing': [bool([r for r in accepted(run, 'media') if r['event'] == 'playing'])
-                                       for run in results]})
-            if all(trials[-1]['playing']):
+            trial = dialog_variant_summary(results, rule)
+            trials.append({'rule': rule, 'runs': len(results), 'n_valid': trial['n_valid'],
+                           'n_playing': trial['n_playing'], 'playing': [row['playing'] for row in trial['runs']]})
+            # An invalid attempt cannot rule out this coordinate or authorize trying another one.
+            if trial['plays'] or trial['n_valid'] < 5:
                 break
         observations['play_control_rule'] = play_rule_choice(trials)
 
@@ -4256,6 +4426,7 @@ async def fixture_page_checks(mode: str, out_dir: Path, *, binary: str, profile_
                 fixture_spec(130 + index, 'cold', ready, 'preview', FIXTURE_STEPS['preview'], '?dialog=1',
                              play_rule=chosen) for index in range(5)])
             observations['preview_dialog'] = dialog_variant_summary(dialog_runs, chosen)
+        checks['preview_ready_state'] = {'ok': bool(observations.get('preview_dialog', {}).get('plays'))}
 
         if mode == 'smoke':
             # smoke_gate.mac_environment: minimising the window and switching focus each invalidate the run.
@@ -4318,14 +4489,18 @@ def frame_event_phases(results: list) -> list:
         # event or no candidate at all (absence); load-only and untraced runs have no traced interaction phase.
         traced = result.get('interaction_traced')
         if traced is None:
-            traced = bool(result.get('trace_events'))
-        if not traced or not result.get('steps'):
+            traced = bool(result.get('trace_events') and result.get('steps'))
+        # Legacy runs set interaction_traced from the script even when opening the trace timed out.
+        if (result.get('reason') == 'cdp_timeout:Tracing.start' and not result.get('steps')
+                and not result.get('trace_events')):
+            traced = False
+        if not traced:
             continue
         interactions = []
-        if record and record.get('raf') is not None and record.get('screencast') is not None:
+        if record and record.get('screencast') is not None:
             check = {}
             for candidate, presented in (record.get('presented') or {}).items():
-                check[candidate] = (presented is not None and presented >= record['raf']
+                check[candidate] = (record.get('raf') is not None and presented is not None and presented >= record['raf']
                                     and abs(presented - record['screencast']) <= FRAME_MATCH_MS)
             interactions.append(check)
         phases.append({'present': present, 'interactions': interactions})
@@ -4360,13 +4535,20 @@ def summary_rows(runs: list, frame_event: str | None, *, warm_evaluable: bool = 
         original = [run for run in members if not run.get('untraced_inp')]
         untraced = [run for run in members if run.get('untraced_inp')]
         row = {'viewport': viewport, 'view': view, 'cache': role, 'label': LOCAL_LABEL,
-               'machine_state': MACHINE_STATE, 'n_valid': len(percentile_runs(original))}
+               'machine_state': MACHINE_STATE, 'machine_state_label': MACHINE_STATE_LABEL,
+               'n_valid': len(percentile_runs(original)),
+               'timed_exceptions': sum(run.get('timed_exceptions', 0) for run in percentile_runs(members)),
+               'http_errors': sum(len(run.get('http_errors') or []) for run in percentile_runs(members))}
         if view in FIXTURE_UNAVAILABLE_VIEWS:
             # R6-7: descriptive only; excluded from C10 acceptance and from before/after claims.
             row.update(fixture_note=FIXTURE_UNAVAILABLE_NOTE, c10_acceptance='excluido', before_after='excluido')
         if role == 'warm' and not warm_evaluable:
             row.update(status=WARM_NOT_EVALUABLE, lcp=WARM_NOT_EVALUABLE, cls=WARM_NOT_EVALUABLE,
                        inp=WARM_NOT_EVALUABLE if view in INTERACTION_VIEWS else LOAD_ONLY_INP)
+            if view == '#acciones':
+                row['c11_action_feedback'] = WARM_NOT_EVALUABLE
+            if view == '#voces':
+                row['c11_preview'] = WARM_NOT_EVALUABLE
             row['cache_mix_percent'] = warm_share(percentile_runs(original))['mix_percent']
             rows.append(row)
             continue
@@ -4386,31 +4568,55 @@ def summary_rows(runs: list, frame_event: str | None, *, warm_evaluable: bool = 
             values = [INF if run_wide_failure(run) else run['metrics'].get('preview', {}).get('value', INF)
                       for run in percentile_runs(original)]
             row['c11_preview'] = summarize(values)
-        row['timed_exceptions'] = sum(run.get('timed_exceptions', 0) for run in percentile_runs(members))
-        row['http_errors'] = sum(len(run.get('http_errors') or []) for run in percentile_runs(members))
         if role == 'warm':
             row['cache_mix_percent'] = warm_share(percentile_runs(original))['mix_percent']
         rows.append(row)
     return rows
 
 
+def batch_summary(runs: list, mode: str, batch: dict) -> dict:
+    """Report the eligible samples using the method settings saved with their batch."""
+    settings = batch.get('cell_settings') or {}
+    rows = [] if batch.get('discarded') else summary_rows(runs, settings.get('frame_event'),
+                                                           warm_evaluable=settings.get('warm_rule', True))
+    version = batch.get('browser_version')
+    for row in rows:
+        row['label'] = LOCAL_LABEL.format(version=version or 'desconocida')
+    return json_safe({'mode': mode, 'cell': batch.get('cell'), 'attempt': batch.get('attempt'),
+                      'status': 'discarded' if batch.get('discarded') else 'complete',
+                      'reasons': batch.get('reasons', []), 'method_identity': batch.get('method_identity'),
+                      'frame_event': settings.get('frame_event'),
+                      'rows': rows, 'machine_state': MACHINE_STATE, 'machine_state_label': MACHINE_STATE_LABEL,
+                      'scope': 'NEXO only; no /obs/ row (Q29, QF); local numbers never accept C10/C11'})
+
+
 def summarize_directory(directory: Path, mode: str) -> dict:
-    """Summary of one batch directory; baseline mode refuses smoke results (run_rules.no_baseline_use)."""
+    """Rebuild a report from recorded evidence, independent of the current preregistration."""
+    header = directory / 'batch.json'
+    batch = json.loads(header.read_text()) if header.exists() else {}
+    if mode == 'baseline':
+        refuse_smoke_input(batch)
+        if batch.get('mode') != mode or not batch.get('cell_settings'):
+            raise SystemExit('baseline_batch_header_required')
+        refuse_other_machine_state(batch)
+    elif batch.get('mode', mode) != mode:
+        raise SystemExit('smoke_batch_header_required')
     runs = []
     for path in sorted(directory.glob('run-*.json')):
         document = json.loads(path.read_text())
         if mode == 'baseline':
             refuse_smoke_input(document)
+            if (document.get('mode') != mode or (document.get('method_identity') or {}).get('preregistration_sha256')
+                    != batch['preregistration_sha256']):
+                raise SystemExit(f'summary_batch_identity_mismatch:{path}')
         refuse_other_machine_state(document)
         document = restore_infinity(document)
         document['outcome'] = Outcome(document['outcome'])
         runs.append(document)
-    fill_ins = load_fill_ins(json.loads(PREREGISTRATION.read_text())) if PREREGISTRATION.exists() else {}
-    frame_event = (fill_ins.get('frame_event') or {}).get('candidate') if isinstance(fill_ins.get('frame_event'), dict) \
-        else fill_ins.get('frame_event')
-    return {'mode': mode, 'rows': json_safe(summary_rows(runs, frame_event, warm_evaluable=warm_rule_active(fill_ins))),
-            'machine_state': MACHINE_STATE, 'machine_state_label': MACHINE_STATE_LABEL,
-            'scope': 'NEXO only; no /obs/ row (Q29, QF); local numbers never accept C10/C11'}
+    if mode == 'baseline' and sorted(run['ordinal'] for run in runs) != sorted(
+            item['ordinal'] for item in batch['run_outcomes']):
+        raise SystemExit('summary_run_inventory_mismatch')
+    return batch_summary(runs, mode, batch)
 
 
 async def smoke_overhead(sha: str, play_rule: dict, *, root: Path | None = None,
@@ -4464,13 +4670,24 @@ async def smoke_overhead(sha: str, play_rule: dict, *, root: Path | None = None,
             'note': 'overhead per metric = median(a) - median(c) as an interval; censored medians are [0, 16)'}
 
 
-def smoke_frame_event(root: Path = SMOKE_ROOT) -> dict:
+def smoke_frame_event(root: Path = SMOKE_ROOT, *, record: SmokeRecord | None = None,
+                      sha: str | None = None) -> dict:
     """smoke_gate.frame_event (V14f): the acceptance test over every smoke run whose interaction phase was traced
     (batches and overhead arm (a) and (b) runs alike); analysis only, no browser."""
+    if record is None:
+        paths = ((path, False) for path in root.rglob('*run-*.json'))
+    else:
+        overhead = deciding_entry(record, 'instrumentation_overhead')
+        entries = [entry for entry in record.data['runs'] if entry['item'].startswith('batch:')
+                   and entry['status'] == 'complete' and entry.get('machine_state') == MACHINE_STATE]
+        if overhead is not None:
+            entries.append(overhead)
+        paths = ((path, entry is overhead) for entry in entries if entry.get('reviewed_sha256') == sha
+                 for path in Path(entry['result']['directory']).glob('*run-*.json'))
     results = []
-    for path in sorted(root.rglob('*run-*.json')):
+    for path, is_overhead in sorted(paths):
         # A legacy smoke scan must not pull in a revised campaign below its root.
-        if path.relative_to(root).parts[0].startswith('prereg-'):
+        if record is None and path.relative_to(root).parts[0].startswith('prereg-'):
             continue
         try:
             document = restore_infinity(json.loads(path.read_text()))
@@ -4480,6 +4697,11 @@ def smoke_frame_event(root: Path = SMOKE_ROOT) -> dict:
             continue
         if document_machine_state(document) != MACHINE_STATE:
             continue
+        identity = document.get('method_identity') or {}
+        run_sha = identity.get('preregistration_sha256') or document.get('preregistration_sha256')
+        # Legacy overhead files inherit the SHA of their deciding smoke-record entry.
+        if sha is not None and run_sha != sha and not (is_overhead and run_sha is None):
+            raise SystemExit(f'frame_event_evidence_identity_mismatch:{path}')
         results.append(document)
     phases = frame_event_phases(results)
     return {'phases': len(phases), 'choice': frame_event_choice(phases)}
@@ -4500,6 +4722,7 @@ def parse_args(argv=None):
         measure.add_argument('--smoke', action='store_true')
         measure.add_argument('--reviewed-sha256')
         measure.add_argument('--frozen-sha256')
+        measure.add_argument('--preregistration', type=Path, help='read preregistration from this file')
         measure.add_argument('--cause', choices=SMOKE_REPEAT_CAUSES)
         measure.add_argument('--viewport', choices=tuple(VIEWPORTS), default='desktop')
         measure.add_argument('--view', choices=VIEW_HASHES, default='#hogar')
@@ -4509,20 +4732,25 @@ def parse_args(argv=None):
     smoke.add_argument('item', choices=('quiet-baseline', 'cold-focus', 'background', 'lock-read', 'fixture-pages',
                                         'overhead', 'frame-event'))
     smoke.add_argument('--reviewed-sha256', required=True)
+    smoke.add_argument('--preregistration', type=Path, help='read preregistration from this file')
     smoke.add_argument('--cause', choices=SMOKE_REPEAT_CAUSES)
     smoke.add_argument('--lock-state', choices=('locked', 'unlocked'), default='unlocked')
     summary = sub.add_parser('summarize', help='summary rows of one batch directory')
     summary.add_argument('directory')
     summary.add_argument('--mode', choices=('baseline', 'smoke'), required=True)
+    f7 = sub.add_parser('f7-report', help='read the F7 diagnostics from an existing smoke campaign')
+    f7.add_argument('--smoke-record', type=Path, required=True)
+    f7.add_argument('--reviewed-sha256', required=True)
     sub.add_parser('identity', help='print the script id and the batch plan cells')
     return parser.parse_args(argv)
 
 
 def check_measure_mode(args) -> tuple:
     """Hash verification at start: smoke against the reviewed hash, baseline against the frozen hash."""
+    path = args.preregistration or PREREGISTRATION
     if args.smoke:
-        return 'smoke', verify_preregistration(PREREGISTRATION, args.reviewed_sha256)
-    return 'baseline', verify_preregistration(PREREGISTRATION, args.frozen_sha256)
+        return 'smoke', verify_preregistration(path, args.reviewed_sha256)
+    return 'baseline', verify_preregistration(path, args.frozen_sha256)
 
 
 def main(argv=None) -> int:
@@ -4536,11 +4764,14 @@ def main(argv=None) -> int:
     if args.command == 'summarize':
         print(json.dumps(summarize_directory(Path(args.directory), args.mode), indent=1, ensure_ascii=False))
         return 0
+    if args.command == 'f7-report':
+        print(json.dumps(json_safe(f7_report(SmokeRecord(args.smoke_record), args.reviewed_sha256)), indent=1))
+        return 0
     if args.command == 'smoke-item':
         if sys.platform != 'darwin':
             raise SystemExit('smoke_runs_only_on_the_mac')
         sha = args.reviewed_sha256
-        _, root, retry = _measurement_preregistration('smoke', sha)
+        _, root, retry = _measurement_preregistration('smoke', sha, args.preregistration)
         out_dir = checked_output('smoke', root / 'items')
         out_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         record = SmokeRecord(checked_output('smoke', root / 'smoke-record.json'))
@@ -4551,14 +4782,15 @@ def main(argv=None) -> int:
         elif args.item == 'frame-event':
             check_smoke_order(record, 'frame_event')
             entry = record.start('frame_event', sha, args.cause)
-            result = smoke_frame_event(root)
+            result = smoke_frame_event(root, record=record, sha=sha)
             record.finish(entry, 'complete', json_safe(result))
         else:
             async def fixture_pages():
                 from tests.frontend.browser_support import browser_binary
                 pages_dir = checked_output('smoke', root / f'fixture-pages-{time.strftime("%Y%m%dT%H%M%S")}')
                 pages_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-                summary = await fixture_page_checks('smoke', pages_dir, binary=browser_binary(), profile_root=None)
+                summary = await fixture_page_checks('smoke', pages_dir, binary=browser_binary(), profile_root=None,
+                                                    setup_timeout_retry=retry)
                 return {'ok': summary['ok'], 'directory': str(pages_dir), 'checks': summary['checks'],
                         'observations': summary['observations']}
             async def overhead():
@@ -4579,10 +4811,10 @@ def main(argv=None) -> int:
         return 0
     mode, sha = check_measure_mode(args)
     if args.command == 'measure-client':
-        root = _measurement_preregistration(mode, sha)[1] if mode == 'smoke' else None
+        root = _measurement_preregistration(mode, sha, args.preregistration)[1] if mode == 'smoke' else None
         return asyncio.run(measure_client(args, mode, sha, smoke_root=root))
     if mode == 'smoke':
-        _, root, _ = _measurement_preregistration(mode, sha)
+        _, root, _ = _measurement_preregistration(mode, sha, args.preregistration)
         record = SmokeRecord(checked_output('smoke', root / 'smoke-record.json'))
         cell_settings('smoke', {}, record)
         entry = record.start(f'batch:{args.viewport}:{args.view}', sha, args.cause)
