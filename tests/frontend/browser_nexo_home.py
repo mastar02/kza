@@ -206,7 +206,7 @@ Q24_PROBE = """(()=>{
     if(size<11)text.push({element:name(el),size});
   }
   for(const el of document.querySelectorAll('input,select,textarea')){
-    if(el.matches('[type=hidden],[type=checkbox],[type=radio],[type=range],[type=button],[type=submit],[type=file]')||!shown(el))continue;
+    if(el.matches('[type=hidden],[type=button],[type=submit],[type=file]')||!shown(el))continue;
     fieldCount++;const size=parseFloat(getComputedStyle(el).fontSize);
     if(size<16)fields.push({element:name(el),size});
   }
@@ -312,6 +312,23 @@ async def audit_rotation(page: Page, evidence: Path, remount) -> dict:
             assert not result['settledEarly'], f'Q26 default motion: the rotation is expected to ease {result}'
     await page.command('Emulation.setEmulatedMedia', {'features': []})
     await page.evaluate("document.querySelector('#reset-view').click()")
+    # Expanded map on short phones: all six tools keep a 44 px box inside the clipped stage and pass a real hit test.
+    observed['expanded_tools'] = {}
+    for width, height in ((320, 520), (390, 520), (390, 540)):
+        await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': height, 'deviceScaleFactor': 1, 'mobile': True})
+        await page.evaluate("document.querySelector('#expand-map').click()")
+        await asyncio.sleep(0.2)
+        tools = await page.evaluate("""(()=>{const stage=document.querySelector('#map-stage').getBoundingClientRect();
+          return ['zoom-in','zoom-out','rotate-left','rotate-right','reset-view','expand-map'].map(id=>{
+            const el=document.getElementById(id),r=el.getBoundingClientRect(),x=r.left+r.width/2,y=r.top+r.height/2,hit=document.elementFromPoint(x,y);
+            const w=Math.min(r.right,stage.right)-Math.max(r.left,stage.left),h=Math.min(r.bottom,stage.bottom)-Math.max(r.top,stage.top);
+            return {id,w:r.width,h:r.height,visibleW:w,visibleH:h,hit:!!hit&&(hit===el||el.contains(hit))}})})()""")
+        observed['expanded_tools'][f'{width}x{height}'] = tools
+        await page.evaluate("document.querySelector('#expand-map').click()")
+        for tool in tools:
+            assert tool['w'] >= 44 and tool['h'] >= 44 and tool['visibleW'] >= 44 and tool['visibleH'] >= 44 and tool['hit'], (width, height, tool)
+    await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
+    await asyncio.sleep(0.15)
     # Without WebGL the tools are disabled, not left as dead controls.
     await page.evaluate("window.__qaGetContext=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(){return null}")
     await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")

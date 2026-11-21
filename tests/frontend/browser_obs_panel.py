@@ -568,6 +568,18 @@ async def main() -> None:
                     assert [entry['status'] for entry in requests if entry['path'] == '/api/admin/auth/login'] == [401, 200]
                     assert await page.evaluate("typeof window.MOCKS === 'undefined'")
                     checks.append('login reaches Live without example data globals')
+                    # T042-U5 R2: with a non-zero top safe area the mobile Menu button lies wholly below the inset and stays reachable.
+                    await page.command('Emulation.setDeviceMetricsOverride', {'width': 390, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
+                    await page.command('Emulation.setSafeAreaInsetsOverride', {'insets': {'top': 47}})
+                    await asyncio.sleep(0.2)
+                    menu = await page.evaluate("""(()=>{const el=document.querySelector('.menu-toggle'),r=el.getBoundingClientRect(),
+                      hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+                      return {top:r.top,height:r.height,width:r.width,hit:hit===el||el.contains(hit),
+                              inset:parseFloat(getComputedStyle(document.querySelector('.sidebar')).paddingTop)}})()""")
+                    await page.command('Emulation.setSafeAreaInsetsOverride', {'insets': {'top': 0}})
+                    await page.command('Emulation.setDeviceMetricsOverride', {'width': 1440, 'height': 1000, 'deviceScaleFactor': 1, 'mobile': False})
+                    assert menu['top'] >= 47 and menu['hit'] and menu['width'] >= 44 and menu['height'] >= 44, menu
+                    checks.append('the mobile Menu button sits below the top safe-area inset')
 
                     async def visit(label, view_id):
                         await page.evaluate("[...document.querySelectorAll('.nav-item')].find(n=>n.textContent.includes("

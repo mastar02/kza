@@ -133,6 +133,7 @@ function LoginModal({ onLogin, onClose, opener, failure }) {
           </p>
           <label htmlFor={`${id}-token`}>Token de administración</label>
           <input id={`${id}-token`} ref={field} type="password" value={token}
+                 autoComplete="current-password" autoCapitalize="off" autoCorrect="off" spellCheck={false} enterKeyHint="go"
                  onChange={e => { setToken(e.target.value); setErr(null); }}
                  readOnly={sending} required />
           {err && <div className="pill err" role="alert">{err}</div>}

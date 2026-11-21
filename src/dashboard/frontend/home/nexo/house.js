@@ -1,6 +1,6 @@
 // Geometry adapted from approved NEXO reference d686fcde; illustrative only.
 import * as THREE from './vendor/three.module.min.js';
-const ROTATE_STEP = Math.PI / 12; // WCAG 2.5.7: a fixed 15 degree step that stands in for the drag gesture.
+const ROTATE_STEP = Math.PI / 12; // WCAG 2.5.7: the rotate buttons cover yaw only, in fixed 15 degree steps; tilt stays on drag and the Plano/3D switch.
 const DEFAULT_YAW = .68;
 const ROOM_LAYOUT = {
   living:{x:-2.6,z:2.05,w:6.5,d:3.75,pin:[-2.9,1.25,2.4]},

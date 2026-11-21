@@ -13,7 +13,7 @@
     --line-soft: #1d1d22;
     --ink: #e7e7ea;
     --ink-dim: #a1a1aa;
-    --ink-mute: #6b6b73;
+    --ink-mute: #9a9aa6;
     --accent: #7c3aed;
     --accent-soft: rgba(124, 58, 237, 0.16);
     --accent-line: rgba(124, 58, 237, 0.4);
@@ -246,7 +246,7 @@
   @media (width < 768px) {
     :root { --pad: 12px; }
     .app { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; }
-    .sidebar { position: static; height: auto; padding: 8px 12px; border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; }
+    .sidebar { position: static; height: auto; padding: calc(8px + env(safe-area-inset-top, 0px)) 12px 8px; border-right: 0; border-bottom: 1px solid var(--line); overflow: visible; }
     .brand { padding: 0; margin: 0; border-bottom: 0; }
     .menu-toggle.btn { display: inline-flex; margin-left: auto; }
     .nav[data-open="false"], .sidebar-foot { display: none; }
@@ -266,7 +266,8 @@
   /* Q24: the views set a few inline sizes below 11 px; raise them without touching the view sources. */
   [style*="font-size: 10px"], [style*="font-size:10px"] { font-size: 12px !important; }
   [style*="font-size: 9px"], [style*="font-size:9px"] { font-size: 11px !important; }
-  .admin-overlay { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); }
+  .admin-overlay { padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px)); padding-top: calc(12px + env(safe-area-inset-top, 0px)); }
+  .user-form input, .user-form select, .admin-overlay input, .login-dialog input { border-color: #6e6e7a; }
 </style>
 </head>
 <body>
