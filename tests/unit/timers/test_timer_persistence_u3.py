@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import replace
 import json
+import threading
 
 import pytest
 
@@ -62,7 +63,124 @@ async def test_recovers_running_deadline_and_frozen_paused_time(tmp_path):
         await clock.advance(0.5)
         await asyncio.wait_for(spoken.wait(), 2)
         assert output == [("¡Terminó el temporizador de pasta!", "zone_cocina")]
+        await asyncio.gather(*manager._expiry_tasks.values())
         assert (await store.get(running.timer_id)).state is TimerState.COMPLETED
+
+
+async def test_timer_rings_on_time_even_if_sqlite_update_fails_at_expiry(tmp_path, caplog):
+    clock = VirtualClock()
+    output = []
+    retry_sleep = asyncio.Queue()
+
+    async def speak(text, zone):
+        output.append((clock(), text, zone))
+
+    async with open_timers(tmp_path / "reminders.db", clock, speak) as (manager, store, reminders):
+        async def observe_sleep(delay):
+            if asyncio.current_task() in manager._expiry_tasks.values():
+                retry_sleep.put_nowait(delay)
+            await clock.sleep(delay)
+
+        manager._sleep = observe_sleep
+        started = clock()
+        timer = await create(manager)
+
+        def reject_update(db):
+            db.execute("CREATE TRIGGER reject_expiry BEFORE UPDATE ON timers "
+                       "BEGIN SELECT RAISE(ABORT, 'synthetic storage failure'); END")
+
+        await reminders._work.write(reject_update)
+        await clock.advance(4.5)
+        assert output == []
+        await clock.advance(0.5)
+        assert output == [(started + 5, "¡Terminó el temporizador de pasta!", "zone_cocina")]
+        assert timer.state is TimerState.COMPLETED
+        assert manager.get_status()["persistence"] == "uncertain"
+
+        # Drive six failed retries, including more than 50 ordinary ticks.
+        for delay in (1, 2, 4, 8, 16, 30):
+            assert await asyncio.wait_for(retry_sleep.get(), 2) == delay
+            await clock.advance(delay)
+        assert await asyncio.wait_for(retry_sleep.get(), 2) == 30
+        assert (await store.get(timer.timer_id)).state is TimerState.RUNNING
+        assert manager.get_status()["persistence"] == "uncertain"
+        warnings = [record for record in caplog.records
+                    if record.name == "src.timers.named_timers" and record.levelname == "WARNING"]
+        assert [record.getMessage() for record in warnings] == ["Timer store expiry unverified: IntegrityError"]
+
+        def restore_updates(db):
+            db.execute("DROP TRIGGER reject_expiry")
+
+        await reminders._work.write(restore_updates)
+        pending = manager._expiry_tasks[timer.timer_id]
+        await clock.advance(30)
+        await asyncio.wait_for(pending, 2)
+        row = await store.get(timer.timer_id)
+        assert (row.state, row.revision, row.remaining_s) == (TimerState.COMPLETED, 2, 0)
+        assert manager.get_status()["persistence"] == "committed"
+        assert [when for when, _, _ in output] == [started + 5, started + 7, started + 9]
+        assert await reminders.get_notice_rows() == []
+
+
+async def test_recover_failure_leaves_timer_manager_uncertain_without_raising(tmp_path, caplog):
+    db = tmp_path / "reminders.db"
+    clock = VirtualClock()
+    async with open_timers(db, clock) as (manager, _, reminders):
+        timer = await create(manager)
+
+        def corrupt_expiry(connection):
+            connection.execute("UPDATE timers SET ends_at = NULL WHERE id = ?", (timer.timer_id,))
+
+        await reminders._work.write(corrupt_expiry)
+
+    async with open_timers(db, clock) as (manager, _, _):
+        assert manager.get_status()["persistence"] == "uncertain"
+        assert not manager.running and manager.get_all_timers() == []
+        assert "Timer recovery failed: TypeError" in caplog.messages
+
+
+async def test_stop_cancels_ring_and_drains_admitted_expiry_write(tmp_path):
+    clock = VirtualClock()
+    played = asyncio.Event()
+    admitted = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+
+    async def speak(text, zone):
+        played.set()
+
+    def hold_write():
+        loop.call_soon_threadsafe(admitted.set)
+        if not release.wait(3):
+            raise RuntimeError("test did not release expiry write")
+
+    async with open_timers(tmp_path / "reminders.db", clock, speak) as (manager, store, reminders):
+        timer = await create(manager)
+
+        def install_hold(db):
+            db.create_function("hold_expiry_write", 0, hold_write)
+            db.execute("CREATE TRIGGER hold_expiry BEFORE UPDATE ON timers BEGIN SELECT hold_expiry_write(); END")
+
+        await reminders._work.write(install_hold)
+        stopping = None
+        try:
+            await clock.advance(5)
+            await asyncio.wait_for(admitted.wait(), 2)
+            assert played.is_set() and timer.state is TimerState.COMPLETED
+            expiry = manager._expiry_tasks[timer.timer_id]
+            stopping = asyncio.create_task(manager.stop())
+            await clock.settle()
+            assert not stopping.done() and not expiry.done()
+            assert manager._update_task.done() and manager._update_task.exception() is None
+            assert manager.ringing_timers() == []
+        finally:
+            release.set()
+            if stopping is not None:
+                await asyncio.wait_for(stopping, 2)
+        assert expiry.done() and expiry.exception() is None
+        assert manager._expiry_tasks == {}
+        row = await store.get(timer.timer_id)
+        assert (row.state, row.revision) == (TimerState.COMPLETED, 2)
 
 
 async def test_missed_expiry_records_one_pending_notice_and_delivers_once_without_ring(tmp_path):
@@ -146,6 +264,7 @@ async def test_manager_serializes_cancel_and_due_tick(tmp_path, cancel_first):
         assert results[order.index(cancel)] is cancel_first
         expected = TimerState.CANCELLED if cancel_first else TimerState.COMPLETED
         assert timer.state is expected
+        await asyncio.gather(*manager._expiry_tasks.values())
         row = await store.get(timer.timer_id)
         assert (row.state, row.revision) == (expected, 2)
         assert len(output) == (0 if cancel_first else 1)

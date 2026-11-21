@@ -57,6 +57,8 @@ WARNING_STALE_S = 5.0
 RING_FOLLOW_UP_S = 30.0
 NOTICE_RETRY_S = 30.0
 RETENTION_INTERVAL_S = 6 * 3600.0
+EXPIRY_RETRY_INITIAL_S = 1.0
+EXPIRY_RETRY_MAX_S = 30.0
 
 
 def warning_thresholds(
@@ -279,6 +281,8 @@ class NamedTimerManager:
         self._staged: dict[str, NamedTimer] | None = None
         self._notice_task: asyncio.Task | None = None
         self._pending_notices = 0
+        self._expiry_tasks: dict[str, asyncio.Task] = {}
+        self._expiry_failure_logged = False
 
         # Owned delivery tasks: warnings and rings, by timer id (T030-U2).
         self._deliveries: dict[asyncio.Task, str] = {}
@@ -299,8 +303,8 @@ class NamedTimerManager:
 
     @property
     def persistence(self) -> PersistenceState:
-        """The last observed state of the timer store."""
-        return self._persistence
+        """The store's observed state, including any uncommitted expirations."""
+        return PersistenceState.UNCERTAIN if self._expiry_tasks else self._persistence
 
     def bind_store(self, store: TimerStore) -> None:
         """Bind the application-owned store before starting the manager."""
@@ -317,11 +321,14 @@ class NamedTimerManager:
             if self._store is not None:
                 try:
                     records = await self._store.recover(self._wall_clock())
-                    self._timers = {row.id: self._restore(row) for row in records}
-                    self._pending_notices = len(await self._store.pending_notices())
-                except Exception:
+                    timers = {row.id: self._restore(row) for row in records}
+                    notices = await self._store.pending_notices()
+                except Exception as error:
                     self._persistence = PersistenceState.UNCERTAIN
-                    raise
+                    logger.error("Timer recovery failed: %s", type(error).__name__)
+                    return
+                self._timers = timers
+                self._pending_notices = len(notices)
                 self._persistence = PersistenceState.COMMITTED
                 self._notice_task = asyncio.create_task(self._maintain_notices())
             self._running = True
@@ -329,7 +336,7 @@ class NamedTimerManager:
             logger.info("Timer manager iniciado")
 
     async def stop(self):
-        """Stop ticking, then cancel and await every warning and ring task.
+        """Stop ticking, then drain expiration writes and cancel deliveries.
 
         After it returns no task of this manager is pending and nothing more
         is spoken.
@@ -342,28 +349,32 @@ class NamedTimerManager:
         if task is not None:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+        owned = [*self._expiry_tasks.values(), *self._deliveries]
         if notice is not None:
-            notice.cancel()
-            await asyncio.gather(notice, return_exceptions=True)
-        deliveries = list(self._deliveries)
-        for delivery in deliveries:
-            delivery.cancel()
-        if deliveries:
-            await asyncio.gather(*deliveries, return_exceptions=True)
+            owned.append(notice)
+        for task in owned:
+            task.cancel()
+        if owned:
+            await asyncio.gather(*owned, return_exceptions=True)
+        self._expiry_tasks.clear()
+        self._expiry_failure_logged = False
         logger.info("Timer manager detenido")
 
     async def _update_loop(self):
         """Tick on deadlines; sleep until the next warning or deadline, at most ``TICK_S``."""
-        while self._running:
-            wait = TICK_S
-            try:
-                if self._store is None:
-                    wait = self._tick()
-                else:
-                    wait = await self._tick_durable()
-            except Exception as error:
-                logger.error("Timer tick failed: %s", type(error).__name__)
-            await self._sleep(wait)
+        try:
+            while self._running:
+                wait = TICK_S
+                try:
+                    if self._store is None:
+                        wait = self._tick()
+                    else:
+                        wait = await self._tick_durable()
+                except Exception as error:
+                    logger.error("Timer tick failed: %s", type(error).__name__)
+                await self._sleep(wait)
+        except asyncio.CancelledError:
+            return
 
     def _tick(self) -> float:
         """Fire due warnings and completions; return the seconds until the next mark (<= TICK_S).
@@ -396,21 +407,37 @@ class NamedTimerManager:
         return due
 
     async def _tick_durable(self) -> float:
-        """Serialize expiry with commands and start rings only after the commit."""
+        """Publish each expiration and start its ring before submitting SQLite work."""
         async with self._mutation_lock:
             for timer in self._find_due():
-                try:
-                    await self._persist(
-                        [self._record(timer, state=TimerState.COMPLETED)],
-                        lambda timer=timer: self._publish_expiry(timer),
-                    )
-                except TimerWriteError:
-                    return TICK_S
+                self._complete(timer)
+                self._expiry_tasks[timer.timer_id] = asyncio.create_task(self._persist_expiry(timer))
             return self._next_wait(self._clock())
 
-    def _publish_expiry(self, timer: NamedTimer) -> None:
-        timer.revision += 1
-        self._complete(timer)
+    async def _persist_expiry(self, timer: NamedTimer) -> None:
+        """Retry the original revision with capped backoff, leaving the ring alone."""
+        delay = EXPIRY_RETRY_INITIAL_S
+        row = self._record(timer)
+
+        def publish() -> None:
+            timer.revision = row.revision + 1
+
+        try:
+            while True:
+                try:
+                    await self._persist([row], publish, expiry=True)
+                    return
+                except TimerWriteError as error:
+                    if error.state is PersistenceState.FAILED or not self._running:
+                        return  # Another writer won, or shutdown has sealed retries.
+                await self._sleep(delay)
+                delay = min(delay * 2, EXPIRY_RETRY_MAX_S)
+        except asyncio.CancelledError:
+            return
+        finally:
+            self._expiry_tasks.pop(timer.timer_id, None)
+            if not self._expiry_tasks:
+                self._expiry_failure_logged = False
 
     def _restore(self, row: TimerRecord) -> NamedTimer:
         wall_now = self._wall_clock()
@@ -429,17 +456,18 @@ class NamedTimerManager:
         timer.warned.update(mark for mark in timer.announce_at if mark > remaining + WARNING_STALE_S)
         return timer
 
-    def _record(self, timer: NamedTimer, *, state: TimerState | None = None) -> TimerRecord:
-        state = state or timer.state
+    def _record(self, timer: NamedTimer) -> TimerRecord:
         return TimerRecord(
             timer.timer_id, timer.name, timer.user_id or "household", timer.zone_id,
-            state, timer.duration_seconds, timer.ends_at,
-            None if state is TimerState.RUNNING else timer.remaining_seconds,
+            timer.state, timer.duration_seconds, timer.ends_at,
+            None if timer.state is TimerState.RUNNING else timer.remaining_seconds,
             timer.created_at.timestamp(), self._wall_clock(), timer.revision,
         )
 
-    async def _persist(self, records: list[TimerRecord], publish: Callable[[], None]) -> None:
-        """Keep the mutation lock through SQLite commit and in-memory publication."""
+    async def _persist(
+        self, records: list[TimerRecord], publish: Callable[[], None], *, expiry: bool = False,
+    ) -> None:
+        """Retain the write through caller cancellation and publish the committed evidence."""
         pending = asyncio.create_task(self._store.save(records))
         cancelled = False
         try:
@@ -447,11 +475,15 @@ class NamedTimerManager:
                 try:
                     await asyncio.shield(pending)
                 except asyncio.CancelledError:
-                    cancelled = True
+                    cancelled = cancelled or asyncio.current_task().cancelling() > 0
                 except Exception:
                     break
             pending.result()
         except TimerConflict:
+            if expiry:
+                # The ring has already started. Preserve the other writer's row
+                # and never replay the ring or apply the expiry to a new revision.
+                raise TimerWriteError(PersistenceState.FAILED) from None
             # A second manager may have won the revision. Drop stale active
             # copies rather than retrying a mutation against an old selection.
             for row in records:
@@ -467,9 +499,12 @@ class NamedTimerManager:
                 elif current.revision != row.revision:
                     self._timers[row.id] = self._restore(current)
             raise TimerWriteError(PersistenceState.FAILED) from None
-        except Exception as error:
+        except (Exception, asyncio.CancelledError) as error:
             self._persistence = PersistenceState.UNCERTAIN
-            logger.warning("Timer store write unverified: %s", type(error).__name__)
+            if not expiry or not self._expiry_failure_logged:
+                logger.warning("Timer store %s unverified: %s", "expiry" if expiry else "write", type(error).__name__)
+                if expiry:
+                    self._expiry_failure_logged = True
             raise TimerWriteError(PersistenceState.UNCERTAIN) from None
         else:
             self._persistence = PersistenceState.COMMITTED
@@ -1223,7 +1258,7 @@ class NamedTimerManager:
         """Obtener estado del manager"""
         return {
             "running": self.running,
-            "persistence": self._persistence.value,
+            "persistence": self.persistence.value,
             "durable_active": sum(t.revision > 0 and t.state in (TimerState.RUNNING, TimerState.PAUSED)
                                   for t in self._timers.values()),
             "pending_notices": self._pending_notices,
