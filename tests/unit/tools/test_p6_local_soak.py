@@ -21,7 +21,8 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 @pytest.fixture
-def dev_user(monkeypatch):
+def dev_user(monkeypatch, tmp_path_factory):
+    tmp_path_factory.getbasetemp()
     monkeypatch.setattr(soak.os, "getuid", lambda: 1500)
     monkeypatch.setattr(soak.os, "geteuid", lambda: 1500)
     monkeypatch.setattr(soak.pwd, "getpwuid", lambda uid: type("User", (), {"pw_name": "yo"})())
@@ -34,7 +35,7 @@ def test_protected_paths(dev_user, path):
         soak.guard(Path(path))
 
 
-def test_guard_detects_symlink_into_protected_path(dev_user, tmp_path):
+def test_guard_detects_symlink_into_protected_path(tmp_path, dev_user):
     redirect = tmp_path / "redirect"
     redirect.symlink_to("/home/kza", target_is_directory=True)
     with pytest.raises(ValueError, match="protected path"):
