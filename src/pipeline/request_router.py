@@ -25,6 +25,7 @@ from src.home_assistant.home_actions import HomeActionRequest, HomeActionResult,
 from src.home_assistant.operations import compile_effect, finite_number
 from src.home_assistant.voice_actions import VoiceHomeActionExecutor
 from src.home_assistant.voice_resolver import HomeVoiceResolver
+from src.integrations.factory import IntegrationServices
 from src.nlu.home_command import parse_home_command
 from src.nlu.command_gate import AcceptanceDecision, CommandAcceptanceGate, contains_wake_word
 from src.nlu.command_grammar import (
@@ -32,7 +33,7 @@ from src.nlu.command_grammar import (
     parse_default_light_target, parse_partial_command, security_order,
 )
 from src.nlu.household_intents import (
-    RING_STOP_INTENT, HouseholdFamily, HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings,
+    INTEGRATION_FAMILIES, RING_STOP_INTENT, HouseholdFamily, HouseholdIntent, HouseholdIntentClassifier, HouseholdIntentSettings,
     HouseholdOperation,
 )
 from src.nlu.sensitive_actions import is_sensitive
@@ -40,7 +41,7 @@ from src.orchestrator import PathType
 from src.orchestrator.compound import CompoundPartContext, CompoundRunner
 from src.orchestrator.dispatcher import (
     DispatchResult, MultiUserOrchestrator, classify_voice_schedule, compound_dispatch_result, compound_part_target,
-    has_domotics_action_verb, notification_dnd_refusal,
+    dispatch_voice_integration, has_domotics_action_verb, notification_dnd_refusal,
 )
 from src.orchestrator.priority_queue import Priority
 from src.pipeline.earcon_gate import should_play_earcon
@@ -331,6 +332,7 @@ class RequestRouter:
         wake_verifier: WakeVerifier | None = None,
         household_clock: HouseholdClock | None = None,
         household_intents: HouseholdIntentClassifier | None = None,
+        integrations: IntegrationServices | None = None,
         voice_routines: VoiceRoutineService | None = None,
     ):
         """
@@ -385,6 +387,7 @@ class RequestRouter:
         self.audio_manager = audio_manager
         self.room_context_manager = room_context_manager
         self.household_clock = household_clock if household_clock is not None else HouseholdClock()
+        self.integrations = integrations
 
         # Orchestrator
         self._orchestrator = orchestrator
@@ -1024,7 +1027,7 @@ class RequestRouter:
         if household is not None:
             if household.family is HouseholdFamily.INTERCOM:
                 return AcceptanceDecision(False, "legacy_household_voice", gate_decision.signals)
-            if household.family is HouseholdFamily.NOTIFICATION:
+            if household.family in INTEGRATION_FAMILIES or household.family is HouseholdFamily.NOTIFICATION:
                 return gate_decision
         if (gate_decision.signals or {}).get("ring_stop") is True:
             # T030-U2b: the legacy timer commands do not stop a ring, so a bare "listo" stays noise here.
@@ -1126,6 +1129,19 @@ class RequestRouter:
             return classify_voice_schedule(text, claimed, self.household_intents)
         return claimed
 
+    def _reject_media_capture(
+        self, intent: HouseholdIntent | None, text: str, *, ambient_strict: bool,
+        wake_score: float, textual_wake: bool, capture_trigger: str | None,
+    ) -> bool:
+        """Require an own wake or an explicit invocation for local media writes."""
+        if intent is None or intent.family is not HouseholdFamily.MEDIA or intent.operation is not HouseholdOperation.EXECUTE:
+            return False
+        if (ambient_strict or textual_wake or _capture_without_own_wake(capture_trigger)
+                or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE):
+            return True
+        clear = self._has_clear_own_wake(tv_signal=False, capture_trigger=capture_trigger)
+        return not clear and not contains_wake_word(text, self._wake_words or ("nexa",))
+
     async def _refuse_routine(self, result: dict, pipeline_start: float, response: str = ROUTINE_CREATE_REFUSAL) -> dict:
         """Finish a retired routine request without handing it to a producer."""
         result.update(intent="routine", response=response, success=False, _task_outcome=TaskOutcome(
@@ -1226,6 +1242,11 @@ class RequestRouter:
             return result
 
         household = self._voice_schedule_claim(text)
+        if self._reject_media_capture(household, text, ambient_strict=ambient_strict, wake_score=wake_score,
+                                      textual_wake=textual_wake, capture_trigger=capture_trigger):
+            result["intent"] = "gate_rejected:media_capture"
+            result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+            return result
         if (ambient_strict and household is not None and household.operation is HouseholdOperation.CREATE
                 and household.family in {HouseholdFamily.REMINDER, HouseholdFamily.DEFERRED_ACTION}
                 and self._voice_reminder_actions is True):
@@ -1705,6 +1726,16 @@ class RequestRouter:
         """
         return not tv_signal and self.wake_acoustically_confirmed and capture_trigger == CaptureTrigger.WAKE
 
+    async def _admit_integration_query(
+        self, text: str, result: dict, *, room_id: str | None, tv_signal: bool, capture_trigger: str | None,
+    ) -> bool:
+        """Require a clear own wake or a positive 7B verdict for P5 reads."""
+        if self._has_clear_own_wake(tv_signal=tv_signal, capture_trigger=capture_trigger):
+            return True
+        # A missing classifier cannot admit an integration read when the wake
+        # is unproven, including when the producer omitted its capture trigger.
+        return await self._household_veto_passes(text, result, room_id=room_id, tv_signal=True)
+
     async def _household_veto_passes(self, text: str, result: dict, *, room_id: str | None, tv_signal: bool) -> bool:
         """Run the 7B as a veto on a weakly woken claimed turn (P3-F2 S6).
 
@@ -1790,8 +1821,15 @@ class RequestRouter:
             weak_wake = False
         # Proposals already require a clear acoustic capture and use local grammar.
         local_proposal = self.voice_routines is not None and self.voice_routines.claims_proposal(household)
-        if weak_wake and not local_proposal and not await self._household_veto_passes(
-                text, result, room_id=room_id, tv_signal=tv_signal):
+        if household is not None and household.family in INTEGRATION_FAMILIES:
+            admitted = household.operation is HouseholdOperation.EXECUTE or await self._admit_integration_query(
+                text, result, room_id=room_id, tv_signal=tv_signal, capture_trigger=capture_trigger,
+            )
+        else:
+            admitted = not weak_wake or local_proposal or await self._household_veto_passes(
+                text, result, room_id=room_id, tv_signal=tv_signal,
+            )
+        if not admitted:
             logger.info("[Household] vetoed %s", summary)
             result["intent"] = "llm_rejected:household"
             result["success"] = False
@@ -2143,6 +2181,25 @@ class RequestRouter:
         await self.response_handler.cancel(zone_id=f"zone_{room_id}" if room_id else None)
 
         household = self.household_intents.classify(text)
+        if household is not None and household.family in INTEGRATION_FAMILIES:
+            if self._reject_media_capture(household, text, ambient_strict=ambient_strict, wake_score=wake_score,
+                                          textual_wake=textual_wake, capture_trigger=capture_trigger):
+                result["intent"] = "gate_rejected:media_capture"
+                result["latency_ms"] = (time.perf_counter() - pipeline_start) * 1000
+                return result
+            tv_signal = (textual_wake or ambient_strict or wake_score < _GRAMMAR_BONUS_MIN_WAKE_SCORE
+                         or _capture_without_own_wake(capture_trigger))
+            if household.operation is HouseholdOperation.QUERY and not await self._admit_integration_query(
+                text, result, room_id=room_id, tv_signal=tv_signal, capture_trigger=capture_trigger,
+            ):
+                result.update(intent="llm_rejected:household", success=False, response="",
+                              latency_ms=(time.perf_counter() - pipeline_start) * 1000)
+                return result
+            dispatched = await dispatch_voice_integration(self.integrations, household, origin_room=room_id)
+            return await self._finish_orchestrated_turn(
+                dispatched, result, text=text, zone_id=self._response_zone.get(),
+                room_context=None, emotion=cmd.emotion, pipeline_start=pipeline_start,
+            )
         if self.voice_routines is not None and self.voice_routines.claims_proposal(household):
             guard = self._admitted_routine_guard(
                 gate_decision, room_id=room_id, wake_score=wake_score, textual_wake=textual_wake,

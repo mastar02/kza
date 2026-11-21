@@ -239,7 +239,7 @@ async def test_read_and_control_permissions(home):
     assert not home.gets and not home.posts
 
 
-@pytest.mark.parametrize("phase", ["read", PLAYER, REMOTE, "post"])
+@pytest.mark.parametrize("phase", ["read", PLAYER, REMOTE])
 async def test_revocation_at_each_io_boundary(home, phase):
     home.revoke_on = PLAYER if phase == "read" else phase
     controller = home.controller(RemoteGrant(REMOTE, turn_on=True))
@@ -250,8 +250,18 @@ async def test_revocation_at_each_io_boundary(home, phase):
             await controller.control(
                 home.actor("home:control"), ROOM, PLAYER, "turn_on"
             )
-    assert home.gets == ([PLAYER, REMOTE] if phase in (REMOTE, "post") else [PLAYER])
-    assert len(home.posts) == int(phase == "post")
+    assert home.gets == ([PLAYER, REMOTE] if phase == REMOTE else [PLAYER])
+    assert not home.posts
+
+
+async def test_revocation_after_send_preserves_uncertainty(home):
+    home.revoke_on = "post"
+    controller = home.controller(RemoteGrant(REMOTE, turn_on=True))
+    outcome = await controller.control(home.actor("home:control"), ROOM, PLAYER, "turn_on")
+    assert outcome.status is ServiceCallStatus.UNCERTAIN
+    assert outcome.reason == "authority_lost_after_dispatch"
+    assert home.gets == [PLAYER, REMOTE]
+    assert len(home.posts) == 1
 
 
 async def test_service_timeout_is_uncertain_without_retry(home):

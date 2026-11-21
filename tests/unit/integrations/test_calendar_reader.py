@@ -423,7 +423,7 @@ async def test_empty_ha_events_is_a_complete_read():
 
 async def test_ha_without_configured_entities_and_without_client():
     client = RecordingHA()
-    assert await CalendarReader(ha_client=client).get_events(START, END) == CalendarRead((), complete=True)
+    assert await CalendarReader(ha_client=client).get_events(START, END) == CalendarRead((), complete=True, configured=False)
     assert client.calls == []
     unconnected = CalendarReader([HACalendarSource(CalendarScope.SHARED, "calendar.home")])
     assert await unconnected.get_events(START, END) == CalendarRead((), complete=False)
@@ -506,7 +506,7 @@ async def test_revoked_session_drops_inflight_personal_ha_result():
     access = CalendarAccess(
         shared_only=False, user_id="owner", personal_authorized=True, session_current=lambda: active,
     )
-    assert await reader.get_events(START, END, access=access) == CalendarRead((), complete=True)
+    assert await reader.get_events(START, END, access=access) == CalendarRead((), complete=True, configured=False)
 
 
 async def test_revocation_after_ha_state_blocks_get_events():
@@ -527,7 +527,7 @@ async def test_revocation_after_ha_state_blocks_get_events():
     access = CalendarAccess(
         shared_only=False, user_id="owner", personal_authorized=True, session_current=lambda: active,
     )
-    assert await reader.get_events(START, END, access=access) == CalendarRead((), complete=True)
+    assert await reader.get_events(START, END, access=access) == CalendarRead((), complete=True, configured=False)
     assert client.calls == [("state", "calendar.personal")]
 
 

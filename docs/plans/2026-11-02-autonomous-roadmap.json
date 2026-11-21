@@ -680,8 +680,13 @@
         "H5"
       ],
       "dependency_level": "verified_local",
-      "status": "planned",
-      "evidence": []
+      "status": "verified_local",
+      "evidence": [
+        "tests/integration/test_application_graph.py",
+        "tests/integration/test_feature_voice_graph.py",
+        "tests/integration/test_scope_visitor_matrix.py",
+        "tests/integration/test_task_outcomes.py"
+      ]
     },
     {
       "id": "P4",
@@ -712,8 +717,12 @@
         "ampliación propuesta"
       ],
       "dependency_level": "verified_local",
-      "status": "planned",
-      "evidence": []
+      "status": "verified_local",
+      "evidence": [
+        "tests/integration/test_p5_integrations_graph.py",
+        "tests/unit/integrations/",
+        "tests/unit/lists/test_ha_sync_t051.py"
+      ]
     },
     {
       "id": "P6",
@@ -1411,20 +1420,23 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "d0704fc2b8e1068d97ba4009c6dea355b1cfafce",
         "72e6ed957956005119518cf1863b9b3f4811d63a",
         "155b519d00db2b1e4db299196baec360269373f9",
-        "7d8016668e67bafeb19b539a13f166ad120e6a0d"
+        "7d8016668e67bafeb19b539a13f166ad120e6a0d",
+        "ec13a0edeaee50a987d79cf2d55cad71fe68e184"
       ],
       "evidence": [
         "tests/unit/intercom/test_intercom_system.py",
         "tests/unit/notifications/test_smart_notifications.py",
         "tests/unit/nlu/test_household_intents.py",
-        "tests/integration/test_voice_compound_commands.py"
+        "tests/integration/test_voice_compound_commands.py",
+        "tests/unit/timers/test_timer_persistence_u3.py",
+        "tests/integration/test_application_graph.py"
       ],
-      "next_action": "Completar T030-U3."
+      "next_action": null
     },
     {
       "id": "T031",
@@ -1440,9 +1452,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "3935f2489179cd6818494b7a81fa75c33f3700eb",
+        "b248edce6eac8980d4f64561ab1caf74889b018e"
+      ],
+      "evidence": [
+        "tests/unit/reminders/test_reminder_target_zone.py",
+        "tests/integration/test_household_reminder_scope.py",
+        "tests/integration/test_application_graph.py"
+      ],
       "next_action": null
     },
     {
@@ -1589,9 +1608,14 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "16b0278993078bbbfd46b33acc5b9ebb331624c3"
+      ],
+      "evidence": [
+        "tests/integration/test_feature_voice_graph.py",
+        "tests/unit/dashboard/test_api_observability.py"
+      ],
       "next_action": null
     },
     {
@@ -1730,16 +1754,22 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "a739e96199699858616edb5050b657ac0691b5ce",
-        "2a602ab03e3a63de57949270521c1733d83d3879"
+        "2a602ab03e3a63de57949270521c1733d83d3879",
+        "1b84b1fdd18cc5bc5d4993c2b8ee015fe4423fce"
       ],
       "evidence": [
         "docs/research/2026-11-20-t042-a11y-inventory.json",
-        "tests/frontend/test_audit_support.py"
+        "tests/frontend/test_audit_support.py",
+        "tests/frontend/test_a11y_q24_q26.cjs",
+        "tests/frontend/test_nexo_memory_owner.cjs",
+        "tests/frontend/test_nexo_routine_owner.cjs",
+        "tests/frontend/browser_nexo_home.py",
+        "tests/frontend/browser_obs_panel.py"
       ],
-      "next_action": "Completar T042-U5."
+      "next_action": null
     },
     {
       "id": "T043",
@@ -1766,7 +1796,7 @@
         "tests/frontend/browser_obs_panel.py",
         "tests/frontend/test_voice_privacy.cjs"
       ],
-      "next_action": "Completar T042-U5 y medicion T046-U1/U3."
+      "next_action": "Verificar en un iPhone real junto con la medición T046-U1/U3 en ventana quieta."
     },
     {
       "id": "T044",
@@ -1982,9 +2012,17 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "fa3f74b0ffab554b4dfa45c5da1737066c957f5b",
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
+      ],
+      "evidence": [
+        "tests/unit/integrations/test_energy_monitor.py",
+        "tests/integration/test_p5_integrations_graph.py",
+        "tests/unit/nlu/test_household_intents.py"
+      ],
       "next_action": null
     },
     {
@@ -2001,9 +2039,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "6a4e9757f3ff5568e8174a5dcde0bf33da7ee1fa",
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
+      ],
+      "evidence": [
+        "tests/unit/lists/test_ha_sync_t051.py",
+        "tests/integration/test_p5_integrations_graph.py"
+      ],
       "next_action": null
     },
     {
@@ -2020,9 +2065,17 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "0734ecb938d40b449c0111788802acb0b5ded72d",
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "e6400c5a6a8c7378535a3c246a2b66a010c399fa",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
+      ],
+      "evidence": [
+        "tests/unit/integrations/test_calendar_reader.py",
+        "tests/integration/test_p5_integrations_graph.py"
+      ],
       "next_action": null
     },
     {
@@ -2040,9 +2093,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "c05f84d2746e5e5c60b73a40da48df03f44ee766",
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
+      ],
+      "evidence": [
+        "tests/unit/integrations/test_media_control.py",
+        "tests/integration/test_p5_integrations_graph.py"
+      ],
       "next_action": null
     },
     {
@@ -2059,9 +2119,16 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required_confirmed_Q14",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
+      "status": "verified_local",
+      "implementation_commits": [
+        "4335962be9d638942cf9b88ce0f10f9ad094e0e6",
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
+      ],
+      "evidence": [
+        "tests/unit/integrations/test_camera_health.py",
+        "tests/integration/test_p5_integrations_graph.py"
+      ],
       "next_action": null
     },
     {
@@ -2393,8 +2460,8 @@
       "tasks": [
         "T030"
       ],
-      "status": "open",
-      "note": null
+      "status": "closed",
+      "note": "El grafo real entrega temporizadores e intercom y responde a notificaciones. T030-U3 cubre timers persistentes, reinicio y avisos vencidos."
     },
     {
       "id": "CORE-02",
@@ -2403,8 +2470,8 @@
         "T011",
         "T031"
       ],
-      "status": "open",
-      "note": null
+      "status": "closed",
+      "note": "T011/T031 verifican el resultado durable de la creación, la aclaración, la zona de entrega y el uso de acciones HA en el grafo local."
     },
     {
       "id": "CORE-03",
@@ -2430,8 +2497,8 @@
       "tasks": [
         "T036"
       ],
-      "status": "open",
-      "note": null
+      "status": "closed",
+      "note": "T036-U3 conecta productores, cobertura por fuente, deduplicación y entrega zonificada; las pruebas de grafo y diagnóstico cubren fuentes ausentes."
     },
     {
       "id": "CORE-06",
@@ -2448,8 +2515,8 @@
       "tasks": [
         "T053"
       ],
-      "status": "open",
-      "note": "CORE-07 se amplía a multimedia local propuesta; Spotify/multiroom no quedan aceptados por ello."
+      "status": "closed",
+      "note": "T053 conecta el control local de TV/multimedia por capacidades seleccionadas en voz y API. Spotify y multiroom están fuera del alcance de esta verificación."
     },
     {
       "id": "CORE-08",
@@ -2486,8 +2553,8 @@
       "tasks": [
         "T042"
       ],
-      "status": "open",
-      "note": null
+      "status": "closed",
+      "note": "T042 verifica navegación de teclado y foco de Observabilidad con el arnés browser_obs_panel.py; el registro corresponde a verificación local."
     },
     {
       "id": "WEB-04",
@@ -2559,8 +2626,8 @@
       "tasks": [
         "T042"
       ],
-      "status": "open",
-      "note": null
+      "status": "closed",
+      "note": "T042 cubre foco en diálogo y preservación del foco al actualizar Memoria y Rutinas mediante las pruebas test_nexo_memory_owner.cjs y test_nexo_routine_owner.cjs."
     },
     {
       "id": "AUD-01",

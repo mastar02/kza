@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from src.home_assistant.ha_client import HomeAssistantClient
     from src.home_assistant.home_actions import HomeActionService
     from src.lists.list_manager import ListManager
+    from src.integrations.factory import IntegrationServices
     from src.memory.erasure_coordinator import ErasureCoordinator
     from src.memory.privacy_services import PrivacyServices
     from src.memory.producer_erasure import ProducerCoverage, ProducersEraser
@@ -276,6 +277,7 @@ class ApplicationGraph:
     verify_run_id: str | None = field(default=None, repr=False)
     # P3-F1: the one household clock and room namespace injected into consumers.
     household_clock: HouseholdClock | None = field(default=None, repr=False)
+    integrations: IntegrationServices | None = field(default=None, repr=False)
     room_namespace: RoomNamespace | None = field(default=None, repr=False)
     _run_entered: bool = field(default=False, init=False, repr=False)
 

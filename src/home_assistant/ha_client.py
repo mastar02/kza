@@ -296,6 +296,7 @@ class HomeAssistantClient:
         self._state_stop_owner = None
         self._state_start_ready = None
         self._calls_connect_task = None
+        self._ws_connected_handler: Callable[[], None] | None = None
         self._registry_read_task = None
         self._transport_tasks: dict[asyncio.Task, str] = {}
         self._ws_open_tasks: dict[str, asyncio.Task] = {}
@@ -1682,6 +1683,17 @@ class HomeAssistantClient:
                     await self._close_socket(ws, purpose)
 
 
+    def set_websocket_connected_handler(self, handler: Callable[[], None] | None) -> None:
+        """Bind a nonblocking observer when the calls or events channel recovers."""
+        self._ws_connected_handler = handler
+
+    def _notify_websocket_connected(self) -> None:
+        if self._ws_connected_handler is not None:
+            try:
+                self._ws_connected_handler()
+            except Exception:
+                logger.exception("HA WebSocket connection observer failed")
+
     async def connect_websocket(self) -> bool:
         """Join one calls connection owner; observer cancellation cannot lose it."""
         if self._closed:
@@ -1727,6 +1739,7 @@ class HomeAssistantClient:
             self._ws_calls = ws
             self._ws_connected = True
             self._ws_reconnect_attempts = 0
+            self._notify_websocket_connected()
             return True
 
 
@@ -2190,6 +2203,7 @@ class HomeAssistantClient:
                     observed_at=observed_at, deadline=deadline, published=subscribed)
                 if not self._state_current(generation) or stream_generation != self._entity_stream_generation:
                     return
+                self._notify_websocket_connected()
                 self._kick_required_calls_recovery()
             full_deadline = monotonic() + self._state_full_refresh_interval_s
             while (self._state_current(generation) and self._ws_events is ws

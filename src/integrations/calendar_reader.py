@@ -85,15 +85,17 @@ class CalendarAccess:
     user_id: str | None = field(default=None, repr=False)
     personal_authorized: bool = False
     session_current: AuthorityGuard | None = field(default=None, repr=False)
+    read_current: AuthorityGuard | None = field(default=None, repr=False)
 
     def _allows(self, source: _CalendarSource) -> bool:
-        if source.scope is CalendarScope.SHARED:
-            return True
-        if (self.shared_only or not self.personal_authorized
-                or self.user_id != source.owner_user_id or self.session_current is None):
-            return False
         try:
-            return self.session_current() is True
+            if self.read_current is not None and self.read_current() is not True:
+                return False
+            if source.scope is CalendarScope.SHARED:
+                return True
+            return (not self.shared_only and self.personal_authorized
+                    and self.user_id == source.owner_user_id and self.session_current is not None
+                    and self.session_current() is True)
         except Exception:
             return False
 
@@ -121,6 +123,7 @@ class CalendarRead:
 
     events: tuple[CalendarEvent, ...] = field(repr=False)
     complete: bool
+    configured: bool = True
 
 
 class HACalendarClient(Protocol):
@@ -155,11 +158,18 @@ class CalendarReader:
         if not math.isfinite(ha_timeout) or ha_timeout <= 0:
             raise ValueError("Calendar HA timeout must be positive and finite")
         self._sources = tuple(sources)
-        self._data_root = Path(data_root).absolute()
+        self._data_root = Path(data_root).resolve()
         self._timezone = ZoneInfo(timezone)
         self._clock = clock
         self._ha_client = ha_client
         self._ha_timeout = ha_timeout
+
+    async def get_day(self, *, access: CalendarAccess, tomorrow: bool = False) -> CalendarRead:
+        """Read a civil day in the household timezone, with exclusive midnight bounds."""
+        day = self._clock().astimezone(self._timezone).date() + timedelta(days=int(tomorrow))
+        start = datetime.combine(day, time.min, self._timezone)
+        end = datetime.combine(day + timedelta(days=1), time.min, self._timezone)
+        return await self.get_events(start, end, access=access)
 
     async def get_events(
         self,
@@ -193,7 +203,7 @@ class CalendarReader:
             (event for result in visible for event in result.events),
             key=lambda event: _as_utc(event.start),
         )
-        return CalendarRead(tuple(events), all(result.complete for result in visible))
+        return CalendarRead(tuple(events), all(result.complete for result in visible), configured=bool(visible))
 
     def _read_ics(self, source: ICSCalendarSource, start: datetime, end: datetime) -> CalendarRead:
         try:
@@ -264,6 +274,8 @@ def _read_local_ics(root: Path, path: Path) -> str:
     if ".." in path.parts or path.suffix.lower() != ".ics":
         raise ValueError("Invalid local calendar path")
     resolved_root = root.resolve(strict=True)
+    if resolved_root != root:
+        raise ValueError("Calendar data root changed")
     if path.is_absolute():
         if path.is_relative_to(root):
             path = path.relative_to(root)
@@ -278,9 +290,9 @@ def _read_local_ics(root: Path, path: Path) -> str:
     # between resolution and open. Nonblocking open also rejects FIFOs safely.
     dir_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     with ExitStack() as stack:
-        directory = os.open(resolved_root, dir_flags)
+        directory = os.open(resolved_root.anchor, dir_flags)
         stack.callback(os.close, directory)
-        for component in relative.parts[:-1]:
+        for component in (*resolved_root.parts[1:], *relative.parts[:-1]):
             directory = os.open(component, dir_flags, dir_fd=directory)
             stack.callback(os.close, directory)
         fd = os.open(relative.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
