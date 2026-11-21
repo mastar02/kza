@@ -14,18 +14,21 @@ keeps the unchanged V3 function.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from functools import partial
 import hashlib
 import os
 from pathlib import Path
 import re
 import stat
+from threading import Lock
 from types import MappingProxyType
 
 from src.memory import output_registration as base
 from src.memory import output_registration_v2 as v2
 from src.memory import output_registration_v3 as v3
+from src.memory.output_publisher import ALL_MATRIX_PRODUCERS, GrammarSpec, publisher_event_shape
 
 CONFIGURATION_REPRESENTATION = "kza-settings-yaml-raw-v1"
 CONFIGURATION_PREFIX = ".consent-"
@@ -187,6 +190,7 @@ class _Grammar:
     producer: str
     event_kind: str
     decode_event: Callable
+    spec: GrammarSpec | None = None
 
     def __reduce_ex__(self, protocol: int):
         raise TypeError("output_journal_grammar_not_serializable")
@@ -332,14 +336,48 @@ def _configuration_event_v2(event: dict, prior: dict | None, selected: bool, hea
                                         header["state_identity"])
 
 
-_GRAMMARS = MappingProxyType({
+_GRAMMAR_ENTRIES: dict[str, _Grammar] = {
     "account_publisher/1": _Grammar("account_publisher/1", "accounts", "account_publisher", _account_event),
     "configuration_publisher/1": _Grammar("configuration_publisher/1", "configuration",
                                           "configuration_publisher", _configuration_event),
     "configuration_publisher/2": _Grammar("configuration_publisher/2", "configuration",
                                           "configuration_publisher", _configuration_event_v2),
-})
+}
+_GRAMMARS = MappingProxyType(_GRAMMAR_ENTRIES)
+_GRAMMAR_LOCK = Lock()
 WRITER_GRAMMARS = MappingProxyType({"accounts": "account_publisher/1", "configuration": "configuration_publisher/2"})
+
+
+def _extra_event(spec: GrammarSpec, event: dict, prior: dict | None, selected: bool, header: dict) -> dict:
+    state = publisher_event_shape(event, prior, selected, producer=spec.producer, event_kind=spec.event_kind)
+    base._require(spec.decode_event(event, prior, selected, header) == state, "publisher_state")
+    return state
+
+
+def register_grammars(specs: Iterable[GrammarSpec]) -> None:
+    """Append trusted family codecs to the reader table without enabling writers.
+
+    Re-registering the same spec is safe. IDs are immutable for the life of
+    the process, so an epoch always resolves to the same decoder.
+    """
+    specs = tuple(specs)
+    additions = {}
+    with _GRAMMAR_LOCK:
+        for spec in specs:
+            base._require(type(spec) is GrammarSpec and type(spec.producer) is str
+                          and spec.producer in ALL_MATRIX_PRODUCERS
+                          and spec.producer not in v2._SELECTED | {"accounts", "configuration"}
+                          and type(spec.event_kind) is str
+                          and spec.event_kind == f"{spec.producer}_publisher"
+                          and type(spec.grammar_id) is str and _GRAMMAR_ID.fullmatch(spec.grammar_id)
+                          and spec.grammar_id.partition("/")[0] == spec.event_kind
+                          and callable(spec.decode_event), "publisher_grammar")
+            existing = additions.get(spec.grammar_id, _GRAMMARS.get(spec.grammar_id))
+            base._require(existing is None or existing.spec is spec, "publisher_grammar_conflict")
+            if existing is None:
+                additions[spec.grammar_id] = _Grammar(spec.grammar_id, spec.producer, spec.event_kind,
+                                                      partial(_extra_event, spec), spec)
+        _GRAMMAR_ENTRIES.update(additions)
 
 
 def declared_grammars(header: dict) -> dict[str, _Grammar]:

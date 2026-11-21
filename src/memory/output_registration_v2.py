@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable, Mapping
 from contextlib import contextmanager
 from contextvars import Context, ContextVar
 from dataclasses import dataclass, field
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
     from src.memory.erasure_journal import ErasureParticipant, TargetRegistrySnapshot
 
 from src.memory import output_registration as base
+from src.memory.output_publisher import (
+    GenericOutputPublisher,
+    GrammarSpec,
+    PublisherPhase,
+    snapshot_metadata,
+)
 from src.core.owned_work import current_native_execution, validate_native_execution
 
 logger = logging.getLogger(__name__)
@@ -518,7 +525,9 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
     """Observe five additional real owner families without taking their close."""
 
     def __init__(self, admission: RuntimeAdmission, config: dict, *, key: object,
-                 journal_format: _JournalFormat | None = None) -> None:
+                 journal_format: _JournalFormat | None = None,
+                 extra_grammars: Iterable[GrammarSpec] = (),
+                 publisher_selection: Mapping[str, bool] | None = None) -> None:
         super().__init__(admission, config, key=key)
         self._format = _known_format(V2_FORMAT if journal_format is None else journal_format)
         self._directory = (self._directory.parents[2] / self._format.namespace_name / "runs"
@@ -550,6 +559,8 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         self._accounts_disabled = False
         self._configuration: _ConfigurationPublisher | None = None
         self._configuration_disabled = False
+        self._writer_grammars: dict[str, str] = {}
+        self._generic_publishers: frozenset[str] = frozenset()
         # OQ-8: the boot consent decision, computed once in _start and written
         # unchanged on this run's first configuration record.
         reasoner = config.get("reasoner")
@@ -566,6 +577,28 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             # enabled under an admission; the destination is never configured.
             self._expected["configuration"] = str(admission.state_root / "config" / "settings.yaml")
             self._selected["configuration"] = self._selected["authority_sessions"]
+            self._configure_publishers(tuple(extra_grammars), publisher_selection)
+        else:
+            base._require(not tuple(extra_grammars) and not publisher_selection, "publisher_format")
+
+    def _configure_publishers(self, extra: tuple[GrammarSpec, ...],
+                              selection: Mapping[str, bool] | None) -> None:
+        from src.memory.output_registration_v4 import WRITER_GRAMMARS, declared_grammars, register_grammars
+
+        grammars = dict(WRITER_GRAMMARS)
+        for spec in extra:
+            base._require(type(spec) is GrammarSpec and type(spec.producer) is str
+                          and spec.producer not in grammars, "publisher_grammar_conflict")
+            grammars[spec.producer] = spec.grammar_id
+        producers = frozenset(grammars.keys() - self._selected.keys())
+        selection = {} if selection is None else dict(selection)
+        base._require(selection.keys() <= producers and all(type(value) is bool for value in selection.values()),
+                      "publisher_selection")
+        register_grammars(extra)
+        declared_grammars({"grammars": grammars})
+        self._writer_grammars = grammars
+        self._generic_publishers = producers
+        self._selected.update({producer: selection.get(producer, True) for producer in producers})
 
     @property
     def prior_decision(self):
@@ -681,10 +714,10 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                     base._require(not (version / "runs" / ticket["run_id"]).exists(), "run_exists")
             grammars = None
             if self._format.schema_version >= 4:
-                from src.memory.output_registration_v4 import WRITER_GRAMMARS, refuse_unknown_grammars
+                from src.memory.output_registration_v4 import refuse_unknown_grammars
                 # Never start beside a run whose declared grammar this release cannot read.
                 refuse_unknown_grammars(self._namespace / self._format.namespace_name / "runs")
-                grammars = dict(WRITER_GRAMMARS)
+                grammars = self._writer_grammars
                 # OQ-8: read the authoritative decision before this run exists.
                 self._decide_consent(self._namespace / self._format.namespace_name / "runs", ticket["run_id"])
             header = {"schema_version": self._format.schema_version, "run_id": ticket["run_id"], "generation": ticket["generation"],
@@ -1271,6 +1304,8 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             if not pinned:
                 _reject("configuration_owner", self)
         for producer, selected in self._selected.items():
+            if producer in self._generic_publishers:
+                continue  # Validated against durable state with the composition append.
             if producer == "configuration":
                 publisher = self._configuration
                 if (selected and (publisher is None or publisher.phase != "attached")
@@ -1299,8 +1334,77 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
         for key in ("lists", "reminders"):
             if key not in self._handles:
                 _reject("composition_incomplete", self)
-        await self._run(self._record, {"kind": "composition", "instrumented": sorted(self._format.selected_producers),
-            "global_inventory_complete": False, "aggregate_copy_complete": False})
+        event = {"kind": "composition", "instrumented": sorted(self._format.selected_producers | self._generic_publishers),
+                 "global_inventory_complete": False, "aggregate_copy_complete": False}
+        append = self._record_publisher_composition if self._generic_publishers else self._record
+        await self._run(append, event)
+
+    def _record_publisher_composition(self, event: dict) -> None:
+        with self._lock:
+            self._current()
+            _, _, states, _ = self._format.decode_chain(self._directory)
+            for producer in self._generic_publishers:
+                phase = states.get(producer, {}).get("phase")
+                valid = (phase in {PublisherPhase.ATTACHED, PublisherPhase.OPENING, PublisherPhase.DRAINED}
+                         if self._selected[producer] else phase == PublisherPhase.DISABLED)
+                if not valid:
+                    _reject("composition_incomplete", self)
+            self._record(event)
+
+    async def publisher_intent(self, producer: str, plan: dict) -> GenericOutputPublisher:
+        """Record the metadata plan before the caller constructs or opens its owner."""
+        await self._publisher_phase(producer, PublisherPhase.INTENT, plan=plan)
+        return GenericOutputPublisher(self, producer)
+
+    async def attach_publisher(self, producer: str) -> GenericOutputPublisher:
+        """Record attachment after intent. The caller keeps the original owner."""
+        await self.publisher_attached(producer)
+        return GenericOutputPublisher(self, producer)
+
+    async def publisher_attached(self, producer: str) -> None:
+        """Record attachment using the exact plan already pinned by intent."""
+        await self._publisher_phase(producer, PublisherPhase.ATTACHED)
+
+    async def publisher_opening(self, producer: str) -> None:
+        """Record the opening phase before the caller requests native work."""
+        await self._publisher_phase(producer, PublisherPhase.OPENING)
+
+    async def publisher_drained(self, producer: str, aggregate: dict) -> None:
+        """Record the original owner's observed terminal aggregate."""
+        await self._publisher_phase(producer, PublisherPhase.DRAINED, aggregate=aggregate)
+
+    async def publisher_disabled(self, producer: str, plan: dict) -> None:
+        """Record a declared, unselected row before any owner was attached."""
+        await self._publisher_phase(producer, PublisherPhase.DISABLED, plan=plan)
+
+    async def _publisher_phase(self, producer: str, phase: PublisherPhase, *,
+                               plan: dict | None = None, aggregate: dict | None = None) -> None:
+        self._live()
+        base._require(self._closing is None and type(producer) is str
+                      and producer in self._generic_publishers, "publisher_producer")
+        if phase in {PublisherPhase.INTENT, PublisherPhase.DISABLED}:
+            plan = snapshot_metadata(plan)
+        if phase == PublisherPhase.DRAINED:
+            aggregate = snapshot_metadata(aggregate)
+        await self._run(self._append_publisher, producer, phase, plan, aggregate)
+
+    def _append_publisher(self, producer: str, phase: PublisherPhase, plan: dict | None,
+                          aggregate: dict | None) -> None:
+        from src.memory.output_registration_v4 import declared_grammars
+
+        with self._lock:
+            self._current()
+            header, _, states, _ = self._format.decode_chain(self._directory)
+            grammar = declared_grammars(header)[producer]
+            prior = states.get(producer)
+            if phase not in {PublisherPhase.INTENT, PublisherPhase.DISABLED}:
+                base._require(prior is not None, "transition")
+                plan = prior["plan"]
+            event = {"kind": grammar.event_kind, "phase": phase.value, "plan": plan}
+            if phase == PublisherPhase.DRAINED:
+                event["aggregate"] = aggregate
+            grammar.decode_event(event, prior, header["selected"][producer], header)
+            self._record(event)
 
     # ------------------------------------------------------------------
     # V3 account publisher: the original UserManager atomic JSON writer,
@@ -1647,6 +1751,9 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                             base._require(states.get("configuration", {}).get("phase") == "drained", "epoch_incomplete")
                         if self._configuration_disabled:
                             base._require(states.get("configuration", {}).get("phase") == "disabled", "epoch_incomplete")
+                        for producer in self._generic_publishers:
+                            expected = PublisherPhase.DRAINED if self._selected[producer] else PublisherPhase.DISABLED
+                            base._require(states.get(producer, {}).get("phase") == expected, "epoch_incomplete")
                 finally:
                     # Every destination pin lives until the epoch closes, poisoned or not.
                     for pinned in (publisher, self._configuration):
@@ -1994,10 +2101,17 @@ def read_inventory(controller: object) -> tuple[dict, ...]:
                     recovered["uncovered_producers"] = [p for p in base.PRODUCERS if p not in states or states[p]["phase"] != "closed"]
                 else:
                     recovered["instrumented_producers"] = sorted({s.get("producer") or s["plan"]["producer"] for s in states.values()})
-                    recovered["uncovered_producers"] = [p for p in base.PRODUCERS if p not in {"lists", "reminders"} or states.get(p, {}).get("phase") != "closed"]
-                    selected = _SELECTED | ({"accounts"} if version.name == "v3" else set()) | (
-                        set(header["grammars"]) if version.name == "v4" else set())
-                    recovered["partial_producers"] = [p for p in sorted(selected - {"lists", "reminders"})]
+                    declared = set(header["grammars"]) if version.name == "v4" else set()
+                    selected = _SELECTED | ({"accounts"} if version.name == "v3" else set()) | declared
+                    primary = {"lists", "reminders"}
+                    covered = {p for p in primary if states.get(p, {}).get("phase") == "closed"}
+                    # Legacy publisher receipts retain their historical partial
+                    # coverage. Generic rows certify only a selected lifecycle
+                    # that reached its grammar's terminal drain.
+                    drained = {p for p in declared - {"accounts", "configuration"}
+                               if header["selected"][p] and states.get(p, {}).get("phase") == PublisherPhase.DRAINED}
+                    recovered["uncovered_producers"] = [p for p in base.PRODUCERS if p not in covered | drained]
+                    recovered["partial_producers"] = sorted(selected - primary - drained)
                     material = []
                     for path in sorted(directory.iterdir()):
                         if re.fullmatch(r"\d{12}-[0-9a-f]{64}\.json", path.name):
