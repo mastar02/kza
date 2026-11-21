@@ -37,7 +37,7 @@ REPO = Path(__file__).resolve().parents[3]
 # is frozen.
 PINNED_CONTRACTS = {
     1: "691c2272c3e4f5b4e3119b008396f340de6ee8ef4006abba659103c694f1e8d8",
-    2: "6ff891ad85feb560277def05860d4d3985b0e8aa714566a9b7ae2136ef20ba95",
+    2: "d0b616eaf5ce55c8995913a0063808235c336945a4a97ca8adee90ad65d71dc5",
 }
 
 
@@ -60,6 +60,12 @@ def test_the_document_is_canonical_json_of_every_contract_part():
     assert document["protected"] == sorted(stage._PROTECTED_TABLES)
     assert document["database_rules"]["metrics"] == {"application_id": 1264206897, "user_version": [1, 2]}
     assert document["database_rules"]["auth_meta_schema_version"] == ["1", "2", "3"]
+    assert document["database_rules"]["legacy_reminders"] == {
+        "database_basename": "reminders.db",
+        "columns": ("id:TEXT user_id:TEXT text:TEXT trigger_at:REAL created_at:REAL recurrence:TEXT "
+                    "recurrence_end:REAL ha_actions:TEXT state:TEXT last_fired_at:REAL fire_count:INTEGER scope:TEXT"),
+        "absent_tables": ["alert_preferences", "timers"],
+    }
     assert document["database_rules"]["unbound_alone"] == ["memories"]
     assert document["database_rules"]["sdk_internals"] == {
         "tables": ["collections", "migrations", "segments"],
@@ -92,6 +98,9 @@ CHANGES = {
     "_DEFAULT_APPLICATION_ID": lambda value: value + 1,
     "_DEFAULT_USER_VERSION": lambda value: value + 1,
     "_AUTH_META_SCHEMA_VERSIONS": lambda value: frozenset(value) | {"4"},
+    "_REMINDERS_DATABASE_NAME": lambda value: "other.db",
+    "_LEGACY_REMINDERS_COLUMNS": lambda value: value + " extra:TEXT",
+    "_LEGACY_REMINDERS_ABSENT_TABLES": _frozen_plus,
     "_LEDGER_KINDS": _frozen_plus,
     "_ERASURE_PARTICIPANTS": _frozen_plus,
     "_FACT_STATES": _frozen_plus,
