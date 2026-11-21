@@ -1,11 +1,20 @@
 """Offline fixtures exercise the independent evaluation corpus policy."""
 
+import ast
 from dataclasses import FrozenInstanceError, replace
 from datetime import datetime, timedelta, timezone, tzinfo
+from hashlib import sha256
+import json
+import math
+from pathlib import Path
+import re
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
+from src.core.task_outcome import EffectState, TaskOutcome, TaskStatus
+from src.core.voice_delivery import DeliveryState, GenerationState, ResponseResult
 from src.evaluation.corpus import (
     CorpusArtifact,
     CorpusCapture,
@@ -14,10 +23,19 @@ from src.evaluation.corpus import (
     CorpusSession,
     CorpusSplit,
 )
+from src.evaluation.freeze_manifest import (
+    ConsentReceipt, EvaluationClip, Partition, VoiceAssignment, WakeCounts,
+    canonical_sha256, clarity_median, complete_delivery, complete_task, nearest_rank,
+    recognition, seeded_order, validate_inventory, voice_pair_counts,
+)
 from src.evaluation.provenance import (
     CaptureLane, CaptureProvenance, CaptureSource, DSPCertainty, DSPObservation,
     FrameInterval, MAX_COUNTER,
 )
+from src.nlu.household_intents import HouseholdFamily, HouseholdIntentClassifier, HouseholdOperation
+from src.pipeline.wake_verification import WakeCheckCode, WakeVerificationConfig, WakeVerificationMode, WakeVerifier
+from tools.ambient_wer import build_report
+from tools.analyze_audio_quality import measure_channel
 
 
 CAPTURED = datetime(2026, 11, 2, 12, tzinfo=timezone.utc)
@@ -531,3 +549,302 @@ def test_folded_expiry_cannot_precede_capture_in_utc(manifest):
     expires = captured.replace(minute=45, fold=0)
     with pytest.raises(ValueError, match="original_deadline_exceeds_consent"):
         replace(capture, captured_at=captured, original_expires_at=expires)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+P6_PROTOCOL_SHA256 = "53a55486e009f549d7a4c42a6bc28ea8239c75a512b8ff50887ec02c54aaba33"
+P6_CRITERIA = {
+    "C12": (("wer_clear_max_pct", "wer_adverse_max_pct", "coverage_min_pct"),
+            ("clear_min", "adverse_min", "critical_condition_min")),
+    "C13": (("success_clear_min_pct", "success_adverse_min_pct"), ("family_min",)),
+    "C14": (("rejection_max_pct", "false_per_house_hour_max"),
+            ("intentional_min", "useful_house_hours_min", "simultaneous_inputs", "review_min_pct")),
+    "C15": (("voice_p50_ms_max", "voice_p95_ms_max", "rapid_effect_p95_ms_max"),
+            ("simple_runs_min", "family_min")),
+    "C16": (("fully_delivered_min_pct", "acoustic_interrupt_p95_ms_max"),
+            ("deliveries_min", "physical_interrupts_min")),
+    "C17": (("clarity_median_min", "clarity_scale", "severe_max"),
+            ("paired_responses_min", "listeners_min")),
+    "C18": (("mixed_pairs_max", "pair_precision_min", "pair_recall_min", "clear_coverage_min"),
+            ("voices_min", "calibration_clear_per_voice_min", "reserve_clear_per_voice_min",
+             "rooms_and_distances_each_min", "per_adverse_condition_min", "first_seed", "last_seed")),
+}
+P6_FINDINGS = ("AUD-04", "AUD-06", "AUD-07")
+P6_TASKS = ("T062", "T071", "T072")
+
+
+@pytest.fixture(scope="module")
+def frozen_protocol():
+    document = (ROOT / "docs/plans/p6-evaluation.md").read_bytes()
+    assert sha256(document).hexdigest() == P6_PROTOCOL_SHA256
+    block, = re.findall(r"(?m)^```json\n([\s\S]*?)^```$", document.decode("utf-8"))
+    return json.loads(block)
+
+
+@pytest.fixture(scope="module")
+def live_roadmap():
+    return json.loads((ROOT / "docs/plans/2026-11-02-autonomous-roadmap.json").read_text(encoding="utf-8"))
+
+
+def test_frozen_protocol_pins_evaluators_and_symbols(frozen_protocol):
+    assert frozen_protocol["protocol"] == "p6-v1"
+    assert set(frozen_protocol["limits"]) == set(P6_CRITERIA)
+    for name, pin in frozen_protocol["sources"].items():
+        source = (ROOT / name).read_bytes()
+        assert sha256(source).hexdigest() == pin["sha256"], name
+        tree = ast.parse(source, filename=name)
+        for symbol in pin["symbols"]:
+            scope = tree
+            for segment in symbol.split("."):
+                candidates = [node for node in scope.body if getattr(node, "name", None) == segment]
+                assert len(candidates) == 1, (name, symbol)
+                scope = candidates[0]
+
+
+def test_p6_roadmap_contract_has_not_drifted(frozen_protocol, live_roadmap):
+    def select(section, ids, *fields):
+        return {row["id"]: {field: row[field] for field in fields}
+                for row in live_roadmap[section] if row["id"] in ids}
+
+    contract = {
+        "criteria": select("criteria", P6_CRITERIA, "target", "minimum_evidence", "agreement"),
+        "tasks": select("tasks", P6_TASKS, "phase", "criteria", "findings", "human_gate"),
+        "findings": select("finding_trace", P6_FINDINGS, "title", "tasks"),
+        "stratification": live_roadmap["stratification"],
+    }
+    assert set(contract["tasks"]["T062"]["criteria"]) == set(P6_CRITERIA)
+    assert set(contract["tasks"]["T062"]["findings"]) == set(P6_FINDINGS)
+    assert canonical_sha256(contract) == frozen_protocol["roadmap_contract_sha256"]
+
+
+@pytest.mark.parametrize("criterion", P6_CRITERIA)
+def test_frozen_numeric_limits_match_roadmap_text(criterion, frozen_protocol, live_roadmap):
+    row, = (item for item in live_roadmap["criteria"] if item["id"] == criterion)
+    words = {"cero": 0, "dos": 2, "tres": 3, "cuatro": 4, "diez": 10}
+    numbers = re.compile(r"\b(?:cero|dos|tres|cuatro|diez)\b|(?<!\w)\d+(?:\.\d+)?(?!\w)")
+    expected = {}
+    for field, keys in zip(("target", "minimum_evidence"), P6_CRITERIA[criterion], strict=True):
+        values = [words[token] if token in words else float(token) for token in numbers.findall(row[field].lower())]
+        expected.update(zip(keys, values, strict=True))
+    assert frozen_protocol["limits"][criterion] == expected
+
+
+@pytest.fixture
+def field_inventory():
+    calibration = EvaluationClip(
+        "clip-cal", "a" * 64, "b" * 64, "session-cal", Partition.CALIBRATION, CAPTURED,
+        CAPTURED + timedelta(seconds=4), frozenset({"voice-cal"}), "receipt-cal",
+    )
+    reserve = EvaluationClip(
+        "clip-res", "c" * 64, "d" * 64, "session-res", Partition.RESERVED,
+        CAPTURED + timedelta(days=1), CAPTURED + timedelta(days=1, seconds=4),
+        frozenset({"voice-res"}), "receipt-res",
+    )
+    now = CAPTURED + timedelta(days=2)
+    receipts = {
+        clip.consent_ref: ConsentReceipt(
+            clip.session_id, "consented_calibration_and_evaluation", True, clip.speaker_refs,
+            CAPTURED - timedelta(minutes=1), now + timedelta(days=1),
+        )
+        for clip in (calibration, reserve)
+    }
+    return calibration, reserve, receipts, now
+
+
+def test_p6_enforces_inventory_but_allows_preregistered_h3_panel(field_inventory):
+    calibration, reserve, receipts, now = field_inventory
+    validate_inventory((reserve, calibration), receipts, now=now)
+    reserve = replace(reserve, speaker_refs=calibration.speaker_refs)
+    receipts[reserve.consent_ref] = replace(receipts[reserve.consent_ref], speaker_refs=reserve.speaker_refs)
+    with pytest.raises(ValueError, match="cross_partition_speaker"):
+        validate_inventory((calibration, reserve), receipts, now=now)
+    validate_inventory((calibration, reserve), receipts, now=now, shared_panel=reserve.speaker_refs)
+
+    training = replace(
+        calibration, clip_id="clip-train", audio_sha256="e" * 64, source_sha256="f" * 64,
+        split=Partition.TRAINING, session_id="session-train", consent_ref="receipt-train",
+    )
+    receipts[training.consent_ref] = replace(receipts[calibration.consent_ref], session_id=training.session_id)
+    with pytest.raises(ValueError, match="cross_partition_speaker"):
+        validate_inventory((training, calibration, reserve), receipts, now=now, shared_panel=reserve.speaker_refs)
+
+
+@pytest.mark.parametrize(
+    ("field", "shared_field", "reason"),
+    [
+        ("clip_id", "clip_id", "clip"),
+        ("audio_sha256", "audio_sha256", "audio"),
+        ("source_sha256", "source_sha256", "audio"),
+        ("audio_sha256", "source_sha256", "audio"),
+        ("session_id", "session_id", "session"),
+    ],
+)
+def test_p6_rejects_cross_partition_lineage(field_inventory, field, shared_field, reason):
+    calibration, reserve, receipts, now = field_inventory
+    contaminated = replace(reserve, **{field: getattr(calibration, shared_field)})
+    receipts[reserve.consent_ref] = replace(receipts[reserve.consent_ref], session_id=contaminated.session_id)
+    with pytest.raises(ValueError, match=f"cross_partition_{reason}"):
+        validate_inventory((contaminated, calibration), receipts, now=now)
+
+
+def test_p6_rejects_nested_overlapping_windows_but_allows_an_exact_boundary(field_inventory):
+    calibration, reserve, receipts, now = field_inventory
+    inside = calibration.start + timedelta(seconds=1)
+    time_zone = timezone(timedelta(hours=-3))
+    reserve = replace(reserve, start=inside.astimezone(time_zone), end=inside + timedelta(seconds=1))
+    with pytest.raises(ValueError, match="cross_partition_window"):
+        validate_inventory((reserve, calibration), receipts, now=now)
+    boundary = replace(reserve, start=calibration.end, end=calibration.end + timedelta(seconds=1))
+    validate_inventory((boundary, calibration), receipts, now=now)
+
+
+def test_p6_rejects_an_empty_split_or_invalid_clip_provenance(field_inventory):
+    calibration, reserve, receipts, now = field_inventory
+    with pytest.raises(ValueError, match="calibration_and_reserve_required"):
+        validate_inventory((calibration,), receipts, now=now)
+    with pytest.raises(ValueError, match="invalid_clip_provenance"):
+        validate_inventory((calibration, replace(reserve, audio_sha256="")), receipts, now=now)
+    with pytest.raises(ValueError, match="duplicate_clip"):
+        validate_inventory((calibration, reserve, reserve), receipts, now=now)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        None, {"granted": False}, {"granted": 1}, {"purpose": "ordinary_capture"},
+        {"session_id": "other-session"}, {"speaker_refs": frozenset()},
+        {"granted_at": CAPTURED + timedelta(days=1, seconds=1)},
+        {"revoked_at": CAPTURED + timedelta(days=2)},
+        {"expires_at": CAPTURED + timedelta(days=2)},
+    ],
+)
+def test_p6_rejects_missing_invalid_or_noncurrent_explicit_consent(field_inventory, changes):
+    calibration, reserve, receipts, now = field_inventory
+    if changes is None:
+        del receipts[reserve.consent_ref]
+    else:
+        receipts[reserve.consent_ref] = replace(receipts[reserve.consent_ref], **changes)
+    with pytest.raises(PermissionError, match="explicit_current_consent_required"):
+        validate_inventory((calibration, reserve), receipts, now=now)
+
+
+def test_p6_seed_order_is_fixed_per_domain_and_independent_of_input_order(frozen_protocol):
+    ids = tuple("abcde")
+    assert seeded_order(ids, seed=0, purpose="h3") == tuple("aedbc")
+    assert seeded_order(ids, seed=9, purpose="h3") == tuple("cadeb")
+    assert seeded_order(ids, seed=0, purpose="listening") == tuple("acedb")
+    all_ids = tuple(f"clip-{i}" for i in range(20))
+    h3 = frozen_protocol["limits"]["C18"]
+    orders = {
+        seeded_order(all_ids, seed=seed, purpose="h3")
+        for seed in range(h3["first_seed"], h3["last_seed"] + 1)
+    }
+    assert len(orders) == 10
+    assert orders == {
+        seeded_order(reversed(all_ids), seed=seed, purpose="h3")
+        for seed in range(10)
+    }
+    assert all(sorted(order) == sorted(all_ids) for order in orders)
+    with pytest.raises(ValueError, match="unique_ids"):
+        seeded_order(("a", "a"), seed=0, purpose="h3")
+    with pytest.raises(ValueError, match="unknown_order"):
+        seeded_order(ids, seed=10, purpose="h3")
+
+
+def test_p6_c12_micro_cer_and_coverage_preserve_different_denominators():
+    rows = [
+        ("¡Café!", "cafe"),
+        ("uno dos tres cuatro cinco seis siete ocho nueve", "uno dos tres cuatro cinco seis siete ocho nueve extra"),
+        ("luz", ""),
+        (None, "luz"),
+    ]
+    result = recognition(rows)
+    assert (result.eligible, result.measured, result.reference_words, result.reference_characters) == (4, 3, 11, 46)
+    assert (result.substitutions, result.insertions, result.deletions, result.empty_hypotheses) == (1, 1, 1, 1)
+    assert result.wer_micro == pytest.approx(3 / 11)
+    assert result.wer_macro == pytest.approx((2 + 1 / 9) / 3)
+    assert result.cer_micro == pytest.approx(9 / 46)
+    assert result.coverage == 0.75
+    historical = build_report(
+        [{"reference": ref, "hypothesis": hyp, "vad_prob": 0.9} for ref, hyp in rows[:3]],
+        {"0.80-1.00": 3},
+    )
+    assert historical["confiable"]
+    assert historical["wer_reponderado"] == pytest.approx(result.wer_macro)
+    assert historical["wer_reponderado"] != pytest.approx(result.wer_micro)
+    with pytest.raises(ValueError, match="speech_reference_requires_words"):
+        recognition([("habla", "habla"), ("[TV]", None)])
+    with pytest.raises(ValueError, match="no_aligned_speech"):
+        recognition([("habla", None)])
+
+
+def test_p6_c13_requires_real_domain_completion_and_independent_effect():
+    intent = HouseholdIntentClassifier().classify("recordame comprar leche")
+    correct_intent = (intent.family, intent.operation) == (HouseholdFamily.REMINDER, HouseholdOperation.CREATE)
+    queued = TaskOutcome(TaskStatus.QUEUED)
+    observed = TaskOutcome(TaskStatus.COMPLETED, effect=EffectState.OBSERVED, observation_scope="software_state")
+    assert queued.handled and not complete_task(queued, intent_correct=True, targets_correct=True, effect_observed=True)
+    assert not complete_task(observed, intent_correct=True, targets_correct=True, effect_observed=False)
+    assert not complete_task(observed, intent_correct=True, targets_correct=False, effect_observed=True)
+    assert complete_task(observed, intent_correct=correct_intent, targets_correct=True, effect_observed=True)
+
+
+def test_p6_c14_conservative_bounds_and_post_stt_diagnostic(frozen_protocol):
+    limits = frozen_protocol["limits"]["C14"]
+    verdict = WakeVerifier(
+        WakeVerificationConfig(mode=WakeVerificationMode.ENFORCE, status_path=None), clock=lambda: 1_800_000_000,
+    ).evaluate("encendé la luz", room_id="synthetic", wake_score=0.9, wake_vad=None, gate_accept=True)
+    assert verdict.code is WakeCheckCode.REJECTED
+
+    counts = WakeCounts(94, 4, 2, 4, 1, 99, 48 * 3600)
+    assert counts.review_coverage >= limits["review_min_pct"] / 100
+    assert counts.rejection_upper == 0.06 > limits["rejection_max_pct"] / 100
+    assert counts.false_per_hour_upper == pytest.approx(5 / 48)
+    assert counts.false_per_hour_upper > limits["false_per_house_hour_max"]
+
+
+def test_p6_c15_and_c16_include_missing_endpoints_and_require_audible_completion():
+    samples = [100] * 94 + [1500] + [None] * 5
+    assert nearest_rank(samples, 50) == 100
+    assert nearest_rank(samples, 95) == 1500
+    assert math.isinf(nearest_rank(samples[:-6] + [None] * 6, 95))
+    with pytest.raises(ValueError, match="invalid_latency"):
+        nearest_rank([-1], 95)
+
+    result = ResponseResult("respuesta", GenerationState.COMPLETE, DeliveryState.COMPLETE, output_started=True)
+    assert complete_delivery(result, audible_end_observed=True)
+    assert not complete_delivery(result, audible_end_observed=False)
+    assert not complete_delivery(replace(result, output_started=False), audible_end_observed=True)
+    for state in (DeliveryState.FAILED, DeliveryState.BLOCKED, DeliveryState.TIMED_OUT, DeliveryState.CANCELLED):
+        assert not complete_delivery(replace(result, delivery=state), audible_end_observed=True)
+
+
+def test_p6_c17_participant_medians_are_independent_of_waveform_diagnostics(frozen_protocol):
+    limits = frozen_protocol["limits"]["C17"]
+    diagnostics = measure_channel(np.array([0.0, 1.0, 1.0, 1.0, 0.0]), 16000)
+    assert diagnostics["longest_near_full_scale_run_samples"] == 3
+    ratings = ([5, 4, 5], [4, 3, 4], [3, 2, 4])
+    assert [clarity_median(scores) >= limits["clarity_median_min"] for scores in ratings] == [True, True, False]
+    with pytest.raises(ValueError, match="invalid_clarity_ratings"):
+        clarity_median([0, 4])
+
+
+def test_p6_c18_counts_abstention_as_missed_pairs_and_mixing_across_conditions():
+    rows = [
+        VoiceAssignment("a1", "a", "group-a", clear=True),
+        VoiceAssignment("a2", "a", "group-a", clear=True),
+        VoiceAssignment("a3", "a", None, clear=True),
+        VoiceAssignment("b1", "b", "group-a", clear=True),
+        VoiceAssignment("b2", "b", "single", clear=True),
+        VoiceAssignment("c1", "c", "group-a", clear=False),
+        VoiceAssignment("a4", "a", None, clear=False, must_abstain=True),
+        VoiceAssignment("overlap", None, "single", clear=False, must_abstain=True),
+    ]
+    counts = voice_pair_counts(rows)
+    assert (counts.tp, counts.fp, counts.fn) == (1, 2, 3)
+    assert (counts.clear_segments, counts.assigned_clear) == (5, 4)
+    assert (counts.precision, counts.recall, counts.coverage) == pytest.approx((1 / 3, 1 / 4, 4 / 5))
+    assert (counts.mixed_pairs, counts.abstention_violations) == (5, 1)
+    assert voice_pair_counts(reversed(rows)) == counts
+    with pytest.raises(ValueError, match="invalid_voice_assignment"):
+        voice_pair_counts(rows + [rows[0]])
