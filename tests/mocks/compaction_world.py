@@ -31,6 +31,7 @@ import subprocess
 import sys
 import tempfile
 
+from scripts import adoption
 from scripts import compaction
 from scripts import stage_runtime as stage
 from tests.mocks.runtime_artifact_cache import cached_build_runtime as build_runtime
@@ -241,11 +242,6 @@ def _replace_prefix(value, old_prefix: str, new_prefix: str):
     return value
 
 
-def _target_id(participant: str, version: int, descriptor: dict) -> str:
-    canonical = json.dumps(descriptor, sort_keys=True, separators=(",", ":"), allow_nan=False)
-    return hashlib.sha256(json.dumps([participant, version, canonical]).encode()).hexdigest()
-
-
 def _relocate_privacy_db(db_path: Path, old_root: str, new_root: str) -> dict[str, str]:
     mode = stat.S_IMODE(os.lstat(db_path).st_mode)
     tid_map: dict[str, str] = {}
@@ -257,8 +253,8 @@ def _relocate_privacy_db(db_path: Path, old_root: str, new_root: str) -> dict[st
         for old_id, participant, version, raw_desc in rows:
             if old_root in raw_desc:
                 new_desc = _replace_prefix(json.loads(raw_desc), old_root, new_root)
-                encoded = json.dumps(new_desc, sort_keys=True, separators=(",", ":"), allow_nan=False)
-                new_id = _target_id(participant, version, new_desc)
+                encoded = adoption._canonical(new_desc)
+                new_id = adoption.target_id(participant, version, new_desc)
                 changed = True
             else:
                 encoded = raw_desc
@@ -644,6 +640,31 @@ def _clone_world_template(tpl: dict, tmp_path: Path, archive: Path, hops: tuple[
     return {"root": dst_root, "archive": archive, "states": new_states, "h": new_states[hops[-1] if hops else "a"]}
 
 
+def _assert_no_template_paths(clone: dict, needle: str, *, full: bool) -> None:
+    """Fail if a clone still names its template (file bytes, SQLite pages, link targets, the dict).
+
+    ``needle`` is the template's random ``kza-cw-tpl-*`` basename, so both the ``/var`` and the
+    ``/private/var`` spellings are caught. ``full`` also scans the verbatim slot runtimes; the
+    first clone of each template does, later ones scan only ``admission/`` and the slot states.
+    """
+    marker = needle.encode()
+    root: Path = clone["root"]
+    assert marker not in repr(clone).encode(), f"template path leaked into the world dict: {needle}"
+    if full:
+        tops = [root]
+    else:
+        tops = [root / "admission", *sorted((root / "slots").glob("*/state"))]
+    for top in tops:
+        for directory, dirnames, filenames in os.walk(top):
+            for name in (*dirnames, *filenames):
+                path = os.path.join(directory, name)
+                if os.path.islink(path):
+                    assert marker not in os.fsencode(os.readlink(path)), f"template path in link {path}"
+                elif name in filenames and stat.S_ISREG(os.lstat(path).st_mode):
+                    with open(path, "rb") as handle:
+                        assert marker not in handle.read(), f"template path in {path}"
+
+
 def world(archive: Path, tmp_path: Path, *, hops: tuple[str, ...] = ("b", "c"), first: tuple[str, ...] = (),
           env: str | None = None) -> dict:
     """A -> hops..., each a real closed head; the last hop is H. Controller and launcher installed.
@@ -653,20 +674,25 @@ def world(archive: Path, tmp_path: Path, *, hops: tuple[str, ...] = ("b", "c"), 
     assert not hops or stage.CONTROLLER_EPOCH == 4, "owner worlds need the epoch-4 build (x4_archive)"
     first_tuple = tuple(first)
     hops_tuple = tuple(hops)
-    tmp_resolved = str(Path(tmp_path).resolve())
-    tmp_raw = str(tmp_path)
-    if any(tmp_resolved in code or tmp_raw in code for code in first_tuple):
+    if first_tuple:
+        # Fail closed: the codes run against A may write paths into any store (ambient.db's
+        # audio_path, for one), which the clone below does not relocate. Never cache them.
         return _build_world_uncached(archive, tmp_path, hops=hops_tuple, first=first_tuple, env=env)
     archive_real = os.path.realpath(archive)
     st = os.lstat(archive_real)
-    key = (archive_real, st.st_size, st.st_mtime_ns, stage.CONTROLLER_EPOCH, hops_tuple, first_tuple, env)
+    key = (archive_real, st.st_size, st.st_mtime_ns, stage.CONTROLLER_EPOCH, hops_tuple, env)
     tpl = _WORLD_TEMPLATE_CACHE.get(key)
     if tpl is None or not tpl["root"].is_dir():
         tpl_dir = Path(tempfile.mkdtemp(prefix="kza-cw-tpl-")).resolve()
         _WORLD_TEMPLATE_DIRS.append(tpl_dir)
-        tpl = _build_world_uncached(archive, tpl_dir, hops=hops_tuple, first=first_tuple, env=env)
+        tpl = _build_world_uncached(archive, tpl_dir, hops=hops_tuple, first=(), env=env)
         _WORLD_TEMPLATE_CACHE[key] = tpl
-    return _clone_world_template(tpl, tmp_path, archive, hops_tuple)
+        clone = _clone_world_template(tpl, tmp_path, archive, hops_tuple)
+        _assert_no_template_paths(clone, tpl_dir.name, full=True)  # The runtimes are copied verbatim.
+    else:
+        clone = _clone_world_template(tpl, tmp_path, archive, hops_tuple)
+        _assert_no_template_paths(clone, tpl["root"].parent.name, full=False)
+    return clone
 
 
 def plan(root: Path, archive: Path, k: str = "k", **options) -> dict:

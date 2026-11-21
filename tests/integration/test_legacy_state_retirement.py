@@ -35,7 +35,7 @@ from scripts import adoption_commands as commands
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
 from tests.integration.test_adoption_commands import (  # noqa: F401
-    CONTAINER, VOICE, World, artifacts, copy_tree_preserving, tree, tree_manifest,
+    CONTAINER, VOICE, World, artifacts, copy_tree_preserving, current_umask, tree, tree_manifest,
     _relocate_ambient_db, _relocate_erasure_privacy_db, _relocate_legacy_tree, _replace_prefix_in_json,
 )
 from tests.mocks import adoption_legacy as fixture
@@ -153,7 +153,7 @@ def _can_use_adopted_template(world: World) -> bool:
 def _adopted_template(world: World, *, close: bool, backups: bool, production: bool) -> tuple[Path, Path]:
     archive_real = os.path.realpath(world.archive)
     st = os.lstat(archive_real)
-    key = (archive_real, st.st_size, st.st_mtime_ns, close, backups, production)
+    key = (archive_real, st.st_size, st.st_mtime_ns, close, backups, production, current_umask())
     cached = _ADOPTED_TEMPLATE_CACHE.get(key)
     if cached is not None and cached[0].is_dir():
         return cached

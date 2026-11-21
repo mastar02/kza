@@ -131,7 +131,7 @@ class Units:
         return True
 
 
-_LEGACY_TEMPLATE_CACHE: dict[str, Path] = {}
+_LEGACY_TEMPLATE_CACHE: dict[tuple[str, int], Path] = {}
 _LEGACY_TEMPLATE_DIRS: list[Path] = []
 
 
@@ -254,8 +254,17 @@ def _relocate_legacy_tree(legacy_dir: Path, old_legacy: str, new_legacy: str, *,
         os.chmod(report_path, mode)
 
 
+def current_umask() -> int:
+    """The process umask, read without leaving it changed (momentarily 0o077, never looser)."""
+    mask = os.umask(0o077)
+    os.umask(mask)
+    return mask
+
+
 def _legacy_template(tree: Path) -> Path:
-    key = os.path.realpath(tree)
+    # build_legacy writes its tree under the caller's umask (0644/0755 under 0022, 0664/0775 under
+    # 0002) and copy_tree_preserving keeps those modes, so the umask is part of the template.
+    key = (os.path.realpath(tree), current_umask())
     cached = _LEGACY_TEMPLATE_CACHE.get(key)
     if cached is not None and cached.is_dir():
         return cached

@@ -1,7 +1,6 @@
 """Authenticate every registered private route before reading or mutating state."""
 
 from functools import lru_cache
-import os
 import re
 from unittest.mock import MagicMock
 
@@ -64,21 +63,12 @@ def _make_mocked_dashboard() -> tuple[DashboardAPI, MagicMock]:
 
 @pytest.fixture(scope="module")
 def _private_http_client():
+    """One mocked dashboard per module; the credential is read per request, so tests set it."""
     dashboard, services = _make_mocked_dashboard()
     with TestClient(dashboard.app) as client:
+        # The startup window stays inside the oracle: nothing may touch a dependency there either.
+        assert services.mock_calls == [], services.mock_calls
         yield client, dashboard, services
-
-
-@pytest.fixture(scope="module")
-def _unconfigured_http_client():
-    previous = os.environ.pop("KZA_DASHBOARD_TOKEN", None)
-    try:
-        dashboard, services = _make_mocked_dashboard()
-        with TestClient(dashboard.app) as client:
-            yield client, dashboard, services
-    finally:
-        if previous is not None:
-            os.environ["KZA_DASHBOARD_TOKEN"] = previous
 
 
 @pytest.fixture(scope="module")
@@ -86,40 +76,26 @@ def _private_ws_client():
     bus = LiveEventBus()
     dashboard = DashboardAPI(event_bus=bus)
     with TestClient(dashboard.app) as client:
+        assert bus.subscriber_count == 0 and dashboard._ws_clients == []
         yield client, dashboard, bus
-
-
-@pytest.fixture(scope="module")
-def _unconfigured_ws_client():
-    previous = os.environ.pop("KZA_DASHBOARD_TOKEN", None)
-    try:
-        bus = LiveEventBus()
-        dashboard = DashboardAPI(event_bus=bus)
-        with TestClient(dashboard.app) as client:
-            yield client, dashboard, bus
-    finally:
-        if previous is not None:
-            os.environ["KZA_DASHBOARD_TOKEN"] = previous
 
 
 @pytest.mark.parametrize("method,path", _private_routes())
 @pytest.mark.parametrize("credential", ["missing", "wrong", "unconfigured", "foreign_origin"])
 def test_all_private_http_routes_reject_before_using_dependencies(
-    method, path, credential, monkeypatch, dashboard_auth, _private_http_client, _unconfigured_http_client,
+    method, path, credential, monkeypatch, dashboard_auth, _private_http_client,
 ):
     headers = {}
     expected = 401
-    if credential == "unconfigured":
+    if credential == "wrong":
+        headers = {"Authorization": "Bearer not-the-credential"}
+    elif credential == "unconfigured":
         monkeypatch.delenv("KZA_DASHBOARD_TOKEN")
         expected = 503
-        client, _dashboard, services = _unconfigured_http_client
-    else:
-        if credential == "wrong":
-            headers = {"Authorization": "Bearer not-the-credential"}
-        elif credential == "foreign_origin":
-            headers = {**dashboard_auth, "Origin": "https://other.invalid"}
-            expected = 403
-        client, _dashboard, services = _private_http_client
+    elif credential == "foreign_origin":
+        headers = {**dashboard_auth, "Origin": "https://other.invalid"}
+        expected = 403
+    client, _dashboard, services = _private_http_client
     client.cookies.clear()
     services.reset_mock()
     response = client.request(method, path, json={} if method not in {"GET", "HEAD"} else None, headers=headers)
@@ -130,18 +106,16 @@ def test_all_private_http_routes_reject_before_using_dependencies(
 @pytest.mark.parametrize("path", ["/ws", "/ws/live", "/ws/evaluation"])
 @pytest.mark.parametrize("credential", ["missing", "wrong", "unconfigured", "foreign_origin"])
 def test_private_websockets_reject_before_subscribing(
-    path, credential, monkeypatch, dashboard_auth, _private_ws_client, _unconfigured_ws_client,
+    path, credential, monkeypatch, dashboard_auth, _private_ws_client,
 ):
     headers = {}
-    if credential == "unconfigured":
+    if credential == "wrong":
+        headers = {"Authorization": "Bearer not-the-credential"}
+    elif credential == "unconfigured":
         monkeypatch.delenv("KZA_DASHBOARD_TOKEN")
-        client, dashboard, bus = _unconfigured_ws_client
-    else:
-        if credential == "wrong":
-            headers = {"Authorization": "Bearer not-the-credential"}
-        elif credential == "foreign_origin":
-            headers = {**dashboard_auth, "Origin": "null"}
-        client, dashboard, bus = _private_ws_client
+    elif credential == "foreign_origin":
+        headers = {**dashboard_auth, "Origin": "null"}
+    client, dashboard, bus = _private_ws_client
     client.cookies.clear()
     with pytest.raises(WebSocketDisconnect) as error:
         with client.websocket_connect(path, headers=headers):
