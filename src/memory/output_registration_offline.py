@@ -19,6 +19,7 @@ from src.memory import output_registration as base
 from src.memory.output_publisher import GenericOutputPublisher, GrammarSpec, publisher_grammar, publisher_plan
 
 if TYPE_CHECKING:
+    from src.core.runtime_admission import RuntimeAdmission
     from src.memory.output_registration_v2 import OutputRegistrationV2
 
 
@@ -26,8 +27,18 @@ _CAPTURE_OWNERS = {
     "test_voice_command": capture.ManualVoiceCommandAuthorityClient,
     "zone_setup": capture.ZoneSetupAuthorityClient,
     "diagnose_wakeword": capture.WakewordDiagnosticsAuthorityClient,
+    "train_wakeword": capture.WakewordTrainingAuthorityClient,
+    "train_nexa": capture.WakewordTrainingAuthorityClient,
+    "train_che_bo": capture.WakewordTrainingAuthorityClient,
+    "acoustic_calibration": capture.CalibrationAuthorityClient,
 }
 _CAPTURE_BOUNDARIES = dict.fromkeys(_CAPTURE_OWNERS, "delegated_target") | {"enroll_voice": "recorded_input"}
+_CAPTURE_MODES = {
+    "train_wakeword": ("record", "test"),
+    "train_nexa": ("record-positive", "record-negative", "test"),
+    "train_che_bo": ("record-positive", "record-negative", "test"),
+    "acoustic_calibration": ("capture",),
+}
 _EXPORT_BOUNDARIES = {
     "inventory_home": "private_export",
     "sync_ha_to_chroma": "ha_index",
@@ -37,6 +48,7 @@ _EXPORT_BOUNDARIES = {
     "train_wakeword": "wakeword_training",
     "train_custom_wake": "wakeword_training",
 }
+_EXPORT_MODES = {"train_wakeword": ("train",)}
 _ROW_LAYOUTS = {
     "training": ("file_tree", ("habit_dataset_generator", "nightly_trainer")),
     "offline_copies": ("readonly_input", ("admission_controller", "copy_reservation", "derivation", "snapshot")),
@@ -46,7 +58,7 @@ _ROW_LAYOUTS = {
 }
 
 
-def _journal_plan(producer: str, tool: str = "none") -> dict:
+def _journal_plan(producer: str, tool: str = "none", mode: str | None = None) -> dict:
     kind, roles = _ROW_LAYOUTS[producer]
     if producer == "training":
         details = {"prior_outputs": "retain", "sdk_work": "external_private", "child_work": "owner_scoped"}
@@ -58,6 +70,8 @@ def _journal_plan(producer: str, tool: str = "none") -> dict:
         details = {"tool": tool, "boundary": "none" if tool == "none" else _EXPORT_BOUNDARIES[tool]}
     else:
         details = {"code": "release_manifest", "forensics": "private_manifest"}
+    if mode is not None:
+        details["mode"] = mode
     return publisher_plan(kind, roles=roles, **details)
 
 
@@ -66,6 +80,7 @@ def _offline_grammar(producer: str) -> GrammarSpec:
         "offline_capture_tools": _CAPTURE_BOUNDARIES,
         "offline_exports_training": _EXPORT_BOUNDARIES,
     }.get(producer, {})
+    tool_modes = _CAPTURE_MODES if producer == "offline_capture_tools" else _EXPORT_MODES
     observations = {
         "training": {"instance_reported", "blocked_instance"},
         "offline_copies": {"catalog_observed", "catalog_unresolved"},
@@ -79,7 +94,13 @@ def _offline_grammar(producer: str) -> GrammarSpec:
         if tool_labels:
             base._require(header.get("selected", {}).get(producer) is (tool != "none"),
                           "offline_tool_selection")
-        base._require(plan == _journal_plan(producer, tool), "offline_plan")
+        mode = plan.get("mode")
+        allowed_modes = tool_modes.get(tool)
+        if allowed_modes is not None:
+            base._require(type(mode) is str and mode in allowed_modes, "offline_tool_mode")
+        else:
+            base._require("mode" not in plan, "offline_tool_mode")
+        base._require(plan == _journal_plan(producer, tool, mode), "offline_plan")
 
     def aggregate_shape(aggregate: dict, plan: dict, header: dict) -> None:
         if producer == "offline_capture_tools":
@@ -101,7 +122,6 @@ OFFLINE_GRAMMAR_SPECS = tuple(_offline_grammar(producer) for producer in _ROW_LA
 class TrainingOutputs:
     """Private constructor paths and historical training obligations."""
 
-    state_root: Path = field(repr=False)
     nightly_data: Path = field(repr=False)
     nightly_output: Path = field(repr=False)
     habits_data: Path = field(repr=False)
@@ -117,13 +137,15 @@ class OfflineCommand:
     For capture, paths are the declared input/output locators and device indices
     describe the selected native devices. For exports, pass effective output
     paths from the original CLI. Spotify uses the protected destination label
-    regardless of its local locator.
+    regardless of its local locator. For the wakeword training CLIs, pass the
+    parsed subcommand as mode. Calibration capture uses mode "capture" by default.
     """
 
     tool: str = field(repr=False)
     paths: tuple[str | Path, ...] = field(default=(), repr=False)
     device_indices: tuple[int, ...] = field(default=(), repr=False)
     authority_origin: str | None = field(default=None, repr=False)
+    mode: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,12 +163,14 @@ class OfflineFamilyPlan:
 
     producer: str
     selected: bool
+    state_root: Path = field(repr=False)
     scope: TrainingOutputs | Path | OfflineCommand | ForensicDeclarations | None = field(repr=False)
 
     def journal_plan(self) -> dict:
         """Return fixed labels suitable for a V4 event."""
-        tool = self.scope.tool if isinstance(self.scope, OfflineCommand) else "none"
-        return _journal_plan(self.producer, tool)
+        if isinstance(self.scope, OfflineCommand):
+            return _journal_plan(self.producer, self.scope.tool, self.scope.mode)
+        return _journal_plan(self.producer)
 
 
 def _path(root: Path, value: str | Path) -> Path:
@@ -156,27 +180,43 @@ def _path(root: Path, value: str | Path) -> Path:
     return Path(os.path.normpath(root / value))
 
 
-def _command(root: Path, command: OfflineCommand | None, *, live: bool) -> OfflineCommand | None:
+def _absolute_root(value: str | Path, error: str) -> Path:
+    if not isinstance(value, (str, Path)) or "\0" in os.fspath(value):
+        raise ValueError(error)
+    path = Path(value)
+    if not path.is_absolute() or str(path) != os.path.normpath(path):
+        raise ValueError(error)
+    return path
+
+
+def _command(root: Path, command: OfflineCommand | None, *, capture_family: bool) -> OfflineCommand | None:
     if command is None:
         return None
-    boundaries = _CAPTURE_BOUNDARIES if live else _EXPORT_BOUNDARIES
+    boundaries = _CAPTURE_BOUNDARIES if capture_family else _EXPORT_BOUNDARIES
     if type(command.tool) is not str or command.tool not in boundaries:
         raise ValueError("offline_tool")
+    modes = _CAPTURE_MODES if capture_family else _EXPORT_MODES
+    allowed_modes = modes.get(command.tool, (None,))
+    mode = command.mode
+    if command.tool == "acoustic_calibration" and mode is None:
+        mode = "capture"
+    if (mode is not None and type(mode) is not str) or mode not in allowed_modes:
+        raise ValueError("offline_tool_mode")
     if command.tool == "setup_spotify":
         return OfflineCommand(command.tool)
     paths = tuple(_path(root, value) for value in command.paths)
     origin = command.authority_origin
     devices = command.device_indices
-    if live and command.tool in _CAPTURE_OWNERS:
+    if capture_family and command.tool in _CAPTURE_OWNERS:
         origin = capture._origin(origin)
-        if (type(devices) is not tuple or not devices
+        if (type(devices) is not tuple or not devices and command.tool != "train_wakeword"
                 or any(type(device) is not int or device < 0 for device in devices)):
             raise ValueError("offline_capture_device")
-        if command.tool != "zone_setup" and len(devices) != 1:
+        if command.tool != "zone_setup" and len(devices) > 1:
             raise ValueError("offline_capture_device")
     elif origin is not None or devices or not paths:
         raise ValueError("offline_cli_scope")
-    return OfflineCommand(command.tool, paths, devices, origin)
+    return OfflineCommand(command.tool, paths, devices, origin, mode)
 
 
 def resolve_offline_family_plans(
@@ -195,13 +235,10 @@ def resolve_offline_family_plans(
     The nightly switch constructs both runtime owners today. All historical
     paths survive either selection. SDK locations remain external obligations.
     """
-    root = Path(state_root)
-    if not root.is_absolute():
-        raise ValueError("offline_state_root")
+    root = _absolute_root(state_root, "offline_state_root")
     training = config.get("training", {})
     nightly = training.get("nightly", {})
     training_scope = TrainingOutputs(
-        root,
         _path(root, nightly.get("data_dir", "./data/nightly_training")),
         _path(root, nightly.get("output_dir", TRAINING_OUTPUT_NIGHTLY)),
         _path(root, training.get("habits", {}).get("data_dir", "./data/habit_training")),
@@ -212,42 +249,65 @@ def resolve_offline_family_plans(
             _path(root, nightly.get("whisper_finetune", {}).get("output_dir", TRAINING_OUTPUT_WHISPER)),
         ),
     )
-    admission = None if admission_root is None else _path(root, admission_root)
-    capture_scope = _command(root, capture_command, live=True)
-    export_scope = _command(root, export_command, live=False)
+    admission = None if admission_root is None else _absolute_root(admission_root, "offline_admission_root")
+    capture_scope = _command(root, capture_command, capture_family=True)
+    export_scope = _command(root, export_command, capture_family=False)
     forensic_scope = ForensicDeclarations(
         tuple(_path(root, path) for path in forensic.code_manifests),
         tuple(_path(root, path) for path in forensic.private_checkpoints),
         tuple(_path(root, path) for path in forensic.private_observations),
     )
     return {
-        "training": OfflineFamilyPlan("training", bool(nightly.get("enabled", False)), training_scope),
-        "offline_copies": OfflineFamilyPlan("offline_copies", admission is not None, admission),
-        "offline_capture_tools": OfflineFamilyPlan("offline_capture_tools", capture_scope is not None, capture_scope),
-        "offline_exports_training": OfflineFamilyPlan("offline_exports_training", export_scope is not None, export_scope),
+        "training": OfflineFamilyPlan("training", bool(nightly.get("enabled", False)), root, training_scope),
+        "offline_copies": OfflineFamilyPlan("offline_copies", admission is not None, root, admission),
+        "offline_capture_tools": OfflineFamilyPlan("offline_capture_tools", capture_scope is not None, root, capture_scope),
+        "offline_exports_training": OfflineFamilyPlan("offline_exports_training", export_scope is not None, root, export_scope),
         "build_forensic_outputs": OfflineFamilyPlan("build_forensic_outputs",
             bool(forensic_scope.code_manifests or forensic_scope.private_checkpoints
-                 or forensic_scope.private_observations), forensic_scope),
+                 or forensic_scope.private_observations), root, forensic_scope),
     }
+
+
+@dataclass(frozen=True, slots=True)
+class _AdmissionScope:
+    state_root: Path = field(repr=False)
+    admission_root: Path = field(repr=False)
+    binding_id: str = field(repr=False)
+    run_id: str = field(repr=False)
+
+
+def _admission_scope(admission: RuntimeAdmission) -> _AdmissionScope:
+    state = _absolute_root(admission.state_root, "offline_state_root")
+    root = _absolute_root(admission._ticket["admission_root"], "offline_admission_root")
+    binding_id = admission._ticket["binding_id"]
+    base._require(_hex(binding_id, 64), "offline_binding_id")
+    return _AdmissionScope(state, root, binding_id, admission.run_id)
+
+
+def _require_copy_scope(plan: OfflineFamilyPlan, scope: _AdmissionScope) -> None:
+    base._require(plan.state_root == scope.state_root, "offline_state_root")
+    base._require(plan.producer == "offline_copies" and plan.scope == scope.admission_root,
+                  "offline_admission_root")
 
 
 @dataclass(frozen=True, eq=False, slots=True)
 class OfflineCopyInventory:
     """Private admission metadata, including failed and unregistered obligations."""
 
-    root: Path = field(repr=False)
+    _scope: _AdmissionScope = field(repr=False)
+    _active_binding_observed: bool = field(repr=False)
     slots: tuple[Path, ...] = field(repr=False)
     bindings: tuple[dict, ...] = field(repr=False)
     copies: tuple[dict, ...] = field(repr=False)
     unknown_entries: tuple[Path, ...] = field(repr=False)
 
 
-def _directory_entries(path: Path) -> tuple[Path, ...]:
+def _directory_entries(path: Path, *, optional: bool = False) -> tuple[Path, ...]:
     try:
         return tuple(sorted(_stage()._safe_directory(path).iterdir()))
     except FileNotFoundError:
-        if path.resolve(strict=False) != path:
-            raise ValueError("offline_directory") from None
+        if not optional or path.resolve(strict=False) != path:
+            raise
         return ()
 
 
@@ -257,20 +317,23 @@ def _regular(path: Path) -> None:
         raise ValueError("offline_manifest_file")
 
 
-def _read_copy_inventory(root: Path) -> OfflineCopyInventory:
+def _read_copy_inventory(scope: _AdmissionScope) -> OfflineCopyInventory:
     from src.memory.copy_catalog import _recover_record
 
     stage = _stage()
+    root = scope.admission_root
+    active_binding_observed = False
     sections = ("slots", "admission/bindings", "admission/copies")
     slots, bindings, copies, unknown = [], [], [], []
     try:
         stage._safe_directory(root)
     except (OSError, ValueError):
-        return OfflineCopyInventory(root, (), (), (), (root,))
+        return OfflineCopyInventory(scope, False, (), (), (), (root,))
     for section, collected in zip(sections, (slots, bindings, copies), strict=True):
         directory = root / section
         try:
-            entries = _directory_entries(directory)
+            # Slots and bindings precede admission. The copy catalog is lazy.
+            entries = _directory_entries(directory, optional=section == "admission/copies")
         except (OSError, ValueError):
             unknown.append(directory)
             continue
@@ -284,7 +347,10 @@ def _read_copy_inventory(root: Path) -> OfflineCopyInventory:
                     if entry.suffix != ".json":
                         raise ValueError("offline_binding_file")
                     _regular(entry)
-                    collected.append(stage.read_binding(root, entry.stem))
+                    binding = stage.read_binding(root, entry.stem)
+                    collected.append(binding)
+                    if entry.stem == scope.binding_id and binding["state_root"] == str(scope.state_root):
+                        active_binding_observed = True
                 else:
                     if not _hex(entry.name, 32):
                         raise ValueError("offline_copy_entry")
@@ -294,18 +360,20 @@ def _read_copy_inventory(root: Path) -> OfflineCopyInventory:
                     collected.append(_recover_record(entry))
             except (OSError, ValueError, TypeError, KeyError, RecursionError):
                 unknown.append(entry)
-    return OfflineCopyInventory(root, tuple(slots), tuple(bindings), tuple(copies), tuple(unknown))
+    return OfflineCopyInventory(scope, active_binding_observed, tuple(slots), tuple(bindings),
+                                tuple(copies), tuple(unknown))
 
 
-async def observe_offline_copies(plan: OfflineFamilyPlan) -> OfflineCopyInventory:
+async def observe_offline_copies(plan: OfflineFamilyPlan, coordinator: OutputRegistrationV2) -> OfflineCopyInventory:
     """Read slots, original bindings and copy chains without taking a lease.
 
     Copy records retain declared destination, snapshot references and extents.
-    This scan also retains unresolved entries. It never visits copy payload roots.
+    This scan retains unresolved entries and checks the active ticket binding.
+    It never visits copy payload roots.
     """
-    if plan.producer != "offline_copies" or not isinstance(plan.scope, Path):
-        raise ValueError("offline_copy_plan")
-    return await asyncio.to_thread(_read_copy_inventory, plan.scope)
+    scope = _admission_scope(coordinator.admission)
+    _require_copy_scope(plan, scope)
+    return await asyncio.to_thread(_read_copy_inventory, scope)
 
 
 @dataclass(frozen=True, eq=False, slots=True)
@@ -420,7 +488,7 @@ async def observe_build_forensic_outputs(plan: OfflineFamilyPlan) -> BuildForens
     return await asyncio.to_thread(_read_forensic_inventory, plan.scope)
 
 
-def _matches_training(scope: TrainingOutputs, owners: tuple[object, ...]) -> bool:
+def _matches_training(scope: TrainingOutputs, state_root: Path, owners: tuple[object, ...]) -> bool:
     from src.training.habit_dataset_generator import HabitDatasetGenerator
     from src.training.nightly_trainer import NightlyTrainer
 
@@ -429,43 +497,47 @@ def _matches_training(scope: TrainingOutputs, owners: tuple[object, ...]) -> boo
     trainer, habits = owners
     return (type(trainer) is NightlyTrainer and type(habits) is HabitDatasetGenerator
             and trainer.habit_generator is habits
-            and _path(scope.state_root, trainer.config.data_dir) == scope.nightly_data
-            and _path(scope.state_root, trainer.config.output_dir) == scope.nightly_output
-            and _path(scope.state_root, trainer.config.conversations_dir) == scope.conversations
-            and _path(scope.state_root, habits.data_dir) == scope.habits_data)
+            and _path(state_root, trainer.config.data_dir) == scope.nightly_data
+            and _path(state_root, trainer.config.output_dir) == scope.nightly_output
+            and _path(state_root, trainer.config.conversations_dir) == scope.conversations
+            and _path(state_root, habits.data_dir) == scope.habits_data)
 
 
-def _matches_plan(plan: OfflineFamilyPlan, owners: tuple[object, ...]) -> bool:
+def _matches_plan(plan: OfflineFamilyPlan, owners: tuple[object, ...], admitted: _AdmissionScope) -> bool:
     if not owners:
         return False
     scope = plan.scope
     if isinstance(scope, TrainingOutputs):
-        return _matches_training(scope, owners)
+        return _matches_training(scope, plan.state_root, owners)
+    if plan.producer == "offline_capture_tools" and isinstance(scope, OfflineCommand) and scope.tool in _CAPTURE_OWNERS:
+        return (len({id(owner) for owner in owners}) == len(owners)
+                and all(type(owner) is _CAPTURE_OWNERS[scope.tool] and owner._origin == scope.authority_origin
+                        for owner in owners))
     if len(owners) != 1:
         return False
     owner, = owners
     if plan.producer == "offline_copies":
-        return type(owner) is OfflineCopyInventory and owner.root == scope
+        return type(owner) is OfflineCopyInventory and owner._scope == admitted
     if plan.producer == "build_forensic_outputs":
         return type(owner) is BuildForensicInventory and owner.declarations is scope
     if plan.producer == "offline_exports_training":
         return owner is scope
     if plan.producer == "offline_capture_tools" and isinstance(scope, OfflineCommand):
-        if scope.tool == "enroll_voice":
-            from src.core.resource_retirement import ResourceSession
+        from src.core.resource_retirement import ResourceSession
 
-            return type(owner) is ResourceSession and owner.error_prefix == "enrollment"
-        return type(owner) is _CAPTURE_OWNERS[scope.tool] and owner._origin == scope.authority_origin
+        return scope.tool == "enroll_voice" and type(owner) is ResourceSession and owner.error_prefix == "enrollment"
     return False
 
 
-def _observation(plan: OfflineFamilyPlan, owner: object) -> str:
+def _observation(plan: OfflineFamilyPlan, owners: tuple[object, ...]) -> str:
+    owner = owners[0]
     match plan.producer:
         case "training":
             return "blocked_instance" if owner.training_blocked else "instance_reported"
         case "offline_copies":
             bound_states = {binding["state_root"] for binding in owner.bindings}
-            if (owner.unknown_entries or any(str(slot / "state") not in bound_states for slot in owner.slots)
+            if (not owner._active_binding_observed or owner.unknown_entries
+                    or any(str(slot / "state") not in bound_states for slot in owner.slots)
                     or any(record["preparation"] != "prepared" or not record.get("finished")
                            for record in owner.copies)):
                 return "catalog_unresolved"
@@ -474,7 +546,8 @@ def _observation(plan: OfflineFamilyPlan, owner: object) -> str:
             if plan.scope.tool == "enroll_voice":
                 base._require(owner._sealed, "offline_enrollment_unsettled")
                 return "resource_session_reported"
-            base._require(owner._retired and owner._closed and not owner._uncertain, "offline_capture_unsettled")
+            base._require(all(client._retired and client._closed and not client._uncertain for client in owners),
+                          "offline_capture_unsettled")
             return "native_retired"
         case "offline_exports_training":
             return "invocation_reported"
@@ -493,9 +566,11 @@ class OfflineFamilyPublishers:
 
     def __init__(
         self, plans: Mapping[str, OfflineFamilyPlan], publishers: Mapping[str, GenericOutputPublisher],
+        admitted: _AdmissionScope,
     ) -> None:
         self._plans = dict(plans)
         self._publishers = dict(publishers)
+        self._admitted = admitted
         self._owners: dict[str, tuple[object, ...]] = {}
         self._opening: set[str] = set()
         self._drained: set[str] = set()
@@ -506,13 +581,13 @@ class OfflineFamilyPublishers:
         attached = self._owners.get(producer)
         return (attached is not None and len(attached) == len(owners)
                 and all(first is second for first, second in zip(attached, owners, strict=True))
-                and _matches_plan(self._plans[producer], owners))
+                and _matches_plan(self._plans[producer], owners, self._admitted))
 
     async def attach(self, producer: str, *owners: object) -> None:
         """Associate the constructed owners after intent and before native work."""
         async with self._lock:
             base._require(producer in self._publishers and producer not in self._owners, "offline_attach")
-            base._require(_matches_plan(self._plans[producer], owners), "offline_owner")
+            base._require(_matches_plan(self._plans[producer], owners, self._admitted), "offline_owner")
             await self._publishers[producer].attached()
             self._owners[producer] = owners
 
@@ -529,7 +604,7 @@ class OfflineFamilyPublishers:
         async with self._lock:
             base._require(self.matches_attached_owners(producer, *owners) and producer in self._opening
                           and producer not in self._drained, "offline_drained")
-            observation = _observation(self._plans[producer], owners[0])
+            observation = _observation(self._plans[producer], owners)
             await self._publishers[producer].drained({"observation": observation})
             self._drained.add(producer)
 
@@ -540,15 +615,20 @@ async def bind_offline_family_publishers(
     """Publish intents/disabled rows before construction by the I1 caller.
 
     Construct the coordinator with OFFLINE_GRAMMAR_SPECS and use each resolved
-    plan's selected flag in publisher_selection. The original owner controls
+    plan's selected flag in publisher_selection. Pass the actual admission root
+    to the resolver. The original owner controls
     authorization, native opening and resource retirement. The returned binder
     checks the identities on subsequent lifecycle observations.
     """
+    plans = dict(plans)
     base._require(plans.keys() == _ROW_LAYOUTS.keys(), "offline_rows")
+    admitted = _admission_scope(coordinator.admission)
+    _require_copy_scope(plans["offline_copies"], admitted)
     shapes = {}
     header = {"selected": coordinator._selected}
     for spec in OFFLINE_GRAMMAR_SPECS:
         plan = plans[spec.producer]
+        base._require(plan.state_root == admitted.state_root, "offline_state_root")
         base._require(plan.producer == spec.producer and coordinator._selected.get(spec.producer) is plan.selected
                       and coordinator._writer_grammars.get(spec.producer) == spec.grammar_id,
                       "offline_selection")
@@ -557,10 +637,11 @@ async def bind_offline_family_publishers(
                            "plan": shape}, None, plan.selected, header)
         shapes[spec.producer] = shape
 
+    await coordinator._run(coordinator.admission.revalidate)
     publishers = {}
     for producer, shape in shapes.items():
         if plans[producer].selected:
             publishers[producer] = await coordinator.publisher_intent(producer, shape)
         else:
             await coordinator.publisher_disabled(producer, shape)
-    return OfflineFamilyPublishers(plans, publishers)
+    return OfflineFamilyPublishers(plans, publishers, admitted)

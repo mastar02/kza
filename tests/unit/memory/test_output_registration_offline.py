@@ -1,12 +1,19 @@
 """Offline family projections through real V4 journals and read-only catalogs."""
 
 from contextlib import AsyncExitStack
+from dataclasses import replace
+import os
 from uuid import uuid4
 
 import pytest
 
 from scripts import stage_runtime as stage
-from src.audio.native_capture_authority import ManualVoiceCommandAuthorityClient, ZoneSetupAuthorityClient
+from src.audio.native_capture_authority import (
+    CalibrationAuthorityClient,
+    ManualVoiceCommandAuthorityClient,
+    WakewordTrainingAuthorityClient,
+    ZoneSetupAuthorityClient,
+)
 from src.core import runtime_admission
 from src.core.resource_retirement import ResourceSession
 from src.memory import copy_catalog
@@ -25,6 +32,7 @@ from src.memory.output_registration_offline import (
 from src.training.habit_dataset_generator import HabitDatasetGenerator
 from src.training.nightly_trainer import NightlyConfig, NightlyTrainer
 from tests.unit.audio.test_native_capture_authority_client import NativeProtocol
+from tests.unit.core.test_live_artifact_integrity import _payload, artifact_admission  # noqa: F401
 from tests.unit.memory.test_copy_catalog import record  # noqa: F401
 from tests.unit.memory.test_copy_observation import observation, published  # noqa: F401
 from tests.unit.memory.test_delegated_output_inventory import (  # noqa: F401
@@ -38,7 +46,8 @@ from tests.unit.memory.test_output_publisher_seam import (  # noqa: F401
     local_grammar_table,
 )
 from tests.unit.memory.test_output_registration_v4 import _record
-from tests.unit.tools.test_calibration_authority_client import ADMIN_TOKEN, CAPABILITY, URL
+from tests.unit.tools.test_calibration_authority_client import ADMIN_TOKEN, CAPABILITY, URL, Protocol
+from tests.unit.tools.test_stage_runtime_admission import admission_archive, admission_root  # noqa: F401
 
 _SPECS = {spec.producer: spec for spec in OFFLINE_GRAMMAR_SPECS}
 
@@ -69,23 +78,30 @@ def manifests(tmp_path):
 
 @pytest.fixture
 def make_writer(monkeypatch, decoder, local_grammar_table):  # noqa: F811
-    """Synthetic admission witness with the same real journal writer as the seam."""
+    """Use the seam's synthetic admission for journal/decoder tests."""
     async def make(stack, config, plans):
         ticket = dict(decoder["header"], admission_root=str(decoder["root"]), run_id=uuid4().hex, generation=3)
         admission = runtime_admission.RuntimeAdmission(ticket, {"state_root": str(decoder["state"])},
             str(decoder["state"] / "privacy.db"), runtime_admission._config_digest(config))
         monkeypatch.setattr(runtime_admission, "_verified_admissions", {admission: False})
         monkeypatch.setattr(admission, "_revalidate_live", lambda snapshot=None: None)
-        admission.install_on(stack)
-        writer = v2.OutputRegistrationV2(admission, config, key=base._KEY, journal_format=v4.V4_FORMAT,
-            extra_grammars=OFFLINE_GRAMMAR_SPECS,
-            publisher_selection={producer: plan.selected for producer, plan in plans.items()})
-        admission._output_registration = writer
-        stack.push_async_callback(writer._disk.aclose)
+        monkeypatch.setattr(admission, "revalidate", lambda: None)
+        (decoder["root"] / "slots").mkdir(exist_ok=True)
+        writer = _coordinator(stack, admission, config, plans)
         await writer._run(writer._start)
         return writer
 
     return make
+
+
+def _coordinator(stack, admission, config, plans):
+    admission.install_on(stack)
+    writer = v2.OutputRegistrationV2(admission, config, key=base._KEY, journal_format=v4.V4_FORMAT,
+        extra_grammars=OFFLINE_GRAMMAR_SPECS,
+        publisher_selection={producer: plan.selected for producer, plan in plans.items()})
+    admission._output_registration = writer
+    stack.push_async_callback(writer._disk.aclose)
+    return writer
 
 
 def _close_receipt(world, writer):
@@ -98,13 +114,13 @@ def _close_receipt(world, writer):
 
 @pytest.mark.parametrize("enabled", (True, False))
 async def test_offline_family_journal_composition_and_inventory(make_writer, decoder, manifests, enabled):  # noqa: F811
-    state, admission = decoder["state"], decoder["root"]
+    state, root = decoder["state"], decoder["root"]
     config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}, "training": {
         "nightly": {"enabled": enabled, "data_dir": "data/PRIVATE_DATASETS"}, "habits": {"enabled": False}}}
     dataset = state / "data/PRIVATE_DATASETS/preexisting.jsonl"
     dataset.parent.mkdir(parents=True)
     dataset.write_bytes(b"PRIVATE_DATASET_CONTENT")
-    plans = resolve_offline_family_plans(config, state, admission_root=admission,
+    plans = resolve_offline_family_plans(config, state, admission_root=root,
         capture_command=OfflineCommand("enroll_voice", paths=("data/recorded", "data/profile")),
         export_command=OfflineCommand("setup_spotify", paths=("PRIVATE_OAUTH_LOCATOR",)),
         forensic=manifests)
@@ -122,7 +138,7 @@ async def test_offline_family_journal_composition_and_inventory(make_writer, dec
         publishers = await bind_offline_family_publishers(writer, plans)
         enrollment = ResourceSession(error_prefix="enrollment")
         forensic = await observe_build_forensic_outputs(plans["build_forensic_outputs"])
-        copies = await observe_offline_copies(plans["offline_copies"])
+        copies = await observe_offline_copies(plans["offline_copies"], writer)
         owners = {
             "offline_copies": (copies,),
             "offline_capture_tools": (enrollment,),
@@ -169,6 +185,8 @@ async def test_offline_family_journal_composition_and_inventory(make_writer, dec
             assert states[producer]["phase"] == ("drained" if plan.selected else "disabled")
             assert states[producer]["plan"] == plan.journal_plan()
         assert states["offline_exports_training"]["plan"]["boundary"] == "protected_oauth"
+        assert states["offline_copies"]["aggregate"] == {"observation": "catalog_observed"}
+        assert not (root / "admission/copies").exists()
         assert forensic.code_roots == (manifests.code_manifests[0].parent,)
         assert forensic.private_roots == (manifests.private_checkpoints[0].parent,)
         assert set(binding["state_root"] for binding in copies.bindings) == {str(state), str(decoder["old"])}
@@ -188,8 +206,8 @@ async def test_offline_family_journal_composition_and_inventory(make_writer, dec
         assert dataset.read_bytes() == b"PRIVATE_DATASET_CONTENT"
 
 
-async def test_readonly_copies_keep_failed_derivations_and_legacy_slots(tmp_path, record):  # noqa: F811
-    root = tmp_path.resolve()
+async def test_readonly_copies_keep_failed_derivations_and_legacy_slots(make_writer, decoder, record):  # noqa: F811
+    root = decoder["root"]
     legacy = root / "slots/old"
     legacy.mkdir(parents=True)
     record["kind"] = "derived_state"
@@ -207,8 +225,10 @@ async def test_readonly_copies_keep_failed_derivations_and_legacy_slots(tmp_path
     malformed.symlink_to(root, target_is_directory=True)
     before = {path.name: path.read_bytes() for path in chain.iterdir()}
 
-    plans = resolve_offline_family_plans({}, root, admission_root=root)
-    inventory = await observe_offline_copies(plans["offline_copies"])
+    plans = resolve_offline_family_plans({}, decoder["state"], admission_root=root)
+    async with AsyncExitStack() as stack:
+        writer = await make_writer(stack, {}, plans)
+        inventory = await observe_offline_copies(plans["offline_copies"], writer)
     assert inventory.slots == (legacy,)
     observed, = inventory.copies
     assert {key: observed[key] for key in failed} == failed
@@ -216,8 +236,104 @@ async def test_readonly_copies_keep_failed_derivations_and_legacy_slots(tmp_path
     assert inventory.unknown_entries == (malformed,)
     assert "PRIVATE_EXTENT" not in repr(inventory)
     assert not (root / ".admission.lock").exists() and not (root / "unread-snapshot").exists()
-    assert not (root / "copy").exists()
+    assert not os.path.exists(record["destination"])
     assert {path.name: path.read_bytes() for path in chain.iterdir()} == before
+
+
+@pytest.mark.parametrize("missing", ("active_binding", "invalid_active_binding", "bindings", "slots", "catalog_metadata"))
+async def test_copies_missing_admission_evidence_are_never_observed(make_writer, decoder, missing):  # noqa: F811
+    root = decoder["root"]
+    config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
+    plans = resolve_offline_family_plans(config, decoder["state"], admission_root=root)
+    producer = "offline_copies"
+    async with AsyncExitStack() as stack:
+        writer = await make_writer(stack, config, plans)
+        publishers = await bind_offline_family_publishers(writer, plans)
+        bindings = root / "admission/bindings"
+        active = bindings / f"{writer.admission._ticket['binding_id']}.json"
+        historical = bindings / f"{decoder['source_id']}.json"
+        if missing == "active_binding":
+            active.unlink()
+            assert historical.is_file()
+        if missing == "invalid_active_binding":
+            active.write_bytes(historical.read_bytes())
+        if missing in {"bindings", "catalog_metadata"}:
+            for file in bindings.iterdir():
+                file.unlink()
+            bindings.rmdir()
+        if missing in {"slots", "catalog_metadata"}:
+            (root / "slots").rmdir()
+        copies = await observe_offline_copies(plans[producer], writer)
+        await publishers.attach(producer, copies)
+        await publishers.opening(producer, copies)
+        await publishers.drained(producer, copies)
+        assert v4.chain(writer._directory)[2][producer]["aggregate"] == {"observation": "catalog_unresolved"}
+
+
+@pytest.mark.parametrize("field", ("state_root", "admission_root"))
+@pytest.mark.parametrize("value", ("", ".", "relative"))
+def test_resolver_rejects_relative_or_empty_roots(tmp_path, field, value):
+    roots = {"state_root": tmp_path, "admission_root": tmp_path}
+    roots[field] = value
+    with pytest.raises(ValueError, match=f"offline_{field}"):
+        resolve_offline_family_plans({}, **roots)
+
+
+@pytest.mark.parametrize("field", ("state_root", "admission_root", "omitted_admission", "mixed_plans"))
+async def test_bind_rejects_a_different_admission_scope(make_writer, decoder, tmp_path, field):  # noqa: F811
+    foreign = tmp_path.resolve() / "foreign"
+    foreign.mkdir()
+    config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
+    state, root = decoder["state"], decoder["root"]
+    selected_state = foreign if field == "state_root" else state
+    selected_root = {"admission_root": foreign, "omitted_admission": None}.get(field, root)
+    plans = resolve_offline_family_plans(config, selected_state, admission_root=selected_root)
+    if field == "mixed_plans":
+        plans["training"] = replace(plans["training"], state_root=foreign)
+    async with AsyncExitStack() as stack:
+        writer = await make_writer(stack, config, plans)
+        before = _journal_bytes(writer)
+        error = "state_root" if field in {"state_root", "mixed_plans"} else "admission_root"
+        with pytest.raises(RuntimeError, match=f"offline_{error}"):
+            await bind_offline_family_publishers(writer, plans)
+        if field != "mixed_plans":
+            with pytest.raises(RuntimeError, match=f"offline_{error}"):
+                await observe_offline_copies(plans["offline_copies"], writer)
+        assert _journal_bytes(writer) == before
+
+
+@pytest.mark.parametrize("corrupt_artifact", (False, True))
+async def test_bind_revalidates_real_admission_snapshot_before_any_events(
+    artifact_admission, local_grammar_table, monkeypatch, corrupt_artifact,  # noqa: F811
+):
+    """Use the built-artifact validator with the repository's unit provenance seam."""
+    root, state, _, inspected, binding, ticket = artifact_admission
+    ticket["run_id"] = uuid4().hex
+    config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
+    plans = resolve_offline_family_plans(config, state, admission_root=root)
+    admission = runtime_admission.RuntimeAdmission(ticket, binding, str(state / "data/privacy.db"),
+        runtime_admission._config_digest(config))
+    monkeypatch.setattr(runtime_admission, "_stage", lambda: stage)
+    monkeypatch.setattr(runtime_admission, "_verified_admissions", {admission: False})
+    async with AsyncExitStack() as stack:
+        writer = _coordinator(stack, admission, config, plans)
+        await writer._run(admission.revalidate)
+        await writer._run(writer._start)
+        initial = admission._validation_snapshot
+        before = _journal_bytes(writer)
+        if corrupt_artifact:
+            path = _payload(inspected)
+            original, info = path.read_bytes(), path.stat()
+            path.write_bytes(bytes([original[0] ^ 1]) + original[1:])
+            os.utime(path, ns=(info.st_atime_ns, info.st_mtime_ns))
+            with pytest.raises(ValueError, match="manifest|artifact"):
+                await bind_offline_family_publishers(writer, plans)
+            assert _journal_bytes(writer) == before
+            assert admission._validation_snapshot is initial
+        else:
+            await bind_offline_family_publishers(writer, plans)
+            assert admission._validation_snapshot is not initial
+            assert v4.chain(writer._directory)[2]["offline_copies"]["phase"] == "intent"
 
 
 @pytest.mark.parametrize("tool", ("test_voice_command", "zone_setup", "diagnose_wakeword"))
@@ -246,15 +362,126 @@ def test_unknown_cli_tool_is_refused(tmp_path, keyword):
                                   "train_assistant", "train_wakeword", "train_custom_wake"))
 def test_export_tools_keep_effective_destination_out_of_journal(tmp_path, tool):
     plan = resolve_offline_family_plans({}, tmp_path,
-        export_command=OfflineCommand(tool, ("PRIVATE_ROOT",)))["offline_exports_training"]
+        export_command=OfflineCommand(tool, ("PRIVATE_ROOT",),
+                                      mode="train" if tool == "train_wakeword" else None))["offline_exports_training"]
     assert plan.scope.paths == (tmp_path / "PRIVATE_ROOT",)
     assert plan.journal_plan()["tool"] == tool
     assert "PRIVATE_ROOT" not in str(plan.journal_plan()) + repr(plan)
 
 
+async def test_wakeword_train_on_existing_files_can_publish_as_export(make_writer, decoder):  # noqa: F811
+    config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
+    plans = resolve_offline_family_plans(config, decoder["state"], admission_root=decoder["root"],
+        export_command=OfflineCommand("train_wakeword", ("data/model_output",), mode="train"))
+    producer = "offline_exports_training"
+    command = plans[producer].scope
+    async with AsyncExitStack() as stack:
+        writer = await make_writer(stack, config, plans)
+        publishers = await bind_offline_family_publishers(writer, plans)
+        await publishers.attach(producer, command)
+        await publishers.opening(producer, command)
+        await publishers.drained(producer, command)
+        states = v4.chain(writer._directory)[2]
+        assert states["offline_capture_tools"]["phase"] == "disabled"
+        assert states[producer]["plan"]["mode"] == "train"
+        assert states[producer]["aggregate"] == {"observation": "invocation_reported"}
+
+
+@pytest.mark.parametrize(("tool", "mode"), (
+    ("train_wakeword", "record"),
+    ("train_wakeword", "test"),
+    ("train_wakeword", None),
+    ("train_wakeword", "unknown"),
+    ("train_nexa", "record-positive"),
+    ("train_nexa", "train"),
+    ("train_che_bo", "record-negative"),
+    ("train_che_bo", "test"),
+    ("acoustic_calibration", "capture"),
+    ("acoustic_calibration", "analyze"),
+))
+def test_export_resolver_and_grammar_reject_live_or_unregistered_modes(tmp_path, tool, mode):
+    command = OfflineCommand(tool, ("PRIVATE_ROOT",), mode=mode)
+    with pytest.raises(ValueError, match="offline_tool"):
+        resolve_offline_family_plans({}, tmp_path, export_command=command)
+    producer = "offline_exports_training"
+    spec = _SPECS[producer]
+    valid = resolve_offline_family_plans({}, tmp_path,
+        export_command=OfflineCommand("train_wakeword", ("out",), mode="train"))[producer].journal_plan()
+    valid["tool"] = tool
+    if mode is None:
+        del valid["mode"]
+    else:
+        valid["mode"] = mode
+    with pytest.raises(RuntimeError, match="offline_tool"):
+        spec.decode_event({"kind": spec.event_kind, "phase": "intent", "plan": valid},
+                          None, True, {"selected": {producer: True}})
+
+
+@pytest.mark.parametrize(("tool", "mode"), (
+    ("train_wakeword", "record"),
+    ("train_wakeword", "test"),
+    ("train_nexa", "record-positive"),
+    ("train_nexa", "record-negative"),
+    ("train_nexa", "test"),
+    ("train_che_bo", "record-positive"),
+    ("train_che_bo", "record-negative"),
+    ("train_che_bo", "test"),
+    ("acoustic_calibration", "capture"),
+))
+async def test_training_and_calibration_capture_wait_for_original_clients(
+    make_writer, decoder, tool, mode,  # noqa: F811
+):
+    config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
+    state, root = decoder["state"], decoder["root"]
+    command = OfflineCommand(tool, device_indices=() if tool == "train_wakeword" else (0,),
+                             authority_origin=URL, mode=mode)
+    with pytest.raises(ValueError, match="calibration_authority_origin_invalid"):
+        resolve_offline_family_plans(config, state, capture_command=replace(command, authority_origin=None))
+
+    plans = resolve_offline_family_plans(config, state, admission_root=root, capture_command=command)
+    producer = "offline_capture_tools"
+    if tool == "acoustic_calibration":
+        authority_type, protocol = CalibrationAuthorityClient, Protocol()
+    else:
+        authority_type, protocol = WakewordTrainingAuthorityClient, NativeProtocol()
+    authority = authority_type(URL, ADMIN_TOKEN, session_factory=protocol.session)
+    other = authority_type(URL, ADMIN_TOKEN)
+    owner_set = (authority,)
+    # A record invocation can run distinct positive and negative capture sessions.
+    if tool == "train_wakeword" and mode == "record":
+        owner_set += (authority_type(URL, ADMIN_TOKEN, session_factory=protocol.session),)
+    async with AsyncExitStack() as stack:
+        writer = await make_writer(stack, config, plans)
+        publishers = await bind_offline_family_publishers(writer, plans)
+        for client in (*owner_set, other):
+            stack.callback(client.close)
+        await publishers.attach(producer, *owner_set)
+        await publishers.opening(producer, *owner_set)
+        assert not publishers.matches_attached_owners(producer, other, *owner_set[1:])
+        for client in owner_set:
+            client.register()
+        for client in owner_set[:-1]:
+            client.retire()
+            client.close()
+        before = _journal_bytes(writer)
+        with pytest.raises(RuntimeError, match="offline_capture_unsettled"):
+            await publishers.drained(producer, *owner_set)
+        owner_set[-1].retire()
+        with pytest.raises(RuntimeError, match="offline_capture_unsettled"):
+            await publishers.drained(producer, *owner_set)
+        assert _journal_bytes(writer) == before
+        owner_set[-1].close()
+        await publishers.drained(producer, *owner_set)
+        _, _, states, _ = v4.chain(writer._directory)
+        assert states[producer]["plan"]["mode"] == mode
+        assert states[producer]["aggregate"] == {"observation": "native_retired"}
+        assert states["offline_exports_training"]["phase"] == "disabled"
+        assert all(b"invocation_reported" not in raw for raw in _journal_bytes(writer).values())
+
+
 async def test_native_capture_requires_the_original_observed_retirement(make_writer, decoder):  # noqa: F811
     config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
-    plans = resolve_offline_family_plans(config, decoder["state"], capture_command=OfflineCommand(
+    plans = resolve_offline_family_plans(config, decoder["state"], admission_root=decoder["root"], capture_command=OfflineCommand(
         "test_voice_command", device_indices=(0,), authority_origin="http://localhost"))
     producer = "offline_capture_tools"
     async with AsyncExitStack() as stack:
@@ -281,7 +508,7 @@ async def test_native_capture_requires_the_original_observed_retirement(make_wri
 
 async def test_native_capture_records_observed_retirement_without_credentials(make_writer, decoder):  # noqa: F811
     config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
-    plans = resolve_offline_family_plans(config, decoder["state"], capture_command=OfflineCommand(
+    plans = resolve_offline_family_plans(config, decoder["state"], admission_root=decoder["root"], capture_command=OfflineCommand(
         "test_voice_command", device_indices=(0,), authority_origin=URL))
     protocol = NativeProtocol()
     protocol.namespace = "manual-voice-command"
