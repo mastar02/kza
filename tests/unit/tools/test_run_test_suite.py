@@ -310,8 +310,13 @@ def test_run_tier2_lanes_waits_for_a_and_b_and_runs_exact_compiled_nodeids(tmp_p
         assert "-n" not in recorded_cmds[lane_b_step]
 
     cmd_c = recorded_cmds["lane-c-compiled-solo"]
-    assert all("::" in target for target in cmd_c if target.startswith("tests/integration/"))
-    assert len([t for t in cmd_c if t.startswith("tests/integration/")]) == len(runner.COMPILED_SOLO_TESTS)
+    p6_restore = "tests/integration/test_p6_bytecode_restore_reproducibility.py"
+    assert p6_restore in cmd_c
+    cmd_a = recorded_cmds["lane-a-core"]
+    assert any(option == "--deselect" and target == p6_restore for option, target in zip(cmd_a, cmd_a[1:]))
+    compiled_targets = [target for target in cmd_c if target.startswith("tests/integration/")]
+    assert compiled_targets == list(runner.COMPILED_SOLO_TESTS)
+    assert len(compiled_targets) == 9
     n_idx = cmd_c.index("-n")
     assert cmd_c[n_idx + 1] == "2"
     assert "--dist=load" in cmd_c

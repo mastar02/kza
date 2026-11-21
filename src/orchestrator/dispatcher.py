@@ -2091,7 +2091,13 @@ class RequestDispatcher:
             t0 = time.perf_counter()
             if target_entity_id is not None:
                 if not target_entity_id.startswith("light.") or service_filter not in ("turn_on", "turn_off"):
-                    return DispatchResult(path=path, priority=Priority.HIGH, success=False, intent="invalid_target")
+                    return DispatchResult(
+                        path=path,
+                        priority=Priority.HIGH,
+                        success=False,
+                        response="No pude completar esa acción.",
+                        intent="invalid_target",
+                    )
                 command = {
                     "entity_id": target_entity_id, "domain": "light", "service": service_filter,
                     "description": "la luz", "data": query_slots or {},

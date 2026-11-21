@@ -495,7 +495,7 @@ def validate_t070(data: Document) -> None:
         "personal_lists_local",
     )
     flags(results["I03"], "I03", "read_only")
-    flags(results["I04"], "I04", "selected_controls_verified")
+    flags(results["I04"], "I04", "selected_controls_verified", "idempotency_passed")
     flags(results["I05"], "I05", "technical_only")
     require(results["I05"].get("video_accessed") is False, "I05 video forbidden")
 
@@ -1633,7 +1633,8 @@ def validate_t075(data: Document) -> None:
         row = mapping(row, "T075 integration")
         require(
             canonical_sha256(row.get("selection")) == canonical_sha256(selection[key])
-            and row.get("source_kind") == "real",
+            and row.get("source_kind") == "real"
+            and row.get("simulated") is False,
             f"T075 {key}: real Q16 source required",
         )
         flags(row, f"T075 {key}", "operated")
