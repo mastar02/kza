@@ -1,7 +1,11 @@
 """Availability accounting and acceptance against a real sealed candidate."""
 
+from contextlib import suppress
 import json
+import os
 from pathlib import Path
+import shutil
+import signal
 import socket
 import stat
 import subprocess
@@ -50,11 +54,13 @@ def test_protected_accounts(dev_user, monkeypatch):
 def test_thermouy_queries_all_four_units_and_reports_interference(monkeypatch):
     monkeypatch.setattr(soak.sys, "platform", "linux")
     queried = []
+    service_state = "active"
 
     def show(cmd, **kwargs):
         queried.extend(cmd)
+        states = ("active", service_state, "inactive", "inactive")
         blocks = [
-            f"Id={name}\nLoadState=loaded\nActiveState={'active' if index < 2 else 'inactive'}\n"
+            f"Id={name}\nLoadState=loaded\nActiveState={states[index]}\n"
             "SubState=waiting\nNextElapseUSecRealtime=Sat 2026-11-21 05:00:00 UTC"
             for index, name in enumerate(soak.THERMOUY)
         ]
@@ -68,6 +74,14 @@ def test_thermouy_queries_all_four_units_and_reports_interference(monkeypatch):
     assert result["scheduled_timers"] == ["thermouy-tier2-nightly.timer"]
     assert result["interference"] is True
 
+    for service_state in ("failed", "inactive", "deactivating"):
+        result = soak.thermouy_status()
+        assert result["interference"] is False
+        assert result["units"][soak.THERMOUY[0]]["SubState"] == "waiting"
+        assert result["units"][soak.THERMOUY[0]]["NextElapseUSecRealtime"].endswith("UTC")
+    for service_state in ("activating", "reloading"):
+        assert soak.thermouy_status()["interference"] is True
+
     monkeypatch.setattr(soak.subprocess, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", ""))
     assert soak.thermouy_status()["interference"] is None
 
@@ -75,10 +89,12 @@ def test_thermouy_queries_all_four_units_and_reports_interference(monkeypatch):
 def test_render_user_unit(tmp_path):
     unit = soak.render_unit(tmp_path / "sealed artifact", 259200, faults_first=True)
     assert "CPUAffinity=24-47\nNice=5\nMemoryHigh=24G\nNoNewPrivileges=yes\n" in unit
-    assert "IPAddressDeny=any\nIPAddressAllow=localhost" in unit
-    assert "PrivateDevices=yes" in unit
-    assert "PrivateNetwork=yes" in unit
+    assert "UMask=0077\n" in unit
+    assert "Environment=CUDA_VISIBLE_DEVICES=\n" in unit
+    for directive in ("PrivateDevices", "PrivateNetwork", "IPAddressDeny", "IPAddressAllow", "InaccessiblePaths"):
+        assert f"{directive}=" not in unit
     assert unit.index("inject-faults") < unit.index("run-soak")
+    assert unit.count("--require-user-unit") == 2
     assert "--duration-s 259200" in unit
     assert "ExecStopPost=" in unit and "summarize" in unit
     assert "kza-voice.service" not in unit
@@ -87,10 +103,32 @@ def test_render_user_unit(tmp_path):
 def test_socket_policy_accepts_loopback_and_refuses_external_connections():
     with socket.socket(socket.AF_INET) as sock:
         soak.offline_io("socket.bind", (sock, ("127.0.0.1", 0)))
-        with pytest.raises(PermissionError, match="external network"):
-            soak.offline_io("socket.connect", (sock, ("192.0.2.1", 443)))
+        for host in ("192.0.2.1", "127.0.0.2"):
+            with pytest.raises(PermissionError, match="external network"):
+                soak.offline_io("socket.connect", (sock, (host, 443)))
     with pytest.raises(PermissionError, match="DNS"):
         soak.offline_io("socket.getaddrinfo", ("example.invalid", 443))
+
+
+def test_filesystem_audit_rejects_protected_operations(tmp_path):
+    redirect = tmp_path / "redirect"
+    redirect.symlink_to("/opt/homeassistant", target_is_directory=True)
+    for event, args in (
+        ("open", ("/home/kza/file", "r", 0)),
+        ("open", (redirect / "file", "r", 0)),
+        ("os.listdir", ("/opt/homeassistant",)),
+        ("os.rename", (tmp_path / "local", "/opt/homeassistant/file", -1, -1)),
+        ("sqlite3.connect", ("file:/opt/%68omeassistant/store.db?mode=ro",)),
+    ):
+        with pytest.raises(PermissionError, match="protected path"):
+            soak.offline_io(event, args)
+    soak.offline_io("open", (tmp_path / "local", "r", 0))
+
+
+def test_process_isolation_requires_the_audit_hook(dev_user, monkeypatch):
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+    with pytest.raises(ValueError, match="offline audit hook did not deny"):
+        soak.process_isolation()
 
 
 def sample(second, **kwargs):
@@ -149,11 +187,44 @@ def candidate(tmp_path_factory):
     return archive, review, commit
 
 
-def cli(*args):
-    result = subprocess.run([sys.executable, "-B", "-m", "tools.p6_local_soak", *map(str, args)],
-                            capture_output=True, text=True, cwd=ROOT, timeout=280, check=False)
-    assert result.returncode == 0, result.stdout + result.stderr
+def run_group(command, *, timeout):
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, cwd=ROOT, start_new_session=True) as proc:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            with suppress(ProcessLookupError):
+                os.killpg(proc.pid, signal.SIGKILL)
+            proc.communicate()
+            raise
+    return subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
+
+
+def cli(*args, expected=0):
+    result = run_group([sys.executable, "-B", "-m", "tools.p6_local_soak", *map(str, args)], timeout=280)
+    assert result.returncode == expected, result.stdout + result.stderr
     return result.stdout
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="requires a Linux systemd user manager")
+def test_real_systemd_user_unit_smoke():
+    if not shutil.which("systemd-run") or not shutil.which("systemctl"):
+        pytest.skip("systemd-run --user is unavailable")
+    manager = run_group(["systemctl", "--user", "show", "--property=Version", "--value"], timeout=10)
+    if manager.returncode != 0:
+        pytest.skip("systemd user manager is unavailable")
+    code = (
+        "import os, sys; from tools.p6_local_soak import linux_isolation, offline_io; "
+        "assert os.umask(0o077) == 0o077; sys.addaudithook(offline_io); print(linux_isolation())"
+    )
+    probe = run_group(
+        ["systemd-run", "--user", "--wait", "--pipe", "--collect", "--property=RuntimeMaxSec=15s",
+         f"--working-directory={ROOT}", *(f"--property={prop}" for prop in soak.UNIT_PROPERTIES),
+         sys.executable, "-B", "-c", code],
+        timeout=25,
+    )
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+    assert "'memory_high_bytes': 25769803776" in probe.stdout
 
 
 def test_rejects_archive_with_wrong_hash(candidate, tmp_path):
@@ -178,6 +249,10 @@ def test_real_candidate_short_soak_and_faults(candidate, tmp_path):
 
     cli("run-soak", "--state", state, "--duration-s", 3)
     cli("inject-faults", "--state", state)
+    journal = (state / "faults.jsonl").read_bytes()
+    cli("run-soak", "--state", state, "--require-user-unit", expected=1)
+    cli("inject-faults", "--state", state, "--require-user-unit", expected=1)
+    assert (state / "faults.jsonl").read_bytes() == journal
     cli("summarize", "--state", state)
     result = json.loads((state / "soak-summary.json").read_text())
     assert result["stability"]["window_seconds"] == 3
@@ -187,6 +262,12 @@ def test_real_candidate_short_soak_and_faults(candidate, tmp_path):
     assert result["faults_outside_stability"] is True
     assert result["total"]["window_seconds"] >= 3 + result["fault_phase"]["window_seconds"]
     assert result["total"]["series"]["kza"]["planned_unavailable_seconds"] > 0
+    assert set(result["isolation_at_start"]) == {"run-soak", "inject-faults"}
+    for start in result["isolation_at_start"].values():
+        assert start["kind"] == "process_at_start"
+        assert start["isolation"]["offline_audit_hook"] is True
+        assert start["isolation"]["cuda_visible_devices"] == ""
+        assert "interfaces" in start["isolation"] and "dev_dri_visible" in start["isolation"]
     evidence = result["fault_evidence"]
     assert evidence["ha_ws"]["recovery_s"] <= 60, evidence
     assert evidence["microphone"]["recovery_s"] <= 180, evidence

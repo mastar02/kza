@@ -8,6 +8,7 @@ import asyncio
 from contextlib import AsyncExitStack, asynccontextmanager, closing, contextmanager
 from datetime import UTC, datetime
 import fcntl
+from functools import cache
 import getpass
 import hashlib
 import ipaddress
@@ -28,17 +29,30 @@ import subprocess
 import sys
 import tempfile
 import time
+from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
 LOG = logging.getLogger(__name__)
 ROOMS = ("living", "hall", "escritorio", "cocina")
 SERIES = ("kza", *ROOMS)
 WINDOW_S = 259200
+UNIT_CPUS = frozenset(range(24, 48))
+UNIT_MEMORY_HIGH = 24 * 1024**3
+UNIT_PROPERTIES = (
+    "CPUAffinity=24-47", "Nice=5", "MemoryHigh=24G", "NoNewPrivileges=yes", "UMask=0077",
+    "Environment=CUDA_VISIBLE_DEVICES=",
+)
 THERMOUY = tuple(
     f"thermouy-{job}.{kind}"
     for job in ("tier2-nightly", "ci-prune") for kind in ("timer", "service")
 )
 PROTECTED = (Path("/home/kza"), Path("/opt/homeassistant"))
+LOOPBACK = (ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1"))
+AUDITED_PATHS = {
+    "open", "os.chdir", "os.chflags", "os.chmod", "os.chown", "os.getxattr", "os.listdir",
+    "os.listxattr", "os.mkdir", "os.remove", "os.removexattr", "os.rmdir", "os.scandir",
+    "os.setxattr", "os.truncate", "os.utime", "os.walk", "os.fwalk", "shutil.rmtree",
+}
 FAULTS = {"ha_ws": ("kza",), "microphone": ("cocina",), "global_mute_restore": SERIES}
 HA_TOKEN = "t061-synthetic-ha"
 CAPTURE = "/api/capture/control"
@@ -52,26 +66,55 @@ def guard(*paths: Path) -> None:
         pwd.getpwuid(uid).pw_name == "kza" for uid in uids
     ):
         raise ValueError("T061 requires an unprivileged development account other than UID 1000")
-    forbidden = (*PROTECTED, *(root.resolve() for root in PROTECTED))
     for path in (Path.cwd(), *paths):
-        for form in (Path(os.path.abspath(path.expanduser())), path.expanduser().resolve()):
-            if any(form.is_relative_to(root) for root in forbidden):
-                raise ValueError(f"protected path: {form}")
+        try:
+            guard_path(path)
+        except PermissionError as error:
+            raise ValueError(str(error)) from error
+
+
+@cache
+def protected_paths(roots: tuple[Path, ...]) -> tuple[Path, ...]:
+    return (*roots, *(root.resolve() for root in roots))
+
+
+def guard_path(path: str | bytes | os.PathLike) -> None:
+    """Reject lexical and symlink-resolved paths into production."""
+    candidate = Path(os.fsdecode(path)).expanduser()
+    forbidden = protected_paths(PROTECTED)
+    for absolute in (lambda: Path(os.path.abspath(candidate)), candidate.resolve):
+        checked = absolute()
+        if any(checked.is_relative_to(root) for root in forbidden):
+            raise PermissionError(f"protected path: {checked}")
+
+
+def memory_high() -> int | str:
+    """Read the VM pressure limit from this process's unified cgroup."""
+    for line in Path("/proc/self/cgroup").read_text().splitlines():
+        if line.startswith("0::"):
+            group = Path(line[3:]).relative_to("/")
+            limit = Path("/sys/fs/cgroup") / group / "memory.high"
+            value = limit.read_text().strip()
+            return value if value == "max" else int(value)
+    raise ValueError("T061 requires a cgroup v2 memory controller")
 
 
 def linux_isolation() -> dict:
-    """Verify the kernel separation used for an evidentiary run."""
-    if sys.platform != "linux" or pwd.getpwuid(os.getuid()).pw_name != "yo":
-        raise ValueError("the 72-hour stability window must run on Linux as yo")
-    interfaces = [name for _, name in socket.if_nameindex()]
-    cpus = sorted(os.sched_getaffinity(0))
-    nice = os.getpriority(os.PRIO_PROCESS, 0)
+    """Verify the effective resource and privilege settings of the Linux user unit."""
+    if sys.platform != "linux":
+        raise ValueError("the T061 user unit requires Linux")
+    cpus = os.sched_getaffinity(0)
+    nice = os.nice(0)
     proc_status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
-    no_new_privileges = proc_status["NoNewPrivs"].strip() == "1"
-    if (interfaces != ["lo"] or cpus != list(range(24, 48)) or nice != 5 or not no_new_privileges
-            or any(Path("/dev").glob("nvidia*")) or Path("/dev/dri").exists() or Path("/dev/kfd").exists()):
-        raise ValueError("launch the 72-hour window in the isolated T061 user unit")
-    return {"interfaces": interfaces, "cpus": cpus, "nice": nice, "no_new_privileges": no_new_privileges}
+    no_new_privileges = proc_status.get("NoNewPrivs", "").strip() == "1"
+    high = memory_high()
+    if not (cpus and cpus <= UNIT_CPUS and nice >= 5 and no_new_privileges and high == UNIT_MEMORY_HIGH):
+        raise ValueError(
+            f"T061 user unit controls mismatch: cpus={sorted(cpus)}, nice={nice}, "
+            f"NoNewPrivs={int(no_new_privileges)}, memory.high={high}"
+        )
+    return {**process_isolation(), "cpus": sorted(cpus), "nice": nice,
+            "no_new_privileges": no_new_privileges, "memory_high_bytes": high}
 
 
 def thermouy_status() -> dict:
@@ -83,6 +126,7 @@ def thermouy_status() -> dict:
             ["systemctl", "--user", "show", *THERMOUY,
              "--property=Id,LoadState,ActiveState,SubState,NextElapseUSecRealtime"],
             capture_output=True, text=True, timeout=10, check=False,
+            env=dict(os.environ, LC_ALL="C", TZ="UTC"),
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         return {"status": "unavailable", "interference": None, "error": type(error).__name__}
@@ -92,7 +136,7 @@ def thermouy_status() -> dict:
         if properties.get("Id") in THERMOUY:
             units[properties["Id"]] = properties
     running = [name for name, props in units.items() if name.endswith(".service")
-               and props.get("ActiveState") not in {"inactive", "failed", None}]
+               and props.get("ActiveState") in {"active", "activating", "reloading"}]
     scheduled = [name for name, props in units.items() if name.endswith(".timer")
                  and props.get("ActiveState") == "active"]
     known = set(units) == set(THERMOUY) and all(
@@ -100,7 +144,7 @@ def thermouy_status() -> dict:
         for unit in units.values()
     )
     return {"status": "observed" if known else "incomplete", "returncode": result.returncode,
-            "units": units, "interference": bool(running or scheduled) if known else None,
+            "units": units, "interference": True if running else False if known else None,
             "running_services": running, "scheduled_timers": scheduled}
 
 
@@ -252,36 +296,68 @@ def render_unit(state: Path, duration: int, faults_first: bool) -> str:
     lines = [
         "[Unit]", f"Description=KZA P6 local soak {state.name}", "", "[Service]",
         "Type=oneshot", f"WorkingDirectory={systemd_quote(Path(__file__).resolve().parents[1])}",
-        "UMask=0077", "CPUAffinity=24-47", "Nice=5", "MemoryHigh=24G", "NoNewPrivileges=yes",
-        "PrivateDevices=yes", "PrivateNetwork=yes", "IPAddressDeny=any", "IPAddressAllow=localhost",
-        f"InaccessiblePaths={' '.join(f'-{path}' for path in PROTECTED)}", "TimeoutStartSec=infinity",
-        "TimeoutStopSec=30s", "Restart=no",
+        *UNIT_PROPERTIES, "TimeoutStartSec=infinity", "TimeoutStopSec=30s", "Restart=no",
     ]
     for command in commands:
         args = f" --duration-s {duration}" if command == "run-soak" else ""
-        lines.append(f"ExecStart={prefix} {command} --state {systemd_quote(state)}{args}")
+        lines.append(f"ExecStart={prefix} {command} --state {systemd_quote(state)} --require-user-unit{args}")
     lines.append(f"ExecStopPost={prefix} summarize --state {systemd_quote(state)}")
     return "\n".join(lines) + "\n"
 
 
 def offline_io(event: str, args: tuple) -> None:
-    """Reject Python network operations outside numeric loopback and child processes."""
+    """Reject audited Python access to external network, production files and child processes."""
     if event in {"socket.connect", "socket.bind", "socket.sendto", "socket.getaddrinfo",
-                 "socket.gethostbyname", "socket.gethostbyaddr", "socket.getnameinfo"}:
-        if event in {"socket.connect", "socket.bind", "socket.sendto"}:
+                 "socket.gethostbyname", "socket.gethostbyaddr", "socket.getnameinfo", "socket.sendmsg"}:
+        if event in {"socket.connect", "socket.bind", "socket.sendto", "socket.sendmsg"}:
             if args[0].family not in {socket.AF_INET, socket.AF_INET6}:
                 raise PermissionError("only loopback TCP/IP is allowed")
+            if event == "socket.sendmsg" and args[1] is None:
+                return  # The destination of a connected socket was checked at connect().
             host = args[1][0]
         else:
             host = args[0][0] if event == "socket.getnameinfo" else args[0]
         try:
-            if ipaddress.ip_address(host).is_loopback:
+            if ipaddress.ip_address(host) in LOOPBACK:
                 return
         except ValueError:
             pass
         raise PermissionError("external network and DNS are disabled")
     if event in {"subprocess.Popen", "os.system", "os.exec", "os.posix_spawn", "os.fork", "os.forkpty"}:
         raise PermissionError("child processes are disabled in the candidate")
+    if event == "sqlite3.connect" and (path := os.fsdecode(args[0])).startswith("file:"):
+        guard_path(unquote(urlsplit(path).path))
+    elif event in AUDITED_PATHS or event in {"sqlite3.connect", "ctypes.dlopen"}:
+        if isinstance(args[0], (str, bytes, os.PathLike)):
+            guard_path(args[0])
+    elif event in {"os.rename", "os.link", "os.symlink", "shutil.copyfile", "shutil.copymode", "shutil.copystat"}:
+        guard_path(args[0])
+        guard_path(args[1])
+
+
+def process_isolation(*paths: Path) -> dict:
+    """Attest that the worker's audit policies are active before loading the candidate."""
+    guard(*paths)
+    gpu_selector = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if gpu_selector != "":
+        raise ValueError("CUDA_VISIBLE_DEVICES must be empty")
+    with socket.socket(socket.AF_INET) as probe:
+        checks = [("socket.connect", (probe, ("192.0.2.1", 443)), "external network")]
+        checks.extend(
+            ("open", (str(root / ".t061-audit-probe"), "r", os.O_RDONLY), "protected path")
+            for root in PROTECTED
+        )
+        for event, args, expected in checks:
+            try:
+                sys.audit(event, *args)
+            except PermissionError as error:
+                if expected in str(error):
+                    continue
+                raise
+            raise ValueError(f"T061 offline audit hook did not deny {event}")
+    return {"offline_audit_hook": True, "cuda_visible_devices": gpu_selector,
+            "interfaces": sorted(name for _, name in socket.if_nameindex()),
+            "dev_dri_visible": Path("/dev/dri").exists()}
 
 
 def worker_env(state: Path) -> dict[str, str]:
@@ -299,9 +375,10 @@ def isolate_process(state: Path, runtime: Path) -> None:
     """Load the app only from read-only bytecode and enforce offline I/O."""
     if any(name == "src" or name.startswith("src.") for name in sys.modules):
         raise RuntimeError("candidate modules already imported")
-    sys.path.insert(0, str(runtime))
-    os.chdir(state / "work")
+    guard(state / "work", runtime)
     sys.addaudithook(offline_io)
+    os.chdir(state / "work")
+    sys.path.insert(0, str(runtime))
 
 
 class HomeSimulator:
@@ -1088,8 +1165,14 @@ def summarize(state: Path, receipt: dict) -> dict:
                    and all(plan["start"] <= starts[name] <= ends[name]["at"] <= fault_end for name in starts))
     journal_hashes = {name: digest(state / name) for name in ("samples.jsonl", "faults.jsonl")
                       if (state / name).exists()}
+    isolation = {event["phase"]: event for event in events
+                 if event["kind"] in {"linux_at_start", "process_at_start"} and "phase" in event}
+    stability_isolation = isolation.get("run-soak")
+    linux_start = (stability_isolation if stability_isolation and stability_isolation["kind"] == "linux_at_start"
+                   else next((event for event in events if event["kind"] == "linux_at_start"
+                              and "phase" not in event), None))
     result = {"candidate": receipt, "stability": block, "fault_phase": fault_counts, "total": total,
-              "journal_sha256": journal_hashes, "linux_at_start": windows.get("linux_at_start"),
+              "journal_sha256": journal_hashes, "linux_at_start": linux_start, "isolation_at_start": isolation,
               "faults_outside_stability": windows_disjoint, "planned_faults": plan,
               "fault_evidence": outcomes, "duplicate_sample_seconds": {
                   phase: sorted(seconds) for phase, seconds in duplicate_seconds.items()
@@ -1100,10 +1183,13 @@ def summarize(state: Path, receipt: dict) -> dict:
     return result
 
 
-async def worker(state: Path, mode: str, duration: int) -> None:
+async def worker(state: Path, mode: str, duration: int, require_unit: bool, thermouy: dict) -> None:
     """Execute one campaign phase with signal-driven cleanup in the isolated process."""
     runtime = state / "runtime"
     isolate_process(state, runtime)
+    isolation = linux_isolation() if require_unit else process_isolation(state, runtime, Path.cwd())
+    journal(state, "linux_at_start" if require_unit else "process_at_start",
+            phase=mode, isolation=isolation, thermouy=thermouy)
     loop = asyncio.get_running_loop()
     task = asyncio.current_task()
     loop.add_signal_handler(signal.SIGTERM, task.cancel)
@@ -1140,6 +1226,8 @@ def main(argv: list[str] | None = None) -> int:
         command.add_argument("--state", type=Path, required=True)
         if name in ("run-soak", "render-systemd-unit"):
             command.add_argument("--duration-s", type=positive_seconds, default=WINDOW_S)
+        if name in ("run-soak", "inject-faults"):
+            command.add_argument("--require-user-unit", action="store_true")
         if name == "render-systemd-unit":
             command.add_argument("--faults-first", action="store_true")
     args = parser.parse_args(argv)
@@ -1162,10 +1250,6 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             verify_runtime(state, receipt)
             duration = getattr(args, "duration_s", WINDOW_S)
-            if args.command == "run-soak" and duration >= WINDOW_S:
-                isolation = linux_isolation()
-                status = thermouy_status()
-                journal(state, "linux_at_start", isolation=isolation, thermouy=status)
             events = list(records(state / "faults.jsonl"))
             if any(event["kind"] == ("window" if args.command == "run-soak" else "fault_plan") for event in events):
                 raise ValueError("this phase already started and cannot replace its evidence")
@@ -1173,13 +1257,21 @@ def main(argv: list[str] | None = None) -> int:
                 raise ValueError("fault injection cannot overlap the fixed stability window")
             script = Path(__file__).resolve()
             guard(script, Path(sys.executable))
+            require_unit = args.require_user_unit or (args.command == "run-soak" and duration >= WINDOW_S)
+            if require_unit and (
+                sys.platform != "linux" or pwd.getpwuid(os.getuid()).pw_name != "yo"
+                or os.environ.get("CUDA_VISIBLE_DEVICES") != ""
+            ):
+                raise ValueError("launch the T061 user unit on Linux as yo with CUDA_VISIBLE_DEVICES empty")
             entry = (
-                "import asyncio, runpy, sys; from pathlib import Path; "
+                "import asyncio, json, runpy, sys; from pathlib import Path; "
                 "scope = runpy.run_path(sys.argv[1]); "
-                "asyncio.run(scope['worker'](Path(sys.argv[2]), sys.argv[3], int(sys.argv[4])))"
+                "asyncio.run(scope['worker'](Path(sys.argv[2]), sys.argv[3], int(sys.argv[4]), "
+                "sys.argv[5] == '1', json.loads(sys.argv[6])))"
             )
             result = subprocess.run(
-                [sys.executable, "-I", "-B", "-c", entry, str(script), str(state), args.command, str(duration)],
+                [sys.executable, "-I", "-B", "-c", entry, str(script), str(state), args.command, str(duration),
+                 "1" if require_unit else "0", json.dumps(thermouy_status())],
                 env=worker_env(state), pass_fds=(lock,), check=False,
             )
             if args.command == "inject-faults" and result.returncode == 0:

@@ -4,7 +4,7 @@ T061 mide 72 horas continuas de disponibilidad del candidato sellado y ejecuta u
 
 ## Preparar el candidato bajo `yo` en `kza-yo`
 
-Usar el venv CPython 3.13 del checkout de desarrollo y el `runtime.tar.gz` que se va a evaluar. Generar y verificar `release-review.json` con `tools.release_manifest_review` y el lock de runtime según el guion de release. Reservar el bloque continuo en coordinación con ThermoUY. El preflight consulta los timers y servicios de Tier 2 nocturno y prune con `systemctl --user show`. El resultado distingue actividad, activaciones previstas y estado incompleto. Revisar la interferencia y las horas de ejecución antes de iniciar.
+Usar el venv CPython 3.13 del checkout de desarrollo y el `runtime.tar.gz` que se va a evaluar. Generar y verificar `release-review.json` con `tools.release_manifest_review` y el lock de runtime según el guion de release. Reservar el bloque continuo en coordinación con ThermoUY. El preflight consulta los timers y servicios de Tier 2 nocturno y prune con `systemctl --user show`. Un servicio en `active`, `activating` o `reloading` marca interferencia. Revisar el estado y la próxima activación UTC de cada timer antes de iniciar.
 
 ```bash
 PY="$PWD/.venv/bin/python"
@@ -20,7 +20,21 @@ El preflight compara SHA-256, inventario y ABI con el manifiesto revisado. Extra
 
 ## Ejecutar la unidad de usuario
 
-Con el estado preparado, generar `kza-soak-ID.service` y verificar que el servidor admite el aislamiento de namespaces en unidades de usuario. El bloque exige red privada con sólo loopback, CPU 24–47, nice 5 y `NoNewPrivileges`. La unidad configura `MemoryHigh=24G`, dispositivos privados y rutas de producción inaccesibles. [Referencia de systemd](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html)
+La unidad de usuario de `yo` configura afinidad a CPU 24–47, nice 5, `MemoryHigh=24G`, `NoNewPrivileges=yes`, `UMask=0077` y `CUDA_VISIBLE_DEVICES=`. Cada fase ejecutada por la unidad comprueba que la afinidad efectiva esté dentro de ese conjunto de CPU, que nice sea al menos 5 y que `NoNewPrivs` y `memory.high` estén aplicados en el proceso y su cgroup v2.
+
+El worker verifica el selector CUDA vacío y el hook de auditoría de Python antes de importar el candidato. El hook limita las conexiones auditadas a `127.0.0.1` y `::1` y rechaza operaciones de archivos auditadas sobre rutas de producción, incluidas las que resuelven por enlace. El arnés usa modelos sintéticos en CPU y registra las interfaces de red y la visibilidad de `/dev/dri` como observaciones del host. Esta política opera en espacio de usuario y su cobertura corresponde a las operaciones auditadas por Python. En Ubuntu 24.04 funciona con la configuración de AppArmor existente.
+
+Ejecutar primero una unidad transitoria de humo con las mismas propiedades. Debe terminar con código 0 y mostrar el límite `memory_high_bytes=25769803776` en el resultado del chequeo.
+
+```bash
+systemd-run --user --wait --pipe --collect --working-directory="$PWD" \
+  --property=CPUAffinity=24-47 --property=Nice=5 --property=MemoryHigh=24G \
+  --property=NoNewPrivileges=yes --property=UMask=0077 \
+  --property=Environment=CUDA_VISIBLE_DEVICES= \
+  "$PY" -B -c 'import os, sys; from tools.p6_local_soak import linux_isolation, offline_io; assert os.umask(0o077) == 0o077; sys.addaudithook(offline_io); print(linux_isolation())'
+```
+
+Con el humo aprobado, generar e iniciar `kza-soak-ID.service`.
 
 ```bash
 UNIT="kza-soak-${COMMIT:0:12}.service"
@@ -34,7 +48,7 @@ systemctl --user status "$UNIT"
 journalctl --user -u "$UNIT"
 ```
 
-La unidad ejecuta `run-soak` seguido de `inject-faults`. Es posible invertir el orden al generar la unidad con `--faults-first`. `ExecStopPost` llama a `summarize` al completar o interrumpir la unidad. El resultado del comando acredita la generación del resumen. El resultado de T061 está en los booleanos del JSON. Cada fase puede abrirse una sola vez por expediente. Para repetir, conservar el expediente anterior y preparar otro con `preflight --state-root`.
+La unidad ejecuta `run-soak` seguido de `inject-faults`. Es posible invertir el orden al generar la unidad con `--faults-first`. Las dos fases registran sus comprobaciones efectivas en `faults.jsonl` y en `isolation_at_start` del resumen. `ExecStopPost` llama a `summarize` al completar o interrumpir la unidad. El resultado del comando acredita la generación del resumen. El resultado de T061 está en los booleanos del JSON. Cada fase puede abrirse una sola vez por expediente. Para repetir, conservar el expediente anterior y preparar otro con `preflight --state-root`.
 
 ## Interpretar y archivar la evidencia
 
@@ -55,7 +69,7 @@ El veredicto `overall_t061_local_passed` exige las cuatro comprobaciones locales
 
 ## Verificar el arnés en una corrida corta
 
-Para un ensayo de desarrollo, preparar otro directorio privado con el mismo preflight y usar su ruta de estado. La prueba de tres segundos ejercita bytecode y transportes locales. C19 y el veredicto global quedan en falso.
+Para un ensayo de desarrollo, preparar otro directorio privado con el mismo preflight y usar su ruta de estado. Las fases directas verifican el hook y el selector CUDA en el worker. La prueba de tres segundos ejercita bytecode y transportes locales. C19 y el veredicto global quedan en falso.
 
 ```bash
 "$PY" -B -m tools.p6_local_soak run-soak --state "$STATE" --duration-s 3
