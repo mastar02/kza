@@ -2119,8 +2119,9 @@ class Serve:
                     elif self.stop.drain() and stop_at is None:
                         stop_at = self.clock()
                         reason = "stop"
-                        if verify:  # lines already written (an acknowledged READY) count first
-                            self._read_notify(selector, notify_read, relay)
+                        # ARMED and READY may already be queued when the stop key comes first.
+                        self._read_notify(selector, notify_read, relay)
+                        if verify:
                             self._close_smoke(relay, run_id, smoke, "stop_request")
                         # (1) forward at once (as soon as the child's handler exists),
                         # (2) only then ask the system manager (v3 N9).
