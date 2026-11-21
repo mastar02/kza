@@ -10,18 +10,24 @@ import pytest
 
 from src.core import runtime_admission
 from src.dashboard.live_erasure import LIVE_TARGET, REST_TARGET, VOICE_REVIEW_TARGET
+from src.home_assistant.ha_client import HomeAssistantClient
+from src.llm.metrics import LLMMetricsTracker
 from src.memory import output_registration as base
 from src.memory import output_registration_v2 as v2
 from src.memory import output_registration_v4 as v4
 from src.memory.output_registration_features import (
+    FEATURES_GRAMMAR_SPECS,
     FEATURES_PRODUCERS,
     GRAMMAR_SPECS,
+    bind_features_family_publishers,
     dashboard_transport_plan,
     features_aggregate,
+    features_family_selection,
     home_integrations_plan,
     household_features_plan,
     latency_plan,
 )
+from src.monitoring.health_aggregator import HealthAggregator
 from tests.unit.memory.test_output_publisher_seam import (  # noqa: F401
     _compose_legacy_fixture,
     decoder,
@@ -44,6 +50,10 @@ def _event(spec, phase, plan, **extra):
     return {"kind": spec.event_kind, "phase": phase, "plan": plan, **extra}
 
 
+def _aggregate(producer, roles):
+    return features_aggregate(producer, instance_sha256={role: sha256(role.encode()).hexdigest() for role in roles})
+
+
 @pytest.mark.parametrize("index", range(4))
 def test_nominal_roles_and_closed_lifecycle(index):
     producer, spec = FEATURES_PRODUCERS[index], GRAMMAR_SPECS[index]
@@ -55,7 +65,7 @@ def test_nominal_roles_and_closed_lifecycle(index):
     prior = None
     for phase in ("intent", "attached", "opening"):
         prior = spec.decode_event(_event(spec, phase, plan), prior, True, header)
-    aggregate = features_aggregate(producer, drained_roles=roles)
+    aggregate = _aggregate(producer, roles)
     assert spec.decode_event(_event(spec, "drained", plan, aggregate=aggregate), prior, True, header) == {
         "producer": producer, "phase": "drained", "plan": plan, "aggregate": aggregate,
     }
@@ -111,7 +121,7 @@ def test_additional_metadata_rejected_in_plan_and_aggregate(index, injection):
     header = {"selected": {spec.producer: True}}
     with pytest.raises(RuntimeError, match="publisher_metadata|features_plan"):
         spec.decode_event(_event(spec, "intent", dict(plan, **injection)), None, True, header)
-    aggregate = features_aggregate(spec.producer, drained_roles=roles)
+    aggregate = _aggregate(spec.producer, roles)
     with pytest.raises(RuntimeError, match="publisher_metadata|features_aggregate"):
         spec.decode_event(_event(spec, "drained", plan, aggregate=dict(aggregate, **injection)),
                           {"phase": "opening", "plan": plan}, True, header)
@@ -131,49 +141,117 @@ def test_existing_fields_reject_unreviewed_values_and_numeric_boolean_aliases(va
     with pytest.raises(RuntimeError, match="features_plan"):
         spec.decode_event(_event(spec, "intent", invalid), None, True, header)
 
-    for aggregate in (
-        {"drained": dict(plan["enabled"], ha_client=value)},
-        features_aggregate(spec.producer, drained_roles=()),
-        features_aggregate(spec.producer, drained_roles=ROLE_IDS[1]),
-    ):
+    invalid_digest = _aggregate(spec.producer, ("ha_client",))
+    invalid_digest["owners"]["ha_client"]["instance_sha256"] = value
+    invalid_observation = _aggregate(spec.producer, ("ha_client",))
+    invalid_observation["owners"]["ha_client"]["observation"] = value
+    for aggregate in (invalid_digest, invalid_observation, _aggregate(spec.producer, ()),
+                      _aggregate(spec.producer, ROLE_IDS[1])):
         with pytest.raises(RuntimeError, match="features_aggregate"):
             spec.decode_event(_event(spec, "drained", plan, aggregate=aggregate),
                               {"phase": "opening", "plan": plan}, True, header)
 
 
-async def test_feature_grammars_round_trip_through_the_coordinator(monkeypatch, decoder, local_grammar_table):  # noqa: F811
+def test_terminal_codec_rejects_a_shared_instance_digest_for_two_owners():
+    spec = GRAMMAR_SPECS[3]
+    roles = ("health_aggregator", "llm_metrics")
+    plan = latency_plan(selected_roles=roles)
+    aggregate = _aggregate(spec.producer, roles)
+    aggregate["owners"]["llm_metrics"]["instance_sha256"] = aggregate["owners"]["health_aggregator"]["instance_sha256"]
+    with pytest.raises(RuntimeError, match="features_aggregate"):
+        spec.decode_event(_event(spec, "drained", plan, aggregate=aggregate),
+                          {"phase": "opening", "plan": plan}, True, {"selected": {spec.producer: True}})
+
+
+@pytest.mark.parametrize("reject_admission", [False, True])
+async def test_feature_grammars_round_trip_through_the_coordinator(
+    monkeypatch, decoder, local_grammar_table, reject_admission,  # noqa: F811
+):
     config = {"dashboard": {"enabled": False}, "analytics": {"enabled": False}}
     ticket = dict(decoder["header"], admission_root=str(decoder["root"]), run_id=uuid4().hex, generation=3)
     admission = runtime_admission.RuntimeAdmission(ticket, {"state_root": str(decoder["state"])},
         str(decoder["state"] / "privacy.db"), runtime_admission._config_digest(config))
     monkeypatch.setattr(runtime_admission, "_verified_admissions", {admission: False})
     monkeypatch.setattr(admission, "_revalidate_live", lambda snapshot=None: None)
+    url = "https://ha.example.invalid"
+    plans = {
+        "household_features": household_features_plan(selected_roles=()),
+        "home_integrations": home_integrations_plan(selected_roles=("ha_client",), ha_url=url),
+        "dashboard_transport": dashboard_transport_plan(selected_roles=()),
+        "latency": latency_plan(selected_roles=("health_aggregator", "llm_metrics")),
+    }
+    assert FEATURES_GRAMMAR_SPECS is GRAMMAR_SPECS
+    revalidations = []
+
+    def revalidate():
+        revalidations.append(True)
+        if reject_admission:
+            raise RuntimeError("admission_revalidation_rejected")
+
+    monkeypatch.setattr(admission, "revalidate", revalidate)
     async with AsyncExitStack() as stack:
         admission.install_on(stack)
         writer = v2.OutputRegistrationV2(admission, config, key=base._KEY, journal_format=v4.V4_FORMAT,
-            extra_grammars=GRAMMAR_SPECS, publisher_selection={"dashboard_transport": False})
+            extra_grammars=FEATURES_GRAMMAR_SPECS, publisher_selection=features_family_selection(plans))
         admission._output_registration = writer
         await writer._run(writer._start)
         try:
             _compose_legacy_fixture(writer)
-            for producer, builder, roles, options in zip(
-                FEATURES_PRODUCERS, BUILDERS, ROLE_IDS, PLAN_OPTIONS, strict=True,
-            ):
-                if producer == "dashboard_transport":
-                    await writer.publisher_disabled(producer, builder(selected_roles=()))
-                    continue
-                await writer.publisher_intent(producer, builder(selected_roles=roles, **options))
-                owner = await writer.attach_publisher(producer)
-                await owner.opening()
-                await owner.drained(features_aggregate(producer, drained_roles=roles))
+            before = v4.chain(writer._directory)
+            invalid = dict(plans, dashboard_transport=dict(plans["dashboard_transport"], unreviewed="invalid"))
+            with pytest.raises(RuntimeError, match="features_plan"):
+                await bind_features_family_publishers(writer, invalid)
+            assert v4.chain(writer._directory) == before and not revalidations
+            if reject_admission:
+                with pytest.raises(RuntimeError, match="admission_revalidation_rejected"):
+                    await bind_features_family_publishers(writer, plans)
+                assert v4.chain(writer._directory) == before and len(revalidations) == 1
+                return
+            bindings = await bind_features_family_publishers(writer, plans)
+            assert set(bindings) == {"home_integrations", "latency"} and len(revalidations) == 1
+            owners = {
+                "home_integrations": {"ha_client": HomeAssistantClient(url, "synthetic-only")},
+                "latency": {"health_aggregator": HealthAggregator(), "llm_metrics": LLMMetricsTracker()},
+            }
+            stack.push_async_callback(owners["home_integrations"]["ha_client"].close)
+            latency = bindings["latency"]
+
+            class HealthReplacement(HealthAggregator):
+                pass
+
+            with pytest.raises(RuntimeError, match="features_owner"):
+                await latency.attach("health_aggregator", HealthReplacement())
+            for producer, binding in bindings.items():
+                for role, owner in owners[producer].items():
+                    await binding.attach(role, owner)
+                    await binding.opening(role, owner)
+                    await binding.opened(role, owner)
+                assert binding.matches(owners[producer])
             await writer.composed()
+            observed = v4.chain(writer._directory)
+            with pytest.raises(RuntimeError, match="features_owner"):
+                await latency.drained(dict(owners["latency"], health_aggregator=HealthAggregator()))
+            with pytest.raises(RuntimeError, match="features_owner"):
+                await bindings["home_integrations"].drained(owners["home_integrations"])
+            assert v4.chain(writer._directory) == observed
+            await owners["home_integrations"]["ha_client"].close()
+            for producer, binding in bindings.items():
+                await binding.drained(owners[producer])
             header, _, states, _ = v4.chain(writer._directory)
             assert {key: header["grammars"][key] for key in FEATURES_PRODUCERS} == {
                 spec.producer: spec.grammar_id for spec in GRAMMAR_SPECS
             }
             assert {key: states[key]["phase"] for key in FEATURES_PRODUCERS} == {
-                "household_features": "drained", "home_integrations": "drained",
+                "household_features": "disabled", "home_integrations": "drained",
                 "dashboard_transport": "disabled", "latency": "drained",
             }
+            seen = set()
+            for producer, graph in owners.items():
+                evidence = states[producer]["aggregate"]["owners"]
+                identities = {role: evidence[role]["instance_sha256"] for role in graph}
+                assert seen.isdisjoint(identities.values())
+                assert states[producer]["aggregate"] == features_aggregate(producer, instance_sha256=identities)
+                seen.update(identities.values())
+            assert len(seen) == 3
         finally:
             await writer._disk.aclose()
