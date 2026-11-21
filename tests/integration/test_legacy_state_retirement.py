@@ -1194,6 +1194,7 @@ def test_a_later_run_accepts_what_an_older_version_left_group_writable(tmp_path,
     retirement and activation all run, leave the older entries unchanged and
     create only private new ones.
     """
+    original_fds = []
     previous = os.umask(0o002)
     try:
         world = World(tmp_path.resolve(), tree, artifacts, adapters=True)
@@ -1201,11 +1202,16 @@ def test_a_later_run_accepts_what_an_older_version_left_group_writable(tmp_path,
         world.retire()
         adopted(world, close=False)
         older = {}
+        legacy = legacy_state(world)
         for name in sorted(created_modes(world, before)):
             if not (name.startswith("slots/") and name.split("/")[2:3] == ["runtime"]):
                 path = world.root / name
                 os.chmod(path, 0o775 if path.is_dir() else 0o664)
-                older[name] = (os.lstat(path).st_ino, stat.S_IMODE(os.lstat(path).st_mode))
+                original = os.lstat(path)
+                older[name] = (original.st_ino, stat.S_IMODE(original.st_mode))
+                if stat.S_ISREG(original.st_mode) and not path.is_relative_to(legacy):
+                    # Keep the original inode from being recycled after an atomic rewrite.
+                    original_fds.append(os.open(path, getattr(os, "O_PATH", os.O_RDONLY) | os.O_NOFOLLOW))
         assert older[".stage.lock"][1] == 0o664 and older["admission"][1] == 0o775
         loosened = set(world.root.rglob("*"))
         assert world.install_controller()["controller_epoch"] == stage.CONTROLLER_EPOCH  # re-verified tree
@@ -1227,6 +1233,8 @@ def test_a_later_run_accepts_what_an_older_version_left_group_writable(tmp_path,
         assert new and all(mode == (0o700 if (world.root / name).is_dir() else 0o600) for name, mode in new.items())
     finally:
         os.umask(previous)
+        for fd in original_fds:
+            os.close(fd)
 
 
 # --- R1E: the e9669ec container and production's other legacy entries (batch_g "R1 base", R1E-2) ----
