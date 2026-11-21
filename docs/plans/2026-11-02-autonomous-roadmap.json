@@ -2015,11 +2015,13 @@
       "status": "verified_local",
       "implementation_commits": [
         "fa3f74b0ffab554b4dfa45c5da1737066c957f5b",
-        "d925f4920bff8ef22018ee103aec18761f7df2c5"
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
       ],
       "evidence": [
         "tests/unit/integrations/test_energy_monitor.py",
-        "tests/integration/test_p5_integrations_graph.py"
+        "tests/integration/test_p5_integrations_graph.py",
+        "tests/unit/nlu/test_household_intents.py"
       ],
       "next_action": null
     },
@@ -2040,7 +2042,8 @@
       "status": "verified_local",
       "implementation_commits": [
         "6a4e9757f3ff5568e8174a5dcde0bf33da7ee1fa",
-        "d925f4920bff8ef22018ee103aec18761f7df2c5"
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
       ],
       "evidence": [
         "tests/unit/lists/test_ha_sync_t051.py",
@@ -2065,7 +2068,9 @@
       "status": "verified_local",
       "implementation_commits": [
         "0734ecb938d40b449c0111788802acb0b5ded72d",
-        "d925f4920bff8ef22018ee103aec18761f7df2c5"
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "e6400c5a6a8c7378535a3c246a2b66a010c399fa",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
       ],
       "evidence": [
         "tests/unit/integrations/test_calendar_reader.py",
@@ -2091,7 +2096,8 @@
       "status": "verified_local",
       "implementation_commits": [
         "c05f84d2746e5e5c60b73a40da48df03f44ee766",
-        "d925f4920bff8ef22018ee103aec18761f7df2c5"
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
       ],
       "evidence": [
         "tests/unit/integrations/test_media_control.py",
@@ -2116,7 +2122,8 @@
       "status": "verified_local",
       "implementation_commits": [
         "4335962be9d638942cf9b88ce0f10f9ad094e0e6",
-        "d925f4920bff8ef22018ee103aec18761f7df2c5"
+        "d925f4920bff8ef22018ee103aec18761f7df2c5",
+        "108d28eea787d1c13496bf1ca8f9883f4e9708ed"
       ],
       "evidence": [
         "tests/unit/integrations/test_camera_health.py",
