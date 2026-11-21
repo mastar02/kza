@@ -125,6 +125,12 @@ _METRICS_USER_VERSIONS = frozenset({1, 2})
 _DEFAULT_APPLICATION_ID = 0
 _DEFAULT_USER_VERSION = 0
 _AUTH_META_SCHEMA_VERSIONS = frozenset({"1", "2", "3"})
+_REMINDERS_DATABASE_NAME = "reminders.db"
+_LEGACY_REMINDERS_COLUMNS = (
+    "id:TEXT user_id:TEXT text:TEXT trigger_at:REAL created_at:REAL recurrence:TEXT "
+    "recurrence_end:REAL ha_actions:TEXT state:TEXT last_fired_at:REAL fire_count:INTEGER scope:TEXT"
+)
+_LEGACY_REMINDERS_ABSENT_TABLES = frozenset({"timers", "alert_preferences"})
 
 # Source-owned v1 column contracts. Unknown additions need an explicit decision
 # about authority versus payload before a managed generation may serve them.
@@ -1551,8 +1557,15 @@ def _schema_contract(db: sqlite3.Connection, names: set[str], relative: str | No
     columns = {}
     for name in sorted(names):
         actual = {row[1]: row[2].upper() for row in db.execute("PRAGMA table_info(" + _quote(name) + ")")}
-        if actual != dict(item.split(":") for item in known[name].split()):
-            raise ValueError("runtime_admission_unknown_schema")
+        expected = dict(item.split(":") for item in known[name].split())
+        if actual != expected:
+            legacy_reminders = (name == "reminders" and relative is not None
+                and PurePosixPath(relative).name == _REMINDERS_DATABASE_NAME
+                and names.isdisjoint(_LEGACY_REMINDERS_ABSENT_TABLES)
+                and actual == dict(item.split(":") for item in _LEGACY_REMINDERS_COLUMNS.split())
+                and len(db.execute("PRAGMA table_xinfo(reminders)").fetchall()) == len(actual))
+            if not legacy_reminders:
+                raise ValueError("runtime_admission_unknown_schema")
         columns[name] = actual
         if name in _SCHEMA_MARKERS:
             if tuple(tuple(row) for row in db.execute("SELECT version FROM " + _quote(name))) \
@@ -1632,6 +1645,11 @@ def schema_contract_document() -> bytes:
                         "user_version": sorted(_METRICS_USER_VERSIONS)},
             "other": {"application_id": _DEFAULT_APPLICATION_ID, "user_version": _DEFAULT_USER_VERSION},
             "auth_meta_schema_version": sorted(_AUTH_META_SCHEMA_VERSIONS),
+            "legacy_reminders": {
+                "database_basename": _REMINDERS_DATABASE_NAME,
+                "columns": _LEGACY_REMINDERS_COLUMNS,
+                "absent_tables": sorted(_LEGACY_REMINDERS_ABSENT_TABLES),
+            },
         },
         "vocabularies": {name: sorted(values) for name, values in _contract_vocabularies().items()},
     })
@@ -1745,7 +1763,8 @@ _AUTHORITY_MEMO_CODE = ("_capture_state_authority", "_authority_database", "_aut
                         "_TABLE_COLUMNS", "_DATABASE_TABLE_COLUMNS", "_SQLITE_INTERNAL_TABLES",
                         "_UNBOUND_ALONE_TABLES", "_SDK_INTERNAL_TABLES", "_REFUSED_SQLITE_OBJECTS",
                         "_AUTHORITY_DATABASE_SUFFIXES", "_AUTHORITY_SQLITE_SIDE_SUFFIXES",
-                        "_AUTHORITY_CONFIGURATION_SUFFIXES")
+                        "_AUTHORITY_CONFIGURATION_SUFFIXES", "_REMINDERS_DATABASE_NAME",
+                        "_LEGACY_REMINDERS_COLUMNS", "_LEGACY_REMINDERS_ABSENT_TABLES")
 
 
 def _authority_database(path: Path) -> bool:
