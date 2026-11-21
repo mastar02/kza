@@ -1382,10 +1382,20 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "verified_local",
+      "implementation_commits": [
+        "f9f1d0317006ef4284af36eb0dd12f3dd9f7b0ad",
+        "ccb610ad7ffe13f540ed58d0365d93667aba557c",
+        "2e7b34c5675d05d90110f4ac98f0e829198041bb"
+      ],
+      "evidence": [
+        "tools/diagnose_room_microphones.py",
+        "tests/unit/tools/test_diagnose_room_microphones.py",
+        "docs/runbooks/2026-11-16-cocina-acceptance.md",
+        "tests/unit/pipeline/test_multi_room_audio_loop.py",
+        "tests/unit/pipeline/test_response_handler_output_hold.py"
+      ],
+      "next_action": "Código local de T025-U1 (diagnóstico de micrófonos por sala, runbook de Cocina) y T025-U2 (refresco PortAudio con límite de frecuencia) fusionado y verificado localmente. La prueba física de Cocina (C19/C20) queda en P7/T070; sin aceptación C19/C20."
     },
     {
       "id": "T030",
@@ -1449,10 +1459,20 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "verified_local",
+      "implementation_commits": [
+        "6ad5458ee3a5882e618493de633b52e1ce76b2d7",
+        "73d7267f87d048541ece8d20b41ace418a92a1e4",
+        "c4858a91626af42ea3e4650bdd834172bcaff242"
+      ],
+      "evidence": [
+        "tests/unit/reminders/test_cancel_never_wrong_property.py",
+        "tests/unit/reminders/test_reminder_manager.py",
+        "tests/unit/nlu/test_household_intents.py",
+        "tests/unit/orchestrator/test_dispatcher_household_intents.py",
+        "tests/unit/pipeline/test_request_router_household.py"
+      ],
+      "next_action": "Código local fusionado (P3-F1/P3-F2 precedencia doméstica; T032-U1 cancelación con pregunta de ambigüedad y elección numerada). T031-U4 fue descartada por decisión Q7. Sin aceptación C01/C02."
     },
     {
       "id": "T033",
@@ -1507,10 +1527,21 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "verified_local",
+      "implementation_commits": [
+        "07b609077e4af83787bcd17c6b3a85b44980ecf7",
+        "e6d32396890b1d62de638e37f349e85ba29de867",
+        "5aae51d1f878447fd1ea271746d98eca042ce145"
+      ],
+      "evidence": [
+        "tests/unit/reminders/test_reminder_scheduler.py",
+        "tests/integration/test_household_reminder_scope.py",
+        "tests/unit/dashboard/test_api_reminder_notices.py",
+        "tests/unit/pipeline/test_response_handler_output_free.py",
+        "tests/unit/pipeline/test_reminder_follow_up_turns.py",
+        "tests/frontend/test_nexo_notices_owner.cjs"
+      ],
+      "next_action": "Código local fusionado: política de entrega T034-U1, recibos durables T034-U2 y panel de avisos NEXO con descarte T034-U3. Sin aceptación C01/C02/C16."
     },
     {
       "id": "T035",
@@ -1577,12 +1608,27 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [
-        "docs/research/2026-11-02-autonomous-t037-validation.json"
+      "status": "verified_local",
+      "implementation_commits": [
+        "ae241765d37c248942c4f305939c692a13cd589a",
+        "b018d0c21cb75a3eba47fb8851c51e35e3f002e2",
+        "bf133a321093fb6c24aa15a57e4500c6f9249eed",
+        "332a5366da96435881467b22e9a0911f36007b22",
+        "e95d07e3a6bbff44c50a3a855037a85bf8b4a2ff",
+        "cd8a935c65a574fab594c1deaf092edca0ea8729",
+        "19a3a069220446961b24a54fe821e89c8809c982"
       ],
-      "next_action": "Matriz determinista preparada. Ejecutar la suite completa en Linux con cero xfails nuevos antes de considerar verified_local y consolidar la regresión en T060. Confirmar el alcance de Q22: la evidencia de estado cubre HTTP de diagnóstico. Quedan pendientes C13 en P7 y la fuente real de pronóstico. Sin aceptación C01/C02/C05/C13."
+      "evidence": [
+        "docs/research/2026-11-02-autonomous-t037-validation.json",
+        "tests/integration/test_household_query_matrix.py",
+        "tests/unit/world/test_weather.py",
+        "tests/integration/test_weather_observation_graph.py",
+        "tests/unit/orchestrator/test_dispatcher_local_queries.py",
+        "tests/unit/pipeline/test_request_router_clock.py",
+        "tests/integration/test_voice_compound_commands.py",
+        "tests/unit/orchestrator/test_compound_runner.py"
+      ],
+      "next_action": "Código local de T037-U1..U7 fusionado (19a3a069) con matriz determinista. C13 de campo y el pronóstico en vivo quedan para P7; la regresión completa se consolida en T060. Sin aceptación C01/C02/C05/C13."
     },
     {
       "id": "T040",
@@ -1709,10 +1755,18 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "in_progress",
+      "implementation_commits": [
+        "63cbd51b8c0b2714cf9f8bf963b56efcdef8d761",
+        "66193de11f3609df80893e8d56f5dc0f9e73e622",
+        "06411ebfcb9a4360a4bf5fc4e82e82037a134c83"
+      ],
+      "evidence": [
+        "tests/frontend/test_obs_panel.cjs",
+        "tests/frontend/browser_obs_panel.py",
+        "tests/frontend/test_voice_privacy.cjs"
+      ],
+      "next_action": "Completar T042-U5 y medicion T046-U1/U3."
     },
     {
       "id": "T044",
