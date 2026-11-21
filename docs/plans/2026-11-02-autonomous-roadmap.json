@@ -1760,16 +1760,20 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "ef46fe37913236e46921daf85c936bcda97a51fc",
-        "58f2b880a200435da851e9d2ffc2ef001b6c9226"
+        "58f2b880a200435da851e9d2ffc2ef001b6c9226",
+        "9530648bf47d1289fe9a6bd2dd4cf52b4eb48926"
       ],
       "evidence": [
         "tests/frontend/test_obs_panel.cjs",
-        "tests/frontend/browser_obs_panel.py"
+        "tests/frontend/browser_obs_panel.py",
+        "tests/frontend/test_error_matrix.cjs",
+        "docs/research/2026-11-20-autonomous-t045-error-matrix.json",
+        "tests/frontend/browser_nexo_home.py"
       ],
-      "next_action": "Completar T045-U3."
+      "next_action": null
     },
     {
       "id": "T046",
@@ -1786,10 +1790,18 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "planned",
-      "implementation_commits": [],
-      "evidence": [],
-      "next_action": null
+      "status": "in_progress",
+      "implementation_commits": [
+        "4b4a98001b1fee06fe6417b7de42a1da498bed7e",
+        "433192b49770cda630ebe360ae6aa240eef25d5b"
+      ],
+      "evidence": [
+        "tools/web_timing_probe.py",
+        "tests/unit/tools/test_web_timing_probe.py",
+        "tests/frontend/test_obs_panel.cjs",
+        "tests/frontend/browser_obs_panel.py"
+      ],
+      "next_action": "Ejecutar baseline T046-U1 en ventana quieta y completar T046-U3."
     },
     {
       "id": "T047",
@@ -2301,12 +2313,14 @@
       "human_gate": false,
       "optional": false,
       "inclusion": "required",
-      "status": "in_progress",
+      "status": "verified_local",
       "implementation_commits": [
         "81a46b671b88f16938d81d5ad80a7d9823813df8",
         "6369a0976c4b2b81e7fa01b508f6e38686e536ac",
         "2394acb1b5b1f85b5877451349d1f68b13e03806",
-        "c587c13dc1a87da4ea205fa63641138dae59ca3b"
+        "c587c13dc1a87da4ea205fa63641138dae59ca3b",
+        "1f03c5b66a7fdd3c1ccbe50a1f6942113554c497",
+        "aaae4ec58a62d6fce93dc5834a76debbdc6ce694"
       ],
       "evidence": [
         "docs/plans/2026-11-20-test-suite-acceleration.md",
@@ -2315,7 +2329,7 @@
         "tests/unit/tools/test_run_test_suite.py",
         "tests/unit/tools/test_runtime_artifact_cache.py"
       ],
-      "next_action": "Ejecutar T090-U3 y T090-U4."
+      "next_action": null
     }
   ],
   "finding_trace": [
@@ -2703,12 +2717,12 @@
       },
       {
         "id": "T090-U3",
-        "status": "planned",
+        "status": "verified_local",
         "summary": "Optimize slow fixtures (test_private_access TestClient reuse, immutable base worlds) without weakening oracles"
       },
       {
         "id": "T090-U4",
-        "status": "planned",
+        "status": "verified_local",
         "summary": "Accelerate systemd lane (sc6b + test_linux_*) and compiled-solo preserving journald NRestarts and real budgets"
       },
       {
