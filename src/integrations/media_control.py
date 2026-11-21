@@ -7,7 +7,7 @@ import re
 from time import time
 
 from src.home_assistant.control_policy import ActorKind, HomeActionDenied, HomeActor
-from src.home_assistant.ha_client import HomeAssistantClient, ServiceCallOutcome
+from src.home_assistant.ha_client import HomeAssistantClient, ServiceCallOutcome, ServiceCallStatus
 from src.home_assistant.operations import finite_number
 from src.home_assistant.state_projection import EntityObservation
 
@@ -150,6 +150,11 @@ class MediaController:
         except KeyError:
             raise HomeActionDenied("media_entity_not_selected") from None
 
+    def selected_players(self, actor: HomeActor, *, room: str | None = None) -> tuple[MediaSelection, ...]:
+        """Return explicit selections for a current shared reader."""
+        _authorize(actor, "home:read")
+        return tuple(player for player in self._players.values() if room is None or player.room == room)
+
     async def _observe(self, actor: HomeActor, entity_id: str) -> EntityObservation:
         actor.require_current()
         try:
@@ -256,9 +261,12 @@ class MediaController:
             return all(self._fresh(observation, now) for observation in observations)
 
         actor.require_current()
+        receipt = await self._ha.call_service_once(domain, service, entity_id, data, guard=current)
         try:
-            return await self._ha.call_service_once(
-                domain, service, entity_id, data, guard=current
-            )
-        finally:
             actor.require_current()
+        except HomeActionDenied:
+            if receipt.status in (ServiceCallStatus.ACCEPTED, ServiceCallStatus.UNCERTAIN):
+                return ServiceCallOutcome(ServiceCallStatus.UNCERTAIN, "authority_lost_after_dispatch")
+            if receipt.status is ServiceCallStatus.NOT_SENT:
+                raise
+        return receipt

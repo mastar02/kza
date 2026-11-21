@@ -20,6 +20,7 @@ from starlette.requests import HTTPConnection
 from src.dashboard.authority import DashboardPrincipal as DashboardPrincipal
 from src.dashboard.authority import DashboardAuthority, DashboardLease, DashboardPermission, legacy_lease
 from src.core.reader_binding import ReaderBinding
+from src.integrations.calendar_reader import CalendarAccess
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,21 @@ def web_session_requested(request: HTTPConnection) -> bool:
     return lease is not None and lease.session is True and "authorization" not in request.headers
 
 
+def calendar_access(request: HTTPConnection, principal: DashboardPrincipal) -> CalendarAccess:
+    """Bind personal calendar visibility to the original authenticated session."""
+    read_guard = session_guard(request, frozenset({DashboardPermission.HOME_READ}), principal)
+    lease = current_lease(request)
+    if lease is None or not lease.session or principal.user_id is None:
+        return CalendarAccess(read_current=read_guard)
+    guard = session_guard(request, frozenset({DashboardPermission.HOME_READ, DashboardPermission.PERSONAL_TASKS}),
+                          principal)
+    if not guard():
+        return CalendarAccess(read_current=read_guard)
+    request.scope["kza.dashboard_delivery_guard"] = guard
+    return CalendarAccess(shared_only=False, user_id=principal.user_id, personal_authorized=True,
+                          session_current=guard, read_current=read_guard)
+
+
 def voice_person_scope_requested(request: HTTPConnection) -> bool:
     """Recognize the closed metadata surface that requires extra server permission."""
     path,method = request.url.path,request.scope.get('method','GET')
@@ -176,6 +192,11 @@ def _route_permissions(
         return frozenset({DashboardPermission.DIAGNOSTICS_READ if read else DashboardPermission.ADMIN_MANAGE})
     if path.startswith("/api/home/"):
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.HOME_CONTROL})
+    if path in {"/api/integrations/energy", "/api/integrations/calendar", "/api/integrations/media",
+                "/api/integrations/cameras/health"} and read:
+        return frozenset({DashboardPermission.HOME_READ})
+    if path == "/api/integrations/media/control" and method == "POST":
+        return frozenset({DashboardPermission.HOME_CONTROL})
     if path in {"/api/alerts", "/api/alerts/zones"}:
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.ADMIN_MANAGE})
     if not read and path.startswith("/api/entities/") and path.endswith("/call") and path.count("/") == 4:
