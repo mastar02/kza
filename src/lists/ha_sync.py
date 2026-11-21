@@ -334,7 +334,11 @@ class HASyncManager:
         # HA supplies summary, uid and status. Adapters may also supply
         # updated_at and an explicit removed item carrying its deletion time.
         response = await self._call_ha(
-            lambda: self._ha.call_service_with_response("todo", "get_items", self._entity), guard,
+            lambda: self._ha.call_service_with_response(
+                "todo", "get_items", self._entity,
+                data={"status": [TodoStatus.PENDING.value, TodoStatus.COMPLETED.value]},
+            ),
+            guard,
         )
         if not isinstance(response, dict):
             raise _IncompleteSync

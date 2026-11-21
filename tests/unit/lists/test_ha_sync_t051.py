@@ -59,6 +59,7 @@ class TodoServer:
             return web.Response(status=503)
         if action == "get_items":
             assert request.query["return_response"] == "true"
+            assert data["status"] == [TodoStatus.PENDING.value, TodoStatus.COMPLETED.value]
             if self.no_entity:
                 return web.json_response({"service_response": {}, "changed_states": []})
             items = [{"summary": "broken"}] if self.malformed else list(self.items.values())
@@ -299,7 +300,9 @@ async def test_failed_read_keeps_local_data_and_retry_recovers(store, shared, ha
 
         class ShortReadClient(HomeAssistantClient):
             async def call_service_with_response(self, domain, service, entity_id, **kwargs):
-                return await super().call_service_with_response(domain, service, entity_id, timeout=0.05)
+                return await super().call_service_with_response(
+                    domain, service, entity_id, timeout=0.05, **kwargs,
+                )
 
         ha.client = ShortReadClient(original_client.url, "test-token")
         manager = ListManager(store, ha.client, CONFIG)
