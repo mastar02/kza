@@ -93,7 +93,7 @@ class ListManager:
             return ListWriteResult(None, TaskOutcome(TaskStatus.NEEDS_INPUT,
                 persistence=PersistenceState.NOT_WRITTEN, effect=EffectState.NOT_OBSERVED))
 
-        report = await self._replicate(lst, guard)
+        report = await self._replicate(lst, guard, added_item=item)
         item = await self._verify_added_item(item, report, guard)
         replication = self._dispatch_state(report)
         if item is None or item.completed:
@@ -104,10 +104,14 @@ class ListManager:
             persistence=PersistenceState.COMMITTED, effect=EffectState.OBSERVED,
             observation_scope="software_state", replication=replication), report)
 
-    async def _replicate(self, lst: UserList, guard: AuthorityGuard | None) -> SyncReport | None:
+    async def _replicate(
+        self, lst: UserList, guard: AuthorityGuard | None, *, added_item: ListItem | None = None,
+    ) -> SyncReport | None:
         if self._ha_sync is None or not _is_shared_target(lst, self._default_list_name):
             return None
         try:
+            if added_item is not None:
+                return await self._ha_sync.sync_after_add(lst, added_item, guard=guard)
             return await self._ha_sync.sync(lst, guard=guard)
         except Exception:
             logger.warning("List committed locally; HA reconciliation remains incomplete")
@@ -121,7 +125,7 @@ class ListManager:
         try:
             items = await self._store.get_items_in_scope(item.list_id, shared_only=True, guard=guard)
         except PermissionError:
-            return None
+            raise
         except Exception:
             logger.warning("Could not verify the added list item after HA reconciliation")
             return None
@@ -252,7 +256,7 @@ class ListManager:
             list_id, item_text, user_id, shared_only=shared_only, guard=guard, owner=owner, target=target,
         )
         if item is not None and target is not None:
-            report = await self._replicate(target, guard)
+            report = await self._replicate(target, guard, added_item=item)
             item = await self._verify_added_item(item, report, guard)
         return item if item is not None and not item.completed else None
 

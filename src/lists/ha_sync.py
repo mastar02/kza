@@ -193,11 +193,12 @@ class _IncompleteSync(Exception):
 class HASyncManager:
     """Reconcile one configured shared list with its explicit HA todo entity.
 
-    The reconciliation snapshot and unpropagated add intents live in process
-    memory. After restart, KZA uploads an item again if HA deleted it while
-    KZA was down and only its absence is observable. If a reopen never reached
-    HA and HA still reports an untimed completion, the first sync restores
-    that completion locally. List storage keeps the schema pinned by
+    The reconciliation snapshot lives in process memory. Explicit add intent
+    expires when its inline sync ends, including after a failure. After
+    restart, KZA uploads an item again if HA deleted it while KZA was down
+    and only its absence is observable. If an add or reopen never reached HA
+    and HA still reports an untimed completion, the first sync restores that
+    completion locally. List storage keeps the schema pinned by
     SCHEMA_CONTRACT_EPOCH.
 
     The legacy one-way methods remain available to callers that explicitly
@@ -263,20 +264,17 @@ class HASyncManager:
             )
             return True, replace(item, completed=False, completed_at=None), time.time()
 
-        def publish(result: tuple[bool, ListItem | None, float | None]) -> None:
-            _, item, added_at = result
-            if item is not None and added_at is not None and self._entity is not None:
-                self._local_add_at[lst.id][item.id] = added_at
-
         async with self._local_add_lock:
-            eligible, item, _ = await self._store._work.write(
-                match_or_reopen, guard=guard, publish=publish,
-            )
-            if item is not None or not eligible:
-                return item
-            return await self._store.add_item(
-                lst.id, text, added_by=added_by, guard=guard, shared_only=shared_only,
-            )
+            eligible, item, added_at = await self._store._work.write(match_or_reopen, guard=guard)
+            if not eligible:
+                return None
+            if item is None:
+                item = await self._store.add_item(
+                    lst.id, text, added_by=added_by, guard=guard, shared_only=shared_only,
+                )
+            if item is not None and self._entity is not None:
+                self._local_add_at[lst.id][item.id] = added_at if added_at is not None else item.created_at
+            return item
 
     def note_removals(self, lst: UserList, items: Iterable[ListItem]) -> None:
         """Remember mutation times for committed local removals."""
@@ -324,6 +322,18 @@ class HASyncManager:
             except _IncompleteSync:
                 logger.debug("Shared list reconciliation incomplete")
         return report
+
+    async def sync_after_add(
+        self, lst: UserList, item: ListItem, *, guard: AuthorityGuard | None = None,
+    ) -> SyncReport:
+        """Expire this add's preference even if inline reconciliation fails."""
+        pending = self._local_add_at.get(lst.id)
+        added_at = pending.get(item.id) if pending is not None else None
+        try:
+            return await self.sync(lst, guard=guard)
+        finally:
+            if pending is not None and added_at is not None and pending.get(item.id) == added_at:
+                del pending[item.id]
 
     async def _reconcile(self, lst: UserList, report: SyncReport, guard: AuthorityGuard | None) -> None:
         remote = await self._read_remote(guard)

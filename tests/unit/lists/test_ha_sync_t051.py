@@ -344,6 +344,88 @@ async def test_add_by_id_returns_only_a_pending_post_sync_item(store, shared, ha
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("by_id", [False, True])
+@pytest.mark.parametrize("with_snapshot", [False, True])
+async def test_first_local_add_reopens_unimported_ha_completion(store, shared, ha, by_id, with_snapshot):
+    manager = ListManager(store, ha.client, CONFIG)
+    if with_snapshot:
+        ha.put("pan")
+        assert (await manager.sync_with_ha()).status is SyncStatus.COMPLETE
+    assert all(item.text.casefold() != "leche" for item in await store.get_items(shared.id))
+    uid = ha.put("leche", TodoStatus.COMPLETED)
+    ha.calls.clear()
+
+    if by_id:
+        item = await manager.add_item_to_list_id(shared.id, "Leche", shared_only=True)
+    else:
+        result = await manager.add_item_with_outcome(None, "Leche", shared_only=True)
+        assert result.outcome.task_completed
+        conflict, = result.sync_report.conflicts
+        assert (conflict.winner, conflict.reason) == (ConflictWinner.LOCAL, ConflictReason.EXPLICIT_LOCAL_ADD)
+        item = result.item
+    assert item is not None and not item.completed
+    assert [local for local in await store.get_items(shared.id) if local.text.casefold() == "leche"] == [item]
+    assert ha.items[uid]["status"] == TodoStatus.PENDING
+    assert ha.writes == [("update_item", {"entity_id": ENTITY, "item": uid, "status": TodoStatus.PENDING})]
+
+    ha.calls.clear()
+    assert (await manager.sync_with_ha()).status is SyncStatus.COMPLETE
+    assert ha.writes == []
+
+
+@pytest.mark.asyncio
+async def test_first_local_add_without_remote_match_sends_one_add(store, shared, ha):
+    manager = ListManager(store, ha.client, CONFIG)
+    result = await manager.add_item_with_outcome(None, "Leche", shared_only=True)
+    assert result.outcome.task_completed and not result.item.completed
+    assert await store.get_items(shared.id) == [result.item]
+    assert ha.writes == [("add_item", {"entity_id": ENTITY, "item": "Leche"})]
+    remote, = ha.items.values()
+    assert remote["status"] == TodoStatus.PENDING
+
+
+@pytest.mark.asyncio
+async def test_failed_inline_add_intent_does_not_override_later_ha_completion(store, shared, ha):
+    manager = ListManager(store, ha.client, CONFIG)
+    item = await manager.add_item(None, "leche", shared_only=True)
+    uid, = ha.items
+    ha.http_error = 503
+    result = await manager.add_item_with_outcome(None, "Leche", shared_only=True)
+    assert result.item == item and result.outcome.task_completed
+    assert result.sync_report.status is SyncStatus.INCOMPLETE
+
+    ha.http_error = None
+    ha.items[uid]["status"] = TodoStatus.COMPLETED
+    ha.calls.clear()
+    assert (await manager.sync_with_ha()).status is SyncStatus.COMPLETE
+    effective, = await store.get_items(shared.id)
+    assert effective.id == item.id and effective.completed
+    assert ha.items[uid]["status"] == TodoStatus.COMPLETED
+    assert ha.writes == []
+
+
+@pytest.mark.asyncio
+async def test_add_by_id_preserves_permission_error_after_commit(store, shared, ha):
+    manager = ListManager(store, ha.client, CONFIG)
+    ha.pause_action = "get_items"
+    allowed = True
+    task = asyncio.create_task(manager.add_item_to_list_id(
+        shared.id, "leche", shared_only=True, guard=lambda: allowed,
+    ))
+    try:
+        await asyncio.wait_for(ha.entered.wait(), timeout=1)
+        allowed = False
+    finally:
+        ha.release.set()
+    with pytest.raises(PermissionError):
+        await task
+
+    item, = await store.get_items(shared.id)
+    assert item.text == "leche" and not item.completed
+    assert ha.writes == []
+
+
+@pytest.mark.asyncio
 async def test_revoked_authority_rolls_back_local_reopen(store, shared, ha, monkeypatch):
     manager = ListManager(store, ha.client, CONFIG)
     item = await store.add_item(shared.id, "leche")
