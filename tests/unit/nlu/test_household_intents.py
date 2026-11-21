@@ -50,11 +50,23 @@ def test_p5_energy_keeps_light_and_cover_phrases_unclaimed(text):
 @pytest.mark.parametrize("text", [
     "cuánto cuesta un auto eléctrico",
     "qué precio tiene un auto eléctrico",
+    "cuánto vale un coche eléctrico",
+    "cuánta energía usa una moto eléctrica",
+    "qué potencia usa una bici eléctrica",
+    "cuánto cuesta un monopatín eléctrico",
     "cuántos watts consume la heladera",
     "cuánta energía consume el lavarropas de casa",
     "cuántos watts consume la computadora",
+    "cuánta energía consume la computadora",
+    "cuánta energía consume el televisor",
+    "cuánto consume la tele de luz",
+    "qué potencia usa el amplificador",
+    "cuánta energía gasta el amplificador de la casa",
+    "cuál es el consumo de la heladera",
+    "qué potencia tiene el amplificador del living",
     "cuánto cuesta una casa",
     "cuánto cuesta la factura del gas",
+    "cuánto sale la factura",
     "cómo está la cámara del video portero",
     "mostrame la cámara del videoportero",
 ])
@@ -62,8 +74,9 @@ def test_p5_integrations_leave_other_electrical_devices_and_doorbells_unclaimed(
     assert classify_household_intent(text) is None
 
 
-def test_p5_camera_keeps_home_camera_health_query():
-    intent = classify_household_intent("cómo está la cámara del patio")
+@pytest.mark.parametrize("text", ["cómo está la cámara del patio", "estado de la cámara del timbre"])
+def test_p5_camera_keeps_home_camera_health_query(text):
+    intent = classify_household_intent(text)
     assert _shape(intent) == (F.CAMERA_HEALTH, O.QUERY, "P5")
     assert intent.complement == "health"
 
@@ -79,6 +92,19 @@ def test_p5_camera_keeps_home_camera_health_query():
     ("cuánto cuesta la factura de electricidad", "cost"),
     ("qué precio tiene la luz de casa", "cost"),
     ("cuántos watts consume el hogar", "power"),
+    ("cuánto cuesta el kwh", "cost"),
+    ("qué precio tiene el kwh", "cost"),
+    ("cuánto vale la tarifa eléctrica", "cost"),
+    ("cuánta potencia estamos consumiendo", "power"),
+    ("cuánta potencia hay", "power"),
+    ("qué potencia estamos usando", "power"),
+    ("cuántos kwh consumí este mes", "energy"),
+    ("qué consumo eléctrico tenemos", "energy"),
+    ("cuánta energía gastamos hoy", "energy"),
+    ("cuánta energía gastamos en luz hoy", "energy"),
+    ("cuánta energía gastamos hoy en pesos", "cost"),
+    ("cuántos watts usa la instalación", "power"),
+    ("qué potencia consume la red", "power"),
 ])
 def test_p5_energy_requires_electrical_measurement_or_cost(text, kind):
     intent = classify_household_intent(text)
