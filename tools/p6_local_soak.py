@@ -971,7 +971,8 @@ async def fault_mute(candidate: Candidate, original: AsyncExitStack) -> dict:
     backup = Path("pre-erasure-events.db")
     graph = candidate.graph
     source = graph.privacy.source_for_capture(str(uuid4()), time.time(), ROOMS[0])
-    await graph.dashboard.event_logger.alog(CANARY, "synthetic", sources=(source,))
+    events = graph.dashboard.event_logger
+    await events.acall(events.log, CANARY, "synthetic", sources=(source,))
     await asyncio.to_thread(sqlite_copy, database, backup)
     evidence = {"rows_in_older_copy": await asyncio.to_thread(canary_rows, backup)}
     await graph.erasure_services.request(source.conversation_id, MemoryReviewer("t061"))
@@ -1229,6 +1230,8 @@ def positive_seconds(value: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     """Run a safety-checked phase or render its operator evidence."""
+    import src  # noqa: F401 -- the isolated worker loads the candidate's src separately
+
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)

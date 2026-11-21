@@ -39,10 +39,10 @@ PHRASE_WORDS: tuple[str, ...] = (
     "pimienta", "jengibre", "tomate", "zanahoria", "lenteja", "garbanzo", "trigo", "lechuga", "avellana",
     "pepino", "batata", "calabaza", "espinaca", "perejil", "albahaca", "vainilla",
     # Nature
-    "meseta", "bosque", "cascada", "repollo", "peninsula", "desierto", "archipielago", "glaciar", "isla",
+    "meseta", "bosque", "cascada", "alcaucil", "peninsula", "desierto", "archipielago", "glaciar", "isla",
     "estepa", "laguna", "llanura", "tundra", "orilla", "piedra", "meandro", "pradera", "fiordo",
     "hornero", "barranco", "manantial", "rama", "semilla", "sendero", "girasol", "helecho", "musgo", "cactus",
-    "quebrada", "roble", "altiplano", "palmera", "hierba", "espiga", "estrella", "cordillera", "caverna", "brisa",
+    "quebrada", "eucalipto", "altiplano", "palmera", "hierba", "espiga", "estrella", "cordillera", "caverna", "brisa",
     "niebla", "granizo", "trueno", "tormenta", "arroyo", "pantano", "acantilado", "higuera",
     # Objects
     "alcachofa", "anillo", "barco", "pergamino", "botella", "telescopio", "canasta", "carpeta", "castillo", "sonajero",
@@ -50,8 +50,8 @@ PHRASE_WORDS: tuple[str, ...] = (
     "libro", "tintero", "maleta", "barrilete", "martillo", "mochila", "moneda", "paraguas", "pelota", "peine",
     "pincel", "pluma", "regalo", "sombrero", "cascabel", "tijera", "tambor", "ajedrez", "trompeta", "mosaico",
     "zapato", "bufanda", "guante", "chaqueta", "brujula", "tornillo", "vitral", "coliflor", "submarino",
-    "medalla", "corona", "escudo", "espada", "flecha", "velero", "canoa", "bicicleta",
-    "helicoptero", "tractor", "carreta", "carrusel", "tenedor", "cuchillo", "plato", "acordeon", "embudo",
+    "medalla", "corona", "escudo", "destornillador", "horquilla", "velero", "canoa", "triciclo",
+    "helicoptero", "tractor", "carreta", "carrusel", "tenedor", "cuchillo", "colador", "acordeon", "embudo",
     # Places, stories and characters
     "aventura", "bandera", "biblioteca", "enigma", "zorzal", "leyenda", "misterio", "poema", "tesoro", "acuario",
     "trineo", "planetario", "molino", "granja", "aldea", "pueblo", "mercado", "museo", "teatro", "gaucho",

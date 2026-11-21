@@ -4,8 +4,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from functools import partial
-from importlib import import_module
+from functools import cache, partial
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
@@ -104,6 +103,71 @@ _ROWS = {
               enabled_setting=("speaker_id", "enabled"), enabled_default=True),
     ), references=(("review_clips", "privacy_authority"), ("enrollment", "resource_only"))),
 }
+
+
+@cache
+def _nominal_types() -> dict[str, type]:
+    """Resolve the registered owner types once runtime composition reaches audio."""
+    from src.ambient.audio_archive import AudioArchiver
+    from src.ambient.erasure import CaptureEraser
+    from src.ambient.store import AmbientStore
+    from src.application import TTSModelOwner
+    from src.audio.input_group import InputGroup
+    from src.audio.ma1260_controller import MA1260Controller
+    from src.audio.owned_input import OwnedInputStream
+    from src.audio.xvf_controller import XvfController
+    from src.audio.zone_manager import ZoneManager
+    from src.core.voice_delivery import LocalVoiceDelivery
+    from src.memory.capture_control import CaptureControl
+    from src.pipeline.audio_loop import AudioLoop
+    from src.pipeline.audio_manager import AudioManager
+    from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop, RoomStream
+    from src.pipeline.response_handler import ResponseHandler
+    from src.pipeline.voice_services import VoiceServices
+    from src.presence.presence_detector import PresenceDetector
+    from src.rooms.room_context import RoomContextManager
+    from src.training.collector_erasure import CollectorEraser
+    from src.training.conversation_collector import ConversationCollector
+    from src.training.stt_correction_collector import STTCorrectionCollector
+    from src.tts.response_cache import ResponseCache
+    from src.users.voice_enrollment import VoiceEnrollment
+    from src.users.voice_ledger import VoiceLedger
+    from src.users.voice_registry import VoiceRegistry
+    from src.wakeword.clip_store import WakeClipStore
+    from src.wakeword.wake_clip_writer import WakeClipWriter
+
+    return {
+        f"{owner_type.__module__}.{owner_type.__qualname__}": owner_type
+        for owner_type in (
+            AudioArchiver,
+            CaptureEraser,
+            AmbientStore,
+            TTSModelOwner,
+            InputGroup,
+            MA1260Controller,
+            OwnedInputStream,
+            XvfController,
+            ZoneManager,
+            LocalVoiceDelivery,
+            CaptureControl,
+            AudioLoop,
+            AudioManager,
+            MultiRoomAudioLoop, RoomStream,
+            ResponseHandler,
+            VoiceServices,
+            PresenceDetector,
+            RoomContextManager,
+            CollectorEraser,
+            ConversationCollector,
+            STTCorrectionCollector,
+            ResponseCache,
+            VoiceEnrollment,
+            VoiceLedger,
+            VoiceRegistry,
+            WakeClipStore,
+            WakeClipWriter,
+        )
+    }
 
 
 def _root_path(state_root: str | PurePosixPath) -> PurePosixPath:
@@ -279,8 +343,7 @@ class AudioPublisherBinding:
             _require(type(entries) is tuple and all(type(entry) is AudioOwner for entry in entries),
                      "audio_publisher_owner_roles")
             if entries:
-                module, name = role.nominal_type.rsplit(".", 1)
-                nominal = getattr(import_module(module), name)
+                nominal = _nominal_types()[role.nominal_type]
                 _require(all(type(entry.instance) is nominal and not getattr(entry.instance, "_capture_unreviewed", False)
                              for entry in entries), "audio_publisher_owner_type")
             owners = {id(entry.instance): entry for entry in entries}

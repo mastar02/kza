@@ -29,6 +29,15 @@ ALLOW_LIST = {
     ("src/memory/runtime_closure.py", "models",
      '"pipeline", "privacy", "ledger", "models", "stt_executors", "tts_models",'):
         "a graph attribute name in the closure inventory, not a file path",
+    ("src/memory/output_registration_memory.py", "models/",
+     'static = static or value.startswith(("/", "./", "../", "models/"))'):
+        "classifies a path prefix versus an SDK identifier",
+    ("src/memory/output_registration_offline.py", "logs",
+     'and value.get("external_paths") == ["config", "data", "models", "logs"]'):
+        "validates a release.json external_paths schema name",
+    ("src/memory/output_registration_offline.py", "models",
+     'and value.get("external_paths") == ["config", "data", "models", "logs"]'):
+        "validates a release.json external_paths schema name",
     ("src/pipeline/voice_pipeline.py", "models", 'self.lifecycle.stop.checkpoint("models")'):
         "a stop-checkpoint label, not a file path",
 }

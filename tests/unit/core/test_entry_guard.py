@@ -430,6 +430,7 @@ NO_SRC_ENTRIES = {
     "tools/analyze_audio_quality.py": "reads an explicit WAV inventory; writes only its output",
     "tools/runtime_diagnostics.py": "fixed read-only snapshot for a restricted SSH key",
     "tools/roadmap_status.py": "read-only roadmap checks",
+    "tools/release_manifest_review.py": "reviews explicit release artifacts and scratch files; opens no KZA store",
     "tools/diagnose_voice_loading.py": "HTTPS timing probe; opens no KZA store",
     "tools/bench_llm.py": "LLM HTTP benchmark; opens no KZA store",
     # SC-0 measurement harness (2026-11-16): never run against production; it builds scratch roots.
