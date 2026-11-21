@@ -198,6 +198,74 @@ async def test_bidirectional_casefold_deduplication_and_idempotence(store, share
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("history", ["initial", "known", "concurrent_timestamp"])
+async def test_readding_completed_item_reopens_locally_and_in_ha(store, shared, ha, history):
+    manager = ListManager(store, ha.client, CONFIG)
+    item = await store.add_item(shared.id, "leche")
+    await store.complete_item(item.id)
+    metadata = {"updated_at": item.created_at - 60} if history == "concurrent_timestamp" else {}
+    uid = ha.put("LECHE", TodoStatus.COMPLETED, **metadata)
+
+    if history != "initial":
+        assert (await manager.sync_with_ha()).status is SyncStatus.COMPLETE
+    if history == "concurrent_timestamp":
+        ha.items[uid]["updated_at"] = datetime.now(UTC).timestamp()
+
+    result = await manager.add_item_with_outcome("member", " Leche ")
+    assert result.item.id == item.id and result.item.created_at == item.created_at
+    assert not result.item.completed and result.item.completed_at is None
+    assert await store.get_items(shared.id) == [result.item]
+    assert result.sync_report.status is SyncStatus.COMPLETE
+    assert result.sync_report.completed_resolved == 1
+    if history == "concurrent_timestamp":
+        conflict, = result.sync_report.conflicts
+        assert (conflict.winner, conflict.reason) == (ConflictWinner.LOCAL, ConflictReason.TIMESTAMP)
+    assert ha.items[uid]["status"] == TodoStatus.PENDING
+    assert ha.writes == [("update_item", {"entity_id": ENTITY, "item": uid, "status": TodoStatus.PENDING})]
+
+    second = await manager.sync_with_ha()
+    assert (second.status, second.completed_resolved, second.added_remote) == (SyncStatus.COMPLETE, 0, 0)
+    assert len(ha.writes) == 1
+    assert await store.get_items(shared.id) == [result.item]
+
+
+@pytest.mark.asyncio
+async def test_readding_completed_item_reopens_without_ha_entity(store, shared, ha):
+    manager = ListManager(store, ha.client, {"ha_sync_enabled": True})
+    item = await store.add_item(shared.id, "leche")
+    await store.complete_item(item.id)
+
+    result = await manager.add_item_with_outcome("member", "Leche")
+    assert result.item.id == item.id and result.item.created_at == item.created_at
+    assert not result.item.completed and result.item.completed_at is None
+    assert await store.get_items(shared.id) == [result.item]
+    assert result.sync_report.status is SyncStatus.INVALID_CONFIGURATION
+    assert ha.calls == []
+
+
+@pytest.mark.asyncio
+async def test_revoked_authority_rolls_back_local_reopen(store, shared, ha, monkeypatch):
+    manager = ListManager(store, ha.client, CONFIG)
+    item = await store.add_item(shared.id, "leche")
+    completed = await store.complete_item(item.id)
+    allowed = True
+    row_to_item = store._row_to_item
+
+    def revoke_at_match(row):
+        nonlocal allowed
+        allowed = False
+        return row_to_item(row)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "_row_to_item", revoke_at_match)
+        with pytest.raises(PermissionError):
+            await manager.add_item_with_outcome("member", "Leche", guard=lambda: allowed)
+
+    assert await store.get_items(shared.id) == [completed]
+    assert ha.calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("remote_time", "winner", "reason"),
     [
