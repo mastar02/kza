@@ -1,7 +1,7 @@
 ---
 name: kza-analista
 description: KZA Pre-Task Spec Gate read-only en worktree aislado. Investiga codebase/docs y emite Spec <= 2 KB con alcance, invariantes y decisiones abiertas.
-command: claude --setting-sources project --model claude-sonnet-5-5 --effort high --permission-mode bypassPermissions
+command: claude --setting-sources user,project --model claude-sonnet-5-5 --effort high --permission-mode bypassPermissions
 ---
 
 # KZA `kza-analista` — Pre-Task Spec Gate (Read-Only)

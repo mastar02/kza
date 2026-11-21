@@ -158,7 +158,7 @@ def test_safe_cli_flags_per_runtime_read_only_vs_write() -> None:
         assert "--disable-write" not in muse_cmd
 
         claude_cmd = kza_router.build_cli_command(by_rt["claude"], role)
-        assert "--setting-sources" in claude_cmd and "project" in claude_cmd
+        assert "--setting-sources" in claude_cmd and "user,project" in claude_cmd
         assert "--permission-mode" in claude_cmd and "bypassPermissions" in claude_cmd
         assert "plan" not in claude_cmd
 
@@ -259,3 +259,34 @@ def test_api_routing_outcome_and_kpi_report(tmp_path: Path) -> None:
     assert report["round1_approval_rate_pct"] == 100.0
     assert report["round1_target_met"] is True
     assert report["estimated_cost_usd"] > 0
+
+
+def test_allowed_runtimes_policy_blocks_disallowed_even_under_emergency(tmp_path: Path) -> None:
+    (tmp_path / "policy.json").write_text(json.dumps({"allowed_runtimes": ["claude", "codex"]}), encoding="utf-8")
+    dec = kza_router.route_task(
+        role="kza-qa",
+        summary="QA restricted to claude and codex",
+        exclude_families=["openai"],
+        allow_quota_emergency=True,
+        offline=True,
+        state_dir=tmp_path,
+        quota_snapshot={
+            "quota_emergency": True,
+            "eligible_runtimes": [],
+            "subscriptions": {rt: {"weight": 0.0, "excluded": True, "status": "excluded"} for rt in ("claude", "codex", "muse", "agy")},
+        },
+    )
+    assert dec["runtime"] == "claude"
+    assert all(cid.startswith(("claude:", "codex:")) for cid in dec["eligible_candidates"])
+
+    # When only claude+codex are allowed and both anthropic and openai are excluded, fail closed (never fall back to agy/muse).
+    with pytest.raises(RuntimeError, match="No candidates remain"):
+        kza_router.route_task(
+            role="kza-qa",
+            summary="No allowed runtime left",
+            exclude_families=["anthropic", "openai"],
+            allow_quota_emergency=True,
+            offline=True,
+            state_dir=tmp_path,
+            quota_snapshot=_healthy_quota_snapshot(),
+        )

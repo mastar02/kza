@@ -1,7 +1,7 @@
 ---
 name: kza-privacy
 description: KZA gate independiente read-only de privacidad, autoridad, separación voz/persona/cuenta y releases autocontenidas.
-command: claude --setting-sources project --model claude-opus-5-5 --effort high --permission-mode bypassPermissions
+command: claude --setting-sources user,project --model claude-opus-5-5 --effort high --permission-mode bypassPermissions
 ---
 
 # KZA `kza-privacy` — Gate de Privacidad, Autoridad y Releases (Read-Only)

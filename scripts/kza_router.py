@@ -402,7 +402,7 @@ def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
         return [
             "claude",
             "--setting-sources",
-            "project",
+            "user,project",
             "--model",
             candidate.model,
             "--effort",
@@ -674,6 +674,27 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
         pass
 
 
+def load_allowed_runtimes(state_dir: Path | None = None) -> set[str] | None:
+    """Load optional runtime allowlist from `KZA_ALLOWED_RUNTIMES` or `<state_dir>/policy.json`."""
+    env_raw = os.environ.get("KZA_ALLOWED_RUNTIMES", "").strip()
+    if env_raw:
+        return {item.strip().lower() for item in env_raw.split(",") if item.strip()}
+
+    policy_path = _state_dir(state_dir) / "policy.json"
+    if not policy_path.is_file():
+        return None
+    try:
+        data = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Invalid router policy file {policy_path}: {exc}") from exc
+    if not isinstance(data, dict) or "allowed_runtimes" not in data:
+        return None
+    raw_list = data["allowed_runtimes"]
+    if not isinstance(raw_list, list):
+        raise RuntimeError(f"Invalid 'allowed_runtimes' in {policy_path}: expected list.")
+    return {str(item).strip().lower() for item in raw_list if str(item).strip()}
+
+
 def route_task(
     *,
     role: str,
@@ -704,6 +725,12 @@ def route_task(
     quota_weights = {rt: float(subs[rt]["weight"]) for rt in kza_quota.RUNTIMES if rt in subs}
 
     all_candidates = catalog if catalog is not None else load_catalog()
+    allowed_runtimes = load_allowed_runtimes(sdir)
+    if allowed_runtimes is not None:
+        all_candidates = [c for c in all_candidates if c.runtime in allowed_runtimes]
+        if not all_candidates:
+            raise RuntimeError(f"No candidates remain under allowed_runtimes={sorted(allowed_runtimes)}.")
+
     # Stage 1 deterministic guardrails: cross-model exclusion by REAL model family.
     family_filtered = [c for c in all_candidates if c.family not in excluded_fams]
     if not family_filtered:
