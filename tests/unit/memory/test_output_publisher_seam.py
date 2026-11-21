@@ -60,6 +60,17 @@ def _journal_bytes(writer):
     return {path.name: path.read_bytes() for path in writer._directory.iterdir()}
 
 
+@pytest.mark.parametrize("disabled", [False, True])
+async def test_intent_and_disabled_snapshot_before_revalidating(writer, monkeypatch, disabled):
+    producer, roles = (OFFLINE.producer, ()) if disabled else (AUDIO.producer, ("single_input", "multi_room"))
+    plan = publisher_plan("resource_only", roles=roles)
+    monkeypatch.setattr(writer.admission, "revalidate", lambda: plan.update(kind="unsupported"))
+    publish = writer.publisher_disabled if disabled else writer.publisher_intent
+    await publish(producer, plan)
+    assert plan["kind"] == "unsupported"
+    assert v4.chain(writer._directory)[2][producer]["plan"]["kind"] == "resource_only"
+
+
 def _compose_legacy_fixture(writer):
     """Provide settled legacy bindings. Only the generic legs are exercised here."""
     writer._accounts_disabled = writer._configuration_disabled = True

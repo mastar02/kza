@@ -1358,7 +1358,6 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
 
     async def publisher_intent(self, producer: str, plan: dict) -> GenericOutputPublisher:
         """Record the metadata plan before the caller constructs or opens its owner."""
-        await self._run(self.admission.revalidate)
         await self._publisher_phase(producer, PublisherPhase.INTENT, plan=plan)
         return GenericOutputPublisher(self, producer)
 
@@ -1381,7 +1380,6 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
 
     async def publisher_disabled(self, producer: str, plan: dict) -> None:
         """Record a declared, unselected row before any owner was attached."""
-        await self._run(self.admission.revalidate)
         await self._publisher_phase(producer, PublisherPhase.DISABLED, plan=plan)
 
     async def _publisher_phase(self, producer: str, phase: PublisherPhase, *,
@@ -1391,6 +1389,9 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
                       and producer in self._generic_publishers, "publisher_producer")
         if phase in {PublisherPhase.INTENT, PublisherPhase.DISABLED}:
             plan = snapshot_metadata(plan)
+            # Preserve the caller's original metadata across the full
+            # admission revalidation and the subsequent durable append.
+            await self._run(self.admission.revalidate)
         if phase == PublisherPhase.DRAINED:
             aggregate = snapshot_metadata(aggregate)
         await self._run(self._append_publisher, producer, phase, plan, aggregate)
