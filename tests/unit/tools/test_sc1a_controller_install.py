@@ -17,7 +17,6 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
-import time
 
 import pytest
 
@@ -241,10 +240,12 @@ def test_every_path_loaded_module_of_the_closure_is_listed():
     assert "src/memory/manual_components.py" in builder.CONTROLLER_PATH_LOADED
 
 
-# Released (epoch, revision) pairs and their closure digest. Empty until the first epoch-5 release:
-# the release procedure (SC-5b) adds the pair it ships, and from then on a closure change without a
+# Released (epoch, revision) pairs and their closure digest.
+# The release procedure (SC-5b) adds the pair it ships, and from then on a closure change without a
 # CONTROLLER_REVISION bump fails here, before install-controller would refuse it (CR2-9, CO-5).
-RELEASED_CONTROLLERS: dict[tuple[int, int], str] = {}
+RELEASED_CONTROLLERS: dict[tuple[int, int], str] = {
+    (5, 1): "8cec6c0477f7b69052a4ae9124c42e27af233733e314b2a3ebbdfd830e6f5b69",
+}
 
 
 def _released_pair_check(released: dict, epoch: int, revision: int, digest: str) -> None:

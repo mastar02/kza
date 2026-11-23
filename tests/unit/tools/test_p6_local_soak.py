@@ -1,6 +1,8 @@
 """Availability accounting and acceptance against a real sealed candidate."""
 
+import asyncio
 from contextlib import suppress
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
@@ -10,7 +12,10 @@ import socket
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 
+import aiohttp
+import httpx
 import pytest
 
 from scripts.build_runtime import build_runtime
@@ -18,6 +23,99 @@ from tools import p6_local_soak as soak
 from tools.release_manifest_review import ReviewInputs, review_manifest
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+async def test_home_simulator_only_accepts_the_read_only_keepalive():
+    home = soak.HomeSimulator()
+    async with (
+        home.serve() as url,
+        aiohttp.ClientSession() as session,
+        session.ws_connect(f"{url}/api/websocket", timeout=aiohttp.ClientWSTimeout(ws_receive=2)) as ws,
+    ):
+        assert await ws.receive_json() == {"type": "auth_required"}
+        await ws.send_json({"type": "auth", "access_token": soak.HA_TOKEN})
+        assert await ws.receive_json() == {"type": "auth_ok"}
+
+        keepalive = {
+            "type": "call_service", "domain": "homeassistant", "service": "update_entity",
+            "service_data": {"entity_id": "light.synthetic"},
+        }
+        await ws.send_json({"id": 1, **keepalive})
+        assert await ws.receive_json() == {"id": 1, "type": "result", "success": True}
+
+        rejected = (
+            {"domain": "light", "service": "turn_on"},
+            {"service_data": {"entity_id": "light.other"}},
+            {"service_data": {"entity_id": "light.synthetic", "extra": True}},
+        )
+        for identifier, changes in enumerate(rejected, start=2):
+            await ws.send_json({**keepalive, **changes, "id": identifier})
+            assert await ws.receive_json() == {
+                "id": identifier, "type": "result", "success": False,
+                "error": {"code": "not_supported", "message": "synthetic read only"},
+            }
+
+
+async def test_candidate_refresh_rest_keeps_websocket_calls_current(tmp_path):
+    from src.home_assistant.ha_client import HomeAssistantClient, TRANSPORT_OBSERVATION_TTL_S
+    from src.monitoring.health_aggregator import HealthAggregator
+
+    home = soak.HomeSimulator()
+    async with home.serve() as url:
+        client = HomeAssistantClient(url, soak.HA_TOKEN, timeout=1.0)
+        health = HealthAggregator(ha_client=client)
+        candidate = soak.Candidate(tmp_path, home, url)
+        candidate.graph = SimpleNamespace(ha_client=client, capture_control=SimpleNamespace(snapshot=dict))
+        candidate.task = asyncio.get_running_loop().create_future()
+
+        def health_response(request):
+            assert request.url.path == "/api/health"
+            ha = health._check_ha()
+            other = [{"name": name, "status": "healthy"} for name in (
+                "priority_queue", "reminders", "command_index", "voice_pipeline",
+            )]
+            return httpx.Response(200, json={"status": str(ha.status), "subsystems": [asdict(ha), *other]})
+
+        async def useful():
+            return (await candidate.observe())["kza_useful"]
+
+        try:
+            async with httpx.AsyncClient(
+                base_url="http://test", transport=httpx.MockTransport(health_response),
+            ) as candidate.http:
+                await client.start_state_sync()
+                assert (await client.get_state_snapshot()).available
+                async with asyncio.timeout(3):
+                    await soak.wait_for(useful)
+                startup = client.get_health_status().calls
+                assert startup.required and startup.observed_at is not None
+                client._channel_observations["calls"] = replace(
+                    startup, observed_at=startup.observed_at - TRANSPORT_OBSERVATION_TTL_S,
+                    expires_at=startup.observed_at,
+                )
+                assert client.get_health_status().calls.phase == "expired"
+                assert (await candidate.observe())["kza_useful"] is False
+
+                refresh = asyncio.create_task(candidate.refresh_rest())
+                try:
+                    async with asyncio.timeout(3):
+                        await soak.wait_for(useful)
+                    refreshed = client.get_health_status().calls.observed_at
+                    assert refreshed > startup.observed_at
+
+                    async def refreshed_again():
+                        return client.get_health_status().calls.observed_at > refreshed
+
+                    async with asyncio.timeout(15):
+                        await soak.wait_for(refreshed_again)
+                    sample = await candidate.observe()
+                    assert sample["kza_useful"] is True
+                    assert set(sample["ha"]) == {"rest", "events"}
+                finally:
+                    await soak.cancel(refresh)
+        finally:
+            candidate.task.cancel()
+            await client.close()
 
 
 @pytest.fixture

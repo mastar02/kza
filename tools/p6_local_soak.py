@@ -456,6 +456,13 @@ class HomeSimulator:
                     }})
                     self.subscribers[ws] = identifier
                     self.initial_frames += 1
+                elif (
+                    body.get("type") == "call_service"
+                    and body.get("domain") == "homeassistant"
+                    and body.get("service") == "update_entity"
+                    and body.get("service_data") == {"entity_id": "light.synthetic"}
+                ):
+                    await ws.send_json({"id": identifier, "type": "result", "success": True})
                 else:
                     await ws.send_json({"id": identifier, "type": "result", "success": False,
                                         "error": {"code": "not_supported", "message": "synthetic read only"}})
@@ -742,9 +749,13 @@ class Candidate:
         )
 
     async def refresh_rest(self) -> None:
-        """Keep REST channel evidence fresh under the steady synthetic workload."""
+        """Keep REST and WebSocket calls evidence fresh during the synthetic workload."""
+        iteration = 0
         while True:
             await self.graph.ha_client.get_state_snapshot()
+            if iteration % 20 == 0 and self.home.online:
+                await self.graph.ha_client.call_service_ws("homeassistant", "update_entity", "light.synthetic")
+            iteration += 1
             await asyncio.sleep(0.5)
 
     async def observe(self) -> dict:

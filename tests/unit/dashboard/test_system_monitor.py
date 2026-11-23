@@ -92,14 +92,17 @@ def test_services_snapshot_returns_none_when_no_signal(monkeypatch):
     assert system_monitor.services_snapshot() is None
 
 
-def test_services_snapshot_includes_in_process_always():
+def test_services_snapshot_includes_in_process_always(monkeypatch):
     """chromadb es in_process; debe aparecer activo siempre."""
+    monkeypatch.setattr(system_monitor.shutil, "which", lambda _: "/usr/bin/systemctl")
+    monkeypatch.setattr(
+        system_monitor, "_systemctl_show",
+        lambda name: {"name": name, "status": "active"} if name == "kza-voice" else None,
+    )
+    monkeypatch.setattr(system_monitor, "_http_ok", lambda _: False)
     snap = system_monitor.services_snapshot()
-    if snap is None:
-        # En CI sin nada respondiendo, es esperable None — saltamos.
-        return
-    chroma = next((s for s in snap if s["name"] == "chromadb"), None)
-    assert chroma is not None
+    assert snap is not None
+    chroma = next(s for s in snap if s["name"] == "chromadb")
     assert chroma["status"] == "active"
 
 
