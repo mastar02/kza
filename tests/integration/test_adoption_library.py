@@ -108,6 +108,63 @@ def test_every_source_file_is_hashed_and_the_source_is_untouched(adopted):
         assert copied["data/obs/" + item[0][len("metrics/"):]] == item[4] or item[0].endswith(".sqlite3")
 
 
+def test_adoption_of_the_slot_with_shared_models_and_in_state_metrics(tmp_path, tree):
+    import yaml
+
+    layout, root = _variant(tmp_path, tree)
+    state = layout.legacy_state
+    (state / "models").symlink_to(layout.models_root)
+    metrics_path = "./logs/kza-metrics.jsonl"
+    settings = state / "config" / "settings.yaml"
+    settings.write_text(settings.read_text().replace(adoption.PRODUCTION_METRICS, metrics_path))
+
+    legacy_metrics = adoption.metrics_store_set(layout, adoption.PRODUCTION_METRICS)
+    policy_name = legacy_metrics["policy_name"]
+    logs = state / "logs"
+    for name in legacy_metrics["members"]:
+        shutil.move(layout.metrics_root / name, logs / name)
+    (layout.metrics_root / policy_name).write_bytes(b"external decoy\n")
+    quarantined = policy_name + ".1.quarantine-fixture"
+    (logs / quarantined).write_bytes(b"quarantined metrics\n")
+
+    with closing(sqlite3.connect(state / "data" / "memory_privacy.db")) as db, db:
+        (old_id, raw_descriptor), = db.execute(
+            "SELECT id, descriptor FROM erasure_targets WHERE participant='diagnostics' AND version=2"
+        ).fetchall()
+        descriptor = json.loads(raw_descriptor)
+        assert descriptor["path"] == str(layout.metrics_root / policy_name)
+        descriptor["path"] = str(logs / policy_name)
+        target_id = adoption.target_id("diagnostics", 2, descriptor)
+        db.execute("UPDATE erasure_targets SET id=?, descriptor=? WHERE id=?",
+                   (target_id, json.dumps(descriptor), old_id))
+        db.execute("UPDATE erasure_steps SET target_id=? WHERE target_id=?", (target_id, old_id))
+
+    before = adoption.source_manifest(layout, metrics_path)
+    private = {}
+    report = _adopt(layout, root, private=private)
+    work = root / "work"
+    config = yaml.safe_load((work / "config" / "settings.yaml").read_text())
+    assert config["observability"]["metrics_path"] == "./data/obs/kza-metrics.jsonl"
+    assert not (work / "models").exists()
+    assert report["metrics"]["members"] == 4
+    for name in (policy_name, policy_name + ".1", quarantined):
+        assert (work / "data" / "obs" / name).read_bytes() == (logs / name).read_bytes()
+    assert (work / "data" / "obs" / (policy_name + ".sqlite3")).is_file()
+    relocated, = [item["descriptor"] for item in adoption.registered_targets(work)
+                  if (item["participant"], item["version"]) == ("diagnostics", 2)]
+    assert relocated == dict(descriptor, path=str(root / "slot" / "state" / "data" / "obs" / policy_name))
+    assert report["targets"] == {"registered": 25, "added_at_first_start": 1}
+
+    assert private["metrics_path"] == metrics_path
+    assert private["source_manifest"] == before == adoption.source_manifest(layout, metrics_path)
+    assert report["source_manifest_sha256"] == adoption.manifest_digest(before)
+    names = [entry[0] for entry in before]
+    assert len(names) == len(set(names)) == report["source_files"]
+    assert not any(name.startswith(("metrics/", "models/")) for name in names)
+    assert {f"logs/{name}" for name in [*legacy_metrics["members"], quarantined]} <= set(names)
+    adoption.verify_source_unchanged(layout, metrics_path, before)
+
+
 def test_the_audit_hook_saw_the_copy_and_refused_nothing(adopted):
     guard = adopted["report"]["guard"]
     assert guard["refused"] == 0 and guard["connects_observed"] > 0
@@ -142,6 +199,31 @@ def test_a_source_change_during_the_copy_refuses(tmp_path, tree, monkeypatch, ch
     monkeypatch.setattr(adoption, "copy_metrics_store", change_source)
     with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_source_changed$"):
         _adopt(layout, root)
+
+
+@pytest.mark.parametrize("advisory", [True, False])
+def test_a_clip_reaped_during_copy_is_tolerated_only_in_advisory_mode(tmp_path, tree, monkeypatch, advisory):
+    layout, root = _variant(tmp_path, tree)
+    clip = layout.legacy_state / "data" / "wakeword_training" / "expired.wav"
+    clip.parent.mkdir(exist_ok=True)
+    clip.write_bytes(b"clip to reap")
+    original_copy = adoption._copy_file
+
+    def reap_before_open(source, destination, moving=None):
+        if source == clip:
+            subprocess.run([sys.executable, "-I", "-c", "import os, sys; os.unlink(sys.argv[1])", str(clip)],
+                           check=True, timeout=60)  # The live reaper runs outside the source guard.
+        return original_copy(source, destination, moving)
+
+    monkeypatch.setattr(adoption, "_copy_file", reap_before_open)
+    if advisory:
+        report = _adopt(layout, root, advisory=True)
+        assert report["source_moving"] == {"during_copy": 1}
+        assert report["targets"] == {"registered": 25, "added_at_first_start": 1}
+        assert not (root / "work" / clip.relative_to(layout.legacy_state)).exists()
+    else:
+        with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_source_changed$"):
+            _adopt(layout, root, advisory=False)
 
 
 @pytest.mark.parametrize("scratch", ["unmarked", "inside_work_parent_slot"])

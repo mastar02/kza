@@ -391,10 +391,15 @@ def checked_scratch(parent, *, tmpfs_required: bool) -> tuple[Path, str]:
     return Path(os.path.realpath(parent)), kind
 
 
-def source_size(layout) -> dict:
+def source_size(layout: adoption.SourceLayout) -> dict:
     files = size = 0
-    for path in adoption._walk_files(layout.legacy_state):
-        files, size = files + 1, size + path.lstat().st_size
+    for path in adoption._walk_files(layout.legacy_state, allowed_models_root=layout.models_root):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        files += 1
+        size += info.st_size
     return {"files": files, "bytes": size}
 
 
