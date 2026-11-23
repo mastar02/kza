@@ -21,15 +21,22 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Literal, TextIO
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MIN_SHM_FREE_BYTES = 16 * 1024**3  # 16 GiB safety margin on /dev/shm
+RAM_BACKED_FSTYPES = frozenset({"tmpfs", "ramfs"})
+CHILD_TERM_GRACE_S = 10.0
+SHUTDOWN_SIGNALS = tuple(
+    getattr(signal, name) for name in ("SIGHUP", "SIGTERM", "SIGINT") if hasattr(signal, name)
+)
 DEFAULT_SOLO_WINDOW_FILE = Path("/home/yo/projects/runs/SOLO_WINDOW")
 TIER2_STEP_NAMES = {
     "node": "frontend-node",
@@ -127,6 +134,35 @@ def _shm_has_capacity(shm_root: Path = Path("/dev/shm"), min_shm_bytes: int = MI
         return (statvfs.f_bavail * statvfs.f_frsize) >= min_shm_bytes
     except OSError:
         return False
+
+
+def _unescape_mount_field(field: str) -> str:
+    """Decode the octal escapes (``\\040`` for a space) used by /proc/mounts."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), field)
+
+
+def is_ram_backed_path(path: Path, *, mounts_file: Path = Path("/proc/mounts")) -> bool:
+    """Return whether ``path`` lives on a tmpfs/ramfs mount (page cache charged to the cgroup).
+
+    Uses the longest matching mount point in ``mounts_file``; returns ``False`` when
+    the mount table is unavailable (non-Linux hosts).
+    """
+    try:
+        resolved = os.path.realpath(path)
+        lines = mounts_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
+    best_len = -1
+    best_type = ""
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 3:
+            continue
+        mount_point = os.path.normpath(_unescape_mount_field(fields[1]))
+        prefix = mount_point if mount_point == "/" else mount_point + "/"
+        if (resolved == mount_point or resolved.startswith(prefix)) and len(mount_point) > best_len:
+            best_len, best_type = len(mount_point), fields[2]
+    return best_type in RAM_BACKED_FSTYPES
 
 
 def choose_basetemp_root(
@@ -484,6 +520,58 @@ def read_git_dirty(repo: Path) -> bool | None:
     return bool(status) if status is not None else None
 
 
+_ACTIVE_CHILDREN: dict[int, subprocess.Popen] = {}
+_ACTIVE_CHILDREN_LOCK = threading.RLock()  # re-entrant: the signal handler may fire while it is held
+_SHUTDOWN = threading.Event()
+
+
+def _killpg(pgid: int, sig: int) -> None:
+    try:
+        os.killpg(pgid, sig)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def terminate_active_children(grace_s: float = CHILD_TERM_GRACE_S) -> None:
+    """SIGTERM every live pytest process group, then SIGKILL survivors after ``grace_s``.
+
+    Process groups are signalled (not just the leader) so pytest-xdist workers cannot
+    outlive the runner and keep tmpfs/RAM pinned after the session closes.
+    """
+    _SHUTDOWN.set()
+    with _ACTIVE_CHILDREN_LOCK:
+        children = dict(_ACTIVE_CHILDREN)
+    for pgid in children:
+        _killpg(pgid, signal.SIGTERM)
+    deadline = time.monotonic() + grace_s
+    while time.monotonic() < deadline and any(proc.poll() is None for proc in children.values()):
+        time.sleep(0.1)
+    for pgid in children:
+        _killpg(pgid, signal.SIGKILL)
+
+
+def _raise_on_shutdown_signal(signum: int, _frame: object) -> None:
+    terminate_active_children()
+    raise SystemExit(128 + signum)
+
+
+def install_shutdown_handlers() -> dict[int, object]:
+    """Route SIGHUP/SIGTERM/SIGINT to an orderly shutdown so ``finally`` cleanup runs.
+
+    Without this an SSH logout (SIGHUP) kills the runner outright, skipping basetemp
+    and SOLO_WINDOW cleanup. Returns the previous handlers (empty off the main thread).
+    """
+    _SHUTDOWN.clear()
+    if threading.current_thread() is not threading.main_thread():
+        return {}
+    return {sig: signal.signal(sig, _raise_on_shutdown_signal) for sig in SHUTDOWN_SIGNALS}
+
+
+def restore_shutdown_handlers(previous: dict[int, object]) -> None:
+    for sig, handler in previous.items():
+        signal.signal(sig, handler)
+
+
 def _run_subprocess(
     name: str,
     cmd: list[str],
@@ -494,12 +582,35 @@ def _run_subprocess(
 ) -> dict:
     started = time.monotonic()
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    returncode = 128 + signal.SIGTERM
     with log_path.open("wb") as log_file:
-        proc = subprocess.run(cmd, cwd=cwd, env=env, stdout=log_file, stderr=subprocess.STDOUT)
+        with _ACTIVE_CHILDREN_LOCK:
+            proc = None
+            if not _SHUTDOWN.is_set():
+                # Own session/process group so shutdown can reap pytest and its xdist workers together.
+                proc = subprocess.Popen(
+                    cmd,
+                    cwd=cwd,
+                    env=env,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+                _ACTIVE_CHILDREN[proc.pid] = proc
+        if proc is not None:
+            try:
+                returncode = proc.wait()
+            except BaseException:
+                _killpg(proc.pid, signal.SIGKILL)
+                proc.wait()
+                raise
+            finally:
+                with _ACTIVE_CHILDREN_LOCK:
+                    _ACTIVE_CHILDREN.pop(proc.pid, None)
     return {
         "name": name,
         "command": cmd,
-        "exit_code": proc.returncode,
+        "exit_code": returncode,
         "duration_s": round(time.monotonic() - started, 2),
         "log": str(log_path),
     }
@@ -661,6 +772,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out-dir", type=Path, default=None, help="Directory for logs, XML reports, and summary.json")
     parser.add_argument("--cache-dir", type=Path, default=None, help="Shared runtime artifact cache directory")
     parser.add_argument("--basetemp", type=Path, default=None, help="Explicit pytest basetemp root")
+    parser.add_argument(
+        "--allow-tmpfs-basetemp",
+        action="store_true",
+        help="Permit an explicit --basetemp on tmpfs/ramfs for Tier 1/2 (default: refused; it pins RAM and starves the cgroup)",
+    )
     parser.add_argument("--targets", nargs="*", default=[], help="Target test files/dirs for Tier 0")
     prebuild_group = parser.add_mutually_exclusive_group()
     prebuild_group.add_argument("--prebuild", action="store_true", help="Prebuild runtime artifacts cache before running (default for Tiers 1 and 2)")
@@ -704,6 +820,17 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--lanes selection requires --tier 2")
     if args.tier == 0 and not args.targets:
         parser.error("--tier 0 requires at least one path in --targets")
+    if (
+        args.basetemp is not None
+        and args.tier >= 1
+        and not args.allow_tmpfs_basetemp
+        and is_ram_backed_path(args.basetemp)
+    ):
+        parser.error(
+            f"--basetemp {args.basetemp} is on tmpfs/ramfs; Tier {args.tier} retains tens of GiB and, with "
+            "MemorySwapMax=0, pins RAM until the directory is removed. Use a disk path (or omit --basetemp), "
+            "or pass --allow-tmpfs-basetemp to override"
+        )
 
     lanes = set(TIER2_STEP_NAMES if "all" in lane_tokens else lane_tokens)
     if "b" in lanes:
@@ -756,6 +883,7 @@ def main(argv: list[str] | None = None) -> int:
     host_interference: list[str] = []
     host_timers_checked: list[HostTimerCheck] = []
 
+    previous_handlers = install_shutdown_handlers()
     try:
         solo_guard = acquire_solo_window(tier=args.tier)
         if args.tier == 2 and not args.ignore_host_timers and lanes.intersection((*TIER2_B_LANES, "c")):
@@ -830,7 +958,10 @@ def main(argv: list[str] | None = None) -> int:
             if cleanup_basetemp and basetemp_root is not None:
                 safe_rmtree(basetemp_root)
         finally:
-            solo_guard.release()
+            try:
+                solo_guard.release()
+            finally:
+                restore_shutdown_handlers(previous_handlers)
 
     overall_exit, nrestarts_ok = evaluate_summary(
         steps=steps,

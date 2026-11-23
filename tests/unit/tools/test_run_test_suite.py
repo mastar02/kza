@@ -1084,3 +1084,117 @@ def test_ci_keeps_nightly_training_triggers(ci_workflow: dict) -> None:
         step.get("name") == "Simulate nightly training cycle" and step.get("run")
         for step in job["steps"]
     )
+
+
+def test_is_ram_backed_path_uses_longest_mount_prefix(tmp_path):
+    mounts = tmp_path / "mounts"
+    mounts.write_text(
+        "/dev/sda1 / ext4 rw 0 0\n"
+        "tmpfs /dev/shm tmpfs rw 0 0\n"
+        "tmpfs /run/with\\040space tmpfs rw 0 0\n"
+        "/dev/sdb1 /dev/shm/persist ext4 rw 0 0\n",
+        encoding="utf-8",
+    )
+    assert runner.is_ram_backed_path(Path("/dev/shm/kza-tier2-lanea-x"), mounts_file=mounts) is True
+    assert runner.is_ram_backed_path(Path("/dev/shm"), mounts_file=mounts) is True
+    assert runner.is_ram_backed_path(Path("/run/with space/x"), mounts_file=mounts) is True
+    assert runner.is_ram_backed_path(Path("/dev/shm/persist/x"), mounts_file=mounts) is False
+    assert runner.is_ram_backed_path(Path("/dev/shmx/y"), mounts_file=mounts) is False
+    assert runner.is_ram_backed_path(Path("/home/yo/x"), mounts_file=mounts) is False
+    assert runner.is_ram_backed_path(Path("/dev/shm/x"), mounts_file=tmp_path / "missing") is False
+
+
+def test_cli_rejects_explicit_tmpfs_basetemp_for_full_tiers_unless_allowed(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(runner, "is_ram_backed_path", lambda _p: True)
+    argv = ["--tier", "1", "--no-prebuild", "--no-node", "--out-dir", str(tmp_path / "out"), "--basetemp", "/dev/shm/bt"]
+
+    with pytest.raises(SystemExit) as excinfo:
+        runner.main(argv)
+    assert excinfo.value.code == 2
+    assert "tmpfs" in capsys.readouterr().err
+
+    monkeypatch.setattr(runner, "acquire_solo_window", lambda **_kw: runner.SoloWindowGuard())
+    monkeypatch.setattr(runner, "_xdist_available", lambda _p: True)
+    monkeypatch.setattr(
+        runner, "_run_subprocess", lambda name, *a, **k: {"name": name, "exit_code": 0, "duration_s": 0.0, "log": "x"}
+    )
+    monkeypatch.setattr(runner, "choose_basetemp_root", lambda *a, **k: (tmp_path / "bt", False))
+    assert runner.main([*argv, "--allow-tmpfs-basetemp"]) == 0
+
+
+def test_cli_allows_explicit_tmpfs_basetemp_for_tier0(tmp_path, monkeypatch):
+    monkeypatch.setattr(runner, "is_ram_backed_path", lambda _p: True)
+    monkeypatch.setattr(runner, "acquire_solo_window", lambda **_kw: runner.SoloWindowGuard())
+    monkeypatch.setattr(runner, "_xdist_available", lambda _p: True)
+    monkeypatch.setattr(
+        runner, "_run_subprocess", lambda name, *a, **k: {"name": name, "exit_code": 0, "duration_s": 0.0, "log": "x"}
+    )
+    monkeypatch.setattr(runner, "choose_basetemp_root", lambda *a, **k: (tmp_path / "bt", False))
+    argv = ["--tier", "0", "--targets", "tests/a.py", "--no-node", "--out-dir", str(tmp_path / "out"), "--basetemp", "/dev/shm/bt"]
+    assert runner.main(argv) == 0
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process groups required")
+def test_terminate_active_children_reaps_whole_process_group(tmp_path):
+    """A SIGHUP/SIGTERM shutdown must also kill grandchildren (xdist workers), not only the leader."""
+    import threading
+
+    pidfile = tmp_path / "grandchild.pid"
+    script = (
+        "import os, subprocess, sys, time\n"
+        f"p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"open({str(pidfile)!r}, 'w').write(str(p.pid))\n"
+        "time.sleep(60)\n"
+    )
+    result: dict = {}
+    runner._SHUTDOWN.clear()
+    worker = threading.Thread(
+        target=lambda: result.update(
+            runner._run_subprocess(
+                "fake", [runner.sys.executable, "-c", script], cwd=tmp_path, env=dict(os.environ), log_path=tmp_path / "x.log"
+            )
+        )
+    )
+    worker.start()
+    try:
+        deadline = time.monotonic() + 10
+        while not pidfile.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert pidfile.exists()
+        grandchild = int(pidfile.read_text())
+
+        runner.terminate_active_children(grace_s=2)
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert result["exit_code"] != 0
+
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(grandchild, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            pytest.fail("grandchild survived terminate_active_children")
+
+        # After shutdown no new child may start.
+        late = runner._run_subprocess(
+            "late", [runner.sys.executable, "-c", "pass"], cwd=tmp_path, env=dict(os.environ), log_path=tmp_path / "late.log"
+        )
+        assert late["exit_code"] != 0
+    finally:
+        runner._SHUTDOWN.clear()
+        worker.join(timeout=1)
+
+
+def test_shutdown_handlers_install_and_restore(monkeypatch):
+    import signal as _signal
+
+    before = _signal.getsignal(_signal.SIGTERM)
+    previous = runner.install_shutdown_handlers()
+    try:
+        assert _signal.getsignal(_signal.SIGTERM) is runner._raise_on_shutdown_signal
+    finally:
+        runner.restore_shutdown_handlers(previous)
+    assert _signal.getsignal(_signal.SIGTERM) == before
