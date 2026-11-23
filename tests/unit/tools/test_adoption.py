@@ -4,6 +4,7 @@ Adoption design v3 sections 1-5; reviews v1 F9/F10, v2 N2/N7/N11/N12d.
 """
 from __future__ import annotations
 
+from collections import Counter
 from contextlib import closing
 import json
 import os
@@ -16,6 +17,7 @@ import pytest
 import yaml
 
 from scripts import adoption
+from scripts import adoption_commands
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 MARKER = b"KZA-UNIT-DROP-MARKER"
@@ -222,6 +224,77 @@ def test_the_manifest_covers_non_sqlite_files(tmp_path):
     os.symlink(tmp_path / "config", tmp_path / "link")
     with pytest.raises(adoption.AdoptionRefusal, match="source_symlink"):
         adoption.file_manifest(tmp_path)
+
+
+def test_only_the_legacy_slot_walk_skips_its_shared_models_link(tmp_path):
+    layout = _layout(tmp_path)
+    (layout.models_root / "model.bin").write_bytes(b"external model")
+    (layout.legacy_state / "models").symlink_to(layout.models_root)
+    work = tmp_path / "work"
+    metrics_path = adoption.PRODUCTION_METRICS
+
+    copied = adoption.copy_source(layout, work, tmp_path / "scratch")
+    manifest = copied["manifest"]
+    assert [entry[0] for entry in manifest] == [".env", "config/settings.yaml"]
+    assert adoption.source_manifest(layout, metrics_path) == manifest
+    adoption.verify_source_unchanged(layout, metrics_path, manifest)
+    assert adoption_commands.source_size(layout) == {
+        "files": len(manifest), "bytes": sum(entry[2] for entry in manifest)}
+
+    assert not (work / "models").exists()
+    (work / "models").symlink_to(layout.models_root)
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_source_symlink$"):
+        adoption.file_manifest(work)
+
+
+@pytest.mark.parametrize("link", ["wrong", "dangling", "nested"])
+def test_legacy_walks_refuse_other_symlinks(tmp_path, link):
+    layout = _layout(tmp_path)
+    name, target = {
+        "wrong": ("models", layout.legacy_checkout),
+        "dangling": ("models", layout.models_root),
+        "nested": ("data/models", layout.models_root),
+    }[link]
+    if link == "dangling":
+        layout.models_root.rmdir()  # even a link spelled exactly as the allowed root must resolve strictly
+    (layout.legacy_state / name).symlink_to(target)
+
+    metrics_path = adoption.PRODUCTION_METRICS
+    for read in (
+        lambda: adoption.copy_source(layout, tmp_path / "work", tmp_path / "scratch"),
+        lambda: adoption.source_manifest(layout, metrics_path),
+        lambda: adoption.source_stat_map(layout, metrics_path),
+        lambda: adoption_commands.source_size(layout),
+    ):
+        with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_source_symlink$"):
+            read()
+
+
+@pytest.mark.parametrize("read", ["size", "verify"])
+def test_a_file_reaped_before_lstat_is_missing_from_the_source_snapshot(tmp_path, monkeypatch, read):
+    layout = _layout(tmp_path)
+    clip = layout.legacy_state / "data" / "expired.wav"
+    clip.write_bytes(b"clip")
+    metrics_path = adoption.PRODUCTION_METRICS
+    manifest = adoption.source_manifest(layout, metrics_path)
+    original_walk = adoption._walk_files
+
+    def reap_during_walk(*args, **kwargs):
+        for path in original_walk(*args, **kwargs):
+            if path == clip:
+                clip.unlink()
+            yield path
+
+    monkeypatch.setattr(adoption, "_walk_files", reap_during_walk)
+    if read == "size":
+        assert adoption_commands.source_size(layout) == {
+            "files": len(manifest) - 1, "bytes": sum(entry[2] for entry in manifest) - len(b"clip")}
+    else:
+        moving = Counter()
+        adoption.verify_source_unchanged(layout, metrics_path, manifest, moving)
+        assert moving == {"after_copy": 1}
+        with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_source_changed$"):
+            adoption.verify_source_unchanged(layout, metrics_path, manifest)
 
 
 # --- recovery and the drop (F9, N2) ----------------------------------------------------------------
@@ -459,6 +532,28 @@ def test_the_metrics_store_set_and_its_refusals(tmp_path):
     (logs / ".diag-abc.tmp").write_text("")
     with pytest.raises(adoption.AdoptionRefusal, match="metrics_unsettled"):
         adoption.metrics_store_set(layout, "/home/kza/logs/kza-metrics.jsonl")
+
+
+@pytest.mark.parametrize("metrics_path", ["./logs/kza-metrics.jsonl", "logs/kza-metrics.jsonl"])
+def test_transform_accepts_the_slot_relative_metrics_path(metrics_path):
+    text = f'observability:\n  metrics_path: "{metrics_path}"\n'
+    rows = tuple(row for row in adoption.transform_table() if row.key == ("observability", "metrics_path"))
+    transformed = yaml.safe_load(adoption.transform_config_text(text, rows))
+    assert transformed["observability"]["metrics_path"] == "./data/obs/kza-metrics.jsonl"
+
+
+@pytest.mark.parametrize("metrics_path", [
+    "../state-other/kza-metrics.jsonl",
+    "logs/../data/obs/kza-metrics.jsonl",
+    "config/kza-metrics.jsonl",
+    ".env/kza-metrics.jsonl",
+    "models/kza-metrics.jsonl",
+])
+def test_relative_metrics_cannot_escape_or_overlap_a_carried_tree(tmp_path, metrics_path):
+    layout = _layout(tmp_path)
+    (layout.legacy_state / "models").symlink_to(layout.models_root)
+    with pytest.raises(adoption.AdoptionRefusal, match="^runtime_admission_adoption_source_special$"):
+        adoption.metrics_store_set(layout, metrics_path)
 
 
 # --- the ledger seed (R1 code) ----------------------------------------------------------------------

@@ -22,6 +22,7 @@ columns, never values.
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterable, Iterator
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 import hashlib
@@ -352,15 +353,22 @@ def _copy_file(source: Path, destination: Path | None, moving: Counter | None = 
     return entry, header
 
 
-def _walk_files(root: Path):
-    """Every regular file under ``root`` (lstat only): a symlink or special file refuses."""
-    pending = [Path(root)]
+def _walk_files(root: Path, *, allowed_models_root: Path | None = None) -> Iterator[Path]:
+    """Yield regular files, skipping only the legacy slot's shared models link when allowed."""
+    root = Path(root)
+    pending = [root]
     while pending:
         directory = pending.pop()
         with os.scandir(directory) as iterator:
             for entry in sorted(iterator, key=lambda item: item.name):
                 info = entry.stat(follow_symlinks=False)
                 if stat.S_ISLNK(info.st_mode):
+                    if allowed_models_root is not None and Path(entry.path) == root / "models":
+                        try:
+                            if os.path.realpath(entry.path, strict=True) == os.path.realpath(allowed_models_root):
+                                continue
+                        except OSError:
+                            pass
                     _refuse("runtime_admission_adoption_source_symlink")
                 if stat.S_ISDIR(info.st_mode):
                     pending.append(Path(entry.path))
@@ -395,26 +403,34 @@ def copy_source(layout: SourceLayout, destination: Path, scratch: Path, moving: 
     source = Path(layout.legacy_state)
     entries, report = [], Counter()
     sqlite_files, sides = set(), {}
-    files = sorted(_walk_files(source))
+    files = sorted(_walk_files(source, allowed_models_root=layout.models_root))
     destination, scratch = Path(destination), Path(scratch)
     for path in files:
         relative = path.relative_to(source).as_posix()
         main, suffix = _side_of(relative)
         top = relative.split("/", 1)[0]
-        target = None
+        target = disposition = None
         if top in CARRIED_TOP and suffix != "-shm":
             if main in NOT_CARRIED:
-                report["not_carried_files"] += 1
+                disposition = "not_carried_files"
             elif main in DROP_LIST:
                 target = scratch / relative
-                report["scratch_files"] += 1
+                disposition = "scratch_files"
             else:
                 target = destination / relative
         elif suffix == "-shm":
-            report["shm_not_copied"] += 1
+            disposition = "shm_not_copied"
         else:
-            report["outside_carried_files"] += 1
-        entry, header = _copy_file(path, target, moving)
+            disposition = "outside_carried_files"
+        try:
+            entry, header = _copy_file(path, target, moving)
+        except FileNotFoundError:
+            if moving is None:
+                _refuse("runtime_admission_adoption_source_changed")
+            moving["during_copy"] += 1
+            continue
+        if disposition is not None:
+            report[disposition] += 1
         entries.append([relative, *entry])
         if suffix:
             sides[relative] = (main, suffix)
@@ -431,6 +447,22 @@ def copy_source(layout: SourceLayout, destination: Path, scratch: Path, moving: 
     return {"manifest": sorted(entries), "counts": dict(sorted(report.items()))}
 
 
+def _metrics_source_root(layout: SourceLayout, metrics_path: str) -> tuple[Path, bool]:
+    """Return the metrics directory and whether its files belong to the legacy state walk."""
+    configured = Path(metrics_path)
+    if configured.is_absolute():
+        return Path(layout.metrics_root), False
+    candidate_dir = Path(os.path.normpath(os.fspath(Path(layout.legacy_state) / configured.parent)))
+    candidate = os.fspath(candidate_dir)
+    state_prefixes = _prefixes(layout.legacy_state)
+    carried = tuple(os.path.join(prefix, name) for prefix in state_prefixes for name in CARRIED_TOP)
+    # The shared models link is outside the legacy state walk.
+    if (not _under(candidate, state_prefixes) or _under(candidate, carried)
+            or not _under(os.path.realpath(candidate), state_prefixes)):
+        _refuse("runtime_admission_adoption_source_special")
+    return candidate_dir, True
+
+
 def metrics_store_set(layout: SourceLayout, metrics_path: str) -> dict:
     """The DiagnosticStore protocol files of the legacy metrics store (review v1 F10).
 
@@ -441,7 +473,7 @@ def metrics_store_set(layout: SourceLayout, metrics_path: str) -> dict:
     """
     original = Path(metrics_path)
     name = original.name if original.stem.endswith("_policy_v1") else original.stem + "_policy_v1" + original.suffix
-    root = Path(layout.metrics_root)
+    root, _ = _metrics_source_root(layout, metrics_path)
     present = sorted(item.name for item in root.iterdir()) if root.is_dir() else []
     if any(item.startswith(".diag-") and item.endswith(".tmp") for item in present):
         _refuse("runtime_admission_adoption_metrics_unsettled")
@@ -459,12 +491,14 @@ def metrics_store_set(layout: SourceLayout, metrics_path: str) -> dict:
 def copy_metrics_store(layout: SourceLayout, metrics_path: str, destination: Path,
                        moving: Counter | None = None) -> dict:
     """Copy the metrics store set to <state>/data/obs/ under the same names; staged must be empty."""
+    root, in_legacy = _metrics_source_root(layout, metrics_path)
     found = metrics_store_set(layout, metrics_path)
     entries = []
     obs = Path(destination) / "data" / "obs"
     for item in found["members"]:
-        entry, _header = _copy_file(Path(layout.metrics_root) / item, obs / item, moving)
-        entries.append(["metrics/" + item, *entry])
+        entry, _header = _copy_file(root / item, obs / item, moving)
+        if not in_legacy:  # already hashed as part of the legacy state
+            entries.append(["metrics/" + item, *entry])
     catalog = obs / (found["policy_name"] + ".sqlite3")
     if catalog.is_file():
         recover_sqlite_file(catalog)
@@ -721,7 +755,9 @@ def transform_table(models_root: str = PRODUCTION_MODELS, logs_root: str = PRODU
                      "./data/training_outputs/nightly"),
         TransformRow(("training", "nightly", "whisper_finetune", "output_dir"), "set",
                      ("./models/lora_adapters/whisper",), "./data/training_outputs/whisper"),
-        TransformRow(("observability", "metrics_path"), "set", (legacy_metrics,), "./data/obs/kza-metrics.jsonl"),
+        TransformRow(("observability", "metrics_path"), "set",
+                     (legacy_metrics, "./logs/kza-metrics.jsonl", "logs/kza-metrics.jsonl"),
+                     "./data/obs/kza-metrics.jsonl"),
         TransformRow(("paths", "models_root"), "add", (ABSENT,), models_root),
         TransformRow(("speaker_id", "savedir"), "add", (ABSENT,), models_root + "/speaker"),
         TransformRow(("hooks", "audit_sqlite", "enabled"), "add", (ABSENT,), False),
@@ -1124,9 +1160,10 @@ class Relocation:
             for prefix in _prefixes(Path(old)):
                 rules.append((prefix, os.path.join(self.state_root, new)))
         if metrics_policy is not None:
-            base = Path(layout.metrics_root) / metrics_policy
-            for prefix in _prefixes(base):
-                rules.append((prefix, os.path.join(self.state_root, "data", "obs", metrics_policy)))
+            destination = os.path.join(self.state_root, "data", "obs", metrics_policy)
+            for root in (Path(layout.metrics_root), Path(layout.legacy_state) / "logs"):
+                for prefix in _prefixes(root / metrics_policy):
+                    rules.append((prefix, destination))
         self.rules = sorted({rule for rule in rules if rule[0] != rule[1]}, key=lambda rule: (-len(rule[0]), rule))
 
     def path(self, value: str) -> str:
@@ -1630,8 +1667,12 @@ def _registered(tables: dict) -> dict:
 def file_manifest(root: Path) -> list[list]:
     """(relative, inode, size, mtime_ns, sha256) of every regular file; a link or special refuses."""
     root = Path(root)
+    return _file_manifest(root, _walk_files(root))
+
+
+def _file_manifest(root: Path, files: Iterable[Path]) -> list[list]:
     entries = []
-    for path in _walk_files(root):
+    for path in files:
         info = path.lstat()
         entries.append([path.relative_to(root).as_posix(), info.st_ino, info.st_size, info.st_mtime_ns,
                         _sha256_file(path)])
@@ -1806,11 +1847,20 @@ def source_stat_map(layout: SourceLayout, metrics_path: str) -> dict:
     """(inode, size, mtime_ns) of every source file the manifest covers, re-walked now."""
     found = {}
     root = Path(layout.legacy_state)
-    for path in _walk_files(root):
-        info = path.lstat()
+    for path in _walk_files(root, allowed_models_root=layout.models_root):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
         found[path.relative_to(root).as_posix()] = [info.st_ino, info.st_size, info.st_mtime_ns]
+    metrics_dir, in_legacy = _metrics_source_root(layout, metrics_path)
+    if in_legacy:
+        return found
     for item in metrics_store_set(layout, metrics_path)["members"]:
-        info = (Path(layout.metrics_root) / item).lstat()
+        try:
+            info = (metrics_dir / item).lstat()
+        except FileNotFoundError:
+            continue
         found["metrics/" + item] = [info.st_ino, info.st_size, info.st_mtime_ns]
     return found
 
@@ -1818,15 +1868,19 @@ def source_stat_map(layout: SourceLayout, metrics_path: str) -> dict:
 def source_manifest(layout: SourceLayout, metrics_path: str) -> list:
     """The full-file source manifest recomputed now, in adopt_copy's order (U3b-0e3 commit and abort).
 
-    Every regular file of the legacy state (sorted), then the metrics store
-    set members as ``metrics/<name>``; each (relative, inode, size,
-    mtime_ns, sha256). Read-only: lstat and O_RDONLY|O_NOFOLLOW only.
+    Every regular file of the legacy state (sorted), then external metrics
+    store members as ``metrics/<name>``. Entries are (relative, inode,
+    size, mtime_ns, sha256). Read-only: lstat and O_RDONLY|O_NOFOLLOW only.
     """
-    entries = file_manifest(layout.legacy_state)
-    root = Path(layout.metrics_root)
+    state = Path(layout.legacy_state)
+    entries = _file_manifest(state, _walk_files(state, allowed_models_root=layout.models_root))
+    metrics_dir, in_legacy = _metrics_source_root(layout, metrics_path)
+    if in_legacy:
+        return entries
     for item in metrics_store_set(layout, metrics_path)["members"]:
-        info = (root / item).lstat()
-        entries.append(["metrics/" + item, info.st_ino, info.st_size, info.st_mtime_ns, _sha256_file(root / item)])
+        path = metrics_dir / item
+        info = path.lstat()
+        entries.append(["metrics/" + item, info.st_ino, info.st_size, info.st_mtime_ns, _sha256_file(path)])
     return entries
 
 
