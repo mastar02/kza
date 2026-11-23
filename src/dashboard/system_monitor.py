@@ -42,7 +42,7 @@ def _service_probes() -> list[dict]:
          "http_probe": "http://127.0.0.1:8101/v1/models",
          "role": "ik_llama Qwen 7B Q4 — fast router (:8101)"},
         {"name": "home-assistant", "kind": "http",
-         "url": f"{ha_url.rstrip('/')}/api/",
+         "url": f"{ha_url.rstrip('/')}/manifest.json",
          "role": "Home Assistant — control de domótica"},
         {"name": "chromadb", "kind": "in_process",
          "role": "ChromaDB — vector store (in-process en kza-voice)"},
@@ -178,14 +178,11 @@ def _http_ok(url: str, timeout: float = 1.5) -> bool:
     try:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310 -- esquema validado arriba (solo http/https admitidos); resto del registry es fijo (_service_probes()) o env var interno, sin input de usuario en el request
-            # 2xx + algunos 4xx (HA devuelve 401 sin token, está vivo).
-            # r.status puede ser None en respuestas/mocks atípicos — TypeError
-            # no está en la tupla de except de abajo, así que lo tratamos
-            # como "no vivo" acá en vez de dejarlo propagar sin capturar.
-            return r.status is not None and r.status < 500
-    except urllib.error.HTTPError as e:
-        # 401/403 = el servicio responde, está vivo
-        return 400 <= e.code < 500
+            # Los probes apuntan a endpoints que devuelven 2xx sin autenticación.
+            return r.status is not None and 200 <= r.status < 400
+    except urllib.error.HTTPError:
+        # Un 401 o 403 también indica que falló el probe.
+        return False
     except (urllib.error.URLError, socket.timeout, ConnectionError, OSError):
         return False
 

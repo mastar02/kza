@@ -1,6 +1,8 @@
 """Tests para system_monitor: GPU parsing + service probe registry."""
 
+from contextlib import nullcontext
 import subprocess
+from types import SimpleNamespace
 import urllib.error
 
 import pytest
@@ -84,6 +86,13 @@ def test_gpu_snapshot_returns_none_on_parse_error(monkeypatch, caplog):
 
 
 # ---------- services_snapshot ----------
+
+def test_home_assistant_probe_uses_public_manifest_endpoint(monkeypatch):
+    monkeypatch.setenv("HOME_ASSISTANT_URL", "http://ha.example:8123/")
+    probe = next(p for p in system_monitor._service_probes() if p["name"] == "home-assistant")
+    assert probe["url"] == "http://ha.example:8123/manifest.json"
+    assert "/api/" not in probe["url"]
+
 
 def test_services_snapshot_returns_none_when_no_signal(monkeypatch):
     """Sin systemctl ni HTTP probes funcionando → None (asume dev box)."""
@@ -182,13 +191,16 @@ def test_systemctl_show_returns_none_on_nonzero_rc(monkeypatch):
     assert system_monitor._systemctl_show("nonexistent") is None
 
 
-def test_http_ok_treats_4xx_as_alive(monkeypatch):
-    """HA sin token devuelve 401 — sigue 'vivo'."""
-    class _ResponseHTTPError(urllib.error.HTTPError):
-        def __init__(self):
-            super().__init__("http://x", 401, "Unauthorized", {}, None)
+@pytest.mark.parametrize("status", [401, 403])
+def test_http_ok_rejects_4xx_errors(monkeypatch, status):
+    def rejected(request, **_):
+        raise urllib.error.HTTPError(request.full_url, status, "Acceso rechazado", {}, None)
+
+    monkeypatch.setattr(system_monitor.urllib.request, "urlopen", rejected)
+    assert system_monitor._http_ok("http://x") is False
+
     monkeypatch.setattr(system_monitor.urllib.request, "urlopen",
-                        lambda *a, **kw: (_ for _ in ()).throw(_ResponseHTTPError()))
+                        lambda *a, **kw: nullcontext(SimpleNamespace(status=200)))
     assert system_monitor._http_ok("http://x") is True
 
 

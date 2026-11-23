@@ -30,7 +30,10 @@ from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks.epoch4 import edited_commit, epoch4_commit, epoch4_in_process
 from tests.unit.tools.test_managed_launcher_serve import TEMPLATE, _settings, _systemctl
 
-REVISION_1 = b"\nCONTROLLER_REVISION = 1\n"
+BASE_REV = stage.CONTROLLER_REVISION
+BASE_REV_LINE = f"\nCONTROLLER_REVISION = {BASE_REV}\n".encode()
+NEXT_REV_LINE = f"\nCONTROLLER_REVISION = {BASE_REV + 1}\n".encode()
+HIGHER_REV_LINE = f"\nCONTROLLER_REVISION = {BASE_REV + 2}\n".encode()
 # The last commit before SC-1a: an epoch-4 controller without the first_install checks (R1's behaviour).
 PRE_SC1A = "b15ce86a1ea7e1926e11c7fdb6c67f6831a9d3c1"
 # R1, the pinned production release (epoch 4, docs/architecture/DEPLOYMENT.md).
@@ -41,7 +44,7 @@ FUTURE = b"from __future__ import annotations\n"
 
 @pytest.fixture(scope="module")
 def builds(tmp_path_factory):
-    """X4 (epoch 4), X5 (as shipped), X5R2 (revision 2), X5C (revision 1, one closure file changed)."""
+    """X4 (epoch 4), X5 (base revision) and variants with a bumped revision or changed closure."""
     base = tmp_path_factory.mktemp("sc1a-builds")
     clone = base / "clone"
     subprocess.run(["git", "clone", "--quiet", "--shared", "--no-checkout", str(cw.REPO), str(clone)],
@@ -50,17 +53,17 @@ def builds(tmp_path_factory):
     revisions = {
         "x5": x5,
         "x4": epoch4_commit(clone, x5),
-        "x5r2": edited_commit(clone, x5, {"scripts/stage_runtime.py": [(REVISION_1, b"\nCONTROLLER_REVISION = 2\n")]},
-                              message="sc-1a X5 revision 2"),
-        "x5r3": edited_commit(clone, x5, {"scripts/stage_runtime.py": [(REVISION_1, b"\nCONTROLLER_REVISION = 3\n")]},
-                              message="sc-1a X5 revision 3"),
+        "x5r2": edited_commit(clone, x5, {"scripts/stage_runtime.py": [(BASE_REV_LINE, NEXT_REV_LINE)]},
+                              message=f"sc-1a X5 revision {BASE_REV + 1}"),
+        "x5r3": edited_commit(clone, x5, {"scripts/stage_runtime.py": [(BASE_REV_LINE, HIGHER_REV_LINE)]},
+                              message=f"sc-1a X5 revision {BASE_REV + 2}"),
         "pre": PRE_SC1A,
         "x5c": edited_commit(clone, x5, {OWNER_COMPACTION: [(FUTURE, FUTURE + b"# sc-1a: a controller-only change\n")]},
                              message="sc-1a X5 closure change"),
-        # revision 2 with another managed_launcher (review F5: the installer identity covers it too)
-        "x5m": edited_commit(clone, x5, {"scripts/stage_runtime.py": [(REVISION_1, b"\nCONTROLLER_REVISION = 2\n")],
+        # Next revision with another managed_launcher (review F5: the installer identity covers it too)
+        "x5m": edited_commit(clone, x5, {"scripts/stage_runtime.py": [(BASE_REV_LINE, NEXT_REV_LINE)],
                                          "scripts/managed_launcher.py": [(FUTURE, FUTURE + b"# sc-1a: launcher\n")]},
-                             message="sc-1a X5 revision 2, launcher changed"),
+                             message=f"sc-1a X5 revision {BASE_REV + 1}, launcher changed"),
         "r1": R1_COMMIT,
     }
     archives, manifests, sources = {}, {}, {}
@@ -143,7 +146,7 @@ def _serve(root, tmp_path, name):
 # --- epochs and the controller triple (epochs.controller_epoch_5, controller_revision) -------------
 
 def test_controller_epoch_5_is_declared():
-    assert stage.CONTROLLER_EPOCH == 5 and stage.CONTROLLER_REVISION == 1
+    assert stage.CONTROLLER_EPOCH == 5 and BASE_REV >= 1
     assert stage.RELEASE_MODE_EPOCH == 5
     assert (stage.SCHEMA_CONTRACT_EPOCH, stage.FORMAT_EPOCH, stage.LAUNCHER_CONTRACT,
             stage.RECEIPT_STATE_SCHEMA) == (2, 1, 3, 2)
@@ -151,11 +154,12 @@ def test_controller_epoch_5_is_declared():
 
 def test_controller_epoch_5_and_revision_are_declared(builds):
     manifest = builds["manifests"]["x5"]
-    assert manifest["controller_epoch"] == 5 and manifest["controller_revision"] == 1
-    assert stage.controller_triple(manifest) == (5, 1, manifest["controller_sources_sha256"])
-    assert builds["manifests"]["x5r2"]["controller_revision"] == 2
+    assert manifest["controller_epoch"] == 5 and manifest["controller_revision"] == BASE_REV
+    assert stage.controller_triple(manifest) == (5, BASE_REV, manifest["controller_sources_sha256"])
+    assert builds["manifests"]["x5r2"]["controller_revision"] == BASE_REV + 1
+    assert builds["manifests"]["x5r3"]["controller_revision"] == BASE_REV + 2
     x4 = builds["manifests"]["x4"]
-    assert x4["controller_epoch"] == 4 and x4["controller_revision"] == 1
+    assert x4["controller_epoch"] == 4 and x4["controller_revision"] == BASE_REV
 
 
 def test_the_closure_reaches_the_worker_and_the_named_modules(builds):
@@ -188,11 +192,11 @@ def test_a_change_only_to_owner_compaction_changes_the_triple(builds):
 
 def test_controller_triple_validation():
     sources = [["scripts/stage_runtime.py", "a" * 64], ["src/x.py", "b" * 64]]
-    good = {"controller_epoch": 5, "controller_revision": 1, "controller_sources": sources,
+    good = {"controller_epoch": 5, "controller_revision": BASE_REV, "controller_sources": sources,
             "controller_sources_sha256": stage.controller_sources_digest(sources)}
     files = {"scripts/stage_runtime.pyc": b"", "src/x.pyc": b""}
-    assert stage.controller_triple(good, files)[:2] == (5, 1)
-    for change in ({"controller_revision": 0}, {"controller_revision": "1"}, {"controller_sources_sha256": "0" * 64},
+    assert stage.controller_triple(good, files)[:2] == (5, BASE_REV)
+    for change in ({"controller_revision": 0}, {"controller_revision": str(BASE_REV)}, {"controller_sources_sha256": "0" * 64},
                    {"controller_sources": list(reversed(sources))}, {"controller_sources": sources + [sources[0]]},
                    {"controller_sources": []}, {"controller_sources_sha256": None},
                    {"controller_sources": [["/abs.py", "a" * 64]]}, {"controller_sources": [["tools/x.py", "a" * 64]]}):
@@ -240,11 +244,12 @@ def test_every_path_loaded_module_of_the_closure_is_listed():
     assert "src/memory/manual_components.py" in builder.CONTROLLER_PATH_LOADED
 
 
-# Released (epoch, revision) pairs and their closure digest.
-# The release procedure (SC-5b) adds the pair it ships, and from then on a closure change without a
+# Pinned release (epoch, revision) pairs and their closure digest.
+# The release procedure (SC-5b) pins the pair to ship, and from then on a closure change without a
 # CONTROLLER_REVISION bump fails here, before install-controller would refuse it (CR2-9, CO-5).
 RELEASED_CONTROLLERS: dict[tuple[int, int], str] = {
     (5, 1): "8cec6c0477f7b69052a4ae9124c42e27af233733e314b2a3ebbdfd830e6f5b69",
+    (5, 2): "03c2eb14c428c23c40c1e235c77e135a6f71e45bede3913af5de6a2aa801049a",
 }
 
 
@@ -260,9 +265,10 @@ def test_a_released_controller_pair_keeps_its_digest():
         timeout=60).stdout.split() if path.endswith(".py")}
     digest = stage.controller_sources_digest(controller_closure(sources))
     _released_pair_check(RELEASED_CONTROLLERS, stage.CONTROLLER_EPOCH, stage.CONTROLLER_REVISION, digest)
-    _released_pair_check({(5, 1): digest}, 5, 1, digest)
+    pair = (stage.CONTROLLER_EPOCH, BASE_REV)
+    _released_pair_check({pair: digest}, *pair, digest)
     with pytest.raises(AssertionError, match="bump CONTROLLER_REVISION"):
-        _released_pair_check({(5, 1): "0" * 64}, 5, 1, digest)
+        _released_pair_check({pair: "0" * 64}, *pair, digest)
 
 
 # --- first install (t0_controller_install.first_install, CR2-1) --------------------------------------
@@ -275,7 +281,7 @@ def test_first_t0_over_an_epoch4_root_installs_and_h_serves(builds, tmp_path):
     with epoch4_in_process():
         assert _serve(root, tmp_path, "h-old").code == 0  # H under the epoch-4 controller
     result = _install(root, builds)
-    assert (result["controller_epoch"], result["controller_revision"]) == (5, 1)
+    assert (result["controller_epoch"], result["controller_revision"]) == (5, BASE_REV)
     assert result["controller_sources_sha256"] == builds["manifests"]["x5"]["controller_sources_sha256"]
     record = _record(root)
     assert set(record) == {"schema_version", "controller_epoch", "commit", "min_format_epoch", "installed_at"}
@@ -489,7 +495,7 @@ def test_install_is_monotone_in_epoch_and_revision(builds, t0_root, tmp_path):
     _install(root, builds, "x5")  # equal triple: a harmless repeat
     assert _record(root)["commit"] == record["commit"] and _current(root) == record["commit"]
     _install(root, builds, "x5r3")
-    assert stage.installed_controller_triple(root)[:2] == (5, 3)
+    assert stage.installed_controller_triple(root)[:2] == (5, BASE_REV + 2)
     witness = cw.witness(root)
     _unchanged_t0(root, witness, lambda: _install(root, builds, "x5r2"), "runtime_admission_controller_downgrade")
     witness = cw.witness(root)
@@ -510,7 +516,7 @@ def test_later_install_refuses_an_unknown_head_with_no_pending_log(builds, t0_ro
     assert head["status"] == "closed" and stage.read_manual_head(root, head)["kind"] == "recovery"
     assert adopted["head"] == head
     _install(root, builds, "x5r2")  # SR-1 alone gates it; no H-serve step needed (R4-OPS-2)
-    assert stage.installed_controller_triple(root)[:2] == (5, 2)
+    assert stage.installed_controller_triple(root)[:2] == (5, BASE_REV + 1)
     assert _serve(root, tmp_path, "after").code == 0
 
 
@@ -624,7 +630,7 @@ def test_a_compiled_install_must_run_the_archives_own_code(builds, t0_root, tmp_
     installed = _compiled(_extract(builds["archives"]["x5r2"], tmp_path / "x5r2"), root, "install-controller",
                           str(builds["archives"]["x5r2"]))
     assert installed.returncode == 0, installed.stderr
-    assert json.loads(installed.stdout)["controller_revision"] == 2
+    assert json.loads(installed.stdout)["controller_revision"] == BASE_REV + 1
 
 
 # --- AUTHZ3-1 after T0 (rows DL, DO; L4 stays reachable) -----------------------------------------------

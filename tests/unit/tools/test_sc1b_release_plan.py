@@ -39,7 +39,7 @@ from tests.mocks import compaction_world as cw
 from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks.epoch4 import edited_commit, epoch4_commit, epoch4_in_process
 
-REVISION_1 = b"\nCONTROLLER_REVISION = 1\n"
+BASE_REV = stage.CONTROLLER_REVISION
 FUTURE = b"from __future__ import annotations\n"
 OUTSIDE_CLOSURE = "src/health/health_check.py"
 
@@ -90,7 +90,8 @@ def x5s(clone):
 @pytest.fixture(scope="module")
 def x5r2(clone):
     revision = edited_commit(clone["path"], clone["x5"], {"scripts/stage_runtime.py": [
-        (REVISION_1, b"\nCONTROLLER_REVISION = 2\n")]}, message="sc-1b X5 revision 2")
+        (f"\nCONTROLLER_REVISION = {BASE_REV}\n".encode(),
+         f"\nCONTROLLER_REVISION = {BASE_REV + 1}\n".encode())]}, message=f"sc-1b X5 revision {BASE_REV + 1}")
     return _build(clone, "x5r2", revision, sources=True)
 
 

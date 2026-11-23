@@ -14,8 +14,8 @@ compiled CLI run as a subprocess:
   ``T0 / sin T0 / conflicto`` decision is the runbook's own paso-2 snippet,
   read from the runbook file;
 - every archive comes from scripts/build_runtime.py: R1's stand-in X4 (this
-  tree at controller epoch 4), R2 = X5 (this tree), R2' = X5R2 (revision 2),
-  X5R3 (revision 3, the hotfix of (12)), X5C and X5R2C (one controller-closure
+  tree at controller epoch 4), R2 = X5 (base revision), R2' = X5R2 (base + 1),
+  X5R3 (base + 2, the hotfix of (12)), X5C and X5R2C (one controller-closure
   comment: an equal pair with another digest) and the e9669ec legacy artifact
   (L4's slot in (8)); the schema-contract NEWs of (7) are X5/X5R2 with only
   ``release.json``'s ``schema_contract`` rewritten to the next epoch (what the checks read);
@@ -91,7 +91,10 @@ RUNBOOK = REPO / "docs" / "runbooks" / "2026-11-17-release-mode.md"
 WRAPPER = REPO / "tests" / "mocks" / "compiled_stage.py"
 SC0_CHILD = REPO / "tools" / "sc0" / "sc0_child.py"
 SMOKE = 10  # N of the first transition (runbook: N = 10 with T0)
-REVISION_1 = b"\nCONTROLLER_REVISION = 1\n"
+BASE_REV = stage.CONTROLLER_REVISION
+BASE_REV_LINE = f"\nCONTROLLER_REVISION = {BASE_REV}\n".encode()
+NEXT_REV_LINE = f"\nCONTROLLER_REVISION = {BASE_REV + 1}\n".encode()
+HIGHER_REV_LINE = f"\nCONTROLLER_REVISION = {BASE_REV + 2}\n".encode()
 FUTURE = b"from __future__ import annotations\n"
 OWNER_COMPACTION = "src/memory/owner_compaction.py"
 LEGACY = launcher.LEGACY_CONTAINER_COMMIT  # R1E: the e9669ec container production serves
@@ -121,13 +124,13 @@ def builds(tmp_path_factory):
     revisions = {
         "x5": x5,
         "x4": epoch4_commit(clone, x5),
-        "x5r2": edited_commit(clone, x5, {stage_py: [(REVISION_1, b"\nCONTROLLER_REVISION = 2\n")]},
-                              message="sc-6b R2' (revision 2)"),
-        "x5r3": edited_commit(clone, x5, {stage_py: [(REVISION_1, b"\nCONTROLLER_REVISION = 3\n")]},
-                              message="sc-6b hotfix (revision 3)"),
-        "x5c": edited_commit(clone, x5, closure, message="sc-6b revision 1, other closure"),
-        "x5r2c": edited_commit(clone, x5, {stage_py: [(REVISION_1, b"\nCONTROLLER_REVISION = 2\n")], **closure},
-                               message="sc-6b revision 2, other closure"),
+        "x5r2": edited_commit(clone, x5, {stage_py: [(BASE_REV_LINE, NEXT_REV_LINE)]},
+                              message=f"sc-6b R2' (revision {BASE_REV + 1})"),
+        "x5r3": edited_commit(clone, x5, {stage_py: [(BASE_REV_LINE, HIGHER_REV_LINE)]},
+                              message=f"sc-6b hotfix (revision {BASE_REV + 2})"),
+        "x5c": edited_commit(clone, x5, closure, message=f"sc-6b revision {BASE_REV}, other closure"),
+        "x5r2c": edited_commit(clone, x5, {stage_py: [(BASE_REV_LINE, NEXT_REV_LINE)], **closure},
+                               message=f"sc-6b revision {BASE_REV + 1}, other closure"),
         "legacy": LEGACY,
     }
     found = {}
@@ -146,10 +149,12 @@ def builds(tmp_path_factory):
         value["triple"] = list(stage.controller_triple(manifest)) if manifest.get("controller_epoch", 0) >= 5 \
             else [manifest.get("controller_epoch"), manifest.get("controller_revision", 0),
                   manifest.get("controller_sources_sha256")]
-    assert found["x4"]["manifest"]["controller_epoch"] == 4 and found["x5"]["manifest"]["controller_epoch"] == 5
-    assert found["x5r2"]["triple"][:2] == [5, 2] and found["x5r3"]["triple"][:2] == [5, 3]
-    assert found["x5c"]["triple"][:2] == [5, 1] and found["x5c"]["triple"][2] != found["x5"]["triple"][2]
-    assert found["x5r2c"]["triple"][:2] == [5, 2] and found["x5r2c"]["triple"][2] != found["x5r2"]["triple"][2]
+    assert found["x4"]["triple"][:2] == [4, BASE_REV]
+    assert found["x5"]["triple"][:2] == [5, BASE_REV]
+    assert found["x5r2"]["triple"][:2] == [5, BASE_REV + 1]
+    assert found["x5r3"]["triple"][:2] == [5, BASE_REV + 2]
+    assert found["x5c"]["triple"][:2] == [5, BASE_REV] and found["x5c"]["triple"][2] != found["x5"]["triple"][2]
+    assert found["x5r2c"]["triple"][:2] == [5, BASE_REV + 1] and found["x5r2c"]["triple"][2] != found["x5r2"]["triple"][2]
     assert found["x5schema"]["manifest"]["schema_contract"] == stage.SCHEMA_CONTRACT_EPOCH + 1
     assert found["legacy"]["manifest"]["git_commit"].startswith(LEGACY)
     real_systemd.record("sc6b-builds", {name: {"commit": value["manifest"]["git_commit"], "sha256": value["sha256"],
@@ -1008,7 +1013,7 @@ def test_06_12_rollbacks_and_the_accepted_release_killed(builds, tmp_path, syste
     new = world.extract("x5r3")
     assert world.triple_check(new) == "T0"
     installed = world.t0("x5r3", new=new)  # SR-1 alone gates it; no H check (R4-OPS-2)
-    assert installed["controller_revision"] == 3
+    assert installed["controller_revision"] == BASE_REV + 2
     world.k += 1
     k = f"k{world.k}"
     # Row PA: without the flag plan refuses, naming the record and its families, and writes nothing.
@@ -1061,7 +1066,7 @@ def test_07_09_schema_contract_and_revision_refusals(builds, tmp_path, systemd, 
         assert refused.get("refused") == code and world.witness() == witness, refused
     found["plan_x5schema"] = world.plan("x5schema", "k1", expect=78,
                                         code="runtime_admission_compaction_schema_contract")["refused"]
-    # (9): revision 2 installed; then revision 1 (lower) and revision 2 with another closure.
+    # (9): next revision installed; then the base revision and a same-revision closure conflict.
     new = world.extract("x5r2")
     assert world.triple_check(new) == "T0"
     world.t0("x5r2", new=new)
@@ -1167,7 +1172,7 @@ def test_11_a_corrected_controller_with_k_prime_open_then_abort(builds, tmp_path
     new = world.extract("x5r2")
     assert world.triple_check(new) == "T0"
     installed = world.t0("x5r2", new=new)  # row CI: no H check, the unit stays stopped and disabled
-    assert installed["controller_revision"] == 2
+    assert installed["controller_revision"] == BASE_REV + 1
     assert stage.pending_compaction(world.root)["compaction_id"] == compaction_id
     assert world.head()["status"] != "closed"
     status = world.status(compaction_id)
