@@ -311,6 +311,9 @@ stt:
     acondicionado, persianas y música en el escritorio, el living, la cocina,
     el baño y el hall. Habla rioplatense con voseo: prendé, apagá, subí, bajá,
     poné, dale.
+  # Boost léxico de CTranslate2 sin inyectar texto previo (complementa al
+  # initial_prompt para comandos cortos en el fast-path de cuda:1).
+  hotwords: "Nexa prendé apagá subí bajá poné escritorio living cocina baño hall"
 
 # Text-to-Speech (GPU 1 — junto con STT, SpeakerID y kza-llm-fast :8101)
 # 2026-05-07: movido cuda:0 → cuda:1 (ver nota en stt.device).
@@ -1911,15 +1914,11 @@ rooms:
     mic_device_name: "XVF3800"
     mic_usb_port: "3-1.4"   # XVF3800 reubicado al escritorio 2026-05-30 (port real 3-1.4, card1; era UAC1.0 en 3-1.1)
     mic_device_index: null   # lo puebla room_context desde mic_usb_port al iniciar
-    # Canal de captura (L-3 2026-06-04): el XVF3800 UA expone 2ch. VERIFICADO
-    # en el chip real (snapshot 06-04) + doc primaria (XMOS appendix + README
-    # Seeed): ch0=L=(8,0)=Conference (auto-select beam + post-processor CON
-    # noise suppression), ch1=R=(7,3)=ASR (mismo beam, tap pre-post-processor
-    # SIN NS; ASROUTONOFF=1 en el chip). XMOS: la NS del post-processor
-    # degrada el ASR → ch1 es el canal diseñado para Whisper/wake. A/B en
-    # curso desde 2026-06-04 (baseline ch0; si wake/STT empeoran, volver a 0).
-    # Fallback seguro a 0 si el device no tiene el canal (mics mono).
-    capture_channel: 1
+    # Canal de captura (actualizado 2026-11-24 tras A/B escuchable 5/5 en
+    # escritorio): ch0=Conference entregó +8.5 dB de SNR vs ch1=ASR sin clipping
+    # y ganó 5/5 en escucha + transcripción de comandos ("Nexa, prendé la luz").
+    # Fallback seguro a 0 si el device no tiene más canales (mics mono).
+    capture_channel: 0
     bt_adapter: "F4:4E:FC:21:0D:66"   # UGREEN BT 5.3 escritorio (resuelve a hciN al iniciar — antes hardcoded "hci0")
     ma1260_zone: 4
     output_mode: "mono"
@@ -2053,17 +2052,22 @@ ambient:
     min_vad: 0.45       # ignorado por lang_ok (queda por compat YAML); el
                         # distiller usa distill.min_vad_prob
   stt:
-    # A/B 2026-11-24 sobre audio real XVF3800 ch0 (Parakeet vs Whisper turbo vs
-    # Whisper large-v3 vs Canary-1B vs Qwen3-ASR-1.7B vs Voxtral-Mini-3B-AWQ4):
+    # A/B 2026-11-24 sobre audio real XVF3800 ch0 + arquitectura multi-mic:
     # HybridVetoSTT = Parakeet-TDT-0.6B-v3 en CPU (veto anti-alucinación + alt_text
-    # acústico fiel en coloquialismos) + Whisper large-v3 float16 en cuda:0
-    # (~3.78 GB VRAM, deja ~3.35 GB libres; rollback rápido: compute_type int8_float16
-    # ~1.82 GB). El command path en cuda:1 NO se toca.
+    # acústico fiel) + STTWorkerPool en cuda:0 (7.12 GiB libres en RTX 3070).
+    # Presupuesto VRAM medido en cuda:0:
+    #   - 2 × large-v3 int8_float16 = ~4.25 GiB (deja ~2.85 GiB libres, balanceo
+    #     real en paralelo entre habitaciones — activo por defecto).
+    #   - 1 × large-v3 float16      = ~3.78 GiB (deja ~3.34 GiB libres, máxima
+    #     precisión single-worker: cambiar workers: 1 y compute_type: "float16").
+    #   - 2 × asimétrico (float16 + int8_float16) = ~6.0 GiB (worker_configs).
+    # El fast-path en cuda:1 permanece 100% aislado.
     engine: "hybrid"                 # hybrid | parakeet | whisper
     model: "large-v3"                # 1.55B, 32 capas decoder (cuda:0 dedicado)
     parakeet_model: "nemo-parakeet-tdt-0.6b-v3"
     device: "cuda:0"                 # GPU ambiental dedicada, JAMÁS cuda:1
-    compute_type: "float16"          # 3.78 GB VRAM en cuda:0 (alt: int8_float16 1.82 GB)
+    workers: 2                       # Pool balanceado multi-mic (1 thread CUDA por worker)
+    compute_type: "int8_float16"     # 2x int8_float16 (~4.25 GiB) | 1x float16 (~3.78 GiB)
     beam_size: 5
     vad_filter: true
     hotwords: "Nexa prendé apagá subí bajá poné escritorio living cocina baño hall"

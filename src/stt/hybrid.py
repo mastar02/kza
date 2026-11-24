@@ -171,6 +171,11 @@ class HybridVetoSTT:
         self.fail_open = fail_open
         self._owns_engines = owns_engines
 
+    @property
+    def max_concurrency(self) -> int:
+        """Expose underlying primary worker pool concurrency to ``AmbientSTT``."""
+        return max(1, int(getattr(self._primary, "max_concurrency", 1)))
+
     def load(self) -> None:
         """Warm/load underlying engines if they expose ``load()``."""
         for engine in (self._gate, self._primary):

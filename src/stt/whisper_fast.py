@@ -715,6 +715,25 @@ class FastWhisperSTT:
         return text, elapsed_ms, early_detected
 
 
+def _build_whisper_instance(config: dict) -> FastWhisperSTT:
+    temp_cfg = config.get("temperature_fallback") or {}
+    return FastWhisperSTT(
+        model=config.get("model", "distil-whisper/distil-small.en"),
+        device=config.get("device", "cuda:0"),
+        compute_type=config.get("compute_type", "float16"),
+        language=config.get("language", "es"),
+        beam_size=config.get("beam_size", 1),
+        best_of=config.get("best_of", 1),
+        initial_prompt=config.get("initial_prompt"),
+        hotwords=config.get("hotwords"),
+        vad_filter=config.get("vad_filter", True),
+        temperature_fallback=temp_cfg.get("enabled", False),
+        fallback_temperatures=temp_cfg.get("temperatures"),
+        compression_ratio_threshold=temp_cfg.get("compression_ratio_threshold", 2.0),
+        log_prob_threshold=temp_cfg.get("log_prob_threshold", -3.0),
+    )
+
+
 def create_stt(config: dict):
     """Unified factory for command and ambient/continuous STT backends.
 
@@ -722,8 +741,10 @@ def create_stt(config: dict):
     - ``parakeet``: ``ParakeetSTT`` (onnx-asr, CPU) — TDT transducer that does
       not hallucinate on silence/non-speech.
     - ``hybrid``: ``HybridVetoSTT`` — Parakeet anti-hallucination gate on CPU +
-      ``FastWhisperSTT`` forced-language primary (e.g. ``cuda:0`` for ambient).
-    - ``whisper`` (default): ``FastWhisperSTT`` (faster-whisper turbo, GPU).
+      ``FastWhisperSTT`` (or ``STTWorkerPool`` when ``workers > 1`` or
+      ``worker_configs`` is provided) as forced-language primary.
+    - ``whisper`` (default): ``FastWhisperSTT`` or ``STTWorkerPool`` when
+      ``workers > 1`` or ``worker_configs`` specifies multiple workers.
     """
     model = config.get("model", "distil-whisper/distil-small.en")
     engine = str(config.get("engine", "")).lower()
@@ -753,18 +774,20 @@ def create_stt(config: dict):
             owns_engines=True,
         )
 
-    return FastWhisperSTT(
-        model=model,
-        device=config.get("device", "cuda:0"),
-        compute_type=config.get("compute_type", "float16"),
-        language=config.get("language", "es"),
-        beam_size=config.get("beam_size", 1),
-        best_of=config.get("best_of", 1),
-        initial_prompt=config.get("initial_prompt"),
-        hotwords=config.get("hotwords"),
-        vad_filter=config.get("vad_filter", True),
-        temperature_fallback=config.get("temperature_fallback", {}).get("enabled", False),
-        fallback_temperatures=config.get("temperature_fallback", {}).get("temperatures"),
-        compression_ratio_threshold=config.get("temperature_fallback", {}).get("compression_ratio_threshold", 2.0),
-        log_prob_threshold=config.get("temperature_fallback", {}).get("log_prob_threshold", -3.0),
-    )
+    worker_configs = config.get("worker_configs")
+    if isinstance(worker_configs, list) and worker_configs:
+        instances = [_build_whisper_instance({**config, **wc}) for wc in worker_configs]
+        if len(instances) == 1:
+            return instances[0]
+        from src.stt.worker_pool import STTWorkerPool
+
+        return STTWorkerPool(instances, owns_workers=True)
+
+    workers_count = int(config.get("workers", 1) or 1)
+    if workers_count > 1:
+        from src.stt.worker_pool import STTWorkerPool
+
+        instances = [_build_whisper_instance(config) for _ in range(workers_count)]
+        return STTWorkerPool(instances, owns_workers=True)
+
+    return _build_whisper_instance(config)

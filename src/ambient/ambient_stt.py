@@ -142,9 +142,15 @@ class AmbientSTT:
         self.asr_col = asr_col
         self._work = OwnedBlockingWork()
         self._source_policy = source_policy
-        self._inference_lock = threading.Lock()
+        self._max_concurrency = max(1, int(getattr(stt, "max_concurrency", 1)))
+        self._inference_lock = threading.BoundedSemaphore(self._max_concurrency)
         self._owns_stt = owns_stt
         self._closing: asyncio.Task | None = None
+
+    @property
+    def max_concurrency(self) -> int:
+        """Maximum concurrent room transcriptions admitted by this adapter."""
+        return self._max_concurrency
 
     def asr_mono(self, audio: np.ndarray) -> np.ndarray:
         """Extraer la columna ASR mono de un audio potencialmente multicanal.

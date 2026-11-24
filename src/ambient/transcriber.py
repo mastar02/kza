@@ -740,6 +740,8 @@ def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict, config: dict | 
         "initial_prompt": stt_cfg.get("initial_prompt", None),
         "hotwords": stt_cfg.get("hotwords", None),
         "vad_filter": bool(stt_cfg.get("vad_filter", False)),
+        "workers": int(stt_cfg.get("workers", 1) or 1),
+        "worker_configs": stt_cfg.get("worker_configs"),
         "gate_first": stt_cfg.get("gate_first", True),
         "fail_open": stt_cfg.get("fail_open", True),
     }
