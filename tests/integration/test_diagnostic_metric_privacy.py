@@ -315,10 +315,11 @@ async def test_real_router_and_native_wake_caller_emit_only_numeric_diagnostics(
         await emitter.aclose()
 
 
-@pytest.mark.parametrize('backend', ['parakeet', 'whisper', 'moonshine'])
+@pytest.mark.parametrize('backend', ['parakeet', 'whisper', 'hybrid'])
 async def test_stt_backend_logs_keep_timing_without_transcription(backend):
+    from src.stt.hybrid import HybridVetoSTT
     from src.stt.parakeet_stt import ParakeetSTT
-    from src.stt.whisper_fast import FastWhisperSTT, MoonshineSTT
+    from src.stt.whisper_fast import FastWhisperSTT, STTResult
 
     if backend == 'parakeet':
         stt = ParakeetSTT()
@@ -328,13 +329,12 @@ async def test_stt_backend_logs_keep_timing_without_transcription(backend):
         stt._model = SimpleNamespace(transcribe=lambda *args, **kwargs: (iter([
             SimpleNamespace(text=PRIVATE, no_speech_prob=.1, avg_logprob=-.1, compression_ratio=1.)]), None))
     else:
-        stt = MoonshineSTT(device='cpu')
-        stt._model = SimpleNamespace(transcribe=lambda *args: PRIVATE)
+        primary = SimpleNamespace(transcribe_with_confidence=lambda *a, **k: STTResult(text=PRIVATE, elapsed_ms=10.0))
+        gate = SimpleNamespace(transcribe_with_confidence=lambda *a, **k: STTResult(text=PRIVATE, elapsed_ms=5.0))
+        stt = HybridVetoSTT(primary=primary, gate=gate)
 
     def transcribe():
         audio = np.zeros(16000, dtype=np.float32)
-        if backend == 'moonshine':
-            return stt.transcribe(audio)[0]
         return stt.transcribe_with_confidence(audio).text
 
     messages = []

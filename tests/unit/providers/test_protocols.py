@@ -34,11 +34,11 @@ class TestSTTProtocol:
         stt = FastWhisperSTT.__new__(FastWhisperSTT)  # no __init__ side-effects
         assert isinstance(stt, STTProvider)
 
-    def test_moonshine_satisfies_protocol(self):
-        """MoonshineSTT has load() and transcribe(audio, sample_rate)."""
-        from src.stt.whisper_fast import MoonshineSTT
+    def test_hybrid_veto_satisfies_protocol(self):
+        """HybridVetoSTT has load() and transcribe(audio, sample_rate)."""
+        from src.stt.hybrid import HybridVetoSTT
 
-        stt = MoonshineSTT.__new__(MoonshineSTT)
+        stt = HybridVetoSTT.__new__(HybridVetoSTT)
         assert isinstance(stt, STTProvider)
 
     def test_protocol_method_signatures(self):

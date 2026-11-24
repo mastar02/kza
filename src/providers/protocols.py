@@ -67,7 +67,7 @@ class ClassificationResult:
 class STTProvider(Protocol):
     """Speech-to-Text provider interface.
 
-    Matches ``FastWhisperSTT.transcribe`` / ``MoonshineSTT.transcribe``.
+    Matches ``FastWhisperSTT.transcribe`` / ``ParakeetSTT.transcribe`` / ``HybridVetoSTT.transcribe``.
     """
 
     def load(self) -> None:

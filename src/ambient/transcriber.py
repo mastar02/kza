@@ -703,38 +703,31 @@ class AmbientPath:
 
 
 def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict, config: dict | None = None):
-    """Seleccionar el motor ASR del ambient path según ``ambient.stt.engine``.
+    """Select the ambient STT backend via the unified ``src.stt.whisper_fast.create_stt``.
 
-    - ``parakeet`` (swap 2026-06-07): Parakeet-TDT-0.6B-v3 onnx en CPU —
-      0/5 alucinaciones sobre no-voz vs 5/5 del turbo en el benchmark A/B
-      con audio real (doc 2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md).
-    - ``whisper`` (default, compat): FastWhisperSTT dedicado en cuda:0,
-      hereda model/compute_type del bloque ``stt:`` top-level. Sin modelo
-      configurado, usa ``<paths.models_root>/whisper-v3-turbo`` (``config``
-      es la configuración central; U3b-0e 2b).
+    Supports ``parakeet`` (CPU), ``whisper`` (dedicated ``cuda:0``), and
+    ``hybrid`` (Parakeet CPU anti-hallucination gate + Whisper ``cuda:0``).
     """
+    from src.stt.whisper_fast import create_stt
+
     engine = stt_cfg.get("engine", "whisper")
-    if engine == "parakeet":
-        from src.stt.parakeet_stt import ParakeetSTT
-
-        return ParakeetSTT(
-            model_name=stt_cfg.get("parakeet_model", "nemo-parakeet-tdt-0.6b-v3"),
-            language=stt_base_cfg.get("language", "es"),
-        )
-    from src.stt.whisper_fast import FastWhisperSTT
-
     model = stt_cfg.get("model", stt_base_cfg.get("model"))
     if model is None:
         model = models_path(config, "whisper-v3-turbo")
-    return FastWhisperSTT(
-        model=model,
-        device=stt_cfg.get("device", "cuda:0"),
-        compute_type=stt_cfg.get("compute_type", stt_base_cfg.get("compute_type", "int8_float16")),
-        language=stt_base_cfg.get("language", "es"),
-        beam_size=stt_cfg.get("beam_size", 1),
-        initial_prompt=None,
-        vad_filter=False,
-    )
+    merged = {
+        "engine": engine,
+        "model": model,
+        "parakeet_model": stt_cfg.get("parakeet_model", "nemo-parakeet-tdt-0.6b-v3"),
+        "device": stt_cfg.get("device", "cuda:0"),
+        "compute_type": stt_cfg.get("compute_type", stt_base_cfg.get("compute_type", "int8_float16")),
+        "language": stt_base_cfg.get("language", "es"),
+        "beam_size": stt_cfg.get("beam_size", 1),
+        "initial_prompt": stt_cfg.get("initial_prompt", None),
+        "vad_filter": False,
+        "gate_first": stt_cfg.get("gate_first", True),
+        "fail_open": stt_cfg.get("fail_open", True),
+    }
+    return create_stt(merged)
 
 
 def build_ambient_path(

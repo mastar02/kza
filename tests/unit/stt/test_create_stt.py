@@ -10,7 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from src.stt.whisper_fast import FastWhisperSTT, MoonshineSTT, create_stt
+from src.stt.hybrid import HybridVetoSTT
+from src.stt.whisper_fast import FastWhisperSTT, create_stt
 
 
 @pytest.fixture
@@ -46,6 +47,27 @@ def test_create_stt_default_is_whisper():
     assert isinstance(stt, FastWhisperSTT)
 
 
-def test_create_stt_moonshine():
-    stt = create_stt({"model": "moonshine/base"})
-    assert isinstance(stt, MoonshineSTT)
+def test_create_stt_hybrid(stub_onnx_asr):
+    from src.stt.parakeet_stt import ParakeetSTT
+
+    stt = create_stt({
+        "engine": "hybrid",
+        "model": "./models/whisper-v3-turbo",
+        "device": "cuda:0",
+        "language": "es",
+    })
+    assert isinstance(stt, HybridVetoSTT)
+    assert isinstance(stt._primary, FastWhisperSTT)
+    assert isinstance(stt._gate, ParakeetSTT)
+    assert stt._primary.device == "cuda:0"
+
+
+def test_build_ambient_stt_engine_supports_hybrid(stub_onnx_asr):
+    from src.ambient.transcriber import _build_ambient_stt_engine
+
+    stt = _build_ambient_stt_engine(
+        stt_cfg={"engine": "hybrid", "device": "cuda:0"},
+        stt_base_cfg={"language": "es", "compute_type": "int8_float16"},
+    )
+    assert isinstance(stt, HybridVetoSTT)
+    assert stt._primary.device == "cuda:0"

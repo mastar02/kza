@@ -709,102 +709,55 @@ class FastWhisperSTT:
         return text, elapsed_ms, early_detected
 
 
-class MoonshineSTT:
-    """
-    Alternativa: Moonshine STT (más rápido que Whisper)
-    https://github.com/usefulsensors/moonshine
-    """
-    
-    def __init__(self, model: str = "moonshine/base", device: str = "cuda:0"):
-        self.model_name = model
-        self.device = device
-        self._model = None
-    
-    def load(self):
-        """Cargar modelo Moonshine"""
-        try:
-            import moonshine_onnx
-            
-            logger.info(f"Cargando Moonshine: {self.model_name}")
-            self._model = moonshine_onnx.load(self.model_name)
-            logger.info("Moonshine cargado")
-        except ImportError:
-            logger.error("Moonshine no instalado: pip install moonshine-onnx")
-            raise
-    
-    def transcribe(
-        self,
-        audio: np.ndarray,
-        sample_rate: int = 16000,
-    ) -> tuple[str, float]:
-        """Transcribir con Moonshine (muy rápido)"""
-        if self._model is None:
-            self.load()
-
-        start = time.perf_counter()
-
-        # Moonshine espera audio float32 normalizado
-        if audio.dtype != np.float32:
-            audio = audio.astype(np.float32)
-        if np.abs(audio).max() > 1.0:
-            audio = audio / 32768.0
-
-        text = self._model.transcribe(audio, sample_rate)
-
-        elapsed_ms = (time.perf_counter() - start) * 1000
-        from contextvars import Context
-        Context().run(logger.debug, "Moonshine STT completed in %.0fms", elapsed_ms)
-
-        return text, elapsed_ms
-
-    def transcribe_with_confidence(
-        self,
-        audio: np.ndarray,
-        sample_rate: int = 16000,
-    ) -> STTResult:
-        """Transcribir devolviendo STTResult (confianza no disponible en Moonshine)."""
-        text, ms = self.transcribe(audio, sample_rate)
-        return STTResult(text=text, elapsed_ms=ms, no_speech_prob=None, avg_logprob=None)
-
-
 def create_stt(config: dict):
-    """Factory para crear el STT del fast path según configuración.
+    """Unified factory for command and ambient/continuous STT backends.
 
-    Selección por ``engine`` (o heurística sobre ``model``):
-    - ``parakeet``: ParakeetSTT (onnx-asr, CPU) — transducer TDT que no alucina
-      sobre no-voz. Duck-type de FastWhisperSTT (transcribe / transcribe_with_
-      confidence -> STTResult). GPU descartado (loop TDT rinde peor que CPU en
-      clips cortos); ver plan Parakeet fast path.
-    - ``moonshine``: MoonshineSTT.
-    - ``whisper`` (default): FastWhisperSTT (faster-whisper turbo, GPU).
+    Selection by ``engine`` (or heuristic on ``model``):
+    - ``parakeet``: ``ParakeetSTT`` (onnx-asr, CPU) — TDT transducer that does
+      not hallucinate on silence/non-speech.
+    - ``hybrid``: ``HybridVetoSTT`` — Parakeet anti-hallucination gate on CPU +
+      ``FastWhisperSTT`` forced-language primary (e.g. ``cuda:0`` for ambient).
+    - ``whisper`` (default): ``FastWhisperSTT`` (faster-whisper turbo, GPU).
     """
     model = config.get("model", "distil-whisper/distil-small.en")
-    engine = config.get("engine", "").lower()
+    engine = str(config.get("engine", "")).lower()
 
-    if engine == "parakeet" or "parakeet" in model.lower():
+    if engine == "parakeet" or (not engine and "parakeet" in str(model).lower()):
         from src.stt.parakeet_stt import ParakeetSTT
 
         return ParakeetSTT(
             model_name=config.get("parakeet_model", "nemo-parakeet-tdt-0.6b-v3"),
             language=config.get("language", "es"),
         )
-    if engine == "moonshine" or "moonshine" in model.lower():
-        return MoonshineSTT(
-            model=model,
-            device=config.get("device", "cuda:0")
-        )
-    else:
-        return FastWhisperSTT(
-            model=model,
-            device=config.get("device", "cuda:0"),
-            compute_type=config.get("compute_type", "float16"),
+
+    if engine == "hybrid":
+        from src.stt.hybrid import HybridVetoSTT
+        from src.stt.parakeet_stt import ParakeetSTT
+
+        primary = create_stt({**config, "engine": "whisper"})
+        gate = ParakeetSTT(
+            model_name=config.get("parakeet_model", "nemo-parakeet-tdt-0.6b-v3"),
             language=config.get("language", "es"),
-            beam_size=config.get("beam_size", 1),
-            best_of=config.get("best_of", 1),
-            initial_prompt=config.get("initial_prompt"),
-            vad_filter=config.get("vad_filter", True),
-            temperature_fallback=config.get("temperature_fallback", {}).get("enabled", False),
-            fallback_temperatures=config.get("temperature_fallback", {}).get("temperatures"),
-            compression_ratio_threshold=config.get("temperature_fallback", {}).get("compression_ratio_threshold", 2.0),
-            log_prob_threshold=config.get("temperature_fallback", {}).get("log_prob_threshold", -3.0),
         )
+        return HybridVetoSTT(
+            primary=primary,
+            gate=gate,
+            gate_first=bool(config.get("gate_first", True)),
+            fail_open=bool(config.get("fail_open", True)),
+            owns_engines=True,
+        )
+
+    return FastWhisperSTT(
+        model=model,
+        device=config.get("device", "cuda:0"),
+        compute_type=config.get("compute_type", "float16"),
+        language=config.get("language", "es"),
+        beam_size=config.get("beam_size", 1),
+        best_of=config.get("best_of", 1),
+        initial_prompt=config.get("initial_prompt"),
+        vad_filter=config.get("vad_filter", True),
+        temperature_fallback=config.get("temperature_fallback", {}).get("enabled", False),
+        fallback_temperatures=config.get("temperature_fallback", {}).get("temperatures"),
+        compression_ratio_threshold=config.get("temperature_fallback", {}).get("compression_ratio_threshold", 2.0),
+        log_prob_threshold=config.get("temperature_fallback", {}).get("log_prob_threshold", -3.0),
+    )

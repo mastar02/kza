@@ -140,6 +140,39 @@ class HybridVetoSTT:
             if callable(load_fn):
                 load_fn()
 
+    def request_close(self) -> None:
+        """Seal owned underlying engines without blocking."""
+        if not self._owns_engines:
+            return
+        for engine in (self._gate, self._primary):
+            fn = getattr(engine, "request_close", None)
+            if callable(fn):
+                fn()
+
+    def begin_close(self):
+        """Async retirement hook compatible with ``AmbientSTT`` and runtime closure."""
+        import asyncio
+        from contextvars import Context
+
+        self.request_close()
+
+        async def _finish() -> None:
+            if not self._owns_engines:
+                return
+            pending = []
+            for engine in (self._gate, self._primary):
+                begin = getattr(engine, "begin_close", None)
+                if callable(begin):
+                    pending.append(begin())
+                else:
+                    close = getattr(engine, "close", None)
+                    if callable(close):
+                        pending.append(asyncio.to_thread(close))
+            if pending:
+                await asyncio.gather(*pending)
+
+        return asyncio.get_running_loop().create_task(_finish(), context=Context())
+
     def close(self) -> None:
         """Close owned underlying engines cleanly."""
         if not self._owns_engines:
@@ -220,7 +253,10 @@ class HybridVetoSTT:
         self, audio: np.ndarray, sample_rate: int = 16000
     ) -> STTResult:
         """Standard ``STTEngine`` entrypoint returning ``STTResult``."""
-        return self.transcribe_detailed(audio, sample_rate).to_stt_result()
+        detailed = self.transcribe_detailed(audio, sample_rate)
+        from contextvars import Context
+        Context().run(logger.debug, "Hybrid STT completed in %.0fms", detailed.elapsed_ms)
+        return detailed.to_stt_result()
 
     def transcribe(
         self, audio: np.ndarray, sample_rate: int = 16000
