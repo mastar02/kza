@@ -858,7 +858,7 @@ slots de R1 siguen sirviéndose: `SCHEMA_CONTRACT_EPOCH` 1, `FORMAT_EPOCH` 1,
 `LAUNCHER_CONTRACT` 3 y `RECEIPT_STATE_SCHEMA` 2 no cambian.
 
 Triple del controlador. `release.json` declara `controller_epoch`,
-`controller_revision` (`CONTROLLER_REVISION`, hoy 4) y
+`controller_revision` (`CONTROLLER_REVISION`, hoy 5) y
 `controller_sources_sha256`, el sha256 de la lista ordenada (ruta, sha256 del
 fuente) de la clausura de imports del controlador, que `build_runtime`
 calcula y también registra (`controller_sources`). La clausura sale de un
@@ -1536,7 +1536,8 @@ Q3: `src.main` rechaza (78) si su padre no le puso los tunables, y ni
 `LAUNCHER_CONTRACT` ni `CONTROLLER_REVISION` subieron, así que ese caso no
 tiene un rechazo propio en `check_slot`; falla al arrancar el hijo. La
 primera release de época 5 ya incluía Q3. Desde esa release,
-`RELEASED_CONTROLLERS` fija los pares `(5, 1)`, `(5, 2)`, `(5, 3)` y `(5, 4)`.
+`RELEASED_CONTROLLERS` fija los pares `(5, 1)` a `(5, 5)`.
+La revisión `(5, 5)` incorpora el catálogo de temperatura y humedad de NEXO Hogar.
 Q3 cambia la clausura del controlador
 (`managed_launcher`, `stage_runtime`), así que con la misma revisión `plan`
 rechaza `runtime_admission_compaction_controller_revision_conflict`, y con la
