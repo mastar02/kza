@@ -2020,8 +2020,8 @@ ambient:
   # calidad vad_prob ≥ 0.45 enforced + idioma SHADOW (log). NO toca el
   # command/wake path (shadow_mode solo gatea el distiller, verificado).
   shadow_mode: false
-  asr_col: 1            # beam ASR (fw 6ch ch1 — mismo canal que el command path)
-  vad_col: 1            # Silero sobre canal ASR real de los XVF3800 de dos canales
+  asr_col: 0            # ch0 Conference (verificado 5/5 A/B escritorio, +8.5 dB vs ch1)
+  vad_col: 0            # Silero sobre ch0 Conference (alineado con asr_col)
   raw_first_col: 2      # primera columna de mics crudos (DoA)
   # 12→48 (2026-06-13): la evidencia far-field se purgaba antes de poder
   # auditarla / juntar dataset de re-entrenamiento. 48h da ventana de audit.
@@ -2053,16 +2053,26 @@ ambient:
     min_vad: 0.45       # ignorado por lang_ok (queda por compat YAML); el
                         # distiller usa distill.min_vad_prob
   stt:
-    # Swap 2026-06-07: Parakeet-TDT-0.6B-v3 (onnx, CPU) reemplaza al turbo
-    # en el ambient path. Benchmark A/B con audio real XVF3800: 0/5
-    # alucinaciones sobre no-voz vs 5/5 del turbo, mejor calidad en voz,
-    # RTF ~0.03 en CPU → 0 VRAM (libera ~1.5GB de cuda:0). El command path
-    # NO se toca (turbo GPU). Doc: docs/research/2026-06-07_SOTA_ASR_ESPANOL_INVESTIGACION.md
-    engine: "parakeet"               # parakeet | whisper (fallback/rollback)
+    # A/B 2026-11-24 sobre audio real XVF3800 ch0 (Parakeet vs Whisper turbo vs
+    # Whisper large-v3 vs Canary-1B vs Qwen3-ASR-1.7B vs Voxtral-Mini-3B-AWQ4):
+    # HybridVetoSTT = Parakeet-TDT-0.6B-v3 en CPU (veto anti-alucinación + alt_text
+    # acústico fiel en coloquialismos) + Whisper large-v3 float16 en cuda:0
+    # (~3.78 GB VRAM, deja ~3.35 GB libres; rollback rápido: compute_type int8_float16
+    # ~1.82 GB). El command path en cuda:1 NO se toca.
+    engine: "hybrid"                 # hybrid | parakeet | whisper
+    model: "large-v3"                # 1.55B, 32 capas decoder (cuda:0 dedicado)
     parakeet_model: "nemo-parakeet-tdt-0.6b-v3"
-    device: "cuda:0"    # solo engine=whisper — GPU ambiental, JAMÁS cuda:1
-    beam_size: 1        # solo engine=whisper
-    # model/compute_type heredan del bloque stt: top-level (solo whisper)
+    device: "cuda:0"                 # GPU ambiental dedicada, JAMÁS cuda:1
+    compute_type: "float16"          # 3.78 GB VRAM en cuda:0 (alt: int8_float16 1.82 GB)
+    beam_size: 5
+    vad_filter: true
+    hotwords: "Nexa prendé apagá subí bajá poné escritorio living cocina baño hall"
+    initial_prompt: >-
+      Español rioplatense (Argentina): che, prendé, apagá, subí, bajá,
+      poné, hacé. Asistente: Nexa. Habitaciones: escritorio, living,
+      cocina, baño, hall.
+    gate_first: true
+    fail_open: true
   segmenter:
     # 0.3 CALIBRADO Fase 0 (2026-06-06): far-field 3-4m la voz da 20.8% de
     # chunks >0.3 vs TV 0.5-3.3% — a 0.5 la voz far-field cae a 12.8% y se

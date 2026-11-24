@@ -128,3 +128,67 @@ def test_curate_cli_runs_end_to_end(tmp_path, capsys):
     assert payload["stt_samples"] == 2
     assert payload["wake_positives"] == 1
     assert payload["llm_conversations"] == 1
+
+
+def test_export_includes_parakeet_alt_text_review_flag_and_multi_inline_commands(tmp_path):
+    import asyncio
+    from src.ambient.store import AmbientStore
+    from src.ambient.types import AmbientUtterance
+
+    _make_2ch_flac(tmp_path / "audio/escritorio/1.flac", 0.3, 0.1)
+    db_path = tmp_path / "ambient_new.db"
+
+    async def seed():
+        store = AmbientStore(db_path=str(db_path), retention_hours=48.0)
+        await store.init()
+        utt_id = await store.add(
+            AmbientUtterance(
+                room_id="escritorio",
+                t0=1000.0,
+                t1=1020.0,
+                text=(
+                    "Hola. Nexa, prendé la luz del escritorio. "
+                    "Nexa, ¿qué temperatura hace? Hoy es un día maravilloso, ¿no?"
+                ),
+                alt_text=(
+                    "Hola. Nexa, aprender a la luz del escritorio. "
+                    "Nexa, ¿qué temperatura hace? Hoy es un día maravilloso para morirse, ¿no?"
+                ),
+                agreement_ratio=0.79,
+                speaker="gabriel",
+                source="live",
+                vad_prob=0.85,
+                lang="es",
+                lang_ok=True,
+                audio_path="audio/escritorio/1.flac",
+            )
+        )
+        await store.close()
+        return utt_id
+
+    utt_id = asyncio.run(seed())
+    out_dir = tmp_path / "curated_new"
+    summary = export_curated_datasets(
+        db_path,
+        out_dir,
+        CurationPolicy(approved_utterance_ids=frozenset({utt_id})),
+        audio_base=tmp_path,
+    )
+    assert summary.stt_samples == 1
+    assert summary.wake_positives == 1
+
+    # Default channel_mode is mono_ch0 (0.3)
+    wav_data, _ = sf.read(str(out_dir / "stt" / "audio" / f"utt_{utt_id}.wav"), dtype="float32")
+    assert np.allclose(wav_data, 0.3, atol=1e-2)
+
+    stt_row = json.loads((out_dir / "stt" / "metadata.jsonl").read_text(encoding="utf-8").strip())
+    assert "para morirse" in stt_row["alt_text_parakeet"]
+    assert stt_row["agreement_ratio"] == 0.79
+    assert stt_row["needs_review"] is True
+
+    llm_row = json.loads((out_dir / "llm" / "conversations.jsonl").read_text(encoding="utf-8").strip())
+    assert llm_row["inline_actions"] == [
+        {"utterance_id": utt_id, "command": "Nexa, prendé la luz del escritorio"},
+        {"utterance_id": utt_id, "command": "Nexa, ¿qué temperatura hace?"},
+    ]
+    assert llm_row["turns"][0]["needs_review"] is True

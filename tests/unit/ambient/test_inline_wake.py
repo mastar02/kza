@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import numpy as np
 
-from src.ambient.inline_wake import extract_inline_command
+from src.ambient.inline_wake import extract_all_inline_commands, extract_inline_command
 from src.ambient.segmenter import UtteranceSegmenter
 from src.ambient.textual_wake import TextualWakeDetector
 
@@ -154,3 +154,64 @@ def test_command_capture_inline_skips_followup_and_incomplete_releases_dedup():
     acoustic_ev = CommandEvent(audio=np.zeros(1600, dtype=np.float32), room_id="living")
     asyncio.run(loop._dispatch_command(acoustic_ev))
     assert loop.last_command_dispatch_ts("living") == 0.0
+
+
+def test_extract_all_inline_commands_handles_back_to_back_commands_with_or_without_punctuation():
+    punctuated = (
+        "Hola, hola, hola, hola. Nexa, prendé la luz del escritorio. "
+        "Nexa, ¿qué temperatura hace? Dale a tu cuerpo, alegría, macarena."
+    )
+    matches = extract_all_inline_commands(punctuated)
+    assert [m.command_text for m in matches] == [
+        "Nexa, prendé la luz del escritorio",
+        "Nexa, ¿qué temperatura hace?",
+    ]
+    assert all(m.embedded_in_conversation for m in matches)
+
+    unpunctuated = (
+        "hola hola nexa prendé la luz del escritorio nexa que temperatura hace? "
+        "bueno te seguía contando"
+    )
+    matches2 = extract_all_inline_commands(unpunctuated)
+    assert [m.command_text for m in matches2] == [
+        "nexa prendé la luz del escritorio",
+        "nexa que temperatura hace?",
+    ]
+
+
+def test_textual_wake_dispatches_multiple_inline_commands_in_single_utterance():
+    dispatched = []
+    missed_calls = []
+
+    async def fake_dispatch(event):
+        dispatched.append(event)
+        return {"success": True}
+
+    detector = TextualWakeDetector(
+        dispatch_fn=fake_dispatch,
+        last_acoustic_command_ts_fn=lambda _room: 0.0,
+        min_vad=0.50,
+        on_missed_fn=lambda room, _audio: missed_calls.append(room),
+    )
+    audio = np.zeros(1600, dtype=np.float32)
+    text = (
+        "Hola, hola. Nexa, prendé la luz del escritorio. "
+        "Nexa, ¿qué temperatura hace? ¿Cómo estás, che?"
+    )
+    ok = asyncio.run(
+        detector.maybe_dispatch(
+            room_id="escritorio",
+            text=text,
+            source="live",
+            speaker="gabriel",
+            audio=audio,
+            vad_prob=0.80,
+        )
+    )
+    assert ok is True
+    assert len(missed_calls) == 1
+    assert [ev.wake_text for ev in dispatched] == [
+        "Nexa, prendé la luz del escritorio",
+        "Nexa, ¿qué temperatura hace?",
+    ]
+    assert all(ev.inline_conversation for ev in dispatched)

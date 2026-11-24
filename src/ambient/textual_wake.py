@@ -391,21 +391,26 @@ class TextualWakeDetector:
             )
             return False
 
-        dispatch_text = text
-        inline_conversation = False
+        dispatch_items: list[tuple[str, bool]] = [(text, False)]
         if self._extract_inline:
-            from src.ambient.inline_wake import extract_inline_command
+            from src.ambient.inline_wake import extract_all_inline_commands
 
-            inline = extract_inline_command(
+            inlines = extract_all_inline_commands(
                 text,
                 variants=self._variants,
                 max_edit_distance=self._max_edit_distance,
                 max_command_words=self._max_command_words,
             )
-            if inline is not None:
-                inline_conversation = inline.embedded_in_conversation
-                if inline.embedded_in_conversation and inline.command_text:
-                    dispatch_text = inline.command_text
+            if inlines:
+                dispatch_items = [
+                    (
+                        item.command_text
+                        if (item.embedded_in_conversation and item.command_text)
+                        else text,
+                        item.embedded_in_conversation,
+                    )
+                    for item in inlines
+                ]
 
         if self._on_missed_fn is not None:
             try:
@@ -415,33 +420,43 @@ class TextualWakeDetector:
             except Exception as e:
                 logger.warning('Textual wake clip callback failed: %s', type(e).__name__)
 
-        event = CommandEvent(
-            audio=audio,
-            room_id=room_id,
-            wake_text=dispatch_text,
-            transcript=CapturedTranscript.from_audio(dispatch_text, TranscriptSource.AMBIENT, audio,
-                transcript_provenance=transcript_provenance, transcript_span=transcript_span,
-                transcript_truncated=transcript_truncated),
-            audio_provenance=audio_provenance,
-            capture_complete=True,
-            wake_score=1.0,
-            textual_wake=True,
-            inline_conversation=inline_conversation,
-            **({"capture_id": memory_source.capture_id, "conversation_id": memory_source.conversation_id,
-                "captured_at": memory_source.captured_at, "source_expires_at": memory_source.expires_at}
-               if memory_source is not None else {}),
-        )
-        try:
-            await self._dispatch_fn(event)
-        except Exception as e:
-            logger.error(
-                f"[TextualWake] dispatch error room={room_id} chars={len(text)}: {type(e).__name__}"
+        dispatched_any = False
+        for dispatch_text, inline_conversation in dispatch_items:
+            event = CommandEvent(
+                audio=audio,
+                room_id=room_id,
+                wake_text=dispatch_text,
+                transcript=CapturedTranscript.from_audio(
+                    dispatch_text,
+                    TranscriptSource.AMBIENT,
+                    audio,
+                    transcript_provenance=transcript_provenance,
+                    transcript_span=transcript_span,
+                    transcript_truncated=transcript_truncated,
+                ),
+                audio_provenance=audio_provenance,
+                capture_complete=True,
+                wake_score=1.0,
+                textual_wake=True,
+                inline_conversation=inline_conversation,
+                **({"capture_id": memory_source.capture_id, "conversation_id": memory_source.conversation_id,
+                    "captured_at": memory_source.captured_at, "source_expires_at": memory_source.expires_at}
+                   if memory_source is not None else {}),
             )
+            try:
+                await self._dispatch_fn(event)
+                dispatched_any = True
+            except Exception as e:
+                logger.error(
+                    f"[TextualWake] dispatch error room={room_id} chars={len(dispatch_text)}: {type(e).__name__}"
+                )
+
+        if not dispatched_any:
             return False
 
         logger.info(
             f"[TextualWake] DISPARO room={room_id} chars={len(text)} "
-            f"source={source} speaker={speaker}"
+            f"commands={len(dispatch_items)} source={source} speaker={speaker}"
         )
         self._last_dispatch_ts[room_id] = now
         return True

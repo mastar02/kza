@@ -25,9 +25,23 @@ from src.memory.producer_context import PRODUCER_CONTEXT, model_admission
 from src.memory.prompt_context import SourcesInvalidated
 
 
-def _validate_stt_scalars(text, elapsed_ms, no_speech_prob, avg_logprob, compression_ratio):
+def _validate_stt_scalars(
+    text,
+    elapsed_ms,
+    no_speech_prob,
+    avg_logprob,
+    compression_ratio,
+    alt_text=None,
+    agreement_ratio=None,
+):
     if (type(text) is not str or type(elapsed_ms) not in (int, float)
             or not math.isfinite(elapsed_ms) or elapsed_ms < 0
+            or (alt_text is not None and type(alt_text) is not str)
+            or (agreement_ratio is not None and (
+                type(agreement_ratio) not in (int, float)
+                or not math.isfinite(agreement_ratio)
+                or not 0.0 <= agreement_ratio <= 1.0
+            ))
             or any(value is not None and (type(value) not in (int, float) or not math.isfinite(value))
                    for value in (no_speech_prob, avg_logprob, compression_ratio))):
         raise ValueError('invalid_ambient_stt_result')
@@ -41,7 +55,8 @@ def _stt_scalars(result):
         if type(result) is not STTResult:
             raise ValueError('invalid_ambient_stt_result')
         values = (result.text, result.elapsed_ms, result.no_speech_prob,
-                  result.avg_logprob, result.compression_ratio)
+                  result.avg_logprob, result.compression_ratio,
+                  result.alt_text, result.agreement_ratio)
         _validate_stt_scalars(*values)
     except (ValueError, TypeError, AttributeError, OverflowError):
         invalid = True
@@ -55,7 +70,7 @@ def _stt_scalars(result):
 
 @dataclass(frozen=True, slots=True, repr=False)
 class AmbientSTTResult:
-    """Five immutable engine scalars and selection; no engine object or extras."""
+    """Closed immutable engine scalars and selection; no engine object or extras."""
 
     text: str
     elapsed_ms: float
@@ -67,10 +82,13 @@ class AmbientSTTResult:
     frame_count: int
     provenance: CaptureProvenance | None = None
     span: FrameInterval | None = None
+    alt_text: str | None = None
+    agreement_ratio: float | None = None
 
     def __post_init__(self):
         _validate_stt_scalars(self.text, self.elapsed_ms, self.no_speech_prob,
-                              self.avg_logprob, self.compression_ratio)
+                              self.avg_logprob, self.compression_ratio,
+                              self.alt_text, self.agreement_ratio)
         if (type(self.selected_channel) is not int
                 or type(self.source_channels) is not int or not 1 <= self.source_channels <= 64
                 or not 0 <= self.selected_channel < self.source_channels
@@ -185,7 +203,16 @@ class AmbientSTT:
                 self._require_live()
                 scalars = _stt_scalars(result)
                 result = None
-                return AmbientSTTResult(*scalars, selected, channels, mono.shape[0], provenance, span)
+                return AmbientSTTResult(
+                    *scalars[:5],
+                    selected,
+                    channels,
+                    mono.shape[0],
+                    provenance,
+                    span,
+                    alt_text=scalars[5],
+                    agreement_ratio=scalars[6],
+                )
         finally:
             audio = mono = opening = segment_generation = result = scalars = provenance = span = None
 

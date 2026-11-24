@@ -54,6 +54,8 @@ class STTResult:
     no_speech_prob: float | None = None
     avg_logprob: float | None = None
     compression_ratio: float | None = None
+    alt_text: str | None = None
+    agreement_ratio: float | None = None
 
 
 class FastWhisperSTT:
@@ -68,6 +70,7 @@ class FastWhisperSTT:
         beam_size: int = 1,
         best_of: int = 1,
         initial_prompt: str | None = None,
+        hotwords: str | None = None,
         vad_filter: bool = True,
         temperature_fallback: bool = False,
         fallback_temperatures: list[float] | None = None,
@@ -108,6 +111,7 @@ class FastWhisperSTT:
         self.beam_size = beam_size
         self.best_of = best_of
         self.initial_prompt = initial_prompt
+        self.hotwords = hotwords
         self.vad_filter = vad_filter
         self.temperature_fallback = temperature_fallback
         self.fallback_temperatures = fallback_temperatures or [0.0, 0.2, 0.4, 0.6, 0.8, 1.0]
@@ -451,6 +455,7 @@ class FastWhisperSTT:
         temperature = (
             self.fallback_temperatures if self.temperature_fallback else 0
         )
+        extra_kwargs = {"hotwords": self.hotwords} if self.hotwords else {}
         segments, info = self._model.transcribe(
             audio_input,
             language=self.language,
@@ -467,6 +472,7 @@ class FastWhisperSTT:
                 "speech_pad_ms": 100,
                 "threshold": 0.5,
             },
+            **extra_kwargs,
         )
 
         seg_list = list(segments)
@@ -755,6 +761,7 @@ def create_stt(config: dict):
         beam_size=config.get("beam_size", 1),
         best_of=config.get("best_of", 1),
         initial_prompt=config.get("initial_prompt"),
+        hotwords=config.get("hotwords"),
         vad_filter=config.get("vad_filter", True),
         temperature_fallback=config.get("temperature_fallback", {}).get("enabled", False),
         fallback_temperatures=config.get("temperature_fallback", {}).get("temperatures"),

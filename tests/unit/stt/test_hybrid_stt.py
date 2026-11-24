@@ -4,7 +4,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from src.stt.hybrid import HybridVetoSTT, STTEngine, apply_hybrid_veto
+from src.stt.hybrid import (
+    HybridVetoSTT,
+    STTEngine,
+    apply_hybrid_veto,
+    compute_transcript_agreement,
+)
 from src.stt.whisper_fast import STTResult
 
 
@@ -126,3 +131,26 @@ def test_hybrid_veto_stt_lifecycle_ownership():
     owned = HybridVetoSTT(primary=primary, gate=gate, owns_engines=True)
     owned.close()
     assert primary.closed and gate.closed
+
+
+def test_hybrid_agreement_and_alt_text_flow_through_ambient_stt():
+    import asyncio
+    from src.ambient.ambient_stt import AmbientSTT
+
+    assert compute_transcript_agreement("¿Cómo estás, che?", "como estas che") == 1.0
+    assert compute_transcript_agreement("Hoy es maravilloso", "Hoy es para morirse") < 0.9
+
+    primary = _FakeSTT("Nexa, prendé la luz. Hoy es un día maravilloso, ¿no?")
+    gate = _FakeSTT("Nexa, aprender la luz. Hoy es un día maravilloso para morirse, ¿no?")
+    hybrid = HybridVetoSTT(primary=primary, gate=gate, gate_first=True)
+
+    stt_res = hybrid.transcribe_with_confidence(_audio())
+    assert stt_res.alt_text == gate.text
+    assert stt_res.agreement_ratio is not None and 0.5 < stt_res.agreement_ratio < 0.95
+
+    ambient_stt = AmbientSTT(stt=hybrid, asr_col=0)
+    ambient_res = asyncio.run(ambient_stt.transcribe(np.zeros((1600, 2), dtype=np.float32)))
+    assert ambient_res.selected_channel == 0
+    assert ambient_res.text == primary.text
+    assert ambient_res.alt_text == gate.text
+    assert ambient_res.agreement_ratio == stt_res.agreement_ratio

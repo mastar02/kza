@@ -83,6 +83,8 @@ class AmbientUtterance:
     # ambient.keep_audio está activo (campaña de medición).
     text_empty: bool = False
     audio_path: str | None = None   # ruta del FLAC, o None si no se archivó
+    alt_text: str | None = None     # transcripción secundaria (ej. Parakeet gate en HybridVetoSTT)
+    agreement_ratio: float | None = None  # similitud [0, 1] entre primario y gate
     capture_id: str = field(default_factory=lambda: str(uuid4()))
     conversation_id: str | None = None
     expires_at: float | None = None

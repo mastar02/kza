@@ -525,6 +525,8 @@ class AmbientTranscriber:
                 no_speech_prob=stt_result.no_speech_prob,
                 vad_prob=seg.vad_prob,
                 lang=lang, lang_prob=lang_prob, lang_ok=lang_ok,
+                alt_text=getattr(stt_result, "alt_text", None),
+                agreement_ratio=getattr(stt_result, "agreement_ratio", None),
                 during_tts=seg.during_tts, **provenance,
             )
             if source == "tv":
@@ -736,7 +738,8 @@ def _build_ambient_stt_engine(stt_cfg: dict, stt_base_cfg: dict, config: dict | 
         "language": stt_base_cfg.get("language", "es"),
         "beam_size": stt_cfg.get("beam_size", 1),
         "initial_prompt": stt_cfg.get("initial_prompt", None),
-        "vad_filter": False,
+        "hotwords": stt_cfg.get("hotwords", None),
+        "vad_filter": bool(stt_cfg.get("vad_filter", False)),
         "gate_first": stt_cfg.get("gate_first", True),
         "fail_open": stt_cfg.get("fail_open", True),
     }

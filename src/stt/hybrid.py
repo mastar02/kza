@@ -11,8 +11,11 @@ fidelity.
 """
 from __future__ import annotations
 
+from difflib import SequenceMatcher
 import logging
+import re
 import time
+import unicodedata
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
@@ -21,6 +24,29 @@ import numpy as np
 from src.stt.whisper_fast import STTResult
 
 logger = logging.getLogger(__name__)
+
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def compute_transcript_agreement(primary_text: str, gate_text: str) -> float:
+    """Normalized word-level similarity ``[0.0, 1.0]`` between two transcripts.
+
+    Strips case, accents, and punctuation so formatting differences do not
+    trigger false disagreements while genuine lexical differences (e.g.
+    ``"para morirse"`` vs ``"maravilloso"``) lower the score for review.
+    """
+    def _tokens(text: str) -> list[str]:
+        norm = unicodedata.normalize("NFD", (text or "").lower())
+        stripped = "".join(c for c in norm if unicodedata.category(c) != "Mn")
+        return _WORD_RE.findall(stripped)
+
+    a = _tokens(primary_text)
+    b = _tokens(gate_text)
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    return round(SequenceMatcher(None, a, b).ratio(), 4)
 
 
 @runtime_checkable
@@ -47,9 +73,11 @@ class HybridTranscriptionResult:
     gate_ms: float
     primary_result: STTResult | None = None
     gate_result: STTResult | None = None
+    agreement_ratio: float | None = None
 
     def to_stt_result(self) -> STTResult:
         """Project to the standard ``STTResult`` consumed by runtime gates."""
+        alt_text = self.gate_text or None
         if self.vetoed or self.primary_result is None:
             return STTResult(
                 text=self.text,
@@ -57,6 +85,8 @@ class HybridTranscriptionResult:
                 no_speech_prob=None,
                 avg_logprob=None,
                 compression_ratio=None,
+                alt_text=alt_text,
+                agreement_ratio=self.agreement_ratio,
             )
         return STTResult(
             text=self.text,
@@ -64,6 +94,8 @@ class HybridTranscriptionResult:
             no_speech_prob=self.primary_result.no_speech_prob,
             avg_logprob=self.primary_result.avg_logprob,
             compression_ratio=self.primary_result.compression_ratio,
+            alt_text=alt_text,
+            agreement_ratio=self.agreement_ratio,
         )
 
 
@@ -92,6 +124,11 @@ def apply_hybrid_veto(
     primary_ms = float(primary_result.elapsed_ms)
     vetoed = gate_result is not None and not gate_text and bool(primary_text)
     final_text = "" if vetoed else primary_text
+    agreement = (
+        compute_transcript_agreement(primary_text, gate_text)
+        if (gate_result is not None and not vetoed and (primary_text or gate_text))
+        else None
+    )
     return HybridTranscriptionResult(
         text=final_text,
         elapsed_ms=primary_ms + gate_ms,
@@ -102,6 +139,7 @@ def apply_hybrid_veto(
         gate_ms=gate_ms,
         primary_result=primary_result,
         gate_result=gate_result,
+        agreement_ratio=agreement,
     )
 
 
@@ -221,6 +259,11 @@ class HybridVetoSTT:
             elapsed_ms = (time.perf_counter() - t0) * 1000
             primary_text = (primary_res.text or "").strip()
             gate_text = "" if gate_res is None else (gate_res.text or "").strip()
+            agreement = (
+                compute_transcript_agreement(primary_text, gate_text)
+                if (gate_res is not None and (primary_text or gate_text))
+                else None
+            )
             return HybridTranscriptionResult(
                 text=primary_text,
                 elapsed_ms=elapsed_ms,
@@ -231,6 +274,7 @@ class HybridVetoSTT:
                 gate_ms=0.0 if gate_res is None else float(gate_res.elapsed_ms),
                 primary_result=primary_res,
                 gate_result=gate_res,
+                agreement_ratio=agreement,
             )
 
         primary_res = self._primary.transcribe_with_confidence(audio, sample_rate)
@@ -247,6 +291,7 @@ class HybridVetoSTT:
             gate_ms=combined.gate_ms,
             primary_result=combined.primary_result,
             gate_result=combined.gate_result,
+            agreement_ratio=combined.agreement_ratio,
         )
 
     def transcribe_with_confidence(

@@ -27,7 +27,7 @@ import sqlite3
 import numpy as np
 import soundfile as sf
 
-from src.ambient.inline_wake import extract_inline_command
+from src.ambient.inline_wake import extract_all_inline_commands
 from src.audio.clip_io import (
     TARGET_SAMPLE_RATE,
     ArchiveChannelMode,
@@ -50,7 +50,8 @@ class CurationPolicy:
     min_vad_prob: float = 0.0
     spanish_only: bool = False
     exclude_sources: frozenset[str] = frozenset({"tv", "self"})
-    channel_mode: ArchiveChannelMode = ArchiveChannelMode.MONO_CH1
+    channel_mode: ArchiveChannelMode = ArchiveChannelMode.MONO_CH0
+    review_agreement_threshold: float = 0.90
 
     def requires_explicit_selection(self) -> bool:
         """Fail closed unless at least one explicit approval filter is supplied."""
@@ -80,12 +81,18 @@ def _load_approved_rows(db_path: Path, policy: CurationPolicy) -> list[dict]:
     conn = sqlite3.connect(f"file:{db_path.resolve()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(utterances)").fetchall()}
+        select_cols = [
+            "id", "room_id", "t0", "t1", "text", "speaker", "source",
+            "vad_prob", "lang", "lang_ok", "audio_path", "conversation_id",
+        ]
+        for opt in ("alt_text", "agreement_ratio"):
+            if opt in cols:
+                select_cols.append(opt)
         rows = [
             dict(r)
             for r in conn.execute(
-                "SELECT id, room_id, t0, t1, text, speaker, source, vad_prob, "
-                "lang, lang_ok, audio_path, conversation_id "
-                "FROM utterances ORDER BY t0 ASC, id ASC"
+                f"SELECT {', '.join(select_cols)} FROM utterances ORDER BY t0 ASC, id ASC"  # nosec B608 -- fixed whitelist of column names
             ).fetchall()
         ]
     finally:
@@ -165,24 +172,37 @@ def export_curated_datasets(
     for row in rows:
         utt_id = int(row["id"])
         text = (corrections.get(utt_id) if utt_id in corrections else row.get("text") or "").strip()
-        inline = extract_inline_command(text) if text else None
-        has_wake = inline is not None
+        inlines = extract_all_inline_commands(text) if text else []
+        first_inline = inlines[0] if inlines else None
+        has_wake = bool(inlines)
+        alt_text = row.get("alt_text")
+        agreement = row.get("agreement_ratio")
+        needs_review = (
+            utt_id not in corrections
+            and agreement is not None
+            and float(agreement) < policy.review_agreement_threshold
+        )
 
         conv_key = row.get("conversation_id") or f"room_{row.get('room_id') or 'unknown'}"
         if text:
-            conversations[conv_key].append(
-                {
-                    "utterance_id": utt_id,
-                    "t0": row.get("t0"),
-                    "t1": row.get("t1"),
-                    "room_id": row.get("room_id"),
-                    "speaker": row.get("speaker") or "unknown",
-                    "text": text,
-                    "vad_prob": row.get("vad_prob"),
-                    "inline_command": inline.command_text if inline is not None else None,
-                    "embedded_in_conversation": inline.embedded_in_conversation if inline is not None else False,
-                }
-            )
+            turn_entry = {
+                "utterance_id": utt_id,
+                "t0": row.get("t0"),
+                "t1": row.get("t1"),
+                "room_id": row.get("room_id"),
+                "speaker": row.get("speaker") or "unknown",
+                "text": text,
+                "vad_prob": row.get("vad_prob"),
+                "inline_command": first_inline.command_text if first_inline is not None else None,
+                "inline_commands": [item.command_text for item in inlines],
+                "embedded_in_conversation": any(item.embedded_in_conversation for item in inlines),
+            }
+            if alt_text:
+                turn_entry["alt_text_parakeet"] = alt_text
+            if agreement is not None:
+                turn_entry["agreement_ratio"] = round(float(agreement), 4)
+                turn_entry["needs_review"] = needs_review
+            conversations[conv_key].append(turn_entry)
 
         raw_audio = row.get("audio_path")
         if not raw_audio:
@@ -208,18 +228,22 @@ def export_curated_datasets(
             write_private_audio(
                 out_dir / stt_rel, np.clip(mono, -1.0, 1.0), TARGET_SAMPLE_RATE, fmt="WAV", subtype="PCM_16"
             )
-            stt_records.append(
-                {
-                    "utterance_id": utt_id,
-                    "audio_path": str(stt_rel),
-                    "text": text,
-                    "room_id": row.get("room_id"),
-                    "speaker": row.get("speaker") or "unknown",
-                    "duration_s": duration_s,
-                    "vad_prob": row.get("vad_prob"),
-                    "conversation_id": row.get("conversation_id"),
-                }
-            )
+            stt_rec = {
+                "utterance_id": utt_id,
+                "audio_path": str(stt_rel),
+                "text": text,
+                "room_id": row.get("room_id"),
+                "speaker": row.get("speaker") or "unknown",
+                "duration_s": duration_s,
+                "vad_prob": row.get("vad_prob"),
+                "conversation_id": row.get("conversation_id"),
+            }
+            if alt_text:
+                stt_rec["alt_text_parakeet"] = alt_text
+            if agreement is not None:
+                stt_rec["agreement_ratio"] = round(float(agreement), 4)
+                stt_rec["needs_review"] = needs_review
+            stt_records.append(stt_rec)
             stt_count += 1
 
         # 2. Wakeword dataset (positives with verified wake vs real-speech hard negatives)
@@ -235,7 +259,7 @@ def export_curated_datasets(
                 "audio_path": str(wake_rel),
                 "room_id": row.get("room_id"),
                 "duration_s": duration_s,
-                "matched_variant": inline.matched_variant if inline is not None else None,
+                "matched_variant": first_inline.matched_variant if first_inline is not None else None,
             }
         )
         if has_wake:
@@ -267,9 +291,9 @@ def export_curated_datasets(
     llm_lines = []
     for conv_id, turns in sorted(conversations.items()):
         inline_actions = [
-            {"utterance_id": t["utterance_id"], "command": t["inline_command"]}
+            {"utterance_id": t["utterance_id"], "command": cmd}
             for t in turns
-            if t["inline_command"]
+            for cmd in t.get("inline_commands", ())
         ]
         llm_lines.append(
             json.dumps(

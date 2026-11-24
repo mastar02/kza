@@ -55,6 +55,8 @@ CREATE TABLE IF NOT EXISTS utterances (
   distilled INTEGER NOT NULL DEFAULT 0,
   text_empty INTEGER NOT NULL DEFAULT 0,
   audio_path TEXT,
+  alt_text TEXT,
+  agreement_ratio REAL,
   capture_id TEXT,
   expires_at REAL,
   conversation_id TEXT,
@@ -90,6 +92,8 @@ _MIGRATIONS: dict[str, str] = {
     # Medición de fidelidad (2026-08-05): la DB de prod ya existe.
     "text_empty": "ALTER TABLE utterances ADD COLUMN text_empty INTEGER NOT NULL DEFAULT 0",
     "audio_path": "ALTER TABLE utterances ADD COLUMN audio_path TEXT",
+    "alt_text": "ALTER TABLE utterances ADD COLUMN alt_text TEXT",
+    "agreement_ratio": "ALTER TABLE utterances ADD COLUMN agreement_ratio REAL",
     "capture_id": "ALTER TABLE utterances ADD COLUMN capture_id TEXT",
     "expires_at": "ALTER TABLE utterances ADD COLUMN expires_at REAL",
     "conversation_id": "ALTER TABLE utterances ADD COLUMN conversation_id TEXT",
@@ -342,8 +346,9 @@ class AmbientStore:
                    (room_id, t0, t1, text, speaker, speaker_confidence, azimuth,
                     azimuth_stability, source, confidence, no_speech_prob,
                     vad_prob, lang, lang_prob, lang_ok, during_tts, distilled,
-                    text_empty, audio_path, created_at, capture_id, expires_at, conversation_id)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    text_empty, audio_path, alt_text, agreement_ratio,
+                    created_at, capture_id, expires_at, conversation_id)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     utt.room_id, utt.t0, utt.t1, utt.text, utt.speaker,
                     utt.speaker_confidence, utt.azimuth, utt.azimuth_stability,
@@ -352,6 +357,7 @@ class AmbientStore:
                     None if utt.lang_ok is None else int(utt.lang_ok),
                     int(utt.during_tts), int(utt.distilled),
                     int(utt.text_empty), utt.audio_path,
+                    utt.alt_text, utt.agreement_ratio,
                     now, utt.capture_id, expires_at, utt.conversation_id,
                 ),
             )

@@ -45,8 +45,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--channel-mode",
         choices=[m.value for m in ArchiveChannelMode],
-        default=ArchiveChannelMode.MONO_CH1.value,
-        help="Channel to extract from 2ch archived FLACs",
+        default=ArchiveChannelMode.MONO_CH0.value,
+        help="Channel to extract from 2ch archived FLACs (default: mono_ch0)",
+    )
+    ap.add_argument(
+        "--review-threshold",
+        type=float,
+        default=0.90,
+        help="Flag rows with agreement_ratio < threshold as needs_review",
     )
     args = ap.parse_args(argv)
 
@@ -57,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
         min_vad_prob=args.min_vad,
         spanish_only=args.spanish_only,
         channel_mode=ArchiveChannelMode(args.channel_mode),
+        review_agreement_threshold=args.review_threshold,
     )
     try:
         summary = export_curated_datasets(args.db, args.out, policy, audio_base=args.audio_base)
