@@ -111,15 +111,13 @@ class NightlyConfig:
     include_all_users: bool = True  # Incluir todos los usuarios
     max_samples_per_session: int = 1000
 
-    # Modelo base para fine-tuning
-    # Opciones para RTX 3070 (8GB):
-    #   - "meta-llama/Llama-3.2-3B-Instruct"  # ~6GB con QLoRA, cabe en 1 GPU
-    #   - "meta-llama/Llama-3.1-8B-Instruct"  # ~8GB con QLoRA, necesita 2+ GPUs
-    #   - "Qwen/Qwen2.5-7B-Instruct"          # ~7GB con QLoRA
-    base_model: str = "meta-llama/Llama-3.2-3B-Instruct"  # Recomendado para 8GB
+    # Modelo base para fine-tuning en 2x RTX 3070 (8GB cada una):
+    #   - "Qwen/Qwen2.5-7B-Instruct"  # familia real de kza-llm-fast (QLoRA 4-bit en 2 GPUs)
+    #   - "Qwen/Qwen2.5-3B-Instruct"  # cabe en 1 RTX 3070 con holgura
+    base_model: str = "Qwen/Qwen2.5-7B-Instruct"
 
     # QLoRA - Cuantización 4-bit para ahorrar VRAM
-    # Con QLoRA un modelo 8B ocupa ~5GB en vez de ~16GB
+    # Con QLoRA un modelo 7B ocupa ~5GB en vez de ~15GB
     use_qlora: bool = True  # IMPORTANTE: Usar siempre en RTX 3070
     qlora_bits: int = 4     # 4-bit quantization
     qlora_compute_dtype: str = "float16"  # bfloat16 si tu GPU lo soporta
@@ -141,9 +139,9 @@ class NightlyConfig:
     max_seq_length: int = 512
     gradient_checkpointing: bool = True  # Ahorra VRAM
 
-    # GPUs
-    gpus: list[int] = field(default_factory=lambda: [0, 1, 2, 3])
-    use_distributed: bool = True  # Usar las 4 GPUs
+    # GPUs reales del servidor (2x RTX 3070 8GB: cuda:0 + cuda:1)
+    gpus: list[int] = field(default_factory=lambda: [0, 1])
+    use_distributed: bool = True  # Usar las 2 GPUs reales
 
     # VRAM Management - Descargar modelos de día antes de entrenar
     unload_daytime_models: bool = True  # Liberar VRAM antes de entrenar
@@ -154,6 +152,7 @@ class NightlyConfig:
     data_dir: str = "./data/nightly_training"
     contexts_dir: str = "./data/contexts"
     conversations_dir: str = "./data/conversations"
+    curated_hub_dir: str | None = None  # opcional: ingestión explícita desde TrainingDatasetHub
 
 
 class NightlyTrainer:
@@ -479,6 +478,30 @@ class NightlyTrainer:
 
                 except Exception as e:
                     logger.warning(f"Error procesando {conv_file}: {e}")
+
+        # 3. Recopilar conversaciones curadas del TrainingDatasetHub (si fue configurado explícitamente)
+        if self.config.curated_hub_dir:
+            hub_conv = Path(self.config.curated_hub_dir) / "llm" / "conversations.jsonl"
+            if hub_conv.is_file():
+                try:
+                    from src.training.pipelines.llm_qlora import build_llm_examples_from_conversations
+
+                    convs = [
+                        json.loads(line)
+                        for line in hub_conv.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    hub_examples, _inline = build_llm_examples_from_conversations(convs)
+                    for ex in hub_examples:
+                        examples.append({
+                            "instruction": ex["instruction"],
+                            "input": ex["input"],
+                            "output": ex["output"],
+                            "metadata": {"source": "curated_hub", "quality": "good", "category": ex.get("category")},
+                        })
+                    stats["curated_hub_examples"] = len(hub_examples)
+                except Exception as e:
+                    logger.warning("Error procesando curated_hub_dir: %s", type(e).__name__)
 
         # Limitar cantidad (siempre respetar max_samples)
         if len(examples) > self.config.max_samples_per_session:

@@ -114,7 +114,8 @@ class TestConfiguration:
         assert config.use_qlora is True
         assert config.qlora_bits == 4
         assert config.gradient_checkpointing is True
-        assert len(config.gpus) == 4
+        assert config.gpus == [0, 1]
+        assert config.base_model == "Qwen/Qwen2.5-7B-Instruct"
 
     def test_custom_config(self, config):
         """Verificar configuración personalizada"""
