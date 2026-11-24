@@ -178,10 +178,11 @@ def _http_ok(url: str, timeout: float = 1.5) -> bool:
     try:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310 -- esquema validado arriba (solo http/https admitidos); resto del registry es fijo (_service_probes()) o env var interno, sin input de usuario en el request
-            # Los probes apuntan a endpoints que devuelven 2xx sin autenticación.
+            # Los probes de servicio esperan una respuesta 2xx o 3xx.
             return r.status is not None and 200 <= r.status < 400
     except urllib.error.HTTPError:
-        # Un 401 o 403 también indica que falló el probe.
+        # Un HTTPError, incluidos los 4xx, marca el servicio como no alcanzable.
+        # Contar un 401 o 403 como éxito ocultaría fallos de autenticación o bloqueos de IP.
         return False
     except (urllib.error.URLError, socket.timeout, ConnectionError, OSError):
         return False

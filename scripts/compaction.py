@@ -867,7 +867,7 @@ def release_admission(root: Path, source: dict, manifest: dict) -> dict:
 
 
 def _legacy_slot_names(root: Path) -> set[str]:
-    """The two legacy slot names of the committed adoption record (container and legacy state slot).
+    """Legacy slots from the committed adoption and proven superseded slots before Q5.
 
     Read-only; any record that is not exactly one committed (not aborted)
     adoption record exempts nothing (stricter reading).
@@ -896,11 +896,29 @@ def _legacy_slot_names(root: Path) -> set[str]:
     legacy = layout.get("legacy_state") if type(layout) is dict else None
     if type(record.get("container_slot")) is not str or type(legacy) is not str:
         return set()
-    return {record["container_slot"], Path(legacy).parent.name}
+    names = {record["container_slot"], Path(legacy).parent.name}
+    try:
+        retirements = launcher.legacy_retirements(root)
+    except launcher.LauncherRefusal:
+        return set()
+    if retirements:
+        return names
+
+    commands = units.commands
+    for slot_name, full_commit in commands.legacy_superseded_slots():
+        try:
+            census = commands._superseded_census(
+                root, slot_name, full_commit, links_only=slot_name == commands.LEGACY_SUPERSEDED_CONTAINER[0],
+            )
+        except commands.CommandRefusal:
+            continue
+        if census.get("exists") is True:
+            names.add(slot_name)
+    return names
 
 
 def _unproven_copies(root: Path, untouched: list[dict]) -> list[str]:
-    """Release mode: every untouched entry under slots/ but the two legacy slots (plan.other)."""
+    """Release mode: untouched entries under slots/ outside the proven legacy set (plan.other)."""
     exempt = _legacy_slot_names(root)
     return sorted(entry["path"] for entry in untouched if entry["path"].startswith("slots/")
                   and entry["path"].split("/")[1] not in exempt)

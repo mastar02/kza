@@ -32,6 +32,7 @@ import pytest
 
 from scripts import adoption
 from scripts import adoption_commands as commands
+from scripts import compaction
 from scripts import managed_launcher as launcher
 from scripts import stage_runtime as stage
 from tests.integration.test_adoption_commands import (  # noqa: F401
@@ -1435,6 +1436,8 @@ def test_r1e2_only_the_three_report_files_are_exempt(world, case):
         (slot / REPORTS[2]).unlink()
         os.mkfifo(slot / REPORTS[2])
     else:
+        # Recreate the entry so its on-disk name changes even on case-insensitive APFS.
+        (slot / REPORTS[0]).unlink()
         (slot / REPORTS[0].upper()).write_text("{}\n")
     before = tree_manifest(world.root / "backups")
     with pytest.raises(commands.CommandRefusal, match="^runtime_admission_legacy_retire_slot_unexpected$"):
@@ -1623,21 +1626,92 @@ def test_r1e2_a_resume_refuses_an_intent_whose_targets_differ(world, monkeypatch
     assert (world.root / "slots" / OLDER).is_dir() and retire(world, confirm=plan)["resumed"] is True
 
 
-def test_r1e2_after_day_14_r2_s_first_release_plan_finds_no_unproven_copy(world):
-    """R1E-Q5: R2's first release-mode plan (compaction plan.other) exempts only the committed adoption
-    record's container and legacy-state slots. On production's layout the 63ea8d3 and 2c5adb4 slots are
-    unproven copies before day 14 (release_unproven_copy); after the real Q5 retirement nothing is."""
-    from scripts import compaction
+def _release_unproven_copies(world: World, module=compaction) -> list[str]:
+    _members, untouched = module.retirement_set(world.root, k_slot="k-r2", retire_prepare_leftovers=False)
+    return module._unproven_copies(world.root, untouched)
 
+
+@pytest.mark.parametrize("load_by_path", [False, True], ids=["package_import", "stage_loader"])
+def test_r1e2_after_day_14_r2_s_first_release_plan_finds_no_unproven_copy(world, load_by_path):
+    """Release planning accepts the proven production slots before and after Q5."""
     adopted(world)
     install_record(world)
     state_slot_runtime(world)
 
-    def unproven() -> list[str]:
-        _members, untouched = compaction.retirement_set(world.root, k_slot="k-r2", retire_prepare_leftovers=False)
-        return compaction._unproven_copies(world.root, untouched)
-    assert compaction._legacy_slot_names(world.root) == {CONTAINER, LEGACY}
-    assert unproven() == sorted(["slots/" + C63, "slots/" + OLDER])
+    module = stage._compaction_module() if load_by_path else compaction
+    assert module.units.commands is (stage._adoption_commands_module() if load_by_path else commands)
+    assert launcher.legacy_retirements(world.root) == []
+    assert module._legacy_slot_names(world.root) == {CONTAINER, LEGACY, C63, OLDER}
+    assert _release_unproven_copies(world, module) == []
     confirm(world)
-    assert unproven() == []
+    assert _release_unproven_copies(world, module) == []
     assert sorted(os.listdir(world.root / "slots")) == sorted(["r1", CONTAINER, LEGACY])
+
+
+@pytest.mark.parametrize(("slot", "case"), [
+    ("unknown-fifth-slot", "unknown"),
+    (OLDER, "wrong_commit"),
+    (C63, "extra_entry"),
+    (C63, "state_file"),
+    pytest.param(OLDER, "release_fifo", marks=pytest.mark.timeout(120)),
+])
+def test_r1e2_before_q5_release_plan_still_finds_unproven_copies(world, slot, case):
+    adopted(world)
+    path = world.root / "slots" / slot
+    manifest = path / "runtime" / "release.json"
+    if case == "unknown":
+        path.mkdir()
+    elif case == "wrong_commit":
+        manifest.write_text(json.dumps({"git_commit": "0" * 40}))
+    elif case == "extra_entry":
+        (path / "notes.txt").touch()
+    elif case == "state_file":
+        (path / "state" / "notes.txt").touch()
+    else:
+        manifest.unlink()
+        os.mkfifo(manifest)
+
+    assert compaction._legacy_slot_names(world.root) == {CONTAINER, LEGACY, C63, OLDER} - {slot}
+    assert _release_unproven_copies(world) == [f"slots/{slot}"]
+
+
+def test_r1e2_q5_intent_and_retirement_stop_exempting_superseded_slots(world, monkeypatch):
+    adopted(world)
+    install_record(world)
+    slots = world.root / "slots"
+    for slot in (C63, OLDER):
+        copy_tree_preserving(slots / slot, world.base / slot)
+    plan = dry(world)["plan_sha256"]
+
+    def crash_before_removal(path):
+        assert Path(path) == legacy_state(world)
+        raise _Crash()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(stage, "make_writable_then_remove", crash_before_removal)
+        with pytest.raises(_Crash):
+            retire(world, confirm=plan)
+    assert [record["kind"] for _, record in launcher.legacy_retirements(world.root)] == ["legacy_state_retire_intent"]
+    assert compaction._legacy_slot_names(world.root) == {CONTAINER, LEGACY}
+    assert _release_unproven_copies(world) == sorted([f"slots/{C63}", f"slots/{OLDER}"])
+
+    result = retire(world, confirm=plan)
+    assert result["resumed"] is True
+    # Isolate the final record as the proof that Q5 has run.
+    (launcher.legacy_retirement_directory(world.root) / result["intent"]).unlink()
+    assert [record["kind"] for _, record in launcher.legacy_retirements(world.root)] == ["legacy_state_retired"]
+    for slot in (C63, OLDER):
+        assert not os.path.lexists(slots / slot)
+        (world.base / slot).rename(slots / slot)
+    assert compaction._legacy_slot_names(world.root) == {CONTAINER, LEGACY}
+    assert _release_unproven_copies(world) == sorted([f"slots/{C63}", f"slots/{OLDER}"])
+
+
+def test_r1e2_invalid_q5_ledger_exempts_no_slots(world):
+    adopted(world)
+    directory = launcher.legacy_retirement_directory(world.root)
+    directory.mkdir()
+    (directory / "unexpected.json").touch()
+
+    assert compaction._legacy_slot_names(world.root) == set()
+    assert _release_unproven_copies(world) == sorted(f"slots/{slot}" for slot in (CONTAINER, LEGACY, C63, OLDER))

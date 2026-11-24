@@ -2145,7 +2145,8 @@ def _superseded_census(root: Path, name: str, commit: str, *, links_only: bool) 
     if not stat.S_ISDIR(os.lstat(runtime).st_mode) or not stat.S_ISDIR(os.lstat(state).st_mode):
         _refuse(code, {"problems": [name]})
     try:
-        descriptor = os.open(runtime / "release.json", os.O_RDONLY | os.O_NOFOLLOW)
+        # Inspect the descriptor type without waiting for a writer if the path is a FIFO.
+        descriptor = os.open(runtime / "release.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         _refuse(code, {"problems": [name]})
     with os.fdopen(descriptor, "rb") as stream:
