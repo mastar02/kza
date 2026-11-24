@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -296,15 +297,41 @@ _SANITIZE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\b(?:192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b"), "[REDACTED_LAN_IP]"),
     (re.compile(r"/home/kza/[^\s\"']+"), "[REDACTED_PROD_PATH]"),
     (re.compile(r"(?:/Users/[^/\s]+/[^\s\"']*\.env\b|(?:\./)?data/[^\s\"']+)"), "[REDACTED_PRIVATE_PATH]"),
+    # Strip host prefix from KZA checkout paths while keeping safe repo-relative paths.
+    (re.compile(r"(?:/Users/[^/\s\"']+/Documents/Proyectos/kza/|/home/[^/\s\"']+/projects/kza/)(?!(?:\.env|\.venv|data/|models/))"), ""),
+    # Redact any remaining local filesystem paths and loopback URLs.
+    (re.compile(r"(?:/Users/[^/\s\"']+(?:/[^\s\"']*)?|/home/[^/\s\"']+(?:/[^\s\"']*)?|/private/var/folders/[^\s\"']+|/var/folders/[^\s\"']+|/tmp/[^\s\"']+)"), "[LOCAL_PATH]"),
+    (re.compile(r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):\d+[^\s\"']*"), "[LOCAL_URL]"),
+)
+
+_DISTILL_NOISE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"(?i)\b(?:Emitir|Entreg[aá])\s+(?:veredicto\s+expl[ií]cito\s+)?APROBADO\s+o\s+(?:BLOQUEA|CAMBIOS_REQUERIDOS)\b[^.]*\.?"), ""),
+    (re.compile(r"(?i)\bverifica(?:r)?\s+con\s+`?git\s+rev-parse\s+HEAD`?\)?"), ""),
+    (re.compile(r"(?i)\b(?:Correr|Ejecutar)\s+[^\n.]*?\bpytest\b[^\n.]*\.?"), ""),
+    (re.compile(r"(?i)\bLEE\s+PRIMERO\s*(?:\([^)]*\))?\s*:"), ""),
+    (re.compile(r"\b[0-9a-f]{16,40}\b"), "<sha>"),
 )
 
 
 def sanitize_summary(text: str, max_len: int = 800) -> str:
-    """Sanitize task summary removing secrets, emails, LAN IPs, and private paths."""
+    """Sanitize task summary removing secrets, emails, LAN IPs, and private/local paths."""
     cleaned = text or ""
     for pat, repl in _SANITIZE_PATTERNS:
         cleaned = pat.sub(repl, cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) > max_len:
+        cleaned = cleaned[: max_len - 3].rstrip() + "..."
+    return cleaned
+
+
+def distill_routing_summary(text: str, max_len: int = 500) -> str:
+    """Sanitize and distill worker task prompts into concise high-signal summaries for `gpt-6-luna`."""
+    cleaned = sanitize_summary(text, max_len=max(max_len * 2, 1200))
+    for pat, repl in _DISTILL_NOISE_PATTERNS:
+        cleaned = pat.sub(repl, cleaned)
+    cleaned = re.sub(r"\s*([,;])\s*", r"\1 ", cleaned)
+    cleaned = re.sub(r"\(\s*\)", "", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ;,")
     if len(cleaned) > max_len:
         cleaned = cleaned[: max_len - 3].rstrip() + "..."
     return cleaned
@@ -572,12 +599,12 @@ Critical invariants that all specialist seats must uphold:
 7. `kza-ui` (read-only, detached HEAD): Real browser/desktop E2E verification specialist (NEXO UI, local HTTP flows, auth/session transitions, responsive layout, capture/privacy states, visual evidence).
 
 === 3. PROPORTIONALITY & QUOTA OPTIMIZATION POLICY ===
-Four subscriptions are active: `claude` (single KZA account `claude-1`), `codex` (multi-account load-balanced across `codex` and `codex-2` on standard tier without `/fast`), `muse` (`muse-wonder-full-1.0`, `muse-wonder-1.0`), and `agy` (`gemini-4-*` and Agy-hosted Claude).
+Four subscriptions (with up to six independent quota pools) are active: `claude` (single KZA account `claude-1`), `codex` (multi-account load-balanced across `codex` and `codex-2` on standard tier without `/fast`), `muse` (`muse-wonder-full-1.0`, `muse-wonder-1.0`), and `agy` (dual-pool: `agy:gemini` for `gemini-4-*` models and `agy:3p` for Agy-hosted Claude models).
 Follow strict proportionality to maximize Round-1 quality per quota unit across the full fleet:
 - Reserve flagship heavyweights (`claude:claude-opus-5-5`, `codex:gpt-6.2-sol`, `muse:muse-wonder-full-1.0`, `agy:gemini-4-neon-high`, `agy:gemini-4-hydrogen-high`, `agy:claude-opus-5-5-high`) for `complexity=high`, multi-module architecture, subtle async/concurrency bugs, privacy/authority gates (`kza-privacy`), deep 4-lens `kza-qa`, or high-rigor specs.
 - Prefer efficient medium-tier specialists (`claude:claude-sonnet-5-5`, `codex:gpt-6.2-astra`, `muse:muse-wonder-1.0`, `agy:gemini-4-carbon-medium`, `agy:claude-sonnet-5-5-medium`) for `kza-pregate`, `kza-ops` tooling, `complexity=low` or cleanly scoped `complexity=medium` tasks, and routine checks—unless the task summary reveals subtle concurrency, security, or privacy risk.
 - For `kza-ui`, evaluate browser/computer-use strength alongside real quota weights: `codex:gpt-6.1-terra` excels at interactive desktop/browser E2E flows, while `agy:gemini-4-neon-high` and `agy:gemini-4-carbon-medium` offer strong multimodal UI inspection, and `claude:claude-opus-5-5` handles multimodal DOM/privacy checks when other families are excluded or depleted.
-- Respect `quota_weight` seriously: when one subscription has a noticeably healthier `quota_weight` (for example `1.00` vs `0.75` or lower) and comparable role suitability, shift work toward the healthier subscription to keep all four fleets balanced and prevent hitting 5h/7d ceilings.
+- Respect `quota_weight` and reset horizons (`resets_in_h`) seriously: when one pool has a noticeably healthier `quota_weight` (for example `1.00` vs `0.85` or lower), or has healthy remaining quota about to reset soon (`resets_in_h <= 12h`, use-before-reset), shift work toward that pool to keep all fleets balanced and avoid losing expiring capacity. Remember `agy:3p` has its own quota separate from `agy:gemini` and from `claude-1`.
 - Notice Codex operates on standard tier (`service_tier` default, `/fast` disabled) to preserve weekly quota capacity across `codex` and `codex-2`.
 
 === 4. TASK RIGOR SCORING RUBRIC (`task_rigor`) & ROUND-1 QUALITY SIGNALS ===
@@ -590,6 +617,112 @@ Score `task_rigor` accurately using the five calibrated levels rather than defau
 Remember that Round-1 approval (`>= 85%` target) depends on matching specialist strengths to task risk: if a `kza-dev` task involves subtle asyncio lifecycle, cancellation, locking, or persistence barriers, prioritize high-precision candidates even at `complexity=medium`; if a task is clean, local, and well-specified, prefer medium-tier specialists to preserve flagship quota for high-rigor gates and complex engineering."""
 
 
+def _candidate_quota_info(candidate: ModelCandidate, subs: dict[str, Any]) -> tuple[float, bool, dict[str, Any]]:
+    """Return `(weight, excluded, pool_info)` honoring Agy dual-pool (`gemini` vs `3p`)."""
+    if candidate.runtime == "agy":
+        agy_sub = subs.get("agy") or {}
+        groups = (agy_sub.get("details") or {}).get("groups")
+        if isinstance(groups, dict):
+            gk = "gemini" if candidate.family == "google" else "3p"
+            if gk in groups and isinstance(groups[gk], dict):
+                g = groups[gk]
+                if agy_sub.get("status") == "throttled" and agy_sub.get("excluded"):
+                    return 0.0, True, agy_sub
+                return float(g.get("weight", 0.0)), bool(g.get("excluded", False)), g
+    sub = subs.get(candidate.runtime) or {}
+    return float(sub.get("weight", 0.0)), bool(sub.get("excluded", False)), sub
+
+
+def _fmt_pool_metrics(pool: dict[str, Any], now: float) -> str:
+    """Format PII-free quota metrics (`5h`, `7d`, `resets_in_h`) for a single pool."""
+    p5 = pool.get("five_hour_pct")
+    p7 = pool.get("seven_day_pct")
+    r5 = pool.get("five_hour_resets_at")
+    r7 = pool.get("seven_day_resets_at")
+    parts = [
+        f"5h={'null' if p5 is None else f'{float(p5):.1f}%'}",
+        f"7d={'null' if p7 is None else f'{float(p7):.1f}%'}",
+    ]
+    resets: list[str] = []
+    if r5 is not None and float(r5) > now:
+        resets.append(f"5h_in={(float(r5) - now) / 3600.0:.1f}h")
+    if r7 is not None and float(r7) > now:
+        resets.append(f"7d_in={(float(r7) - now) / 3600.0:.1f}h")
+    if resets:
+        parts.append(f"resets({','.join(resets)})")
+    return " ".join(parts)
+
+
+def format_quota_pools_for_decisions(quota_snapshot: dict[str, Any] | None, now: float | None = None) -> str:
+    """Build a compact, PII-free telemetry summary of all subscription pools for `gpt-6-luna`."""
+    if not isinstance(quota_snapshot, dict):
+        return ""
+    subs = quota_snapshot.get("subscriptions")
+    if not isinstance(subs, dict):
+        return ""
+
+    ts = now if now is not None else time.time()
+    lines: list[str] = []
+
+    claude = subs.get("claude")
+    if isinstance(claude, dict):
+        acct = (claude.get("details") or {}).get("selected_account") or "claude-1"
+        telem = "unknown" if claude.get("status") == "unknown" else "live"
+        lines.append(
+            f"- claude:{acct}: weight={float(claude.get('weight', 0.0)):.2f}, status={claude.get('status')}, "
+            f"{_fmt_pool_metrics(claude, ts)}, telemetry={telem}"
+        )
+
+    codex = subs.get("codex")
+    if isinstance(codex, dict):
+        cdet = codex.get("details") or {}
+        accts = cdet.get("accounts")
+        if isinstance(accts, list) and accts:
+            sel = cdet.get("selected_account")
+            for a in accts:
+                if not isinstance(a, dict):
+                    continue
+                aname = a.get("account", "codex")
+                tag = " [ACTIVE]" if aname == sel else " [STANDBY]"
+                telem = "unknown" if a.get("status") == "unknown" else "live"
+                lines.append(
+                    f"- codex:{aname}{tag}: weight={float(a.get('weight', 0.0)):.2f}, status={a.get('status')}, "
+                    f"{_fmt_pool_metrics(a, ts)}, telemetry={telem}"
+                )
+        else:
+            lines.append(
+                f"- codex: weight={float(codex.get('weight', 0.0)):.2f}, status={codex.get('status')}, "
+                f"{_fmt_pool_metrics(codex, ts)}"
+            )
+
+    muse = subs.get("muse")
+    if isinstance(muse, dict):
+        lines.append(
+            f"- muse: weight={float(muse.get('weight', 0.0)):.2f}, status={muse.get('status')}, "
+            f"{_fmt_pool_metrics(muse, ts)}, telemetry=live"
+        )
+
+    agy = subs.get("agy")
+    if isinstance(agy, dict):
+        adet = agy.get("details") or {}
+        groups = adet.get("groups")
+        if isinstance(groups, dict) and groups:
+            for gk in ("gemini", "3p"):
+                g = groups.get(gk)
+                if isinstance(g, dict):
+                    lines.append(
+                        f"- agy:{gk}: weight={float(g.get('weight', 0.0)):.2f}, status={g.get('status')}, "
+                        f"{_fmt_pool_metrics(g, ts)}, telemetry=live"
+                    )
+        else:
+            lines.append(
+                f"- agy: weight={float(agy.get('weight', 0.0)):.2f}, status={agy.get('status')}, "
+                f"band={adet.get('band', 'unknown')}, telemetry=band_estimate"
+            )
+
+    return "\n".join(lines)
+
+
 def build_decisions_payload(
     *,
     role: str,
@@ -598,31 +731,49 @@ def build_decisions_payload(
     candidates: list[ModelCandidate],
     quota_weights: dict[str, float],
     excluded_families: list[str],
+    quota_snapshot: dict[str, Any] | None = None,
+    candidate_weights: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Construct the live `POST /v1/decisions` request payload for `gpt-6-luna`.
 
     Places `STATIC_ROUTING_PREAMBLE` at the front of `input` so the request is
     eligible for >1,024-token prefix caching, and appends the variable request
-    details and eligible candidates at the tail.
+    details, full pool telemetry, and eligible candidates at the tail.
     """
+    ts = time.time()
+    subs = (quota_snapshot.get("subscriptions") or {}) if isinstance(quota_snapshot, dict) else {}
     cand_lines = []
     choice_items = []
     for c in candidates:
-        qw = quota_weights.get(c.runtime, 0.0)
+        if candidate_weights and c.candidate_id in candidate_weights:
+            qw = candidate_weights[c.candidate_id]
+        elif subs:
+            qw, _, _ = _candidate_quota_info(c, subs)
+        else:
+            qw = quota_weights.get(c.runtime, 0.0)
         suit = c.role_suitability.get(role, 0.80)
         fast_tag = ", codex_fast=enabled" if uses_codex_fast_mode(c) else ""
+        pool_tag = ""
+        if subs:
+            _, _, pinfo = _candidate_quota_info(c, subs)
+            if pinfo:
+                pool_tag = f", {_fmt_pool_metrics(pinfo, ts)}"
         desc = (
             f"runtime={c.runtime}, family={c.family}, effort={c.effort}{fast_tag}, "
-            f"quota_weight={qw:.2f}, benchmark_prior={suit:.2f}; {c.capability_notes}"
+            f"quota_weight={qw:.2f}{pool_tag}, benchmark_prior={suit:.2f}; {c.capability_notes}"
         )
         cand_lines.append(f"- {c.candidate_id}: {desc}")
         choice_items.append({"value": c.candidate_id, "description": desc})
+
+    pools_block = format_quota_pools_for_decisions(quota_snapshot, now=ts)
+    pools_section = f"Live subscription pools telemetry:\n{pools_block}\n" if pools_block else ""
 
     dynamic_section = (
         f"Role: {role} ({'read-only' if role in READ_ONLY_ROLES else 'read-write'}).\n"
         f"Complexity hint: {complexity}.\n"
         f"Excluded model families (cross-model guard): {', '.join(excluded_families) or 'none'}.\n"
-        f"Task summary (sanitized): {sanitized_summary}\n"
+        f"{pools_section}"
+        f"Task summary (sanitized & distilled): {sanitized_summary}\n"
         f"Eligible candidates with real subscription quota weights (higher = healthier quota) "
         f"and documented capability/benchmark priors:\n"
         + "\n".join(cand_lines)
@@ -731,6 +882,7 @@ def _deterministic_scores(
     role: str,
     complexity: str,
     quota_weights: dict[str, float],
+    candidate_weights: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Compute transparent deterministic score per eligible candidate."""
     effort_bonus = {
@@ -742,7 +894,11 @@ def _deterministic_scores(
     scores: dict[str, float] = {}
     for c in candidates:
         suit = c.role_suitability.get(role, 0.80)
-        qw = quota_weights.get(c.runtime, 0.50)
+        qw = (
+            candidate_weights[c.candidate_id]
+            if candidate_weights and c.candidate_id in candidate_weights
+            else quota_weights.get(c.runtime, 0.50)
+        )
         bonus = effort_bonus.get(c.effort, 0.0)
         # Blend capability (60%) and real quota health (40%) multiplicatively damped by severe scarcity.
         score = (0.60 * (suit + bonus) + 0.40 * qw) * (0.45 + 0.55 * qw)
@@ -829,11 +985,13 @@ def route_task(
     if not family_filtered:
         raise RuntimeError(f"No candidates remain after excluding families {excluded_fams}.")
 
-    eligible = [
-        c
-        for c in family_filtered
-        if not subs.get(c.runtime, {}).get("excluded", False) and quota_weights.get(c.runtime, 0.0) > 0.0
-    ]
+    eligible: list[ModelCandidate] = []
+    cand_weights: dict[str, float] = {}
+    for c in family_filtered:
+        cw, c_excl, _ = _candidate_quota_info(c, subs)
+        if not c_excl and cw > 0.0:
+            eligible.append(c)
+            cand_weights[c.candidate_id] = cw
 
     quota_emergency_used = False
     if not eligible:
@@ -844,9 +1002,12 @@ def route_task(
             )
         quota_emergency_used = True
         eligible = family_filtered
+        for c in eligible:
+            cw, _, _ = _candidate_quota_info(c, subs)
+            cand_weights[c.candidate_id] = cw
 
-    sanitized = sanitize_summary(summary)
-    det_scores = _deterministic_scores(eligible, role, complexity, quota_weights)
+    sanitized = distill_routing_summary(summary)
+    det_scores = _deterministic_scores(eligible, role, complexity, quota_weights, candidate_weights=cand_weights)
 
     source = "fallback-deterministic"
     fallback_reason: str | None = None
@@ -870,6 +1031,8 @@ def route_task(
                 candidates=eligible,
                 quota_weights=quota_weights,
                 excluded_families=excluded_fams,
+                quota_snapshot=qsnap,
+                candidate_weights=cand_weights,
             )
             caller = api_caller or call_decisions_api
             try:
@@ -885,8 +1048,7 @@ def route_task(
                     for cid, prob in probs.items():
                         if cid not in eligible_ids:
                             continue
-                        rt = next(c.runtime for c in eligible if c.candidate_id == cid)
-                        qw = max(0.05, quota_weights.get(rt, 0.1))
+                        qw = max(0.05, cand_weights.get(cid, 0.1))
                         mult = (0.85 + 0.15 * qw) if qw >= 0.25 else (0.50 + 0.50 * qw)
                         weighted_probs[cid] = prob * mult
                     if weighted_probs:
@@ -909,11 +1071,14 @@ def route_task(
     effective_effort = resolve_effective_effort(selected, role, complexity, task_rigor)
     codex_details = (subs.get("codex", {}).get("details") or {}) if isinstance(subs.get("codex"), dict) else {}
     claude_details = (subs.get("claude", {}).get("details") or {}) if isinstance(subs.get("claude"), dict) else {}
+    agy_details = (subs.get("agy", {}).get("details") or {}) if isinstance(subs.get("agy"), dict) else {}
     codex_binary = str(codex_details.get("selected_cli") or "codex")
     if selected.runtime == "codex":
         selected_account = str(codex_details.get("selected_account") or "codex")
     elif selected.runtime == "claude":
         selected_account = str(claude_details.get("selected_account") or "claude-1")
+    elif selected.runtime == "agy" and isinstance(agy_details.get("groups"), dict):
+        selected_account = "agy:gemini" if selected.family == "google" else "agy:3p"
     else:
         selected_account = selected.runtime
 

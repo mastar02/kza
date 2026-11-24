@@ -645,3 +645,25 @@ def test_concurrent_same_alias_open_and_close_serialization(tmp_path: Path) -> N
     lines = [json.loads(l) for l in (state_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     outcomes = [o for o in lines if o.get("type") == "outcome" and o.get("decision_id") == winner["decision_id"]]
     assert len(outcomes) == 1
+
+
+def test_open_seat_routing_summary_keeps_worker_task_intact(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    wt_root = tmp_path / "worktrees"
+    state_dir = tmp_path / "state"
+
+    dry = kza_seat.open_seat(
+        alias="kza-qa-summary",
+        role="kza-qa",
+        task="Full worker instructions with /Users/gabriel/secret/path and SHA 1234567890abcdef1234567890abcdef12345678",
+        routing_summary="Audit NEXO privacy boundaries across access and capture modules",
+        exclude_families=["google"],
+        offline=True,
+        allow_quota_emergency=True,
+        repo_root=repo,
+        worktree_root=wt_root,
+        state_dir=state_dir,
+        dry_run=True,
+    )
+    assert dry["decision"]["sanitized_summary"] == "Audit NEXO privacy boundaries across access and capture modules"

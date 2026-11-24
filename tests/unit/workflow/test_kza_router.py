@@ -466,3 +466,94 @@ def test_keychain_requires_explicit_opt_in_and_uses_kza_default_service(
     )
     assert dec_c2["selected_account"] == "claude-2"
     assert dec_c2["cli_command"][0] == "claude-2"
+
+
+def test_distill_sanitizes_local_paths_and_agy_dual_pool_in_payload(tmp_path: Path) -> None:
+    raw_task = (
+        "LEE PRIMERO: /Users/gabriel/Documents/Proyectos/kza/scripts/kza_router.py y "
+        "/Users/gabriel/.local/state/kza-router/reports/kza-qa.md en SHA 7d3b205769447d5d59139e982c68ed1fd5e0c31d "
+        "(verifica con `git rev-parse HEAD`) http://127.0.0.1:8080/nexo y /var/folders/ng/abc/log. "
+        "Correr /Users/gabriel/Documents/Proyectos/kza/.venv/bin/python -m pytest tests/unit/workflow/. "
+        "Emitir APROBADO o BLOQUEA literal en el report_path."
+    )
+    distilled = kza_router.distill_routing_summary(raw_task)
+    assert "/Users/gabriel" not in distilled
+    assert "/var/folders" not in distilled
+    assert "127.0.0.1" not in distilled
+    assert "7d3b205769447d5d59139e982c68ed1fd5e0c31d" not in distilled
+    assert "scripts/kza_router.py" in distilled
+    assert "[LOCAL_PATH]" in distilled
+    assert "[LOCAL_URL]" in distilled
+    assert "<sha>" in distilled
+    assert "git rev-parse" not in distilled
+
+    # Agy dual-pool: when agy:gemini is excluded (weight=0), agy:3p remains eligible while gemini candidates are filtered out.
+    import time as _time
+    now = _time.time()
+    dual_snap = {
+        "quota_emergency": False,
+        "eligible_runtimes": ["agy"],
+        "subscriptions": {
+            "claude": {"weight": 0.0, "excluded": True, "status": "excluded"},
+            "codex": {"weight": 0.0, "excluded": True, "status": "excluded"},
+            "muse": {"weight": 0.0, "excluded": True, "status": "excluded"},
+            "agy": {
+                "weight": 1.0,
+                "excluded": False,
+                "status": "ok",
+                "details": {
+                    "usage_known": True,
+                    "selected_group": "3p",
+                    "groups": {
+                        "gemini": {
+                            "weight": 0.0,
+                            "excluded": True,
+                            "status": "excluded",
+                            "five_hour_pct": 93.0,
+                            "five_hour_resets_at": now + 1800,
+                            "seven_day_pct": 40.0,
+                            "seven_day_resets_at": now + 86400,
+                        },
+                        "3p": {
+                            "weight": 1.0,
+                            "excluded": False,
+                            "status": "ok",
+                            "five_hour_pct": 0.0,
+                            "five_hour_resets_at": None,
+                            "seven_day_pct": 0.0,
+                            "seven_day_resets_at": None,
+                        },
+                    },
+                },
+            },
+        },
+    }
+    captured_payload: dict = {}
+
+    def _cap_api(payload: dict, api_key: str) -> dict:
+        captured_payload.update(payload)
+        picked = payload["questions"][0]["choices"][0]["value"]
+        return {
+            "model": "gpt-6-luna",
+            "answers": [
+                {"name": "selected_candidate", "type": "choice", "choice": picked, "probabilities": [{"value": picked, "probability": 0.9}]},
+                {"name": "task_rigor", "type": "score", "score": 3.0},
+            ],
+            "usage": {"input_tokens": 1400, "cached_tokens": 0, "output_tokens": 0},
+        }
+
+    dec = kza_router.route_task(
+        role="kza-qa",
+        summary=raw_task,
+        state_dir=tmp_path,
+        quota_snapshot=dual_snap,
+        api_caller=_cap_api,
+        api_key_override="test-key",
+    )
+    assert dec["selected_account"] == "agy:3p"
+    assert all(cid.startswith("agy:claude-") for cid in dec["eligible_candidates"])
+    assert "Live subscription pools telemetry:" in captured_payload["input"]
+    assert "agy:gemini:" in captured_payload["input"]
+    assert "agy:3p:" in captured_payload["input"]
+    assert "5h_in=" in captured_payload["input"]
+    assert "/Users/gabriel" not in captured_payload["input"]

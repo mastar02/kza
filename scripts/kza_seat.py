@@ -315,6 +315,7 @@ def open_seat(
     alias: str,
     role: str,
     task: str,
+    routing_summary: str | None = None,
     ref: str = "HEAD",
     branch: str | None = None,
     complexity: str = "medium",
@@ -364,7 +365,7 @@ def open_seat(
 
         decision = kza_router.route_task(
             role=role,
-            summary=task,
+            summary=(routing_summary or task),
             complexity=complexity,
             exclude_families=norm_excluded,
             allow_quota_emergency=allow_quota_emergency,
@@ -778,6 +779,7 @@ def main(argv: list[str] | None = None) -> int:
     p_open.add_argument("--alias", required=True, help="Seat alias (must start with 'kza-').")
     p_open.add_argument("--role", required=True, choices=sorted(kza_router.ALL_ROLES))
     p_open.add_argument("--task", required=True, help="Task instructions for the worker.")
+    p_open.add_argument("--routing-summary", default=None, help="Optional concise summary sent to gpt-6-luna (defaults to distilled --task).")
     p_open.add_argument("--ref", default="HEAD", help="Git ref/SHA to check out.")
     p_open.add_argument("--branch", default=None, help="Branch name for write roles (default seat/<alias>).")
     p_open.add_argument("--complexity", choices=("low", "medium", "high"), default="medium")
@@ -820,6 +822,7 @@ def main(argv: list[str] | None = None) -> int:
                 alias=args.alias,
                 role=args.role,
                 task=args.task,
+                routing_summary=args.routing_summary,
                 ref=args.ref,
                 branch=args.branch,
                 complexity=args.complexity,

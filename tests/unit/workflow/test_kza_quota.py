@@ -304,3 +304,86 @@ def test_claude_empty_env_falls_back_to_claude1_and_empty_arg_fails(tmp_path: Pa
     monkeypatch.delenv("KZA_CLAUDE_ACCOUNTS", raising=False)
     with pytest.raises(ValueError, match="Unsupported Claude account"):
         kza_quota.probe_claude(tap_dir=tmp_path, now=now, allowed_accounts=("claude-3",))
+
+
+def test_agy_dual_pool_tap_and_cli_refresh_with_epoch_zero_reset(tmp_path: Path) -> None:
+    now = 1_800_000_000.0
+    state_dir = tmp_path / "state"
+    tap_file = tmp_path / "quota-agy.json"
+
+    # 1. Fresh shared tap file (statusLine) supplies both gemini and 3p groups.
+    _write_json(
+        tap_file,
+        {
+            "timestamp": now - 30.0,
+            "source": "agy-statusline",
+            "buckets": {
+                "gemini-5h": {"used_percentage": 16.0, "resets_at": now + 3600},
+                "gemini-weekly": {"used_percentage": 25.0, "resets_at": now + 86400},
+                "3p-5h": {"used_percentage": 0.0, "resets_at": None},
+                "3p-weekly": {"used_percentage": 0.0, "resets_at": None},
+            },
+        },
+    )
+    q_tap = kza_quota.probe_agy(state_dir=state_dir, tap_file=tap_file, now=now)
+    assert q_tap.details["usage_known"] is True
+    assert q_tap.details["groups"]["gemini"]["seven_day_pct"] == 25.0
+    assert q_tap.details["groups"]["3p"]["weight"] == 1.0
+    assert 0.90 < q_tap.details["groups"]["gemini"]["weight"] < 1.0
+
+    # 2. Stale tap triggers CLI runner (`/usage --output-format json`), ignoring 1970 epoch reset_time.
+    from datetime import datetime, timezone
+
+    _write_json(tap_file, {"timestamp": now - 900.0, "buckets": {"gemini-5h": {"used_percentage": 99.0}}})
+    fut_7d = datetime.fromtimestamp(now + 86400.0, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fut_5h = datetime.fromtimestamp(now + 3600.0, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    cli_payload = {
+        "status": "SUCCESS",
+        "command": {
+            "name": "usage",
+            "data": {
+                "groups": [
+                    {
+                        "name": "Gemini Models",
+                        "buckets": [
+                            {"id": "gemini-weekly", "window": "weekly", "remaining_fraction": 0.05, "reset_time": fut_7d},
+                            {"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.50, "reset_time": fut_5h},
+                        ],
+                    },
+                    {
+                        "name": "Claude and GPT models",
+                        "buckets": [
+                            {"id": "3p-weekly", "window": "weekly", "remaining_fraction": 1.0, "reset_time": "1970-01-01T00:00:00Z"},
+                            {"id": "3p-5h", "window": "5h", "remaining_fraction": 1.0, "reset_time": "1970-01-01T00:00:00Z"},
+                        ],
+                    },
+                ]
+            },
+        },
+    }
+    q_cli = kza_quota.probe_agy(
+        state_dir=state_dir,
+        tap_file=tap_file,
+        runner=lambda: subprocess.CompletedProcess(["agy"], 0, json.dumps(cli_payload), ""),
+        now=now,
+    )
+    assert q_cli.details["groups"]["gemini"]["excluded"] is True  # 95.0% >= 95%
+    assert q_cli.details["groups"]["3p"]["excluded"] is False
+    assert q_cli.details["groups"]["3p"]["seven_day_pct"] == 0.0
+    assert q_cli.details["groups"]["3p"]["seven_day_resets_at"] is None
+    assert q_cli.details["selected_group"] == "3p"
+    assert (state_dir / "quota-agy-cache.json").is_file()
+
+    # 3. Independent throttle on `agy-gemini` leaves `agy-3p` eligible.
+    kza_quota.record_throttle("agy-gemini", ttl_minutes=30, reason="gemini_429", state_dir=state_dir, now=now)
+    snap = kza_quota.collect_all_quotas(
+        state_dir=state_dir,
+        claude_tap_dir=tmp_path / "none",
+        codex_sessions_dir=tmp_path / "none2",
+        muse_runner=lambda: subprocess.CompletedProcess(["muse"], 0, json.dumps({"reason": "server_sent_no_usage", "allowance": None}), ""),
+        agy_tap_file=tap_file,
+        now=now + 10,
+    )
+    agy_groups = snap["subscriptions"]["agy"]["details"]["groups"]
+    assert agy_groups["gemini"]["excluded"] is True
+    assert agy_groups["3p"]["excluded"] is False

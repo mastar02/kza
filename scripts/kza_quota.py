@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 DEFAULT_STATE_DIR = Path.home() / ".local" / "state" / "kza-router"
 DEFAULT_CLAUDE_TAP_DIR = Path.home() / ".local" / "state" / "thermouy-router"
+DEFAULT_AGY_TAP_FILE = DEFAULT_CLAUDE_TAP_DIR / "quota-agy.json"
 DEFAULT_CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 DEFAULT_CODEX2_SESSIONS_DIR = Path.home() / ".codex-2" / "sessions"
 DEFAULT_CLAUDE_ACCOUNTS: tuple[str, ...] = ("claude-1",)
@@ -31,6 +32,7 @@ KNOWN_CLAUDE_ACCOUNTS: frozenset[str] = frozenset({"claude-1", "claude-2"})
 PENALTY_START_PCT = 70.0
 HARD_EXCLUDE_5H_PCT = 92.0
 HARD_EXCLUDE_7D_PCT = 95.0
+AGY_CACHE_TTL_SECONDS = 300.0
 
 AGY_BAND_WEIGHTS: dict[str, float] = {
     "high": 1.0,
@@ -40,7 +42,16 @@ AGY_BAND_WEIGHTS: dict[str, float] = {
 }
 
 RUNTIMES: tuple[str, ...] = ("claude", "codex", "muse", "agy")
-THROTTLE_TARGETS: tuple[str, ...] = ("claude", "codex", "codex-1", "codex-2", "muse", "agy")
+THROTTLE_TARGETS: tuple[str, ...] = (
+    "claude",
+    "codex",
+    "codex-1",
+    "codex-2",
+    "muse",
+    "agy",
+    "agy-gemini",
+    "agy-3p",
+)
 
 
 @dataclass
@@ -97,23 +108,26 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 
 def _parse_timestamp(value: Any) -> float | None:
     """Parse unix seconds, unix milliseconds, numeric strings, or ISO-8601 timestamps."""
-    if value is None or value == "":
+    if value is None or value == "" or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
         ts = float(value)
-        return ts / 1000.0 if ts > 1e12 else ts
+        ts = ts / 1000.0 if ts > 1e12 else ts
+        return ts if ts > 0.0 else None
     if isinstance(value, str):
         raw = value.strip()
         if not raw:
             return None
         try:
             ts = float(raw)
-            return ts / 1000.0 if ts > 1e12 else ts
+            ts = ts / 1000.0 if ts > 1e12 else ts
+            return ts if ts > 0.0 else None
         except ValueError:
             pass
         try:
             iso = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
-            return datetime.fromisoformat(iso).timestamp()
+            ts = datetime.fromisoformat(iso).timestamp()
+            return ts if ts > 0.0 else None
         except ValueError:
             return None
     return None
@@ -732,13 +746,205 @@ def probe_muse(
     return _apply_throttle(q, throttle)
 
 
+def _default_agy_runner() -> subprocess.CompletedProcess[str]:
+    """Execute zero-token `agy -p /usage --output-format json` probe."""
+    return subprocess.run(
+        ["agy", "-p", "/usage", "--output-format", "json"],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+
+def _extract_agy_buckets_from_json(data: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], str]:
+    """Extract normalized Agy quota buckets from either statusline tap or `/usage` JSON."""
+    if isinstance(data.get("buckets"), dict) and data["buckets"]:
+        return dict(data["buckets"]), str(data.get("source") or "agy-statusline")
+
+    groups = ((data.get("command") or {}).get("data") or {}).get("groups")
+    if not isinstance(groups, list):
+        return {}, ""
+
+    buckets: dict[str, dict[str, Any]] = {}
+    for grp in groups:
+        if not isinstance(grp, dict):
+            continue
+        gname = str(grp.get("name") or "").lower()
+        prefix = "gemini" if "gemini" in gname else ("3p" if ("claude" in gname or "gpt" in gname or "3p" in gname) else "")
+        for b in grp.get("buckets") or []:
+            if not isinstance(b, dict):
+                continue
+            bid = str(b.get("id") or "").strip()
+            if not bid and prefix:
+                win = str(b.get("window") or "").lower()
+                bid = f"{prefix}-{'5h' if '5h' in win else 'weekly'}"
+            if not bid:
+                continue
+            rf = _to_float(b.get("remaining_fraction"))
+            used_pct = round(max(0.0, min(100.0, (1.0 - rf) * 100.0)), 2) if rf is not None else None
+            rt = b.get("reset_time")
+            parsed_rt = _parse_timestamp(rt)
+            buckets[bid] = {
+                "remaining_fraction": rf,
+                "used_percentage": used_pct,
+                "resets_at": rt if parsed_rt is not None else None,
+                "disabled": bool(b.get("disabled", False)),
+            }
+    return buckets, "agy-usage-cli" if buckets else ""
+
+
+def _build_agy_groups(
+    buckets: dict[str, Any],
+    now: float,
+    group_throttles: dict[str, dict[str, Any] | None] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Compute per-pool (`gemini`, `3p`) weights and exclusions from Agy buckets."""
+    gthrottles = group_throttles or {}
+    groups: dict[str, dict[str, Any]] = {}
+
+    for gk in ("gemini", "3p"):
+        b5 = buckets.get(f"{gk}-5h") if isinstance(buckets.get(f"{gk}-5h"), dict) else {}
+        b7 = buckets.get(f"{gk}-weekly") if isinstance(buckets.get(f"{gk}-weekly"), dict) else {}
+        if not b5 and not b7:
+            continue
+
+        def _pct(b: dict[str, Any]) -> float | None:
+            up = _to_float(b.get("used_percentage"))
+            if up is not None:
+                return up
+            rf = _to_float(b.get("remaining_fraction"))
+            return round(max(0.0, min(100.0, (1.0 - rf) * 100.0)), 2) if rf is not None else None
+
+        r5 = _parse_timestamp(b5.get("resets_at") if "resets_at" in b5 else b5.get("reset_time"))
+        r7 = _parse_timestamp(b7.get("resets_at") if "resets_at" in b7 else b7.get("reset_time"))
+        p5 = _effective_pct(_pct(b5), r5, now)
+        p7 = _effective_pct(_pct(b7), r7, now)
+        weight, excluded, reason = compute_window_weight(p5, p7)
+        status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
+        entry: dict[str, Any] = {
+            "status": status,
+            "weight": weight,
+            "excluded": excluded,
+            "exclude_reason": reason,
+            "five_hour_pct": p5,
+            "five_hour_resets_at": r5,
+            "seven_day_pct": p7,
+            "seven_day_resets_at": r7,
+            "throttled_until": None,
+            "throttle_reason": None,
+        }
+        th = gthrottles.get(gk) or gthrottles.get(f"agy-{gk}")
+        if th:
+            entry["status"] = "throttled"
+            entry["weight"] = 0.0
+            entry["excluded"] = True
+            entry["throttled_until"] = th["expires_at"]
+            entry["throttle_reason"] = th["reason"]
+            entry["exclude_reason"] = f"active throttle: {th['reason']}"
+        groups[gk] = entry
+
+    return groups
+
+
 def probe_agy(
     state_dir: Path | None = None,
     throttle: dict[str, Any] | None = None,
+    *,
+    tap_file: Path | None = None,
+    runner: Callable[[], subprocess.CompletedProcess[str]] | None = None,
+    group_throttles: dict[str, dict[str, Any] | None] | None = None,
+    now: float | None = None,
+    cache_ttl: float = AGY_CACHE_TTL_SECONDS,
 ) -> SubscriptionQuota:
-    """Return honest null/unknown percentages for Agy plus configured band weight."""
+    """Read real Agy dual-pool telemetry (`statusLine` tap or cached `/usage` CLI), falling back to band."""
+    ts = now if now is not None else time.time()
     sdir = state_dir or _default_state_dir()
+    is_default_state = (state_dir is None) or (sdir.resolve() == _default_state_dir().resolve())
+
+    cand_tap: Path | None = tap_file
+    if cand_tap is None:
+        env_tap = os.environ.get("KZA_AGY_TAP_FILE", "").strip()
+        if env_tap:
+            cand_tap = Path(env_tap)
+        elif is_default_state:
+            cand_tap = DEFAULT_AGY_TAP_FILE
+
+    cache_file = sdir / "quota-agy-cache.json"
+
+    def _read_fresh(fp: Path | None) -> tuple[dict[str, Any], str] | None:
+        if fp is None or not fp.is_file():
+            return None
+        try:
+            raw = json.loads(fp.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(raw, dict):
+            return None
+        snap_ts = _parse_timestamp(raw.get("timestamp")) or fp.stat().st_mtime
+        age = ts - snap_ts
+        if age < -5.0 or age > cache_ttl:
+            return None
+        buckets, src = _extract_agy_buckets_from_json(raw)
+        return (buckets, src) if buckets else None
+
+    found = _read_fresh(cand_tap) or _read_fresh(cache_file)
+
+    if found is None and (runner is not None or is_default_state):
+        exec_fn = runner or _default_agy_runner
+        try:
+            proc = exec_fn()
+            if proc.returncode == 0 and proc.stdout.strip():
+                parsed = json.loads(proc.stdout)
+                if isinstance(parsed, dict):
+                    buckets, src = _extract_agy_buckets_from_json(parsed)
+                    if buckets:
+                        _atomic_write_json(
+                            cache_file,
+                            {
+                                "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                                "source": src,
+                                "buckets": buckets,
+                            },
+                        )
+                        found = (buckets, src)
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            found = None
+
     band = _read_agy_band(sdir)
+    if found is not None:
+        buckets, src = found
+        groups = _build_agy_groups(buckets, ts, group_throttles=group_throttles)
+        if groups:
+            # Prefer healthy `gemini` pool as primary summary, or fall back to `3p` if `gemini` is excluded.
+            ranked = sorted(
+                groups.items(),
+                key=lambda kv: (0 if kv[1]["excluded"] else 1, kv[1]["weight"], 1 if kv[0] == "gemini" else 0),
+                reverse=True,
+            )
+            best_gk, best = ranked[0]
+            q = SubscriptionQuota(
+                runtime="agy",
+                status=best["status"],
+                weight=best["weight"],
+                excluded=best["excluded"],
+                exclude_reason=best["exclude_reason"],
+                five_hour_pct=best["five_hour_pct"],
+                five_hour_resets_at=best["five_hour_resets_at"],
+                seven_day_pct=best["seven_day_pct"],
+                seven_day_resets_at=best["seven_day_resets_at"],
+                throttled_until=best["throttled_until"],
+                throttle_reason=best["throttle_reason"],
+                source=f"{src}:{best_gk}",
+                details={
+                    "band": band,
+                    "usage_known": True,
+                    "selected_group": best_gk,
+                    "groups": groups,
+                },
+            )
+            return _apply_throttle(q, throttle)
+
     weight = AGY_BAND_WEIGHTS[band]
     excluded = band == "throttled"
     status = "throttled" if excluded else ("degraded" if weight < 1.0 else "ok")
@@ -767,6 +973,8 @@ def collect_all_quotas(
     codex_sessions_dir: Path | None = None,
     codex_sessions_dirs: dict[str, Path] | None = None,
     muse_runner: Callable[[], subprocess.CompletedProcess[str]] | None = None,
+    agy_tap_file: Path | None = None,
+    agy_runner: Callable[[], subprocess.CompletedProcess[str]] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
     """Collect quota telemetry across all 4 subscriptions and evaluate quota_emergency."""
@@ -784,7 +992,14 @@ def collect_all_quotas(
             now=ts,
         ),
         "muse": probe_muse(runner=muse_runner, throttle=throttles.get("muse"), now=ts),
-        "agy": probe_agy(state_dir=sdir, throttle=throttles.get("agy")),
+        "agy": probe_agy(
+            state_dir=sdir,
+            throttle=throttles.get("agy"),
+            tap_file=agy_tap_file,
+            runner=agy_runner,
+            group_throttles={"gemini": throttles.get("agy-gemini"), "3p": throttles.get("agy-3p")},
+            now=ts,
+        ),
     }
     eligible = [name for name, q in subs.items() if not q.excluded and q.weight > 0.0]
     return {
@@ -810,12 +1025,20 @@ def _format_human(snapshot: dict[str, Any]) -> str:
         sub = snapshot["subscriptions"][name]
         p5 = "null" if sub["five_hour_pct"] is None else f"{sub['five_hour_pct']:.1f}%"
         p7 = "null" if sub["seven_day_pct"] is None else f"{sub['seven_day_pct']:.1f}%"
-        acct = (sub.get("details") or {}).get("selected_account")
+        details = sub.get("details") or {}
+        acct = details.get("selected_account") or (f"agy:{details['selected_group']}" if details.get("selected_group") else None)
         acct_tag = f" | acct={acct}" if acct else ""
         extra = f" ({sub['exclude_reason']})" if sub.get("exclude_reason") else ""
         lines.append(
             f"  - {name:6s} | status={sub['status']:11s} | weight={sub['weight']:.2f} | 5h={p5:6s} | 7d={p7:6s}{acct_tag} | src={sub['source']}{extra}"
         )
+        if name == "agy" and isinstance(details.get("groups"), dict):
+            for gk, ginfo in details["groups"].items():
+                gp5 = "null" if ginfo["five_hour_pct"] is None else f"{ginfo['five_hour_pct']:.1f}%"
+                gp7 = "null" if ginfo["seven_day_pct"] is None else f"{ginfo['seven_day_pct']:.1f}%"
+                lines.append(
+                    f"      pool={gk:6s} | status={ginfo['status']:11s} | weight={ginfo['weight']:.2f} | 5h={gp5:6s} | 7d={gp7:6s}"
+                )
     return "\n".join(lines)
 
 
