@@ -142,54 +142,9 @@ _FULL_UTTERANCE_HALLUCINATIONS = frozenset({
     "suscribete",
 })
 
-# Palabras que NO terminan una oración bien formada en español. Si la
-# transcripción del wake termina con una de éstas, el silencio que cerró la
-# utterance probablemente fue una pausa intra-frase y el comando real continúa
-# después. El caller (`multi_room_audio_loop`) usa esta señal para no saltar
-# la captura post-wake.
-_TRUNCATING_TAILS = frozenset({
-    # preposiciones
-    "de", "del", "a", "al", "en", "con", "por", "para", "sin", "sobre",
-    "tras", "hacia", "desde",
-    # artículos solos al final
-    "el", "la", "los", "las", "un", "una", "unos", "unas",
-    # demostrativos (raramente cierran oración)
-    "este", "esta", "esto", "ese", "esa", "eso", "aquel", "aquella",
-    # conjunciones
-    "y", "o", "u", "pero", "ni", "que",
-    # adverbios/intensificadores que esperan un complemento
-    "como", "muy", "tan", "mas", "mucho", "poco",
-})
-
-
-def _text_likely_truncated(text: str) -> bool:
-    """Heurística: ¿la transcripción del wake fue cortada antes de tiempo?
-
-    Whisper cierra la utterance por silencio breve mientras el usuario aún
-    está hablando. El resultado es texto que termina con preposición ('del'),
-    artículo ('la'), conjunción ('y') o elipsis. Cuando esto ocurre, el caller
-    debe NO saltar la captura post-wake — debe seguir capturando audio para
-    completar el comando.
-
-    Args:
-        text: texto original (con acentos/puntuación) del wake.
-
-    Returns:
-        True si el texto luce cortado a media frase.
-    """
-    if not text:
-        return False
-    raw = text.strip()
-    if raw.endswith(("...", "…")):
-        return True
-    stripped = raw.rstrip(",.;:!?¡¿\"' ")
-    if not stripped:
-        return False
-    norm = _normalize(stripped)
-    parts = norm.split()
-    if not parts:
-        return False
-    return parts[-1] in _TRUNCATING_TAILS
+# Re-exported from src.pipeline.text_utils so active capture modules have zero
+# runtime dependency on legacy WhisperWakeDetector.
+from src.pipeline.text_utils import _TRUNCATING_TAILS, _text_likely_truncated  # noqa: F401
 
 
 # Velocidad máxima de habla humana sostenida (palabras/segundo). Voz rápida

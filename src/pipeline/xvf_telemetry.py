@@ -46,7 +46,6 @@ from src.memory.producer_context import PRODUCER_CONTEXT, model_admission, produ
 from src.memory.producer_scopes import ProducerScopes, current_producer_scope
 from src.memory.prompt_context import SourcesInvalidated, run_private
 from src.wakeword.detector import WakeWordDetector
-from src.wakeword.whisper_wake import _text_likely_truncated
 from src.audio.echo_suppressor import EchoSuppressor
 from src.audio.direction_observer import (
     DirectionCalibration, DirectionObserver, parse_direction_observation,

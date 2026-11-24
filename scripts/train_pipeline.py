@@ -20,6 +20,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+import src as _g1_src  # noqa: E402,F401 -- G1 (U3b-0e): refuses unmanaged run under a managed root (exit 78)
 
 from src.training.pipelines import (  # noqa: E402
     LlmQloraConfig,
