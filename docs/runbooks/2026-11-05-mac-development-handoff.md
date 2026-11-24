@@ -1466,10 +1466,10 @@ los hace la sesión coordinadora. Sin release. Evidencia:
 - En época 5 todo log nuevo es del modo release: `intent.mode = "release"`
   (lo lee la instalación de SC-1a) y `--retire-prepare-leftovers` queda
   forzado. SC-1b eximía los dos slots heredados del registro de adopción
-  confirmado. Con la adopción directa en época 5 (Q4 y Q17 de
-  `grill_me_20261121`), desde 5/3 `_legacy_slot_names` también exime
-  63ea8d3 y 2c5adb4 si pasan `_superseded_census` y el registro de Q5 es
-  válido, antes del primer `intent` o registro final del retiro del día 14.
+  confirmado. Con la adopción directa en época 5 (Q4 de `grill_me_20261121`
+  y `q17_adoption_and_preq5_hotfix_20261123`), desde 5/3 `_legacy_slot_names`
+  también exime 63ea8d3 y 2c5adb4 si pasan `_superseded_census` y el registro
+  de Q5 es válido, antes del primer `intent` o registro final del retiro del día 14.
   Esto reemplaza la cláusula de orden «before R2» de R1E-Q5.
 - P6' en `compact plan`: contrato y formato del NUEVO, época del NUEVO entre
   5 y la instalada (R1 nunca es destino), served(root) o el mismo triple;
@@ -2084,7 +2084,8 @@ Decisiones del usuario `r1e_questions_20261118` (R1E-Q1 a R1E-Q5):
 - R2: después del retiro del día 14 el plan del modo release ya no ve
   `release_unproven_copy` para 63ea8d3 ni 2c5adb4
   (`test_r1e2_after_day_14_r2_s_first_release_plan_finds_no_unproven_copy`).
-  Con la adopción directa en época 5 (Q4 y Q17 de `grill_me_20261121`),
+  Con la adopción directa en época 5 (Q4 de `grill_me_20261121` y
+  `q17_adoption_and_preq5_hotfix_20261123`),
   desde 5/3 `_legacy_slot_names` también exime 63ea8d3 y 2c5adb4 antes del
   día 14 si pasan `_superseded_census` y el registro de Q5 es válido y
   aún no tiene `intent` ni registro final. Esta actualización reemplaza la

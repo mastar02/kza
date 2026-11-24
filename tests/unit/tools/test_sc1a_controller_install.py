@@ -251,6 +251,7 @@ RELEASED_CONTROLLERS: dict[tuple[int, int], str] = {
     (5, 1): "8cec6c0477f7b69052a4ae9124c42e27af233733e314b2a3ebbdfd830e6f5b69",
     (5, 2): "03c2eb14c428c23c40c1e235c77e135a6f71e45bede3913af5de6a2aa801049a",
     (5, 3): "a8d934150f69c616cf95dc1ea25fe6ab994ba3e100a27e623458c454e378c345",
+    (5, 4): "e05f35beeb8411a1a4640bdfee6d1fd0dbff9790e208cc33baf69779fc337485",
 }
 
 

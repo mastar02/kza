@@ -42,7 +42,9 @@ from tests.mocks import compaction_world as cw
 from tests.mocks import launcher_rehearsal as rehearsal
 from tests.mocks import sc4c_chroma as sc
 from tests.mocks.epoch4 import epoch4_in_process
-from tests.unit.tools.test_sc1b_release_plan import _install, _refusal, clone, x4, x5  # noqa: F401
+from tests.unit.tools.test_sc1b_release_plan import _install, _refusal, clone, x4, x5
+
+__all__ = ["clone", "x4", "x5"]  # Re-exported pytest fixtures.
 
 UNLISTED = "runtime_admission_compaction_unlisted_collection"
 NOW = 1_800_000_000.0
@@ -817,6 +819,43 @@ def test_each_store_is_written_by_a_clean_child_that_gets_only_k_s_records(x4, x
 
 # --- SC4C-RV-3: D5's two strongest checks on rebuilt stores -------------------------------------------
 
+def test_compact_start_accepts_float32_cosine_renormalization(x4, x5, tmp_path):
+    import numpy as np
+
+    # Exceed the HNSW batch size so get() reads vectors that the index has normalized.
+    first = _replace_once(
+        sc.chroma_state(),
+        f"base.add(ids=['light.sala_0'], documents=[{sc.COMMAND + '-base'!r}], metadatas=[{{'entity_id': 'light.sala'}}],\n"
+        f"    embeddings=[{sc.EMBEDDING!r}])\n",
+        "import numpy as np\n"
+        "vectors = np.random.default_rng(7).standard_normal((337, 1024), dtype=np.float32)\n"
+        "vectors[:, 0] *= 3\n"
+        "vectors /= np.linalg.norm(vectors, axis=1, keepdims=True)\n"
+        "base.add(ids=[f'command-{i:03d}' for i in range(len(vectors))], embeddings=vectors,\n"
+        "         documents=['synthetic command'] * len(vectors),\n"
+        "         metadatas=[{'entity_id': 'light.sala'}] * len(vectors))\n",
+    )
+    world = _post_r1(x4, x5, tmp_path, first)
+    command = ("data/chroma_db", "home_assistant_commands")
+    before = _stores(world["h"]["state"], tmp_path / "h-copy")[command]
+    assert before["configuration"]["hnsw"]["space"] == "cosine"
+
+    assert cw.start(world["root"], x5["archive"])["phase"] == "activated"
+
+    k_state = world["root"] / "slots" / "k" / "state"
+    after = _stores(k_state, tmp_path / "k-copy")[command]
+    for key in ("metadata", "configuration"):
+        assert after[key] == before[key]
+    for key in ("id", "document", "metadata"):
+        assert [row[key] for row in after["records"]] == [row[key] for row in before["records"]]
+    expected, actual = [np.array([row["embedding"] for row in image["records"]], dtype=np.float32)
+                        for image in (before, after)]
+    assert expected.shape == actual.shape == (337, 1024)
+    delta = np.abs(actual - expected)
+    assert 0 < delta.max() <= 1e-6
+    assert np.any(delta == np.abs(np.spacing(expected)))
+
+
 @pytest.mark.parametrize("old, new", [
     ("        rows = item['records']\n", "        rows = item['records'][1:]\n"),
     ("    guard()\n    image = []\n",
@@ -838,6 +877,33 @@ def test_the_child_s_afterimage_must_be_the_planned_one(x4, x5, tmp_path, monkey
     assert compaction.compact_abort(root, log["compaction_id"])["phase"] == "aborted"
     assert stage.read_admission_head(root) == world["h_head"]
     assert sorted(os.listdir(root / "slots")) == ["a"]
+
+
+@pytest.mark.parametrize(("name", "space", "delta"), [
+    ("home_assistant_commands", "cosine", 2e-6),
+    (sc.POLICY, "l2", -1e-8),
+    ("home_assistant_commands", "cosine", float("nan")),
+    (sc.POLICY, "l2", float("inf")),
+], ids=["cosine_above_tolerance", "l2_one_ulp", "cosine_nan", "l2_inf"])
+def test_compact_start_refuses_embedding_drift(x4, x5, tmp_path, monkeypatch, name, space, delta):
+    world = _post_r1(x4, x5, tmp_path, sc.chroma_state())
+    root = world["root"]
+    # Inject the drift into the real child's write, then let Chroma serve the afterimage.
+    add = "            collection.add(ids="
+    child = _replace_once(oc.CHROMA_REBUILD_CHILD, add,
+                          f"            if collection.name == {name!r}:\n"
+                          f"                assert collection.configuration_json['hnsw']['space'] == {space!r}\n"
+                          "                row = part[0]\n"
+                          "                vector = row['embedding']\n"
+                          f"                vector = [vector[0] + float({str(delta)!r}), *vector[1:]]\n"
+                          "                part[0] = dict(row, embedding=vector)\n"
+                          + add)
+    monkeypatch.setattr(oc, "CHROMA_REBUILD_CHILD", child)
+    _refusal("runtime_admission_compaction_payload_changed:chroma",
+             lambda: cw.start(root, x5["archive"], worker=_in_process_worker()))
+    [log] = stage.compaction_logs(root)
+    assert "materialized" not in [event["kind"] for event in log["events"]]
+    assert stage.read_admission_head(root) == world["h_head"]
 
 
 def test_resume_refuses_a_rebuilt_store_changed_after_the_evidence(x4, x5, tmp_path, monkeypatch):

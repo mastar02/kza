@@ -858,7 +858,7 @@ slots de R1 siguen sirviéndose: `SCHEMA_CONTRACT_EPOCH` 1, `FORMAT_EPOCH` 1,
 `LAUNCHER_CONTRACT` 3 y `RECEIPT_STATE_SCHEMA` 2 no cambian.
 
 Triple del controlador. `release.json` declara `controller_epoch`,
-`controller_revision` (`CONTROLLER_REVISION`, hoy 3) y
+`controller_revision` (`CONTROLLER_REVISION`, hoy 4) y
 `controller_sources_sha256`, el sha256 de la lista ordenada (ruta, sha256 del
 fuente) de la clausura de imports del controlador, que `build_runtime`
 calcula y también registra (`controller_sources`). La clausura sale de un
@@ -1026,7 +1026,8 @@ sin su contenido. Para eximir slots, `_legacy_slot_names` exige exactamente
 un registro de adopción confirmado cuyo nombre corresponda al digest de su
 head. De ese registro obtiene el contenedor de e9669ec y el slot de b0866e8.
 
-Tras la adopción directa en época 5, Q4 y Q17 de `grill_me_20261121`
+Tras la adopción directa en época 5, Q4 de `grill_me_20261121` y
+`q17_adoption_and_preq5_hotfix_20261123`
 reemplazaron la cláusula «before R2» de R1E-Q5. Desde 5/3 se puede planear
 antes del día 14. Mientras `admission/legacy-retirement` esté ausente o sea
 válido y no contenga ningún `intent` ni registro final de Q5, el plan también exime
@@ -1424,12 +1425,17 @@ compactación podía pasar del snapshot.
   `CHROMA_REBUILD_TIMEOUT` (600 s, el presupuesto de bajada entero de
   SC-D2 A) mata al hijo y rechaza
   `runtime_admission_compaction_chroma_rebuild_timeout`.
-- **D5 para almacenes reconstruidos.** El hijo vuelve a leer su almacén y
-  el sha256 de esa imagen (exactamente las colecciones planeadas, cada una
-  con su metadata, configuración y registros) tiene que coincidir con la del
-  plan; después se fija el sha256 de cada archivo del almacén y cada D5
-  posterior (antes y después del VACUUM, y en `resume`) compara ese pin
-  exacto (`payload_changed:chroma`). Un almacén cuyas colecciones se dan
+- **D5 para almacenes reconstruidos.** `CHROMA_REBUILD_CHILD` vuelve a leer
+  su almacén. HNSW puede renormalizar los vectores `float32` al reinsertarlos
+  en una colección `cosine`. Para el sha256 de la imagen, el hijo usa el
+  vector planeado del mismo registro y colección si ambos tienen la misma
+  dimensión y cada coordenada leída es finita y difiere en `<= 1e-6`.
+  Los vectores `l2` y de cualquier otra métrica se comparan exactamente.
+  El sha256 debe coincidir con el plan, incluidas las colecciones, sus
+  metadatos, sus configuraciones, los registros y sus demás campos. Luego
+  se fija el sha256 de cada archivo del almacén y cada D5 posterior (antes
+  y después del VACUUM, y en `resume`) compara ese pin byte por byte
+  (`payload_changed:chroma`). Un almacén cuyas colecciones se dan
   todas de baja se crea igual, vacío, para que los `schemas` de K sigan
   iguales a los de H (A1).
 - **Registros sin contenido.** `plan` muestra `chroma` con conteos por
@@ -1530,7 +1536,7 @@ Q3: `src.main` rechaza (78) si su padre no le puso los tunables, y ni
 `LAUNCHER_CONTRACT` ni `CONTROLLER_REVISION` subieron, así que ese caso no
 tiene un rechazo propio en `check_slot`; falla al arrancar el hijo. La
 primera release de época 5 ya incluía Q3. Desde esa release,
-`RELEASED_CONTROLLERS` fija los pares `(5, 1)`, `(5, 2)` y `(5, 3)`.
+`RELEASED_CONTROLLERS` fija los pares `(5, 1)`, `(5, 2)`, `(5, 3)` y `(5, 4)`.
 Q3 cambia la clausura del controlador
 (`managed_launcher`, `stage_runtime`), así que con la misma revisión `plan`
 rechaza `runtime_admission_compaction_controller_revision_conflict`, y con la
