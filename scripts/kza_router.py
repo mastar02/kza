@@ -299,26 +299,47 @@ _SANITIZE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?:/Users/[^/\s]+/[^\s\"']*\.env\b|(?:\./)?data/[^\s\"']+)"), "[REDACTED_PRIVATE_PATH]"),
     # Strip host prefix from KZA checkout paths while keeping safe repo-relative paths.
     (re.compile(r"(?:/Users/[^/\s\"']+/Documents/Proyectos/kza/|/home/[^/\s\"']+/projects/kza/)(?!(?:\.env|\.venv|data/|models/))"), ""),
-    # Redact any remaining local filesystem paths and loopback URLs.
-    (re.compile(r"(?:/Users/[^/\s\"']+(?:/[^\s\"']*)?|/home/[^/\s\"']+(?:/[^\s\"']*)?|/private/var/folders/[^\s\"']+|/var/folders/[^\s\"']+|/tmp/[^\s\"']+)"), "[LOCAL_PATH]"),
+    # Redact any remaining local filesystem paths (including ~/, $HOME/, /Volumes/, /var/, /tmp/) and loopback URLs.
+    (re.compile(r"(?:~(?:/[^\s\"']*)|\$HOME(?:/[^\s\"']*)?|\$\{HOME\}(?:/[^\s\"']*)?|/Volumes/[^\s\"']+|/Users/[^/\s\"']+(?:/[^\s\"']*)?|/home/[^/\s\"']+(?:/[^\s\"']*)?|/private/var/[^\s\"']+|/var/folders/[^\s\"']+|/tmp/[^\s\"']+)"), "[LOCAL_PATH]"),
     (re.compile(r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):\d+[^\s\"']*"), "[LOCAL_URL]"),
 )
 
+_KZA_SAFE_QUOTED_PATH_RE = re.compile(
+    r"^(?:/Users/[^/\s]+/Documents/Proyectos/kza/|/home/[^/\s]+/projects/kza/)((?!(?:\.env|\.venv|data/|models/))[^\s]+)$"
+)
+_QUOTED_LOCAL_PATH_RE = re.compile(
+    r"""(['"])((?:~(?:/|$)|\$HOME(?:/|$)|\$\{HOME\}(?:/|$)|/Volumes/|/Users/|/home/|/private/var/|/var/|/tmp/)[^'"\n]*)\1"""
+)
+
 _DISTILL_NOISE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?i)\b(?:Emitir|Entreg[aá])\s+(?:veredicto\s+expl[ií]cito\s+)?APROBADO\s+o\s+(?:BLOQUEA|CAMBIOS_REQUERIDOS)\b[^.]*\.?"), ""),
+    (re.compile(r"(?im)^[ \t]*(?:Emitir|Entreg[aá])\s+(?:veredicto\s+expl[ií]cito\s+)?`?APROBADO`?\s+o\s+`?(?:BLOQUEA|CAMBIOS_REQUERIDOS)`?[^\n]*$"), ""),
+    (re.compile(r"(?i)(?:(?<=\.)\s*|^)(?:Emitir|Entreg[aá])\s+(?:veredicto\s+expl[ií]cito\s+)?`?APROBADO`?\s+o\s+`?(?:BLOQUEA|CAMBIOS_REQUERIDOS)`?[^\n.]*\.?"), ""),
     (re.compile(r"(?i)\bverifica(?:r)?\s+con\s+`?git\s+rev-parse\s+HEAD`?\)?"), ""),
-    (re.compile(r"(?i)\b(?:Correr|Ejecutar)\s+[^\n.]*?\bpytest\b[^\n.]*\.?"), ""),
+    (re.compile(r"(?im)(?:^|(?<=\.)\s*|[ \t]+)(?:Correr|Ejecutar)\s+[^\n]*?\bpytest\b[^\n.;]*\.?"), ""),
     (re.compile(r"(?i)\bLEE\s+PRIMERO\s*(?:\([^)]*\))?\s*:"), ""),
-    (re.compile(r"\b[0-9a-f]{16,40}\b"), "<sha>"),
+    (re.compile(r"(?i)\b(?=[0-9a-f]*\d)[0-9a-f]{8,40}\b"), "<sha>"),
 )
 
 
-def sanitize_summary(text: str, max_len: int = 800) -> str:
+def _replace_quoted_local_path(match: re.Match[str]) -> str:
+    quote, inner = match.group(1), match.group(2)
+    safe = _KZA_SAFE_QUOTED_PATH_RE.match(inner)
+    if safe:
+        return f"{quote}{safe.group(1)}{quote}"
+    if inner.startswith("/home/kza/"):
+        return "[REDACTED_PROD_PATH]"
+    return "[LOCAL_PATH]"
+
+
+def sanitize_summary(text: str, max_len: int = 800, *, collapse_whitespace: bool = True) -> str:
     """Sanitize task summary removing secrets, emails, LAN IPs, and private/local paths."""
-    cleaned = text or ""
+    cleaned = _QUOTED_LOCAL_PATH_RE.sub(_replace_quoted_local_path, text or "")
     for pat, repl in _SANITIZE_PATTERNS:
         cleaned = pat.sub(repl, cleaned)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if collapse_whitespace:
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    else:
+        cleaned = cleaned.strip()
     if len(cleaned) > max_len:
         cleaned = cleaned[: max_len - 3].rstrip() + "..."
     return cleaned
@@ -326,12 +347,19 @@ def sanitize_summary(text: str, max_len: int = 800) -> str:
 
 def distill_routing_summary(text: str, max_len: int = 500) -> str:
     """Sanitize and distill worker task prompts into concise high-signal summaries for `gpt-6-luna`."""
-    cleaned = sanitize_summary(text, max_len=max(max_len * 2, 1200))
+    sanitized_multiline = sanitize_summary(
+        text,
+        max_len=max(max_len * 3, 2400),
+        collapse_whitespace=False,
+    )
+    cleaned = sanitized_multiline
     for pat, repl in _DISTILL_NOISE_PATTERNS:
         cleaned = pat.sub(repl, cleaned)
     cleaned = re.sub(r"\s*([,;])\s*", r"\1 ", cleaned)
     cleaned = re.sub(r"\(\s*\)", "", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip(" ;,")
+    if not cleaned:
+        cleaned = re.sub(r"\s+", " ", sanitized_multiline).strip()
     if len(cleaned) > max_len:
         cleaned = cleaned[: max_len - 3].rstrip() + "..."
     return cleaned
@@ -706,18 +734,21 @@ def format_quota_pools_for_decisions(quota_snapshot: dict[str, Any] | None, now:
     if isinstance(agy, dict):
         adet = agy.get("details") or {}
         groups = adet.get("groups")
+        band = adet.get("band", "unknown")
         if isinstance(groups, dict) and groups:
             for gk in ("gemini", "3p"):
                 g = groups.get(gk)
                 if isinstance(g, dict):
+                    g_known = g.get("usage_known", adet.get("usage_known", True))
+                    telem = "live" if g_known else f"band_estimate(band={band})"
                     lines.append(
                         f"- agy:{gk}: weight={float(g.get('weight', 0.0)):.2f}, status={g.get('status')}, "
-                        f"{_fmt_pool_metrics(g, ts)}, telemetry=live"
+                        f"{_fmt_pool_metrics(g, ts)}, telemetry={telem}"
                     )
         else:
             lines.append(
                 f"- agy: weight={float(agy.get('weight', 0.0)):.2f}, status={agy.get('status')}, "
-                f"band={adet.get('band', 'unknown')}, telemetry=band_estimate"
+                f"band={band}, telemetry=band_estimate"
             )
 
     return "\n".join(lines)

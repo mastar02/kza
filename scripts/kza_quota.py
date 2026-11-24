@@ -116,7 +116,7 @@ def _parse_timestamp(value: Any) -> float | None:
         return ts if ts > 0.0 else None
     if isinstance(value, str):
         raw = value.strip()
-        if not raw:
+        if not raw or raw.startswith(("1970-01-01", "1969-12-31")):
             return None
         try:
             ts = float(raw)
@@ -762,7 +762,13 @@ def _extract_agy_buckets_from_json(data: dict[str, Any]) -> tuple[dict[str, dict
     if isinstance(data.get("buckets"), dict) and data["buckets"]:
         return dict(data["buckets"]), str(data.get("source") or "agy-statusline")
 
-    groups = ((data.get("command") or {}).get("data") or {}).get("groups")
+    cmd = data.get("command")
+    if not isinstance(cmd, dict):
+        return {}, ""
+    cmd_data = cmd.get("data")
+    if not isinstance(cmd_data, dict):
+        return {}, ""
+    groups = cmd_data.get("groups")
     if not isinstance(groups, list):
         return {}, ""
 
@@ -772,7 +778,10 @@ def _extract_agy_buckets_from_json(data: dict[str, Any]) -> tuple[dict[str, dict
             continue
         gname = str(grp.get("name") or "").lower()
         prefix = "gemini" if "gemini" in gname else ("3p" if ("claude" in gname or "gpt" in gname or "3p" in gname) else "")
-        for b in grp.get("buckets") or []:
+        blist = grp.get("buckets")
+        if not isinstance(blist, list):
+            continue
+        for b in blist:
             if not isinstance(b, dict):
                 continue
             bid = str(b.get("id") or "").strip()
@@ -797,44 +806,64 @@ def _extract_agy_buckets_from_json(data: dict[str, Any]) -> tuple[dict[str, dict
 def _build_agy_groups(
     buckets: dict[str, Any],
     now: float,
+    *,
+    band: str = "medium",
     group_throttles: dict[str, dict[str, Any] | None] | None = None,
+    global_throttle: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Compute per-pool (`gemini`, `3p`) weights and exclusions from Agy buckets."""
+    """Compute per-pool (`gemini`, `3p`) weights and exclusions from Agy buckets + band fallback."""
     gthrottles = group_throttles or {}
     groups: dict[str, dict[str, Any]] = {}
+    band_weight = AGY_BAND_WEIGHTS[band]
+    band_excluded = band == "throttled"
+    band_status = "throttled" if band_excluded else ("degraded" if band_weight < 1.0 else "ok")
+
+    def _pct(b: dict[str, Any]) -> float | None:
+        up = _to_float(b.get("used_percentage"))
+        if up is not None:
+            return up
+        rf = _to_float(b.get("remaining_fraction"))
+        return round(max(0.0, min(100.0, (1.0 - rf) * 100.0)), 2) if rf is not None else None
 
     for gk in ("gemini", "3p"):
         b5 = buckets.get(f"{gk}-5h") if isinstance(buckets.get(f"{gk}-5h"), dict) else {}
         b7 = buckets.get(f"{gk}-weekly") if isinstance(buckets.get(f"{gk}-weekly"), dict) else {}
-        if not b5 and not b7:
-            continue
+        if b5 or b7:
+            r5 = _parse_timestamp(b5.get("resets_at") if "resets_at" in b5 else b5.get("reset_time"))
+            r7 = _parse_timestamp(b7.get("resets_at") if "resets_at" in b7 else b7.get("reset_time"))
+            p5 = _effective_pct(_pct(b5), r5, now)
+            p7 = _effective_pct(_pct(b7), r7, now)
+            weight, excluded, reason = compute_window_weight(p5, p7)
+            status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
+            entry: dict[str, Any] = {
+                "status": status,
+                "weight": weight,
+                "excluded": excluded,
+                "exclude_reason": reason,
+                "five_hour_pct": p5,
+                "five_hour_resets_at": r5,
+                "seven_day_pct": p7,
+                "seven_day_resets_at": r7,
+                "throttled_until": None,
+                "throttle_reason": None,
+                "usage_known": True,
+            }
+        else:
+            entry = {
+                "status": band_status,
+                "weight": band_weight,
+                "excluded": band_excluded,
+                "exclude_reason": "agy band set to throttled" if band_excluded else None,
+                "five_hour_pct": None,
+                "five_hour_resets_at": None,
+                "seven_day_pct": None,
+                "seven_day_resets_at": None,
+                "throttled_until": None,
+                "throttle_reason": None,
+                "usage_known": False,
+            }
 
-        def _pct(b: dict[str, Any]) -> float | None:
-            up = _to_float(b.get("used_percentage"))
-            if up is not None:
-                return up
-            rf = _to_float(b.get("remaining_fraction"))
-            return round(max(0.0, min(100.0, (1.0 - rf) * 100.0)), 2) if rf is not None else None
-
-        r5 = _parse_timestamp(b5.get("resets_at") if "resets_at" in b5 else b5.get("reset_time"))
-        r7 = _parse_timestamp(b7.get("resets_at") if "resets_at" in b7 else b7.get("reset_time"))
-        p5 = _effective_pct(_pct(b5), r5, now)
-        p7 = _effective_pct(_pct(b7), r7, now)
-        weight, excluded, reason = compute_window_weight(p5, p7)
-        status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
-        entry: dict[str, Any] = {
-            "status": status,
-            "weight": weight,
-            "excluded": excluded,
-            "exclude_reason": reason,
-            "five_hour_pct": p5,
-            "five_hour_resets_at": r5,
-            "seven_day_pct": p7,
-            "seven_day_resets_at": r7,
-            "throttled_until": None,
-            "throttle_reason": None,
-        }
-        th = gthrottles.get(gk) or gthrottles.get(f"agy-{gk}")
+        th = global_throttle or gthrottles.get(gk) or gthrottles.get(f"agy-{gk}")
         if th:
             entry["status"] = "throttled"
             entry["weight"] = 0.0
@@ -863,12 +892,9 @@ def probe_agy(
     is_default_state = (state_dir is None) or (sdir.resolve() == _default_state_dir().resolve())
 
     cand_tap: Path | None = tap_file
-    if cand_tap is None:
+    if cand_tap is None and is_default_state:
         env_tap = os.environ.get("KZA_AGY_TAP_FILE", "").strip()
-        if env_tap:
-            cand_tap = Path(env_tap)
-        elif is_default_state:
-            cand_tap = DEFAULT_AGY_TAP_FILE
+        cand_tap = Path(env_tap) if env_tap else DEFAULT_AGY_TAP_FILE
 
     cache_file = sdir / "quota-agy-cache.json"
 
@@ -912,52 +938,41 @@ def probe_agy(
             found = None
 
     band = _read_agy_band(sdir)
-    if found is not None:
-        buckets, src = found
-        groups = _build_agy_groups(buckets, ts, group_throttles=group_throttles)
-        if groups:
-            # Prefer healthy `gemini` pool as primary summary, or fall back to `3p` if `gemini` is excluded.
-            ranked = sorted(
-                groups.items(),
-                key=lambda kv: (0 if kv[1]["excluded"] else 1, kv[1]["weight"], 1 if kv[0] == "gemini" else 0),
-                reverse=True,
-            )
-            best_gk, best = ranked[0]
-            q = SubscriptionQuota(
-                runtime="agy",
-                status=best["status"],
-                weight=best["weight"],
-                excluded=best["excluded"],
-                exclude_reason=best["exclude_reason"],
-                five_hour_pct=best["five_hour_pct"],
-                five_hour_resets_at=best["five_hour_resets_at"],
-                seven_day_pct=best["seven_day_pct"],
-                seven_day_resets_at=best["seven_day_resets_at"],
-                throttled_until=best["throttled_until"],
-                throttle_reason=best["throttle_reason"],
-                source=f"{src}:{best_gk}",
-                details={
-                    "band": band,
-                    "usage_known": True,
-                    "selected_group": best_gk,
-                    "groups": groups,
-                },
-            )
-            return _apply_throttle(q, throttle)
-
-    weight = AGY_BAND_WEIGHTS[band]
-    excluded = band == "throttled"
-    status = "throttled" if excluded else ("degraded" if weight < 1.0 else "ok")
+    buckets_map = found[0] if found is not None else {}
+    groups = _build_agy_groups(
+        buckets_map,
+        ts,
+        band=band,
+        group_throttles=group_throttles,
+        global_throttle=throttle,
+    )
+    ranked = sorted(
+        groups.items(),
+        key=lambda kv: (0 if kv[1]["excluded"] else 1, kv[1]["weight"], 1 if kv[0] == "gemini" else 0),
+        reverse=True,
+    )
+    best_gk, best = ranked[0]
+    any_known = any(g["usage_known"] for g in groups.values())
+    src_str = f"{found[1]}:{best_gk}" if (found is not None and best["usage_known"]) else f"agy-band:{band}"
     q = SubscriptionQuota(
         runtime="agy",
-        status=status,
-        weight=weight,
-        excluded=excluded,
-        exclude_reason="agy band set to throttled" if excluded else None,
-        five_hour_pct=None,
-        seven_day_pct=None,
-        source=f"agy-band:{band}",
-        details={"band": band, "usage_known": False},
+        status=best["status"],
+        weight=best["weight"],
+        excluded=best["excluded"],
+        exclude_reason=best["exclude_reason"],
+        five_hour_pct=best["five_hour_pct"],
+        five_hour_resets_at=best["five_hour_resets_at"],
+        seven_day_pct=best["seven_day_pct"],
+        seven_day_resets_at=best["seven_day_resets_at"],
+        throttled_until=best["throttled_until"],
+        throttle_reason=best["throttle_reason"],
+        source=src_str,
+        details={
+            "band": band,
+            "usage_known": any_known,
+            "selected_group": best_gk,
+            "groups": groups,
+        },
     )
     return _apply_throttle(q, throttle)
 

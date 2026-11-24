@@ -557,3 +557,50 @@ def test_distill_sanitizes_local_paths_and_agy_dual_pool_in_payload(tmp_path: Pa
     assert "agy:3p:" in captured_payload["input"]
     assert "5h_in=" in captured_payload["input"]
     assert "/Users/gabriel" not in captured_payload["input"]
+
+
+def test_sanitize_handles_tilde_volumes_spaces_multiline_and_global_throttle_block(tmp_path: Path) -> None:
+    noisy = (
+        "Emitir APROBADO o BLOQUEA literal en el report_path.\n"
+        "Auditar ~/secret/notes.txt, $HOME/.ssh/id_rsa, /Volumes/Backup/kza.db, "
+        '"/Users/gabriel/My Folder/SYNTHETIC_CASE.json" y SHA ABCDEF1234567890.\n'
+        "Correr .venv/bin/python -m pytest tests/unit/workflow/."
+    )
+    distilled = kza_router.distill_routing_summary(noisy)
+    assert "secret/notes.txt" not in distilled
+    assert ".ssh/id_rsa" not in distilled
+    assert "/Volumes/" not in distilled
+    assert "SYNTHETIC_CASE.json" not in distilled
+    assert "ABCDEF1234567890" not in distilled
+    assert "pytest" not in distilled
+    assert "Auditar" in distilled
+    assert "<sha>" in distilled
+
+    # Global agy throttle must show status=throttled, weight=0.00 in both agy rows in payload block.
+    import kza_quota
+    now = 1_800_000_000.0
+    kza_quota.record_throttle("agy", ttl_minutes=30, reason="global_agy_pause", state_dir=tmp_path, now=now)
+    tap = tmp_path / "tap.json"
+    tap.write_text(
+        json.dumps(
+            {
+                "timestamp": now,
+                "buckets": {
+                    "gemini-5h": {"used_percentage": 10.0, "resets_at": now + 3600},
+                    "3p-5h": {"used_percentage": 0.0, "resets_at": None},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    snap = kza_quota.collect_all_quotas(
+        state_dir=tmp_path,
+        claude_tap_dir=tmp_path / "none",
+        codex_sessions_dir=tmp_path / "none2",
+        muse_runner=lambda: type("P", (), {"returncode": 0, "stdout": json.dumps({"reason": "server_sent_no_usage", "allowance": None}), "stderr": ""})(),
+        agy_tap_file=tap,
+        now=now + 5,
+    )
+    pool_text = kza_router.format_quota_pools_for_decisions(snap, now=now + 5)
+    assert "agy:gemini: weight=0.00, status=throttled" in pool_text
+    assert "agy:3p: weight=0.00, status=throttled" in pool_text

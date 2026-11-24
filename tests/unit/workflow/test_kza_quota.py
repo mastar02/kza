@@ -387,3 +387,71 @@ def test_agy_dual_pool_tap_and_cli_refresh_with_epoch_zero_reset(tmp_path: Path)
     agy_groups = snap["subscriptions"]["agy"]["details"]["groups"]
     assert agy_groups["gemini"]["excluded"] is True
     assert agy_groups["3p"]["excluded"] is False
+
+
+def test_agy_throttles_apply_with_partial_or_no_telemetry_and_bad_json_isolated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 1_800_000_000.0
+    state_dir = tmp_path / "state"
+
+    # 1. Epoch-0 / 1970-01-01 without timezone must normalize to None regardless of TZ.
+    monkeypatch.setenv("TZ", "America/Montevideo")
+    if hasattr(time, "tzset"):
+        time.tzset()
+    assert kza_quota._parse_timestamp("1970-01-01") is None
+    assert kza_quota._parse_timestamp("1970-01-01T00:00:00Z") is None
+
+    # 2. Inherited KZA_AGY_TAP_FILE must NOT leak into isolated state_dir=tmp_path calls.
+    leaked_tap = tmp_path / "external_tap.json"
+    _write_json(
+        leaked_tap,
+        {"timestamp": now - 10, "buckets": {"gemini-5h": {"used_percentage": 16.0}}},
+    )
+    monkeypatch.setenv("KZA_AGY_TAP_FILE", str(leaked_tap))
+    q_isolated = kza_quota.probe_agy(state_dir=state_dir, now=now)
+    assert q_isolated.details["usage_known"] is False
+    assert set(q_isolated.details["groups"].keys()) == {"gemini", "3p"}
+
+    # 3. Malformed CLI JSON shape (`{"command": ["usage"]}`) must not crash; falls back to band.
+    q_bad_shape = kza_quota.probe_agy(
+        state_dir=state_dir,
+        runner=lambda: subprocess.CompletedProcess(["agy"], 0, json.dumps({"command": ["usage"]}), ""),
+        now=now,
+    )
+    assert q_bad_shape.details["usage_known"] is False
+    assert q_bad_shape.source.startswith("agy-band:")
+
+    # 4. Pool throttle `agy-gemini` applies even without telemetry (band fallback), preserving `3p`.
+    kza_quota.record_throttle("agy-gemini", ttl_minutes=30, reason="gem_limit", state_dir=state_dir, now=now)
+    snap_band = kza_quota.collect_all_quotas(
+        state_dir=state_dir,
+        claude_tap_dir=tmp_path / "none",
+        codex_sessions_dir=tmp_path / "none2",
+        muse_runner=lambda: subprocess.CompletedProcess(["muse"], 0, json.dumps({"reason": "server_sent_no_usage", "allowance": None}), ""),
+        now=now + 5,
+    )
+    g_band = snap_band["subscriptions"]["agy"]["details"]["groups"]
+    assert g_band["gemini"]["status"] == "throttled" and g_band["gemini"]["excluded"] is True
+    assert g_band["3p"]["status"] != "throttled" and g_band["3p"]["excluded"] is False
+
+    # 5. Reverse direction with partial telemetry (only gemini buckets present) + `agy-3p` throttled.
+    kza_quota.clear_throttle("agy-gemini", state_dir=state_dir)
+    kza_quota.record_throttle("agy-3p", ttl_minutes=30, reason="3p_limit", state_dir=state_dir, now=now)
+    partial_tap = tmp_path / "partial_tap.json"
+    _write_json(
+        partial_tap,
+        {"timestamp": now, "buckets": {"gemini-5h": {"used_percentage": 10.0, "resets_at": now + 3600}}},
+    )
+    snap_partial = kza_quota.collect_all_quotas(
+        state_dir=state_dir,
+        claude_tap_dir=tmp_path / "none",
+        codex_sessions_dir=tmp_path / "none2",
+        muse_runner=lambda: subprocess.CompletedProcess(["muse"], 0, json.dumps({"reason": "server_sent_no_usage", "allowance": None}), ""),
+        agy_tap_file=partial_tap,
+        now=now + 5,
+    )
+    g_part = snap_partial["subscriptions"]["agy"]["details"]["groups"]
+    assert g_part["gemini"]["excluded"] is False and g_part["gemini"]["usage_known"] is True
+    assert g_part["3p"]["status"] == "throttled" and g_part["3p"]["excluded"] is True
+    assert g_part["3p"]["usage_known"] is False
