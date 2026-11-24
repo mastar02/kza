@@ -104,3 +104,48 @@ def test_fallo_de_escritura_cuenta_failed(tmp_path):
     path = _run(arch.write("cocina", 3, audio))
     assert path is None
     assert arch.stats["failed"] == 1
+
+
+def test_channel_mode_stereo_2ch_preserva_ch0_y_ch1(tmp_path):
+    import pytest
+
+    from src.ambient.audio_archive import ArchiveChannelMode
+
+    t = np.linspace(0, 0.1, 1600, endpoint=False, dtype=np.float32)
+    ch0 = 0.2 * np.sin(2 * np.pi * 440 * t)
+    ch1 = 0.5 * np.sin(2 * np.pi * 880 * t)
+    stereo = np.stack([ch0, ch1], axis=1)
+
+    arch = AudioArchiver(
+        base_dir=str(tmp_path), enabled=True, channel_mode=ArchiveChannelMode.STEREO_2CH
+    )
+    path = _run(arch.write("living", 7, stereo))
+    assert path is not None
+    data, sr = sf.read(path, dtype="float32")
+    assert sr == 16000
+    assert data.shape == (1600, 2)
+    assert np.allclose(data[:, 0], ch0, atol=1e-3)
+    assert np.allclose(data[:, 1], ch1, atol=1e-3)
+
+    with pytest.raises(ValueError, match="invalid_archive_channel_mode"):
+        AudioArchiver(base_dir=str(tmp_path), enabled=True, channel_mode="quad_4ch")
+
+
+def test_channel_mode_mono_ch1_y_fallback_1ch(tmp_path):
+    t = np.linspace(0, 0.1, 1600, endpoint=False, dtype=np.float32)
+    ch0 = 0.1 * np.ones_like(t)
+    ch1 = 0.4 * np.ones_like(t)
+    stereo = np.stack([ch0, ch1], axis=1)
+
+    arch_ch1 = AudioArchiver(base_dir=str(tmp_path), enabled=True, channel_mode="mono_ch1")
+    path = _run(arch_ch1.write("cocina", 8, stereo))
+    data, _ = sf.read(path, dtype="float32")
+    assert data.ndim == 1
+    assert np.allclose(data, ch1, atol=1e-3)
+
+    # 1ch input with stereo_2ch degrades cleanly to mono instead of failing
+    arch_2ch = AudioArchiver(base_dir=str(tmp_path), enabled=True, channel_mode="stereo_2ch")
+    path_1ch = _run(arch_2ch.write("cocina", 9, ch0))
+    data_1ch, _ = sf.read(path_1ch, dtype="float32")
+    assert data_1ch.ndim == 1
+    assert len(data_1ch) == 1600

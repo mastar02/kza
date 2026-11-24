@@ -20,6 +20,7 @@ import shutil
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
@@ -31,8 +32,52 @@ logger = logging.getLogger(__name__)
 _DISK_WARN_INTERVAL_S = 3600.0
 
 
+class ArchiveChannelMode(StrEnum):
+    """Explicit channel retention mode for ambient FLAC archives."""
+
+    MONO_CH0 = "mono_ch0"
+    MONO_CH1 = "mono_ch1"
+    STEREO_2CH = "stereo_2ch"
+
+
+def select_archive_audio(
+    audio: np.ndarray, channel_mode: ArchiveChannelMode | str = ArchiveChannelMode.MONO_CH0
+) -> np.ndarray:
+    """Extract the configured channel layout from a 1D or 2D audio segment.
+
+    Args:
+        audio: Raw segment samples, shape ``(frames,)`` or ``(frames, channels)``.
+        channel_mode: ``mono_ch0`` (Conference), ``mono_ch1`` (ASR), or
+            ``stereo_2ch`` (preserve ``ch0`` + ``ch1``). Falls back cleanly to
+            channel 0 when the input has fewer channels than requested.
+
+    Returns:
+        Contiguous float array ready for FLAC encoding.
+
+    Raises:
+        ValueError: If ``audio`` is empty, has unsupported dimensions, or
+            ``channel_mode`` is unknown.
+    """
+    mode = ArchiveChannelMode(channel_mode)
+    if audio.ndim not in (1, 2) or audio.size == 0 or audio.shape[0] == 0:
+        raise ValueError("audio vacío")
+    if audio.ndim == 1:
+        return np.ascontiguousarray(audio)
+    channels = audio.shape[1]
+    if channels < 1:
+        raise ValueError("audio vacío")
+    if mode is ArchiveChannelMode.STEREO_2CH:
+        if channels >= 2:
+            return np.ascontiguousarray(audio[:, :2])
+        return np.ascontiguousarray(audio[:, 0])
+    if mode is ArchiveChannelMode.MONO_CH1:
+        col = 1 if channels >= 2 else 0
+        return np.ascontiguousarray(audio[:, col])
+    return np.ascontiguousarray(audio[:, 0])
+
+
 class AudioArchiver:
-    """Escribe el audio de un segmento a FLAC mono, best-effort."""
+    """Escribe el audio de un segmento a FLAC (mono o 2ch), best-effort."""
 
     def __init__(
         self,
@@ -44,6 +89,7 @@ class AudioArchiver:
         privacy=None,
         store=None,
         capacity: int = 8,
+        channel_mode: ArchiveChannelMode | str = ArchiveChannelMode.MONO_CH0,
     ):
         self.base_dir = Path(base_dir)
         self.enabled = enabled
@@ -52,6 +98,10 @@ class AudioArchiver:
         self._discard_audio = discard_audio
         if type(capacity) is not int or capacity < 1:
             raise ValueError('invalid_archive_capacity')
+        try:
+            self.channel_mode = ArchiveChannelMode(channel_mode)
+        except ValueError as error:
+            raise ValueError('invalid_archive_channel_mode') from error
         self._privacy, self._store, self._capacity = privacy, store, capacity
         self._writes: dict[asyncio.Task, tuple[MemorySource | None, str]] = {}
         self._calls: dict[asyncio.Future, MemorySource | None] = {}
@@ -99,9 +149,7 @@ class AudioArchiver:
         if self._privacy is not None and (source is None or not self._privacy.sources_available((source,))):
             return None
         try:
-            mono = audio[:, 0] if audio.ndim == 2 else audio
-            if mono.size == 0:
-                raise ValueError("audio vacío")
+            samples = select_archive_audio(audio, self.channel_mode)
             path = self.base_dir / room_id / f"{utt_id}.flac"
             if self._privacy is not None:
                 if self._store is None:
@@ -123,7 +171,7 @@ class AudioArchiver:
             def encode():
                 if self._privacy is not None and not self._privacy.sources_available((source,)):
                     return None
-                return self._write_sync(path, mono)
+                return self._write_sync(path, samples)
             writing = asyncio.create_task(asyncio.to_thread(encode))
             self._writes[writing] = (source, str(path))
             def completed(task):
@@ -200,7 +248,7 @@ class AudioArchiver:
         else:
             await asyncio.to_thread(Path(path).unlink, missing_ok=True)
 
-    def _write_sync(self, path: Path, mono: np.ndarray) -> bool:
+    def _write_sync(self, path: Path, samples: np.ndarray) -> bool:
         """Escritura bloqueante — corre en un hilo aparte.
 
         Returns:
@@ -216,7 +264,7 @@ class AudioArchiver:
         try:
             os.fchmod(descriptor, 0o600)
             with os.fdopen(descriptor, 'wb', closefd=False) as output:
-                sf.write(output, mono, self.sample_rate, format="FLAC")
+                sf.write(output, samples, self.sample_rate, format="FLAC")
         finally:
             os.close(descriptor)
         return True

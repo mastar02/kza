@@ -2038,6 +2038,10 @@ ambient:
     enabled: false
     dir: "./data/ambient_audio"
     min_free_mb: 1000        # piso de disco; debajo de esto no archiva
+    # Modo de canal al archivar FLAC: "mono_ch0" (Conference, default histórico),
+    # "mono_ch1" (ASR sin NS), o "stereo_2ch" (L=ch0 Conference, R=ch1 ASR para
+    # campañas A/B escuchables con tools/stt_ab_compare.py).
+    channel_mode: "mono_ch0"
   # Producto del ambient 24/7: MEDIR español, no destilar charla. El
   # discriminante de calidad rioplatense es el idioma del texto, no la energía
   # (vad). py3langid + marcadores (voseo: prende/apaga/nexa) → lang_ok.

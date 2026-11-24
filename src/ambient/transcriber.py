@@ -887,6 +887,7 @@ def build_ambient_path(
         discard_audio=store.discard_audio,
         privacy=privacy,
         store=store,
+        channel_mode=ka_cfg.get("channel_mode", "mono_ch0"),
     )
     store.audio_inflight = archiver.is_writing
 
