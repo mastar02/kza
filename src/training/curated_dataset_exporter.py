@@ -143,6 +143,7 @@ def export_curated_datasets(
     *,
     audio_base: Path | None = None,
     corrections: dict[int, str] | None = None,
+    alt_metadata: dict[int, dict] | None = None,
 ) -> CurationSummary:
     """Export explicitly approved ambient conversations into STT, wakeword, and LLM datasets.
 
@@ -152,6 +153,8 @@ def export_curated_datasets(
         policy: Explicit opt-in selection and channel policy.
         audio_base: Base directory for resolving relative ``audio_path`` entries.
         corrections: Optional ``{utterance_id: human_corrected_text}`` overrides.
+        alt_metadata: Optional ``{utterance_id: {"alt_text": ..., "agreement_ratio": ...}}``
+            sidecar metadata (used when ``ambient.db`` stays on SCHEMA_CONTRACT_EPOCH=2).
 
     Returns:
         ``CurationSummary`` with sample counts across the 3 datasets.
@@ -159,6 +162,7 @@ def export_curated_datasets(
     rows = _load_approved_rows(db_path, policy)
     base = audio_base if audio_base is not None else Path.cwd()
     corrections = corrections or {}
+    alt_metadata = alt_metadata or {}
 
     out_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(out_dir, 0o700)
@@ -175,8 +179,11 @@ def export_curated_datasets(
         inlines = extract_all_inline_commands(text) if text else []
         first_inline = inlines[0] if inlines else None
         has_wake = bool(inlines)
-        alt_text = row.get("alt_text")
+        extra_meta = alt_metadata.get(utt_id) or {}
+        alt_text = row.get("alt_text") or extra_meta.get("alt_text")
         agreement = row.get("agreement_ratio")
+        if agreement is None:
+            agreement = extra_meta.get("agreement_ratio")
         needs_review = (
             utt_id not in corrections
             and agreement is not None

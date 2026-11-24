@@ -59,6 +59,7 @@ class HubConfig:
     ambient_policy: CurationPolicy | None = None
     audio_base: Path | None = None
     corrections: dict[int, str] = field(default_factory=dict)
+    alt_metadata: dict[int, dict] = field(default_factory=dict)
     # Optional explicitly approved extra sources (never auto-discovered):
     wake_clips_dir: Path | None = None
     stt_correction_records: tuple[dict, ...] = ()
@@ -162,6 +163,7 @@ class TrainingDatasetHub:
                 config.ambient_policy,
                 audio_base=config.audio_base,
                 corrections=config.corrections,
+                alt_metadata=config.alt_metadata,
             )
             skipped_audio += amb_summary.skipped_missing_audio
             sources_used.append("ambient_db")

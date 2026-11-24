@@ -111,6 +111,13 @@ def test_hub_unifies_all_four_sources_and_generates_needs_review_html(tmp_path):
             ambient_db=db_path,
             ambient_policy=CurationPolicy(approved_speakers=frozenset({"gabriel"})),
             audio_base=tmp_path,
+            alt_metadata={
+                u1: {
+                    "alt_text": "Nexa, aprender la luz del escritorio. Hoy es maravilloso para morirse, ¿no?",
+                    "agreement_ratio": 0.78,
+                },
+                u2: {"alt_text": "Buenos días, ¿todo bien?", "agreement_ratio": 1.0},
+            },
             wake_clips_dir=wake_dir,
             stt_correction_records=(
                 {"audio_path": str(corr_wav), "original_text": "nexa prende", "corrected_text": "Nexa, prendé"},

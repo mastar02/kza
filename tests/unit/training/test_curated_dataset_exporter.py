@@ -167,12 +167,30 @@ def test_export_includes_parakeet_alt_text_review_flag_and_multi_inline_commands
         return utt_id
 
     utt_id = asyncio.run(seed())
+    # Verify AmbientStore stays strictly compliant with SCHEMA_CONTRACT_EPOCH=2
+    from scripts import stage_runtime
+    conn = sqlite3.connect(db_path)
+    try:
+        names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        stage_runtime._schema_contract(conn, names, "data/ambient.db")
+    finally:
+        conn.close()
+
     out_dir = tmp_path / "curated_new"
     summary = export_curated_datasets(
         db_path,
         out_dir,
         CurationPolicy(approved_utterance_ids=frozenset({utt_id})),
         audio_base=tmp_path,
+        alt_metadata={
+            utt_id: {
+                "alt_text": (
+                    "Hola. Nexa, aprender a la luz del escritorio. "
+                    "Nexa, ¿qué temperatura hace? Hoy es un día maravilloso para morirse, ¿no?"
+                ),
+                "agreement_ratio": 0.79,
+            }
+        },
     )
     assert summary.stt_samples == 1
     assert summary.wake_positives == 1
