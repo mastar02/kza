@@ -32,7 +32,7 @@ import kza_quota  # noqa: E402
 
 DECISIONS_API_URL = "https://api.openai.com/v1/decisions"
 DECISIONS_MODEL = "gpt-6-luna"
-DEFAULT_KEYCHAIN_SERVICE = "thermouy-openai-decisions"
+DEFAULT_KEYCHAIN_SERVICE = "kza-openai-decisions"
 DEFAULT_STATE_DIR = kza_quota.DEFAULT_STATE_DIR
 
 # Estimated gpt-6-luna pricing (USD per 1M input / cached input tokens; 0 output tokens).
@@ -449,8 +449,22 @@ def build_cli_command(
     raise ValueError(f"Unsupported runtime '{candidate.runtime}'")
 
 
-def resolve_openai_api_key() -> tuple[str | None, str]:
-    """Resolve OpenAI API key from env or macOS Keychain without printing secrets."""
+def _load_policy_dict(state_dir: Path | None = None) -> dict[str, Any]:
+    """Load optional `<state_dir>/policy.json` object, or return empty dict if absent."""
+    policy_path = _state_dir(state_dir) / "policy.json"
+    if not policy_path.is_file():
+        return {}
+    try:
+        data = json.loads(policy_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Invalid router policy file {policy_path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Invalid router policy file {policy_path}: expected JSON object.")
+    return data
+
+
+def resolve_openai_api_key(state_dir: Path | None = None) -> tuple[str | None, str]:
+    """Resolve OpenAI API key from env or explicit Keychain opt-in without printing secrets."""
     env_key = os.environ.get("OPENAI_API_KEY", "").strip()
     if env_key:
         return env_key, "env:OPENAI_API_KEY"
@@ -459,10 +473,20 @@ def resolve_openai_api_key() -> tuple[str | None, str]:
     th_kc = os.environ.get("THERMOUY_USE_KEYCHAIN", "").strip()
     if kza_kc == "0" or th_kc == "0":
         return None, "disabled"
-    if sys.platform != "darwin" and kza_kc != "1" and th_kc != "1":
+
+    policy: dict[str, Any] = {}
+    try:
+        policy = _load_policy_dict(state_dir)
+    except RuntimeError:
+        policy = {}
+
+    policy_use_kc = bool(policy.get("use_keychain", False))
+    policy_kc_service = str(policy.get("keychain_service") or "").strip()
+
+    if not (kza_kc == "1" or th_kc == "1" or policy_use_kc):
         return None, "none"
 
-    service = os.environ.get("KZA_KEYCHAIN_SERVICE", "").strip() or DEFAULT_KEYCHAIN_SERVICE
+    service = os.environ.get("KZA_KEYCHAIN_SERVICE", "").strip() or policy_kc_service or DEFAULT_KEYCHAIN_SERVICE
     try:
         proc = subprocess.run(
             ["security", "find-generic-password", "-s", service, "-w"],
@@ -568,8 +592,8 @@ def build_decisions_payload(
 ) -> dict[str, Any]:
     """Construct the live `POST /v1/decisions` request payload for `gpt-6-luna`.
 
-    Places `STATIC_ROUTING_PREAMBLE` at the front of `input` so OpenAI prompt
-    caching hits on the >1,024-token prefix, and appends the variable request
+    Places `STATIC_ROUTING_PREAMBLE` at the front of `input` so the request is
+    eligible for >1,024-token prefix caching, and appends the variable request
     details and eligible candidates at the tail.
     """
     cand_lines = []
@@ -826,7 +850,7 @@ def route_task(
         api_key = api_key_override
         key_src = "override"
         if api_key is None:
-            api_key, key_src = resolve_openai_api_key()
+            api_key, key_src = resolve_openai_api_key(state_dir=sdir)
         if not api_key:
             fallback_reason = f"no_api_key ({key_src})"
         else:

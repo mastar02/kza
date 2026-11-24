@@ -208,6 +208,8 @@ def test_close_guards_working_foreign_dirt_and_merge_ancestry(tmp_path: Path) ->
         closed = kza_seat.close_seat(
             alias="kza-dev-guard",
             merged=True,
+            approved=True,
+            rounds=1,
             base_ref="main",
             repo_root=repo,
             state_dir=state_dir,
@@ -217,7 +219,15 @@ def test_close_guards_working_foreign_dirt_and_merge_ancestry(tmp_path: Path) ->
     assert closed["outcome_recorded"] is True
     assert not wt.exists()
 
-    # Verify outcome was written once and is not duplicated on subsequent record_outcome(skip_if_exists=True).
+    # Verify outcome was written once and a repeat call with skip_if_exists=True does not duplicate it.
+    dup = kza_seat.kza_router.record_outcome(
+        decision_id=seat["decision_id"],
+        rounds=1,
+        approved=True,
+        state_dir=state_dir,
+        skip_if_exists=True,
+    )
+    assert dup.get("already_recorded") is True
     lines = [json.loads(l) for l in (state_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     outcomes = [o for o in lines if o.get("type") == "outcome" and o.get("decision_id") == seat["decision_id"]]
     assert len(outcomes) == 1
@@ -243,6 +253,21 @@ def test_open_seat_requires_exclude_family_on_gate_roles(tmp_path: Path) -> None
                 state_dir=state_dir,
                 dry_run=True,
             )
+
+    # Whitespace-only exclude_families must also be rejected before routing.
+    with pytest.raises(ValueError, match="exclude-family"):
+        kza_seat.open_seat(
+            alias="kza-qa-blankfam",
+            role="kza-qa",
+            task="Audit diff",
+            exclude_families=["  "],
+            offline=True,
+            allow_quota_emergency=True,
+            repo_root=repo,
+            worktree_root=wt_root,
+            state_dir=state_dir,
+            dry_run=True,
+        )
 
     dry = kza_seat.open_seat(
         alias="kza-qa-cross",
@@ -272,3 +297,118 @@ def test_open_seat_requires_exclude_family_on_gate_roles(tmp_path: Path) -> None
         dry_run=True,
     )
     assert dry_override["dry_run"] is True
+
+
+def test_reused_alias_archives_stale_report_and_outcome_errors_preserve_closed_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    wt_root = tmp_path / "worktrees"
+    state_dir = tmp_path / "state"
+
+    # Pre-seed an old report from a previous seat with the same alias.
+    stale_report = state_dir / "reports" / "kza-qa-reuse.md"
+    stale_report.parent.mkdir(parents=True, exist_ok=True)
+    stale_report.write_text("# Old Report\nAPROBADO\n", encoding="utf-8")
+
+    seen_envs: list[dict[str, str] | None] = []
+    orig_run = kza_seat._run
+
+    def _fake_run(cmd: list[str], **kwargs):
+        if cmd[:2] == ["hc", "run"]:
+            seen_envs.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"address": "t88"}), "")
+        if cmd[:2] in (["hc", "kill"], ["hc", "rm"]):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return orig_run(cmd, **kwargs)
+
+    monkeypatch.setenv("CODEX_HOME", "/tmp/other-codex")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/tmp/other-claude")
+
+    with (
+        mock.patch.object(kza_seat, "_run", side_effect=_fake_run),
+        mock.patch.object(kza_seat, "_rename_herdr_tab_no_focus", return_value="tb88"),
+    ):
+        seat = kza_seat.open_seat(
+            alias="kza-qa-reuse",
+            role="kza-qa",
+            task="Audit new SHA",
+            exclude_families=["google"],
+            offline=True,
+            allow_quota_emergency=True,
+            space_id="sp-test",
+            parent_terminal_id="t0",
+            repo_root=repo,
+            worktree_root=wt_root,
+            state_dir=state_dir,
+        )
+
+    assert not stale_report.exists()
+    archived = list((state_dir / "reports" / "archive").glob("kza-qa-reuse-*.md"))
+    assert len(archived) == 1
+    assert seen_envs and seen_envs[0] is not None
+    assert "CODEX_HOME" not in seen_envs[0]
+    assert "CLAUDE_CONFIG_DIR" not in seen_envs[0]
+
+    # Placing a file with mtime older than opened_epoch must be rejected as stale.
+    stale_report.write_text("# Backdated Report\nAPROBADO\n", encoding="utf-8")
+    old_ts = float(seat["opened_epoch"]) - 10.0
+    os.utime(stale_report, (old_ts, old_ts))
+    with mock.patch.object(
+        kza_seat, "_hc_get_terminal", return_value={"state": "live", "status": {"state": "done"}}
+    ):
+        with pytest.raises(RuntimeError, match="stale report"):
+            kza_seat.close_seat(
+                alias="kza-qa-reuse",
+                done_readonly=True,
+                repo_root=repo,
+                state_dir=state_dir,
+            )
+
+    # Fresh report written now succeeds, and invalid rounds fails BEFORE removing worktree.
+    stale_report.write_text("# Fresh Report\nAPROBADO\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="rounds must be >= 1"):
+        kza_seat.close_seat(
+            alias="kza-qa-reuse",
+            done_readonly=True,
+            rounds=0,
+            approved=True,
+            repo_root=repo,
+            state_dir=state_dir,
+        )
+    assert Path(seat["worktree"]).exists()
+
+    with pytest.raises(ValueError, match="--rounds requires --approved"):
+        kza_seat.close_seat(
+            alias="kza-qa-reuse",
+            done_readonly=True,
+            rounds=2,
+            repo_root=repo,
+            state_dir=state_dir,
+        )
+    assert Path(seat["worktree"]).exists()
+
+    # If record_outcome fails with OSError, seat must be persisted as closed with outcome_recorded=False.
+    with (
+        mock.patch.object(kza_seat, "_hc_get_terminal", return_value={"state": "live", "status": {"state": "done"}}),
+        mock.patch.object(kza_seat, "_run", side_effect=_fake_run),
+        mock.patch.object(kza_seat.kza_router, "record_outcome", side_effect=OSError("disk full")),
+    ):
+        with pytest.raises(RuntimeError, match="recording outcome failed"):
+            kza_seat.close_seat(
+                alias="kza-qa-reuse",
+                done_readonly=True,
+                approved=True,
+                rounds=1,
+                repo_root=repo,
+                state_dir=state_dir,
+            )
+
+    saved = json.loads((state_dir / "seats.json").read_text(encoding="utf-8"))["kza-qa-reuse"]
+    assert saved["status"] == "closed"
+    assert saved["outcome_recorded"] is False
+    assert "disk full" in saved["outcome_error"]
+    assert not Path(seat["worktree"]).exists()

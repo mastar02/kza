@@ -277,3 +277,22 @@ def test_codex_multi_account_selects_healthier_codex2_and_per_account_throttle(t
     assert codex_sub["details"]["selected_account"] == "codex"
     assert codex_sub["details"]["selected_cli"] == "codex"
     assert 0.85 < codex_sub["weight"] < 0.90
+
+
+def test_claude_empty_env_falls_back_to_claude1_and_empty_arg_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    now = 1_800_000_000.0
+    _write_json(
+        tmp_path / "quota-claude-1.json",
+        {"account": "claude-1", "seven_day": {"used_percentage": 30, "resets_at": str(int(now + 3600))}},
+    )
+    _write_json(
+        tmp_path / "quota-claude-2.json",
+        {"account": "claude-2", "seven_day": {"used_percentage": 5, "resets_at": str(int(now + 3600))}},
+    )
+    monkeypatch.setenv("KZA_CLAUDE_ACCOUNTS", " , ")
+    q = kza_quota.probe_claude(tap_dir=tmp_path, now=now)
+    assert q.details["selected_account"] == "claude-1"
+    assert len(q.details["accounts"]) == 1
+
+    with pytest.raises(ValueError, match="allowed_accounts cannot be empty"):
+        kza_quota.probe_claude(tap_dir=tmp_path, now=now, allowed_accounts=())

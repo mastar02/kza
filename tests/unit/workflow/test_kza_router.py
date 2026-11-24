@@ -395,3 +395,35 @@ def test_cacheable_preamble_codex2_account_propagation_and_rigor_effort(tmp_path
     assert dec_down["effort"] == "high"
     assert dec_down["effective_effort"] == "medium"
     assert "model_reasoning_effort=medium" in dec_down["cli_command"]
+
+
+def test_keychain_requires_explicit_opt_in_and_uses_kza_default_service(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert kza_router.DEFAULT_KEYCHAIN_SERVICE == "kza-openai-decisions"
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("KZA_USE_KEYCHAIN", raising=False)
+    monkeypatch.delenv("THERMOUY_USE_KEYCHAIN", raising=False)
+    monkeypatch.delenv("KZA_KEYCHAIN_SERVICE", raising=False)
+
+    called_services: list[str] = []
+
+    def _fake_subproc_run(cmd, **kwargs):
+        called_services.append(cmd[cmd.index("-s") + 1])
+        return type("Proc", (), {"returncode": 0, "stdout": "sk-test-kc\n"})()
+
+    monkeypatch.setattr(kza_router.subprocess, "run", _fake_subproc_run)
+
+    # Without opt-in (no env, no policy.json opt-in), security is never invoked.
+    key, src = kza_router.resolve_openai_api_key(state_dir=tmp_path)
+    assert key is None and src == "none"
+    assert called_services == []
+
+    # With policy.json opt-in, configured service (or KZA default) is queried.
+    (tmp_path / "policy.json").write_text(
+        json.dumps({"use_keychain": True, "keychain_service": "kza-custom-kc"}),
+        encoding="utf-8",
+    )
+    key2, src2 = kza_router.resolve_openai_api_key(state_dir=tmp_path)
+    assert key2 == "sk-test-kc" and src2 == "keychain:kza-custom-kc"
+    assert called_services == ["kza-custom-kc"]

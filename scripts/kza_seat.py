@@ -27,6 +27,7 @@ import shlex
 import subprocess
 import sys
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -72,12 +73,21 @@ def _repo_root(cwd: Path | None = None) -> Path:
     return Path(proc.stdout.strip()).resolve()
 
 
+def _clean_launch_env() -> dict[str, str]:
+    """Return process environment stripped of inherited profile overrides (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`)."""
+    cleaned = dict(os.environ)
+    cleaned.pop("CODEX_HOME", None)
+    cleaned.pop("CLAUDE_CONFIG_DIR", None)
+    return cleaned
+
+
 def _run(
     cmd: list[str],
     *,
     cwd: Path | None = None,
     check: bool = True,
     timeout: float = 30.0,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Run subprocess command capturing stdout/stderr."""
     return subprocess.run(
@@ -87,6 +97,7 @@ def _run(
         text=True,
         timeout=timeout,
         check=check,
+        env=env,
     )
 
 
@@ -285,7 +296,8 @@ def open_seat(
     validate_alias(alias)
     if role not in kza_router.ALL_ROLES:
         raise ValueError(f"Unknown role '{role}'. Expected one of {sorted(kza_router.ALL_ROLES)}.")
-    if role in CROSS_MODEL_GATE_ROLES and not exclude_families and not allow_same_family:
+    norm_excluded = sorted({f.strip().lower() for f in (exclude_families or []) if isinstance(f, str) and f.strip()})
+    if role in CROSS_MODEL_GATE_ROLES and not norm_excluded and not allow_same_family:
         raise ValueError(
             f"Role '{role}' requires at least one --exclude-family for strict cross-model auditing "
             "(or pass --allow-same-family explicitly)."
@@ -312,7 +324,7 @@ def open_seat(
         role=role,
         summary=task,
         complexity=complexity,
-        exclude_families=exclude_families,
+        exclude_families=norm_excluded,
         allow_quota_emergency=allow_quota_emergency,
         offline=offline,
         state_dir=sdir,
@@ -338,6 +350,15 @@ def open_seat(
             "decision": decision,
         }
 
+    # Archive any leftover report for a reused alias so close_seat never accepts stale output.
+    if report_path.exists():
+        archive_dir = reports_dir / "archive"
+        kza_quota._ensure_private_dir(archive_dir)
+        old_mtime = int(report_path.stat().st_mtime)
+        archived_path = archive_dir / f"{alias}-{old_mtime}-{uuid.uuid4().hex[:6]}.md"
+        report_path.replace(archived_path)
+
+    opened_epoch = time.time()
     wroot.mkdir(parents=True, exist_ok=True)
     created_worktree = False
     created_branch = False
@@ -413,7 +434,7 @@ def open_seat(
         hc_cmd.append("--")
         hc_cmd.extend(runtime_argv)
 
-        proc = _run(hc_cmd, cwd=rroot, check=False, timeout=20.0)
+        proc = _run(hc_cmd, cwd=rroot, check=False, timeout=20.0, env=_clean_launch_env())
         if proc.returncode != 0:
             err = (proc.stderr or proc.stdout or "").strip()
             raise RuntimeError(f"`hc run` failed (rc={proc.returncode}): {err}")
@@ -431,6 +452,7 @@ def open_seat(
             "read_only": read_only,
             "status": "open",
             "created_at": datetime.now(tz=timezone.utc).isoformat(),
+            "opened_epoch": opened_epoch,
             "terminal_id": terminal_id,
             "tab_id": tab_id,
             "space_id": resolved_space,
@@ -466,7 +488,7 @@ def close_seat(
     done_readonly: bool = False,
     abandon: bool = False,
     allow_missing_report: bool = False,
-    rounds: int = 1,
+    rounds: int | None = None,
     approved: bool | None = None,
     outcome_notes: str = "",
     record_seat_outcome: bool = True,
@@ -474,8 +496,13 @@ def close_seat(
     repo_root: Path | None = None,
     state_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Close a KZA seat enforcing live status, report presence, cleanliness, and merge safety guards."""
+    """Close a KZA seat enforcing live status, report freshness, cleanliness, and merge safety guards."""
     validate_alias(alias)
+    if rounds is not None and rounds < 1:
+        raise ValueError("rounds must be >= 1.")
+    if rounds is not None and approved is None:
+        raise ValueError("--rounds requires --approved true|false.")
+
     rroot = repo_root or _repo_root()
     sdir = state_dir or kza_router._state_dir()
     seats = _load_seats(sdir)
@@ -509,7 +536,7 @@ def close_seat(
                 "Wait for completion or pass --abandon."
             )
 
-    # Guard 1b: require non-empty report file unless --abandon or --allow-missing-report.
+    # Guard 1b: require non-empty fresh report file unless --abandon or --allow-missing-report.
     if not abandon and not allow_missing_report:
         report_raw = seat.get("report_path")
         rpath = Path(report_raw) if report_raw else None
@@ -517,6 +544,11 @@ def close_seat(
             raise RuntimeError(
                 f"Refusing to close seat '{alias}': missing or empty report at '{report_raw}'. "
                 "Ensure the worker wrote its report, or pass --allow-missing-report / --abandon."
+            )
+        opened_epoch = seat.get("opened_epoch")
+        if opened_epoch is not None and rpath.stat().st_mtime < float(opened_epoch):
+            raise RuntimeError(
+                f"Refusing to close seat '{alias}': stale report at '{report_raw}' predates this seat launch."
             )
 
     wt_path = Path(seat["worktree"])
@@ -569,25 +601,34 @@ def close_seat(
         if abandon
         else ("done-readonly" if done_readonly else ("merged" if merged else "merged-squash"))
     )
-
-    eff_approved = approved
-    if eff_approved is None and not abandon and not read_only and (merged or merged_squash):
-        eff_approved = True
-
-    decision_id = str(seat.get("decision_id") or "")
-    if record_seat_outcome and decision_id and eff_approved is not None:
-        kza_router.record_outcome(
-            decision_id=decision_id,
-            rounds=rounds,
-            approved=eff_approved,
-            notes=outcome_notes or f"seat:{alias}:{seat['close_mode']}",
-            state_dir=sdir,
-            skip_if_exists=True,
-        )
-        seat["outcome_recorded"] = True
-
     seats[alias] = seat
     _save_seats(sdir, seats)
+
+    decision_id = str(seat.get("decision_id") or "")
+    if record_seat_outcome and decision_id and approved is not None:
+        eff_rounds = rounds if rounds is not None else 1
+        try:
+            kza_router.record_outcome(
+                decision_id=decision_id,
+                rounds=eff_rounds,
+                approved=approved,
+                notes=outcome_notes or f"seat:{alias}:{seat['close_mode']}",
+                state_dir=sdir,
+                skip_if_exists=True,
+            )
+            seat["outcome_recorded"] = True
+            seat.pop("outcome_error", None)
+            seats[alias] = seat
+            _save_seats(sdir, seats)
+        except OSError as exc:
+            seat["outcome_recorded"] = False
+            seat["outcome_error"] = str(exc)
+            seats[alias] = seat
+            _save_seats(sdir, seats)
+            raise RuntimeError(
+                f"Seat '{alias}' closed cleanly, but recording outcome failed: {exc}"
+            ) from exc
+
     return seat
 
 
@@ -695,7 +736,7 @@ def main(argv: list[str] | None = None) -> int:
     p_close.add_argument("--done-readonly", action="store_true", help="Close completed read-only seat.")
     p_close.add_argument("--abandon", action="store_true", help="Force close even if working/blocked/dirty.")
     p_close.add_argument("--allow-missing-report", action="store_true", help="Allow closing without a non-empty report file.")
-    p_close.add_argument("--rounds", type=int, default=1, help="Number of rounds before approval (for KPI outcome).")
+    p_close.add_argument("--rounds", type=int, default=None, help="Number of rounds before approval (requires --approved).")
     p_close.add_argument("--approved", type=kza_router._parse_bool, default=None, help="Whether seat deliverable was approved (true|false).")
     p_close.add_argument("--outcome-notes", default="", help="Optional outcome note saved to decisions.jsonl.")
     p_close.add_argument("--no-outcome", action="store_true", help="Skip recording outcome on close.")

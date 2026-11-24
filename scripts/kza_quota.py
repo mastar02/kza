@@ -287,13 +287,15 @@ def probe_claude(
 
     if allowed_accounts is None:
         env_accts = os.environ.get("KZA_CLAUDE_ACCOUNTS", "").strip()
-        allowed_set = (
-            {a.strip() for a in env_accts.split(",") if a.strip()}
-            if env_accts
-            else set(DEFAULT_CLAUDE_ACCOUNTS)
-        )
+        if env_accts:
+            parsed = {a.strip() for a in env_accts.split(",") if a.strip()}
+            allowed_set = parsed if parsed else set(DEFAULT_CLAUDE_ACCOUNTS)
+        else:
+            allowed_set = set(DEFAULT_CLAUDE_ACCOUNTS)
     else:
         allowed_set = {str(a).strip() for a in allowed_accounts if str(a).strip()}
+        if not allowed_set:
+            raise ValueError("allowed_accounts cannot be empty.")
 
     accounts: list[dict[str, Any]] = []
     best: dict[str, Any] | None = None
