@@ -738,10 +738,10 @@ class RecoveryDecision:
 
 
 def _origin_kind(root: Path, record: dict, limit: int = 4096) -> str:
-    """The first non-selection kind behind a manual head record (selection chains are copies)."""
+    """The first non-selection/config_change kind behind a manual head record."""
     current = record
     for _ in range(limit):
-        if current["kind"] != "selection" or current["previous"] is None:
+        if current["kind"] not in {"selection", "config_change"} or current["previous"] is None:
             return current["kind"]
         path = root / "admission" / "manual-components" / "heads" / (current["previous"]["head_sha256"] + ".json")
         current = stage._read_json(path)
@@ -3169,11 +3169,210 @@ def _legacy_mismatches(record: dict, shown: dict | None, runtime: Path, state: P
 
 
 # --------------------------------------------------------------------------
+# Operator configuration change (settings.yaml on a closed managed head)
+
+_PROTECTED_CONFIG_PATH_KEYS: tuple[tuple[str, ...], ...] = (
+    ("ambient", "db_path"),
+    ("ambient", "keep_audio", "dir"),
+    ("analytics", "events_db"),
+    ("analytics", "suggestions_path"),
+    ("dashboard", "auth", "db_path"),
+    ("lists", "db_path"),
+    ("memory", "privacy_db_path"),
+    ("monitoring", "db_path"),
+    ("reminders", "db_path"),
+    ("rooms", "stream_watchdog", "health_path"),
+    ("rooms", "wake_word", "capture_clips", "dir"),
+    ("routines", "db_path"),
+    ("speaker_id", "users_path"),
+    ("training", "conversations_dir"),
+    ("training", "exports_dir"),
+    ("training", "stt_corrections", "data_dir"),
+    ("vectordb", "path"),
+)
+
+
+def _lookup_dotted(mapping: dict, path: tuple[str, ...]) -> object:
+    current: object = mapping
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return None
+        current = current[key]
+    return current
+
+
+def _deep_merge_config(base: dict, patch: dict) -> dict:
+    merged = dict(base)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge_config(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _diff_config_keys(old: dict, new: dict, prefix: str = "") -> list[str]:
+    changed: list[str] = []
+    for key in sorted(set(old) | set(new), key=str):
+        dotted = f"{prefix}.{key}" if prefix else str(key)
+        if key not in old or key not in new:
+            changed.append(dotted)
+            continue
+        old_val, new_val = old[key], new[key]
+        if isinstance(old_val, dict) and isinstance(new_val, dict):
+            changed.extend(_diff_config_keys(old_val, new_val, dotted))
+        elif old_val != new_val or type(old_val) is not type(new_val):
+            changed.append(dotted)
+    return changed
+
+
+def _cloud_consent_flag(config: dict) -> bool:
+    reasoner = config.get("reasoner")
+    if not isinstance(reasoner, dict):
+        return False
+    cloud = reasoner.get("cloud")
+    return isinstance(cloud, dict) and cloud.get("consent") is True
+
+
+def _parse_yaml_dict(raw: bytes, *, code: str = "runtime_admission_config_invalid") -> dict:
+    import yaml
+
+    if not raw or len(raw) > stage._MAX_CONFIG_BYTES:
+        raise LauncherRefusal(code)
+    try:
+        parsed = yaml.safe_load(raw.decode("utf-8"))
+    except (UnicodeDecodeError, yaml.YAMLError):
+        raise LauncherRefusal(code) from None
+    if type(parsed) is not dict or not parsed:
+        raise LauncherRefusal(code)
+    return parsed
+
+
+def update_config(
+    root: Path,
+    *,
+    config_path: Path | None = None,
+    patch_path: Path | None = None,
+    dry_run: bool = False,
+    confirm: str = "",
+    reason: str = "",
+    allow_cloud_consent_grant: bool = False,
+) -> dict:
+    """Operator-sanctioned settings.yaml update on a closed head with immutable audit record.
+
+    Requires an exclusive root lease, a closed head, and no pending compaction.
+    Refuses changes to protected storage path keys and refuses silent cloud-consent
+    escalation unless ``allow_cloud_consent_grant`` is explicitly set.
+    """
+    import yaml
+
+    if (config_path is None) == (patch_path is None):
+        raise LauncherRefusal("runtime_admission_config_source_required")
+    if type(reason) is not str or len(reason) > stage._MAX_CONFIG_REASON_CHARS:
+        raise LauncherRefusal("runtime_admission_config_reason_invalid")
+    source_path = config_path if config_path is not None else patch_path
+    try:
+        source_raw = Path(source_path).read_bytes()
+    except OSError:
+        raise LauncherRefusal("runtime_admission_config_source_unreadable") from None
+    source_parsed = _parse_yaml_dict(source_raw)
+
+    root = Path(root).resolve()
+    try:
+        with stage.AdmissionController(root, allow_open_head=False, gate="normal") as admission:
+            if admission.compaction is not None:
+                raise LauncherRefusal("runtime_admission_compaction_pending")
+            head = stage.read_admission_head(root)
+            if head is None or head["status"] != "closed":
+                raise LauncherRefusal("runtime_admission_not_closed")
+            binding = stage.verify_closed_binding(root, head["binding_id"])
+            state = Path(binding["state_root"])
+            settings_path = state / "config" / "settings.yaml"
+            if settings_path.is_symlink() or settings_path.parent.is_symlink():
+                raise LauncherRefusal("runtime_admission_config_invalid")
+            current_raw = settings_path.read_bytes()
+            current_sha256 = hashlib.sha256(current_raw).hexdigest()
+            bound_sha256 = binding["authority"]["projection"]["configuration"].get("config/settings.yaml")
+            if current_sha256 != bound_sha256:
+                raise LauncherRefusal("privacy_authority_stale")
+            current_parsed = _parse_yaml_dict(current_raw)
+
+            if patch_path is not None:
+                candidate_parsed = _deep_merge_config(current_parsed, source_parsed)
+                candidate_raw = yaml.safe_dump(
+                    candidate_parsed,
+                    sort_keys=False,
+                    allow_unicode=True,
+                ).encode("utf-8")
+                candidate_parsed = _parse_yaml_dict(candidate_raw)
+            else:
+                candidate_parsed = source_parsed
+                candidate_raw = source_raw
+
+            protected_changed = [
+                ".".join(path)
+                for path in _PROTECTED_CONFIG_PATH_KEYS
+                if _lookup_dotted(current_parsed, path) != _lookup_dotted(candidate_parsed, path)
+            ]
+            if protected_changed:
+                raise LauncherRefusal(
+                    "runtime_admission_config_protected_path_changed",
+                    problems=protected_changed,
+                )
+
+            if _cloud_consent_flag(candidate_parsed) and not _cloud_consent_flag(current_parsed):
+                if not allow_cloud_consent_grant:
+                    raise LauncherRefusal("runtime_admission_config_cloud_consent_grant_refused")
+
+            changed_keys = sorted(set(_diff_config_keys(current_parsed, candidate_parsed)))
+            candidate_sha256 = hashlib.sha256(candidate_raw).hexdigest()
+            if candidate_sha256 == current_sha256 or not changed_keys:
+                raise LauncherRefusal("runtime_admission_config_unchanged")
+
+            head_sha = stage._digest(head)
+            plan_sha256 = stage._digest({
+                "head_sha256": head_sha,
+                "slot": binding["slot"],
+                "previous_config_sha256": current_sha256,
+                "new_config_sha256": candidate_sha256,
+                "changed_keys": changed_keys,
+            })
+            if dry_run:
+                return {
+                    "dry_run": True,
+                    "plan_sha256": plan_sha256,
+                    "head_sha256": head_sha,
+                    "slot": binding["slot"],
+                    "previous_config_sha256": current_sha256,
+                    "new_config_sha256": candidate_sha256,
+                    "changed_keys": changed_keys,
+                }
+            if confirm != plan_sha256:
+                raise LauncherRefusal("runtime_admission_config_confirmation_mismatch")
+            result = stage.apply_operator_config_change(
+                root,
+                head,
+                candidate_raw,
+                changed_keys=changed_keys,
+                reason=reason,
+            )
+            return {
+                **result,
+                "dry_run": False,
+                "plan_sha256": plan_sha256,
+            }
+    except LauncherRefusal:
+        raise
+    except ValueError as error:
+        raise LauncherRefusal(str(error)) from None
+
+
+# --------------------------------------------------------------------------
 # CLI (dispatched from stage_runtime.main)
 
 
 COMMANDS = ("serve", "adopt", "install-controller", "install-launcher", "uninstall-launcher", "stop-timeout-dropin",
-            "console-logrotate", "completion-status")
+            "console-logrotate", "completion-status", "update-config")
 
 
 def add_commands(commands) -> None:
@@ -3223,6 +3422,16 @@ def add_commands(commands) -> None:
     rotate = commands.add_parser("console-logrotate",
                                  help="Print the logrotate stanza for the console log (kza applies it)")
     rotate.add_argument("--console-log", required=True)
+    cfg = commands.add_parser("update-config",
+                              help="Operator-sanctioned settings.yaml update on a closed head")
+    cfg_src = cfg.add_mutually_exclusive_group(required=True)
+    cfg_src.add_argument("--config", type=Path, help="Full replacement settings.yaml file")
+    cfg_src.add_argument("--patch", type=Path, help="YAML patch deep-merged onto current settings.yaml")
+    cfg.add_argument("--dry-run", action="store_true", help="Validate and print plan_sha256 without writing")
+    cfg.add_argument("--confirm", default="", help="plan_sha256 returned by --dry-run")
+    cfg.add_argument("--reason", default="", help="Content-free operator audit reason (<= 200 chars)")
+    cfg.add_argument("--allow-cloud-consent-grant", action="store_true",
+                     help="Explicitly authorize changing reasoner.cloud.consent from false to true")
 
 
 def run_command(args) -> int:
@@ -3239,6 +3448,16 @@ def run_command(args) -> int:
         if args.command == "adopt":
             result = adopt(args.root, confirm=args.confirm, dry_run=args.dry_run, boot_id_path=args.boot_id_file,
                            regressions=[item for item in args.confirm_regressions.split(",") if item])
+        elif args.command == "update-config":
+            result = update_config(
+                args.root,
+                config_path=args.config,
+                patch_path=args.patch,
+                dry_run=args.dry_run,
+                confirm=args.confirm,
+                reason=args.reason,
+                allow_cloud_consent_grant=args.allow_cloud_consent_grant,
+            )
         elif args.command == "install-controller":
             result = install_controller(args.root, args.archive)
         elif args.command == "install-launcher":

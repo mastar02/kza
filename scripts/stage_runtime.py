@@ -336,7 +336,7 @@ LAUNCHER_CONTRACT = 3
 FORMAT_EPOCH = 1
 RECEIPT_STATE_SCHEMA = 2
 CONTROLLER_EPOCH = 5
-CONTROLLER_REVISION = 8
+CONTROLLER_REVISION = 9
 SCHEMA_CONTRACT_EPOCH = 2
 MIN_FORMAT_EPOCH = 1
 _RELEASE_INTEGER_KEYS = ("launcher_contract", "format_epoch", "receipt_state", "controller_epoch",
@@ -3457,7 +3457,7 @@ def _read_manual_head(root: Path, head: dict) -> dict:
             or head["status"] != "closed" or head["run_id"] is not None
             or type(record["capture"]) is not dict
             or record["kind"] not in {"bootstrap", "selection", "closure", "recovery", "adoption",
-                                      "compaction_return"}):
+                                      "compaction_return", "config_change"}):
         raise ValueError("runtime_admission_manual_companion_schema")
     binding = read_binding(root, head["binding_id"])
     if (record["capture"].get("state_root") != binding["state_root"]
@@ -3488,7 +3488,7 @@ def _read_manual_head(root: Path, head: dict) -> dict:
                 or record["authority_seal"] != prior["authority_seal"]):
             raise ValueError("runtime_admission_manual_companion_changed")
         if record["authority_seal"] is None:
-            if prior["kind"] not in {"bootstrap", "selection", "recovery"} or _has_authority(binding):
+            if prior["kind"] not in {"bootstrap", "selection", "recovery", "config_change"} or _has_authority(binding):
                 raise ValueError("runtime_admission_manual_bootstrap_invalid")
             _require_manual_equivalent(prior["capture"], record["capture"])
             return record
@@ -3515,7 +3515,33 @@ def _read_manual_head(root: Path, head: dict) -> dict:
                 or record["authority_seal"] != prior["authority_seal"]):
             raise ValueError("runtime_admission_manual_companion_changed")
         if record["authority_seal"] is None:
-            if prior["kind"] not in {"bootstrap", "selection", "recovery"} or _has_authority(binding):
+            if prior["kind"] not in {"bootstrap", "selection", "recovery", "config_change"} or _has_authority(binding):
+                raise ValueError("runtime_admission_manual_bootstrap_invalid")
+            _require_manual_equivalent(prior["capture"], record["capture"])
+            return record
+    if record["kind"] == "config_change":
+        # Operator-sanctioned settings.yaml update on a closed head: the immutable
+        # audit record binds head_before, closed_head, previous/new settings digests
+        # and changed key names (content-free). Every non-settings part of the
+        # binding must stay bit-for-bit identical; the prior authority seal applies.
+        change = _read_config_change_record(root, head)
+        if (change["previous"] != previous
+                or _canonical_json(change["head_before"]) != _canonical_json(prior["head"])
+                or change["previous_binding_id"] != prior["head"]["binding_id"]
+                or change["new_binding_id"] != head["binding_id"]
+                or prior["head"]["generation"] + 1 != head["generation"]
+                or record["authority_seal"] != prior["authority_seal"]):
+            raise ValueError("runtime_admission_manual_companion_changed")
+        prior_binding = read_binding(root, prior["head"]["binding_id"])
+        if (_binding_without_settings_config(binding) != _binding_without_settings_config(prior_binding)
+                or prior_binding["authority"]["projection"]["configuration"].get("config/settings.yaml")
+                != change["previous_config_sha256"]
+                or binding["authority"]["projection"]["configuration"].get("config/settings.yaml")
+                != change["new_config_sha256"]
+                or change["previous_config_sha256"] == change["new_config_sha256"]):
+            raise ValueError("runtime_admission_manual_companion_changed")
+        if record["authority_seal"] is None:
+            if prior["kind"] not in {"bootstrap", "selection", "recovery", "config_change"} or _has_authority(binding):
                 raise ValueError("runtime_admission_manual_bootstrap_invalid")
             _require_manual_equivalent(prior["capture"], record["capture"])
             return record
@@ -3535,6 +3561,207 @@ def _read_manual_head(root: Path, head: dict) -> dict:
 
 
 _RETURN_KEYS = frozenset({"schema_version", "compaction_id", "head_before", "h_head", "head"})
+_CONFIG_CHANGE_KEYS = frozenset({
+    "schema_version", "head_before", "closed_head", "previous_binding_id", "new_binding_id",
+    "previous_config_sha256", "new_config_sha256", "changed_keys", "reason", "previous",
+})
+_MAX_CONFIG_BYTES = 2 * 1024 * 1024
+_MAX_CONFIG_REASON_CHARS = 200
+
+
+def config_change_directory(root: Path) -> Path:
+    """admission/config-changes: immutable content-free records of operator settings.yaml updates."""
+    return Path(root) / "admission" / "config-changes"
+
+
+def config_change_record_path(root: Path, head: dict) -> Path:
+    return config_change_directory(root) / (_digest(head) + ".json")
+
+
+def _binding_without_settings_config(binding: dict) -> dict:
+    """Copy of binding with config/settings.yaml digest normalized out for exact invariance checks."""
+    normalized = copy.deepcopy(binding)
+    authority = normalized.get("authority")
+    if type(authority) is dict and type(authority.get("projection")) is dict:
+        config_proj = authority["projection"].get("configuration")
+        if type(config_proj) is dict and "config/settings.yaml" in config_proj:
+            config_proj["config/settings.yaml"] = None
+        authority["digest"] = _digest(authority["projection"])
+    return normalized
+
+
+def _read_config_change_record(root: Path, head: dict) -> dict:
+    try:
+        record = _read_json(config_change_record_path(root, head))
+    except FileNotFoundError:
+        raise ValueError("runtime_admission_config_change_record_missing") from None
+    prev = record.get("previous")
+    keys = record.get("changed_keys")
+    reason = record.get("reason")
+    if (set(record) != _CONFIG_CHANGE_KEYS or record["schema_version"] != 1
+            or _canonical_json(record["closed_head"]) != _canonical_json(head)
+            or not _manual_head_shape(record["head_before"], "closed")
+            or not _hex64(record["previous_binding_id"])
+            or not _hex64(record["new_binding_id"])
+            or not _hex64(record["previous_config_sha256"])
+            or not _hex64(record["new_config_sha256"])
+            or type(keys) is not list or not keys
+            or any(type(item) is not str or not item for item in keys)
+            or keys != sorted(set(keys))
+            or type(reason) is not str or len(reason) > _MAX_CONFIG_REASON_CHARS
+            or type(prev) is not dict or set(prev) != {"head_sha256", "companion_sha256"}
+            or any(not _hex64(value) for value in prev.values())):
+        raise ValueError("runtime_admission_manual_companion_schema")
+    return record
+
+
+def _write_settings_atomic(settings_path: Path, raw: bytes, mode: int) -> None:
+    """Atomically replace <state>/config/settings.yaml with fsync on file and directory."""
+    parent = settings_path.parent
+    fd, tmp_name = tempfile.mkstemp(prefix=".settings-operator-", dir=parent)
+    tmp_path = Path(tmp_name)
+    try:
+        os.fchmod(fd, mode)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(raw)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp_path, settings_path)
+        dir_fd = os.open(parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except BaseException:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+
+
+def apply_operator_config_change(
+    root: Path,
+    expected_head: dict,
+    new_raw: bytes,
+    *,
+    changed_keys: list[str],
+    reason: str = "",
+) -> dict:
+    """Atomically apply an operator settings.yaml update on a closed head under the root lease.
+
+    Verifies the prior closed head and binding, writes the new settings.yaml atomically,
+    re-snapshots and proves ONLY config/settings.yaml changed in the binding, writes the
+    immutable content-free audit record and 'config_change' manual companion head, updates
+    the state marker, and CASes head.json to the next closed generation. Restores the
+    original settings.yaml on any failure before CAS.
+    """
+    root = _safe_directory(Path(root).resolve(strict=True))
+    _require_root_lease(root)
+    if type(new_raw) is not bytes or not new_raw or len(new_raw) > _MAX_CONFIG_BYTES:
+        raise ValueError("runtime_admission_config_invalid")
+    normalized_keys = sorted(set(changed_keys))
+    if not normalized_keys or any(type(item) is not str or not item for item in normalized_keys):
+        raise ValueError("runtime_admission_config_invalid")
+    if type(reason) is not str or len(reason) > _MAX_CONFIG_REASON_CHARS:
+        raise ValueError("runtime_admission_config_reason_invalid")
+    with _locked_root(root):
+        if read_admission_head(root) != expected_head:
+            raise ValueError("runtime_admission_head_changed")
+        if expected_head is None or expected_head.get("status") != "closed":
+            raise ValueError("runtime_admission_not_closed")
+        previous_binding = verify_closed_binding(root, expected_head["binding_id"])
+        previous_manual = _verify_manual_head(root, expected_head, previous_binding)
+        state = Path(previous_binding["state_root"])
+        _assert_writers_closed(state)
+        settings_path = state / "config" / "settings.yaml"
+        if settings_path.is_symlink() or settings_path.parent.is_symlink():
+            raise ValueError("runtime_admission_config_invalid")
+        info = settings_path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise ValueError("runtime_admission_config_invalid")
+        previous_mode = stat.S_IMODE(info.st_mode)
+        previous_raw = settings_path.read_bytes()
+        previous_sha256 = hashlib.sha256(previous_raw).hexdigest()
+        bound_sha256 = previous_binding["authority"]["projection"]["configuration"].get("config/settings.yaml")
+        if previous_sha256 != bound_sha256:
+            raise ValueError("privacy_authority_stale")
+        new_sha256 = hashlib.sha256(new_raw).hexdigest()
+        if new_sha256 == previous_sha256:
+            raise ValueError("runtime_admission_config_unchanged")
+        _write_settings_atomic(settings_path, new_raw, previous_mode)
+        cas_done = False
+        try:
+            new_binding = _binding_snapshot(root, previous_binding["slot"])
+            if _binding_without_settings_config(new_binding) != _binding_without_settings_config(previous_binding):
+                raise ValueError("runtime_admission_config_unexpected_state_change")
+            if new_binding["authority"]["projection"]["configuration"].get("config/settings.yaml") != new_sha256:
+                raise ValueError("runtime_admission_config_unexpected_state_change")
+            validate_target_ownership(root, new_binding)
+            new_binding_id = _store_binding(root, new_binding)
+            closed_head = {
+                "schema_version": 1,
+                "generation": expected_head["generation"] + 1,
+                "binding_id": new_binding_id,
+                "status": "closed",
+                "run_id": None,
+            }
+            reference = manual_reference(previous_manual)
+            record = {
+                "schema_version": 1,
+                "head_before": expected_head,
+                "closed_head": closed_head,
+                "previous_binding_id": expected_head["binding_id"],
+                "new_binding_id": new_binding_id,
+                "previous_config_sha256": previous_sha256,
+                "new_config_sha256": new_sha256,
+                "changed_keys": normalized_keys,
+                "reason": reason,
+                "previous": reference,
+            }
+            capture = _manual_capture(root, new_binding)
+            if previous_manual["authority_seal"] is None:
+                if _has_authority(new_binding):
+                    raise ValueError("runtime_admission_manual_bootstrap_invalid")
+                _require_manual_equivalent(previous_manual["capture"], capture)
+            else:
+                _require_manual_equivalent(
+                    _read_authority_seal(root, previous_manual["authority_seal"])["capture"],
+                    capture,
+                )
+            _atomic_record(config_change_record_path(root, closed_head), record, immutable=True)
+            _atomic_record(_manual_head_path(root, closed_head), {
+                "schema_version": 1,
+                "head": closed_head,
+                "kind": "config_change",
+                "capture": capture,
+                "authority_seal": previous_manual["authority_seal"],
+                "previous": reference,
+            }, immutable=True)
+            _write_marker(root, new_binding_id, new_binding)
+            closed = _cas_head(root, expected_head, new_binding_id, "closed")
+            cas_done = True
+            return {
+                "head": closed,
+                "slot": previous_binding["slot"],
+                "previous_binding_id": expected_head["binding_id"],
+                "new_binding_id": new_binding_id,
+                "previous_config_sha256": previous_sha256,
+                "new_config_sha256": new_sha256,
+                "changed_keys": normalized_keys,
+                "record_sha256": _digest(record),
+            }
+        except BaseException:
+            if not cas_done:
+                try:
+                    _write_settings_atomic(settings_path, previous_raw, previous_mode)
+                except OSError:
+                    pass
+                try:
+                    _write_marker(root, expected_head["binding_id"], previous_binding)
+                except OSError:
+                    pass
+            raise
 
 
 def _compaction_return_path(root: Path, head: dict) -> Path:
@@ -3707,22 +3934,49 @@ def regressed_source_bound(sha256: str | None):
         _REGRESSED_SOURCE.sha256 = previous
 
 
+def _unwrap_config_change_head(root: Path, head: dict, *, limit: int = 4096) -> dict:
+    """Walk back across validated 'config_change' heads to the underlying closed base head."""
+    root = Path(root)
+    current = head
+    for _ in range(limit):
+        if not os.path.lexists(_manual_head_path(root, current)):
+            return current
+        manual = _read_manual_head(root, current)
+        if manual["kind"] != "config_change":
+            return current
+        prior = _read_config_change_record(root, current)["head_before"]
+        if prior["generation"] >= current["generation"]:
+            raise ValueError("runtime_admission_manual_companion_changed")
+        current = prior
+    raise ValueError("runtime_admission_manual_companion_changed")
+
+
 def recovery_witness_head(root: Path, head: dict) -> dict | None:
     """The closed head whose recovery record witnesses ``head``'s binding, or None (row PA).
 
     The head itself when it has a recovery record; for the head an abort
     returned to H with (its manual companion of kind 'compaction_return', same
-    binding, an earlier generation), the H it names, repeatedly; otherwise None.
+    binding, an earlier generation), or an operator 'config_change' head
+    (whose non-settings state is identical), the prior head it names,
+    repeatedly; otherwise None.
     """
     root = Path(root)
     while not os.path.lexists(recovery_record_path(root, head)):
-        if not os.path.lexists(_manual_head_path(root, head)) or _read_manual_head(root, head)["kind"] \
-                != "compaction_return":
+        if not os.path.lexists(_manual_head_path(root, head)):
             return None
-        returned = _read_compaction_return(root, head)["h_head"]
-        if returned["binding_id"] != head["binding_id"] or returned["generation"] >= head["generation"]:
-            raise ValueError("runtime_admission_manual_companion_changed")
-        head = returned
+        kind = _read_manual_head(root, head)["kind"]
+        if kind == "compaction_return":
+            returned = _read_compaction_return(root, head)["h_head"]
+            if returned["binding_id"] != head["binding_id"] or returned["generation"] >= head["generation"]:
+                raise ValueError("runtime_admission_manual_companion_changed")
+            head = returned
+        elif kind == "config_change":
+            prior = _read_config_change_record(root, head)["head_before"]
+            if prior["generation"] >= head["generation"]:
+                raise ValueError("runtime_admission_manual_companion_changed")
+            head = prior
+        else:
+            return None
     return head
 
 
@@ -3731,35 +3985,40 @@ def closed_witness(root: Path, binding_id: str, *, head: dict | None = None,
     """The proof that a closed head's binding was closed (sc-release-design v4 mechanism.closed_witness).
 
     When ``head`` (default: the current head) is closed with this binding and
-    has a recovery record (its own, or through an abort's return to H,
-    recovery_witness_head), that record is the witness, even if an older
-    closure proved the same binding (a regression can restore an older closed
-    state exactly; R5-1 still needs the operator's bound sha256 for it). It is
-    the immutable record adopt_recovered_state wrote: its 'recovery' companion
-    verified with the record (_read_manual_head), new_binding_id equal to the
-    binding, and checks.regressed empty with no resurrected count (no ledger or
-    append-only regression, no resurrected family, no state changed after
-    close, no missing ledger): ``{"kind": "recovery", "record_sha256",
-    "record"}``. A record with confirmed regressions is a witness only when
-    ``regressed_source_sha256`` (or the worker's bound one) is its sha256,
-    else RECOVERY_REGRESSED_SOURCE (R5-1). In every other case (a closure
-    head, a historical binding) it is ``{"kind": "closure", "proof": ...}``,
-    admission/closures/<binding_id>.json read and checked exactly as before,
-    and a missing proof raises as before. compaction_verified and the
-    delegation grants stay closure-only.
+    has a recovery record (its own, or through an abort's return to H or an
+    operator config_change, recovery_witness_head), that record is the witness,
+    even if an older closure proved the same binding (a regression can restore
+    an older closed state exactly; R5-1 still needs the operator's bound sha256
+    for it). It is the immutable record adopt_recovered_state wrote: its
+    'recovery' companion verified with the record (_read_manual_head),
+    new_binding_id equal to the recovered head's binding, and checks.regressed
+    empty with no resurrected count (no ledger or append-only regression, no
+    resurrected family, no state changed after close, no missing ledger):
+    ``{"kind": "recovery", "record_sha256", "record"}``. A record with
+    confirmed regressions is a witness only when ``regressed_source_sha256``
+    (or the worker's bound one) is its sha256, else RECOVERY_REGRESSED_SOURCE
+    (R5-1). In every other case (a closure head, a config_change over a
+    closure head, or a historical binding) it is ``{"kind": "closure",
+    "proof": ...}``, admission/closures/<binding_id>.json read and checked
+    exactly as before, and a missing proof raises as before.
+    compaction_verified and the delegation grants stay closure-only.
     """
     root = Path(root)
     witness_head = read_admission_head(root) if head is None else head
     recovered = None
+    closure_binding_id = binding_id
     if (type(witness_head) is dict and witness_head.get("status") == "closed"
             and witness_head.get("binding_id") == binding_id):
         recovered = recovery_witness_head(root, witness_head)
+        if recovered is None:
+            base_head = _unwrap_config_change_head(root, witness_head)
+            closure_binding_id = base_head["binding_id"]
     if recovered is None:
-        return {"kind": "closure", "proof": _closure_proof(root, binding_id)}
+        return {"kind": "closure", "proof": _closure_proof(root, closure_binding_id)}
     manual = _read_manual_head(root, recovered)
     record = _read_recovery_record(root, recovered)
-    if (manual["kind"] != "recovery" or record["new_binding_id"] != binding_id
-            or _digest(read_binding(root, binding_id)) != binding_id):
+    if (manual["kind"] != "recovery" or record["new_binding_id"] != recovered["binding_id"]
+            or _digest(read_binding(root, recovered["binding_id"])) != recovered["binding_id"]):
         raise ValueError("runtime_admission_manual_close_proof")
     checks = record["checks"]
     regressed, resurrected = checks.get("regressed"), checks.get("resurrected")
@@ -3814,7 +4073,12 @@ def verify_closed_binding(root: Path, binding_id: str, *, regressed_source_sha25
     _verify_manual_head(root, head, read_binding(root, head["binding_id"]))
     if witness["kind"] == "closure":
         closed_head = _manual_closed_head(witness["proof"])
-        record = _verify_manual_head(root, closed_head, binding)
+        if closed_head["binding_id"] == binding_id:
+            record = _verify_manual_head(root, closed_head, binding)
+        elif head["binding_id"] == binding_id and _unwrap_config_change_head(root, head) == closed_head:
+            record = _read_manual_head(root, closed_head)
+        else:
+            raise ValueError("runtime_admission_manual_close_proof")
         if record["kind"] != "closure":
             raise ValueError("runtime_admission_manual_close_proof")
     return binding
