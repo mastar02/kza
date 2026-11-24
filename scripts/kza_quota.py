@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -111,36 +112,48 @@ def _parse_timestamp(value: Any) -> float | None:
     if value is None or value == "" or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        ts = float(value)
+        try:
+            ts = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if not math.isfinite(ts):
+            return None
         ts = ts / 1000.0 if ts > 1e12 else ts
-        return ts if ts > 0.0 else None
+        return ts if 0.0 < ts < 1e12 else None
     if isinstance(value, str):
         raw = value.strip()
         if not raw or raw.startswith(("1970-01-01", "1969-12-31")):
             return None
         try:
             ts = float(raw)
+        except (ValueError, OverflowError):
+            ts = None
+        if ts is not None:
+            if not math.isfinite(ts):
+                return None
             ts = ts / 1000.0 if ts > 1e12 else ts
-            return ts if ts > 0.0 else None
-        except ValueError:
-            pass
+            return ts if 0.0 < ts < 1e12 else None
         try:
             iso = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
-            ts = datetime.fromisoformat(iso).timestamp()
-            return ts if ts > 0.0 else None
-        except ValueError:
+            dt = datetime.fromisoformat(iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            ts = dt.timestamp()
+            return ts if 0.0 < ts < 1e12 else None
+        except (ValueError, OverflowError, OSError):
             return None
     return None
 
 
 def _to_float(value: Any) -> float | None:
-    """Convert numeric or numeric-string value to float safely."""
+    """Convert numeric or numeric-string value to finite float safely."""
     if value is None or isinstance(value, bool):
         return None
     try:
-        return float(value)
-    except (TypeError, ValueError):
+        num = float(value)
+    except (TypeError, ValueError, OverflowError):
         return None
+    return num if math.isfinite(num) else None
 
 
 def _effective_pct(used_pct: float | None, resets_at: float | None, now: float) -> float | None:
@@ -190,7 +203,7 @@ def _load_throttles(state_dir: Path, now: float) -> dict[str, dict[str, Any]]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return {}
     if not isinstance(data, dict):
         return {}
@@ -215,7 +228,7 @@ def record_throttle(
     state_dir: Path | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Record a throttle TTL for a runtime or account target in state_dir/throttles.json."""
+    """Record a throttle TTL for a runtime, Codex account, or Agy pool in state_dir/throttles.json."""
     if runtime not in THROTTLE_TARGETS:
         raise ValueError(f"Unknown throttle target '{runtime}'. Expected one of {THROTTLE_TARGETS}.")
     if ttl_minutes <= 0:
@@ -234,7 +247,7 @@ def record_throttle(
 
 
 def clear_throttle(runtime: str, state_dir: Path | None = None) -> bool:
-    """Clear an active throttle for a runtime or account target."""
+    """Clear an active throttle for a runtime, Codex account, or Agy pool."""
     if runtime not in THROTTLE_TARGETS:
         raise ValueError(f"Unknown throttle target '{runtime}'. Expected one of {THROTTLE_TARGETS}.")
     sdir = state_dir or _default_state_dir()
@@ -268,10 +281,11 @@ def _read_agy_band(state_dir: Path) -> str:
     if path.is_file():
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
-            band = str(data.get("band", "")).strip().lower()
-            if band in AGY_BAND_WEIGHTS:
-                return band
-        except (OSError, json.JSONDecodeError):
+            if isinstance(data, dict):
+                band = str(data.get("band", "")).strip().lower()
+                if band in AGY_BAND_WEIGHTS:
+                    return band
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             pass
     return "medium"
 
@@ -324,7 +338,7 @@ def probe_claude(
     for fp in files:
         try:
             raw = json.loads(fp.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             continue
         if not isinstance(raw, dict):
             continue
@@ -625,6 +639,8 @@ def _default_muse_runner() -> subprocess.CompletedProcess[str]:
         ["muse", "usage", "--json"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=10,
         check=False,
     )
@@ -752,15 +768,45 @@ def _default_agy_runner() -> subprocess.CompletedProcess[str]:
         ["agy", "-p", "/usage", "--output-format", "json"],
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=15,
         check=False,
     )
 
 
+AGY_BUCKET_IDS: frozenset[str] = frozenset({"gemini-5h", "gemini-weekly", "3p-5h", "3p-weekly"})
+
+
+def _agy_bucket_pct(bucket: dict[str, Any]) -> float | None:
+    """Compute finite bounded used percentage from an Agy bucket dict."""
+    up = _to_float(bucket.get("used_percentage"))
+    if up is not None:
+        return max(0.0, min(100.0, up))
+    rf = _to_float(bucket.get("remaining_fraction"))
+    return round(max(0.0, min(100.0, (1.0 - rf) * 100.0)), 2) if rf is not None else None
+
+
 def _extract_agy_buckets_from_json(data: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], str]:
     """Extract normalized Agy quota buckets from either statusline tap or `/usage` JSON."""
-    if isinstance(data.get("buckets"), dict) and data["buckets"]:
-        return dict(data["buckets"]), str(data.get("source") or "agy-statusline")
+    raw_buckets = data.get("buckets")
+    if isinstance(raw_buckets, dict) and raw_buckets:
+        valid: dict[str, dict[str, Any]] = {}
+        for bid, bval in raw_buckets.items():
+            if bid not in AGY_BUCKET_IDS or not isinstance(bval, dict):
+                continue
+            used_pct = _agy_bucket_pct(bval)
+            if used_pct is None:
+                continue
+            rt = bval.get("resets_at") if "resets_at" in bval else bval.get("reset_time")
+            parsed_rt = _parse_timestamp(rt)
+            valid[bid] = {
+                "remaining_fraction": _to_float(bval.get("remaining_fraction")),
+                "used_percentage": used_pct,
+                "resets_at": rt if parsed_rt is not None else None,
+                "disabled": bool(bval.get("disabled", False)),
+            }
+        return (valid, str(data.get("source") or "agy-statusline")) if valid else ({}, "")
 
     cmd = data.get("command")
     if not isinstance(cmd, dict):
@@ -788,11 +834,13 @@ def _extract_agy_buckets_from_json(data: dict[str, Any]) -> tuple[dict[str, dict
             if not bid and prefix:
                 win = str(b.get("window") or "").lower()
                 bid = f"{prefix}-{'5h' if '5h' in win else 'weekly'}"
-            if not bid:
+            if bid not in AGY_BUCKET_IDS:
+                continue
+            used_pct = _agy_bucket_pct(b)
+            if used_pct is None:
                 continue
             rf = _to_float(b.get("remaining_fraction"))
-            used_pct = round(max(0.0, min(100.0, (1.0 - rf) * 100.0)), 2) if rf is not None else None
-            rt = b.get("reset_time")
+            rt = b.get("reset_time") if "reset_time" in b else b.get("resets_at")
             parsed_rt = _parse_timestamp(rt)
             buckets[bid] = {
                 "remaining_fraction": rf,
@@ -818,21 +866,15 @@ def _build_agy_groups(
     band_excluded = band == "throttled"
     band_status = "throttled" if band_excluded else ("degraded" if band_weight < 1.0 else "ok")
 
-    def _pct(b: dict[str, Any]) -> float | None:
-        up = _to_float(b.get("used_percentage"))
-        if up is not None:
-            return up
-        rf = _to_float(b.get("remaining_fraction"))
-        return round(max(0.0, min(100.0, (1.0 - rf) * 100.0)), 2) if rf is not None else None
-
     for gk in ("gemini", "3p"):
         b5 = buckets.get(f"{gk}-5h") if isinstance(buckets.get(f"{gk}-5h"), dict) else {}
         b7 = buckets.get(f"{gk}-weekly") if isinstance(buckets.get(f"{gk}-weekly"), dict) else {}
-        if b5 or b7:
-            r5 = _parse_timestamp(b5.get("resets_at") if "resets_at" in b5 else b5.get("reset_time"))
-            r7 = _parse_timestamp(b7.get("resets_at") if "resets_at" in b7 else b7.get("reset_time"))
-            p5 = _effective_pct(_pct(b5), r5, now)
-            p7 = _effective_pct(_pct(b7), r7, now)
+        r5 = _parse_timestamp(b5.get("resets_at") if "resets_at" in b5 else b5.get("reset_time")) if b5 else None
+        r7 = _parse_timestamp(b7.get("resets_at") if "resets_at" in b7 else b7.get("reset_time")) if b7 else None
+        p5 = _effective_pct(_agy_bucket_pct(b5), r5, now) if b5 else None
+        p7 = _effective_pct(_agy_bucket_pct(b7), r7, now) if b7 else None
+
+        if p5 is not None or p7 is not None:
             weight, excluded, reason = compute_window_weight(p5, p7)
             status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
             entry: dict[str, Any] = {
@@ -862,6 +904,12 @@ def _build_agy_groups(
                 "throttle_reason": None,
                 "usage_known": False,
             }
+
+        if band_excluded:
+            entry["status"] = "throttled"
+            entry["weight"] = 0.0
+            entry["excluded"] = True
+            entry["exclude_reason"] = "agy band set to throttled"
 
         th = global_throttle or gthrottles.get(gk) or gthrottles.get(f"agy-{gk}")
         if th:
@@ -903,11 +951,12 @@ def probe_agy(
             return None
         try:
             raw = json.loads(fp.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            mtime = fp.stat().st_mtime
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             return None
         if not isinstance(raw, dict):
             return None
-        snap_ts = _parse_timestamp(raw.get("timestamp")) or fp.stat().st_mtime
+        snap_ts = _parse_timestamp(raw.get("timestamp")) or mtime
         age = ts - snap_ts
         if age < -5.0 or age > cache_ttl:
             return None
@@ -920,19 +969,23 @@ def probe_agy(
         exec_fn = runner or _default_agy_runner
         try:
             proc = exec_fn()
-            if proc.returncode == 0 and proc.stdout.strip():
-                parsed = json.loads(proc.stdout)
+            stdout = proc.stdout if isinstance(proc.stdout, str) else ""
+            if proc.returncode == 0 and stdout.strip():
+                parsed = json.loads(stdout)
                 if isinstance(parsed, dict):
                     buckets, src = _extract_agy_buckets_from_json(parsed)
                     if buckets:
-                        _atomic_write_json(
-                            cache_file,
-                            {
-                                "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
-                                "source": src,
-                                "buckets": buckets,
-                            },
-                        )
+                        try:
+                            _atomic_write_json(
+                                cache_file,
+                                {
+                                    "timestamp": datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+                                    "source": src,
+                                    "buckets": buckets,
+                                },
+                            )
+                        except OSError:
+                            pass
                         found = (buckets, src)
         except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
             found = None
@@ -1068,7 +1121,7 @@ def main(argv: list[str] | None = None) -> int:
         "--record-throttle",
         choices=THROTTLE_TARGETS,
         default=None,
-        help="Record an active throttle TTL for a runtime or Codex account.",
+        help="Record an active throttle TTL for a runtime, Codex account, or Agy pool.",
     )
     parser.add_argument("--ttl-minutes", type=float, default=60.0, help="Throttle TTL in minutes.")
     parser.add_argument("--reason", type=str, default="rate_limit", help="Throttle reason.")
@@ -1076,7 +1129,7 @@ def main(argv: list[str] | None = None) -> int:
         "--clear-throttle",
         choices=THROTTLE_TARGETS,
         default=None,
-        help="Clear active throttle for a runtime or Codex account.",
+        help="Clear active throttle for a runtime, Codex account, or Agy pool.",
     )
     parser.add_argument(
         "--set-agy-band",

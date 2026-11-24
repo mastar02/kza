@@ -604,3 +604,71 @@ def test_sanitize_handles_tilde_volumes_spaces_multiline_and_global_throttle_blo
     pool_text = kza_router.format_quota_pools_for_decisions(snap, now=now + 5)
     assert "agy:gemini: weight=0.00, status=throttled" in pool_text
     assert "agy:3p: weight=0.00, status=throttled" in pool_text
+
+
+def test_distill_mixed_quotes_backticks_long_preamble_and_same_line_goal(tmp_path: Path) -> None:
+    # 1. Same-line boilerplate must not erase the technical goal following it on the same line.
+    same_line_emit = "Emitir APROBADO o BLOQUEA. Auditar la retención de sesiones.\nRevisar el controlador."
+    res_emit = kza_router.distill_routing_summary(same_line_emit)
+    assert "Auditar la retención de sesiones." in res_emit
+    assert "Revisar el controlador." in res_emit
+    assert "APROBADO" not in res_emit
+
+    same_line_pytest = "Correr pytest tests/unit/workflow/test_kza_quota.py. Auditar la retención de sesiones."
+    res_pytest = kza_router.distill_routing_summary(same_line_pytest)
+    assert "Auditar la retención de sesiones." in res_pytest
+    assert "pytest" not in res_pytest
+
+    # 2. >900 chars of protocol lines followed by mixed quotes, backticks, file:// links, escaped spaces, and DEADBEEF.
+    long_protocol = "\n".join(
+        [
+            "LEE PRIMERO: Emitir veredicto explícito APROBADO o BLOQUEA (verifica con `git rev-parse HEAD`).",
+            "Correr /Users/gabriel/Documents/Proyectos/kza/.venv/bin/python -m pytest tests/unit/workflow/test_kza_quota.py.",
+        ]
+        * 5
+    )
+    assert len(long_protocol) > 900
+    prompt = (
+        f"{long_protocol}\n"
+        'Revisar "/Volumes/Synthetic Client\'s Archive/CANARY_PRIVATE.json", '
+        '\'/Volumes/Synthetic "Quoted" Archive/CANARY_SINGLE.json\', '
+        "`~/Synthetic Archive/CANARY_BACKTICK.json`, "
+        "[evidencia](file:///Volumes/Synthetic Link/CANARY_LINK.json), "
+        r"/Volumes/Synthetic\ Escaped/CANARY_ESCAPED.json "
+        "y SHA DEADBEEF (~3.8s)."
+    )
+    captured_payload: dict = {}
+
+    def _cap_api(payload: dict, api_key: str) -> dict:
+        captured_payload.update(payload)
+        picked = payload["questions"][0]["choices"][0]["value"]
+        return {
+            "model": "gpt-6-luna",
+            "answers": [
+                {"name": "selected_candidate", "type": "choice", "choice": picked, "probabilities": [{"value": picked, "probability": 0.9}]},
+                {"name": "task_rigor", "type": "score", "score": 3.0},
+            ],
+            "usage": {"input_tokens": 1400, "cached_tokens": 0, "output_tokens": 0},
+        }
+
+    kza_router.route_task(
+        role="kza-qa",
+        summary=prompt,
+        state_dir=tmp_path,
+        quota_snapshot=_healthy_quota_snapshot(),
+        api_caller=_cap_api,
+        api_key_override="test-key",
+    )
+    sent = captured_payload["input"]
+    for canary in (
+        "CANARY_PRIVATE",
+        "CANARY_SINGLE",
+        "CANARY_BACKTICK",
+        "CANARY_LINK",
+        "CANARY_ESCAPED",
+        "Client's Archive",
+        "DEADBEEF",
+    ):
+        assert canary not in sent
+    assert "<sha>" in sent
+    assert "~3.8s" in sent

@@ -295,40 +295,87 @@ _SANITIZE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?i)\b((?:password|passwd|pwd|secret|token|api[_-]?key|client_secret)\s*[:=]\s*)[^\s\"',;]{4,}"), r"\1[REDACTED]"),
     (re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"), "[REDACTED_EMAIL]"),
     (re.compile(r"\b(?:192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b"), "[REDACTED_LAN_IP]"),
-    (re.compile(r"/home/kza/[^\s\"']+"), "[REDACTED_PROD_PATH]"),
-    (re.compile(r"(?:/Users/[^/\s]+/[^\s\"']*\.env\b|(?:\./)?data/[^\s\"']+)"), "[REDACTED_PRIVATE_PATH]"),
+    (re.compile(r"(?:file://)?/home/kza/(?:\\.|[^\s\"'`])+"), "[REDACTED_PROD_PATH]"),
+    (re.compile(r"(?:(?:file://)?/Users/[^/\s\"'`]+/(?:\\.|[^\s\"'`])*\.env\b|(?:\./)?data/(?:\\.|[^\s\"'`])+)"), "[REDACTED_PRIVATE_PATH]"),
     # Strip host prefix from KZA checkout paths while keeping safe repo-relative paths.
-    (re.compile(r"(?:/Users/[^/\s\"']+/Documents/Proyectos/kza/|/home/[^/\s\"']+/projects/kza/)(?!(?:\.env|\.venv|data/|models/))"), ""),
+    (re.compile(r"(?:file://)?(?:/Users/[^/\s\"'`]+/Documents/Proyectos/kza/|/home/[^/\s\"'`]+/projects/kza/)(?!(?:\.env|\.venv|data/|models/))"), ""),
     # Redact any remaining local filesystem paths (including ~/, $HOME/, /Volumes/, /var/, /tmp/) and loopback URLs.
-    (re.compile(r"(?:~(?:/[^\s\"']*)|\$HOME(?:/[^\s\"']*)?|\$\{HOME\}(?:/[^\s\"']*)?|/Volumes/[^\s\"']+|/Users/[^/\s\"']+(?:/[^\s\"']*)?|/home/[^/\s\"']+(?:/[^\s\"']*)?|/private/var/[^\s\"']+|/var/folders/[^\s\"']+|/tmp/[^\s\"']+)"), "[LOCAL_PATH]"),
-    (re.compile(r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):\d+[^\s\"']*"), "[LOCAL_URL]"),
+    (
+        re.compile(
+            r"(?:file://)?(?:"
+            r"~(?:[A-Za-z0-9._-]+)?/(?:\\.|[^\s\"'`])*"
+            r"|\$(?:HOME|TMPDIR)(?:/(?:\\.|[^\s\"'`])*)?"
+            r"|\$\{(?:HOME|TMPDIR)\}(?:/(?:\\.|[^\s\"'`])*)?"
+            r"|/(?:Volumes|Users|home|private|var|tmp|etc|opt|root|mnt|media|srv)/(?:\\.|[^\s\"'`])+"
+            r")"
+        ),
+        "[LOCAL_PATH]",
+    ),
+    (re.compile(r"https?://(?:localhost|127\.0\.0\.1|\[::1\]):\d+[^\s\"'`]*"), "[LOCAL_URL]"),
 )
 
+_PATH_ROOT_PREFIX = (
+    r"(?:file://)?(?:"
+    r"~(?:[A-Za-z0-9._-]+)?/"
+    r"|\$(?:HOME|TMPDIR)(?=/|['\"`)\s]|$)"
+    r"|\$\{(?:HOME|TMPDIR)\}"
+    r"|/(?:Volumes|Users|home|private|var|tmp|etc|opt|root|mnt|media|srv)/"
+    r")"
+)
 _KZA_SAFE_QUOTED_PATH_RE = re.compile(
-    r"^(?:/Users/[^/\s]+/Documents/Proyectos/kza/|/home/[^/\s]+/projects/kza/)((?!(?:\.env|\.venv|data/|models/))[^\s]+)$"
+    r"^(?:file://)?(?:/Users/[^/\s\"'`]+/Documents/Proyectos/kza/|/home/[^/\s\"'`]+/projects/kza/)"
+    r"((?!(?:\.env|\.venv|data/|models/))[^\s\"'`]+)$"
 )
 _QUOTED_LOCAL_PATH_RE = re.compile(
-    r"""(['"])((?:~(?:/|$)|\$HOME(?:/|$)|\$\{HOME\}(?:/|$)|/Volumes/|/Users/|/home/|/private/var/|/var/|/tmp/)[^'"\n]*)\1"""
+    rf'"(?P<dq>{_PATH_ROOT_PREFIX}[^"\n]*)"'
+    rf"|'(?P<sq>{_PATH_ROOT_PREFIX}[^'\n]*)'"
+    rf"|`(?P<bq>{_PATH_ROOT_PREFIX}[^`\n]*)`"
+    rf"|(?<=\])\((?P<md>{_PATH_ROOT_PREFIX}[^)\n]*)\)"
 )
 
 _DISTILL_NOISE_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"(?im)^[ \t]*(?:Emitir|Entreg[aá])\s+(?:veredicto\s+expl[ií]cito\s+)?`?APROBADO`?\s+o\s+`?(?:BLOQUEA|CAMBIOS_REQUERIDOS)`?[^\n]*$"), ""),
-    (re.compile(r"(?i)(?:(?<=\.)\s*|^)(?:Emitir|Entreg[aá])\s+(?:veredicto\s+expl[ií]cito\s+)?`?APROBADO`?\s+o\s+`?(?:BLOQUEA|CAMBIOS_REQUERIDOS)`?[^\n.]*\.?"), ""),
+    (
+        re.compile(
+            r"(?im)(?:^[ \t]*|(?<=[.!?;])\s+)"
+            r"(?:Emitir|Entreg[aá])\s+(?:veredicto\s+expl[ií]cito\s+)?`?APROBADO`?\s+o\s+`?(?:BLOQUEA|CAMBIOS_REQUERIDOS)`?"
+            r"[^\n]*?(?:\.(?=\s|$)|[!?;]|$)"
+        ),
+        "",
+    ),
     (re.compile(r"(?i)\bverifica(?:r)?\s+con\s+`?git\s+rev-parse\s+HEAD`?\)?"), ""),
-    (re.compile(r"(?im)(?:^|(?<=\.)\s*|[ \t]+)(?:Correr|Ejecutar)\s+[^\n]*?\bpytest\b[^\n.;]*\.?"), ""),
+    (
+        re.compile(
+            r"(?im)(?:^[ \t]*|(?<=[.!?;])\s+|[ \t]+)"
+            r"(?:Correr|Ejecutar)\s+[^\n]*?\bpytest\b[^\n;]*?(?:\.(?=\s|$)|;|$)"
+        ),
+        "",
+    ),
     (re.compile(r"(?i)\bLEE\s+PRIMERO\s*(?:\([^)]*\))?\s*:"), ""),
-    (re.compile(r"(?i)\b(?=[0-9a-f]*\d)[0-9a-f]{8,40}\b"), "<sha>"),
+    (re.compile(r"\b(?:[0-9a-fA-F]{8,40}|(?=[0-9a-fA-F]*\d)[0-9a-fA-F]{7})\b"), "<sha>"),
 )
 
 
 def _replace_quoted_local_path(match: re.Match[str]) -> str:
-    quote, inner = match.group(1), match.group(2)
+    if match.group("dq") is not None:
+        open_d, close_d, inner = '"', '"', match.group("dq")
+    elif match.group("sq") is not None:
+        open_d, close_d, inner = "'", "'", match.group("sq")
+    elif match.group("bq") is not None:
+        open_d, close_d, inner = "`", "`", match.group("bq")
+    else:
+        open_d, close_d, inner = "(", ")", match.group("md")
+
     safe = _KZA_SAFE_QUOTED_PATH_RE.match(inner)
     if safe:
-        return f"{quote}{safe.group(1)}{quote}"
-    if inner.startswith("/home/kza/"):
-        return "[REDACTED_PROD_PATH]"
-    return "[LOCAL_PATH]"
+        return f"{open_d}{safe.group(1)}{close_d}"
+    norm = inner.removeprefix("file://")
+    if norm.startswith("/home/kza/"):
+        token = "[REDACTED_PROD_PATH]"
+    elif re.search(r"(?:^|/)\.env\b", norm) or norm.startswith("./data/") or "/data/" in norm:
+        token = "[REDACTED_PRIVATE_PATH]"
+    else:
+        token = "[LOCAL_PATH]"
+    return f"({token})" if open_d == "(" else token
 
 
 def sanitize_summary(text: str, max_len: int = 800, *, collapse_whitespace: bool = True) -> str:
@@ -736,13 +783,16 @@ def format_quota_pools_for_decisions(quota_snapshot: dict[str, Any] | None, now:
         groups = adet.get("groups")
         band = adet.get("band", "unknown")
         if isinstance(groups, dict) and groups:
+            top_throttled = agy.get("status") == "throttled" and bool(agy.get("excluded"))
             for gk in ("gemini", "3p"):
                 g = groups.get(gk)
                 if isinstance(g, dict):
                     g_known = g.get("usage_known", adet.get("usage_known", True))
                     telem = "live" if g_known else f"band_estimate(band={band})"
+                    eff_w = 0.0 if top_throttled else float(g.get("weight", 0.0))
+                    eff_st = "throttled" if top_throttled else g.get("status")
                     lines.append(
-                        f"- agy:{gk}: weight={float(g.get('weight', 0.0)):.2f}, status={g.get('status')}, "
+                        f"- agy:{gk}: weight={eff_w:.2f}, status={eff_st}, "
                         f"{_fmt_pool_metrics(g, ts)}, telemetry={telem}"
                     )
         else:

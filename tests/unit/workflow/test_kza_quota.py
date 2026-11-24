@@ -455,3 +455,84 @@ def test_agy_throttles_apply_with_partial_or_no_telemetry_and_bad_json_isolated(
     assert g_part["gemini"]["excluded"] is False and g_part["gemini"]["usage_known"] is True
     assert g_part["3p"]["status"] == "throttled" and g_part["3p"]["excluded"] is True
     assert g_part["3p"]["usage_known"] is False
+
+
+def test_agy_band_throttled_priority_and_corrupt_telemetry_resilience(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    now = 1_800_000_000.0
+    state_dir = tmp_path / "state"
+
+    # 1. Persisted band=throttled must block both Agy groups even when a fresh healthy tap exists.
+    kza_quota.set_agy_band("throttled", state_dir=state_dir)
+    healthy_tap = tmp_path / "healthy_tap.json"
+    _write_json(
+        healthy_tap,
+        {
+            "timestamp": now - 10,
+            "source": "agy-statusline",
+            "buckets": {
+                "gemini-5h": {"used_percentage": 10.0, "resets_at": now + 3600},
+                "3p-5h": {"used_percentage": 0.0, "resets_at": None},
+            },
+        },
+    )
+    q_throt = kza_quota.probe_agy(state_dir=state_dir, tap_file=healthy_tap, now=now)
+    assert q_throt.status == "throttled"
+    assert q_throt.excluded is True
+    assert q_throt.weight == 0.0
+    for gk in ("gemini", "3p"):
+        assert q_throt.details["groups"][gk]["status"] == "throttled"
+        assert q_throt.details["groups"][gk]["excluded"] is True
+        assert q_throt.details["groups"][gk]["weight"] == 0.0
+
+    snap_throt = kza_quota.collect_all_quotas(
+        state_dir=state_dir,
+        claude_tap_dir=tmp_path / "none",
+        codex_sessions_dir=tmp_path / "none2",
+        muse_runner=lambda: subprocess.CompletedProcess(
+            ["muse"], 0, json.dumps({"reason": "server_sent_no_usage", "allowance": None}), ""
+        ),
+        agy_tap_file=healthy_tap,
+        now=now + 5,
+    )
+    assert "agy" not in snap_throt["eligible_runtimes"]
+
+    # 2. Invalid object metric `used_percentage: {}` must NOT fake usage_known=True / weight=1.0; fall back to band.
+    kza_quota.set_agy_band("low", state_dir=state_dir)
+    obj_metric_tap = tmp_path / "obj_metric.json"
+    _write_json(obj_metric_tap, {"timestamp": now, "buckets": {"gemini-5h": {"used_percentage": {}}}})
+    q_obj = kza_quota.probe_agy(state_dir=state_dir, tap_file=obj_metric_tap, now=now)
+    assert q_obj.details["usage_known"] is False
+    assert q_obj.excluded is False
+    assert q_obj.weight == 0.50
+
+    # 3. Huge 401-digit integer in tap must not raise OverflowError; falls back cleanly.
+    huge_int = 10**400
+    huge_tap = tmp_path / "huge.json"
+    _write_json(huge_tap, {"timestamp": huge_int, "buckets": {"gemini-5h": {"used_percentage": huge_int}}})
+    q_huge = kza_quota.probe_agy(state_dir=state_dir, tap_file=huge_tap, now=now)
+    assert q_huge.details["usage_known"] is False
+    assert q_huge.weight == 0.50
+
+    # 4. Invalid UTF-8 bytes in tap must not abort collect_all_quotas with UnicodeDecodeError.
+    bad_utf8_tap = tmp_path / "bad_utf8.json"
+    bad_utf8_tap.write_bytes(b"\xff\xfe{bad-utf8")
+    snap_bad_utf8 = kza_quota.collect_all_quotas(
+        state_dir=state_dir,
+        claude_tap_dir=tmp_path / "none",
+        codex_sessions_dir=tmp_path / "none2",
+        muse_runner=lambda: subprocess.CompletedProcess(
+            ["muse"], 0, json.dumps({"reason": "server_sent_no_usage", "allowance": None}), ""
+        ),
+        agy_tap_file=bad_utf8_tap,
+        now=now + 5,
+    )
+    assert snap_bad_utf8["subscriptions"]["agy"]["details"]["usage_known"] is False
+    assert snap_bad_utf8["subscriptions"]["agy"]["weight"] == 0.50
+
+    # 5. CLI help text documents Agy pool targets on throttle flags.
+    with pytest.raises(SystemExit):
+        kza_quota.main(["--help"])
+    help_out = capsys.readouterr().out
+    assert "Agy pool" in help_out
