@@ -19,6 +19,7 @@ import numpy as np
 
 from src.ambient.types import AmbientUtterance, RawSegment
 from src.ambient.room_producer import RoomProducer
+from src.audio.clip_io import select_mono_channel
 from src.core.capture_opening import CaptureOpening
 from src.core.owned_work import OwnedBlockingWork, WorkCloseTimeout
 from src.core.paths import models_path, speaker_savedir
@@ -57,6 +58,7 @@ class AmbientTranscriber:
         archiver: AudioArchiver | None = None,
         privacy=None,
         close_timeout_s: float = 1,
+        speaker_col: int = 0,
         *, owns_segmenters: bool = False,
     ):
         self._tap = tap
@@ -64,6 +66,7 @@ class AmbientTranscriber:
         self._owns_segmenters = owns_segmenters
         self._stt = ambient_stt
         self._tagger = tagger
+        self._speaker_col = int(speaker_col)
         self._doa = doa_estimator
         self._classifier = classifier
         self._store = store
@@ -430,8 +433,9 @@ class AmbientTranscriber:
                         or opening.channels != (1 if seg.audio.ndim == 1 else seg.audio.shape[1])):
                     raise ValueError('ambient_segment_opening_mismatch')
                 if segment_generation is not None:
+                    _, selected_speaker_col = select_mono_channel(seg.audio, self._speaker_col)
                     audio_provenance = opening.project(lane=CaptureLane.AMBIENT,
-                        segment_generation=segment_generation, selected_channel=0,
+                        segment_generation=segment_generation, selected_channel=selected_speaker_col,
                         frame_count=seg.audio.shape[0], input_ref=uuid4().hex)
             provenance = {}
             if capture_source is not None:
@@ -490,11 +494,9 @@ class AmbientTranscriber:
             if self._quality_fn is not None:
                 self._require_live(capture_source)
                 lang, lang_prob, lang_ok = await self._native.run(self._quality, text, seg.vad_prob, capture_source)
-            # Tagger sobre ch0 (Conference): full-band, presente en TODOS los
-            # firmwares (6ch/2ch/mono). Asimétrico a propósito con el STT
-            # (ch1 ASR): los embeddings de hablante prefieren la señal con
-            # post-proceso completo; el ASR prefiere el tap sin NS.
-            mono = seg.audio[:, 0] if seg.audio.ndim == 2 else seg.audio
+            # Explicit speaker/preview channel (default 0 = Conference, configurable
+            # via ambient.speaker.channel to align with the A/B winner).
+            mono, _ = select_mono_channel(seg.audio, self._speaker_col)
             self._require_live(capture_source)
             if getattr(self._tagger,'review_managed',False) is True:
                 speaker, sp_conf = await self._tagger.tag(mono,transcript=text[:8192],room_id=room_id,
@@ -899,6 +901,7 @@ def build_ambient_path(
         quality_fn=quality_fn,
         archiver=archiver,
         privacy=privacy,
+        speaker_col=int(sp_cfg.get("channel", 0)),
     )
     if register_stt_borrower is not None:
         register_stt_borrower(transcriber.begin_close)

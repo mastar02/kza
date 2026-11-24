@@ -47,6 +47,12 @@ import soundfile as sf
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.audio.clip_io import (  # noqa: E402
+    TARGET_SAMPLE_RATE as TARGET_SR,
+    resample_linear_16k as _resample_16k,
+    write_private_audio,
+    write_private_bytes as _write_private_bytes,
+)
 from src.core.resource_retirement import ResourceOwner, ResourceSession  # noqa: E402
 from src.stt.hybrid import STTEngine, apply_hybrid_veto  # noqa: E402
 from src.stt.whisper_fast import STTResult  # noqa: E402
@@ -54,7 +60,6 @@ from tools.ambient_groundtruth import SAMPLEABLE_WHERE, sample_stratified  # noq
 
 logger = logging.getLogger(__name__)
 
-TARGET_SR = 16000
 AUDIO_EXTENSIONS = frozenset({".flac", ".wav"})
 CHANNEL_LABELS: dict[str, str] = {
     "ch0": "ch0 · Conference (NS)",
@@ -73,38 +78,10 @@ class ClipSpec:
     db_text: str | None = None
 
 
-def _write_private_bytes(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb", closefd=False) as handle:
-            handle.write(data)
-    finally:
-        os.close(fd)
-
-
 def _write_private_wav(path: Path, mono: np.ndarray, sample_rate: int = TARGET_SR) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-    try:
-        os.fchmod(fd, 0o600)
-        with os.fdopen(fd, "wb", closefd=False) as handle:
-            sf.write(handle, np.clip(mono, -1.0, 1.0), sample_rate, subtype="PCM_16", format="WAV")
-    finally:
-        os.close(fd)
-
-
-def _resample_16k(samples: np.ndarray, sr: int) -> np.ndarray:
-    if sr == TARGET_SR or samples.shape[0] == 0:
-        return np.ascontiguousarray(samples, dtype=np.float32)
-    target_len = max(1, int(round(samples.shape[0] * TARGET_SR / sr)))
-    idx = np.linspace(0, samples.shape[0] - 1, target_len)
-    base = np.arange(samples.shape[0])
-    if samples.ndim == 1:
-        return np.interp(idx, base, samples).astype(np.float32)
-    cols = [np.interp(idx, base, samples[:, c]).astype(np.float32) for c in range(samples.shape[1])]
-    return np.ascontiguousarray(np.stack(cols, axis=1))
+    write_private_audio(
+        path, np.clip(mono, -1.0, 1.0), sample_rate, fmt="WAV", subtype="PCM_16"
+    )
 
 
 def read_clip_channels(path: Path) -> tuple[dict[str, np.ndarray], float]:

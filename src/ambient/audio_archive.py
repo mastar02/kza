@@ -20,60 +20,20 @@ import shutil
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from enum import StrEnum
 from pathlib import Path
 
 import numpy as np
 
+from src.audio.clip_io import (
+    ArchiveChannelMode,
+    select_archive_audio,
+    write_private_audio,
+)
 from src.memory.fact_ledger import MemorySource
 
 logger = logging.getLogger(__name__)
 
 _DISK_WARN_INTERVAL_S = 3600.0
-
-
-class ArchiveChannelMode(StrEnum):
-    """Explicit channel retention mode for ambient FLAC archives."""
-
-    MONO_CH0 = "mono_ch0"
-    MONO_CH1 = "mono_ch1"
-    STEREO_2CH = "stereo_2ch"
-
-
-def select_archive_audio(
-    audio: np.ndarray, channel_mode: ArchiveChannelMode | str = ArchiveChannelMode.MONO_CH0
-) -> np.ndarray:
-    """Extract the configured channel layout from a 1D or 2D audio segment.
-
-    Args:
-        audio: Raw segment samples, shape ``(frames,)`` or ``(frames, channels)``.
-        channel_mode: ``mono_ch0`` (Conference), ``mono_ch1`` (ASR), or
-            ``stereo_2ch`` (preserve ``ch0`` + ``ch1``). Falls back cleanly to
-            channel 0 when the input has fewer channels than requested.
-
-    Returns:
-        Contiguous float array ready for FLAC encoding.
-
-    Raises:
-        ValueError: If ``audio`` is empty, has unsupported dimensions, or
-            ``channel_mode`` is unknown.
-    """
-    mode = ArchiveChannelMode(channel_mode)
-    if audio.ndim not in (1, 2) or audio.size == 0 or audio.shape[0] == 0:
-        raise ValueError("audio vacío")
-    if audio.ndim == 1:
-        return np.ascontiguousarray(audio)
-    channels = audio.shape[1]
-    if channels < 1:
-        raise ValueError("audio vacío")
-    if mode is ArchiveChannelMode.STEREO_2CH:
-        if channels >= 2:
-            return np.ascontiguousarray(audio[:, :2])
-        return np.ascontiguousarray(audio[:, 0])
-    if mode is ArchiveChannelMode.MONO_CH1:
-        col = 1 if channels >= 2 else 0
-        return np.ascontiguousarray(audio[:, col])
-    return np.ascontiguousarray(audio[:, 0])
 
 
 class AudioArchiver:
@@ -255,18 +215,9 @@ class AudioArchiver:
             False si el disco está debajo del piso (no se escribió nada),
             True si el archivo quedó en disco.
         """
-        import soundfile as sf
-
         if not self._has_room():
             return False
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        descriptor = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
-        try:
-            os.fchmod(descriptor, 0o600)
-            with os.fdopen(descriptor, 'wb', closefd=False) as output:
-                sf.write(output, samples, self.sample_rate, format="FLAC")
-        finally:
-            os.close(descriptor)
+        write_private_audio(path, samples, self.sample_rate, fmt="FLAC")
         return True
 
     def _has_room(self) -> bool:
