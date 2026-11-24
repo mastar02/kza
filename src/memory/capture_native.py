@@ -71,8 +71,10 @@ def build_capture_native_drains(
     from src.pipeline.multi_room_audio_loop import MultiRoomAudioLoop
     from src.pipeline.request_router import RequestRouter
     from src.pipeline.response_handler import ResponseHandler
+    from src.stt.hybrid import HybridVetoSTT
     from src.stt.parakeet_stt import ParakeetSTT
     from src.stt.whisper_fast import FastWhisperSTT
+    from src.stt.worker_pool import STTWorkerPool
     from src.tts.piper_tts import DualTTS, KokoroTTS
     from src.users.speaker_identifier import SpeakerIdentifier
     from src.users.voice_registry import VoiceRegistry
@@ -190,6 +192,23 @@ def build_capture_native_drains(
         else:
             supported = False
 
+    def _register_model_leaves(model, *, has_borrowers: bool) -> None:
+        if isinstance(model, HybridVetoSTT):
+            _register_model_leaves(model._primary, has_borrowers=has_borrowers)
+            _register_model_leaves(model._gate, has_borrowers=has_borrowers)
+            return
+        if isinstance(model, STTWorkerPool):
+            if not model._workers:
+                nonlocal supported
+                supported = False
+                return
+            for worker in model._workers:
+                _register_model_leaves(worker, has_borrowers=has_borrowers)
+            return
+        models[id(model)] = model
+        if has_borrowers:
+            model_receipts.add(id(model))
+
     for owner in model_owners:
         if not isinstance(owner, _ModelResourceOwner):
             supported = False
@@ -197,9 +216,7 @@ def build_capture_native_drains(
         if owner._capture_unreviewed or owner._closing is not None:
             supported = False
         for model in tuple(owner._models.values()):
-            models[id(model)] = model
-            if owner._borrowers:
-                model_receipts.add(id(model))
+            _register_model_leaves(model, has_borrowers=bool(owner._borrowers))
         for begin in tuple(owner._borrowers):
             borrower = getattr(begin, "__self__", None)
             if borrower is None:

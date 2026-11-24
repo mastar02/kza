@@ -74,8 +74,10 @@ def _model_unknown(model):
     from src.llm.hermes_reasoner import (_HermesLifecycle, _HERMES_PROCESS_LOCK,
                                        _HERMES_PROCESS_OWNERS)
     from src.llm.reasoner import FastRouter, HttpReasoner
+    from src.stt.hybrid import HybridVetoSTT
     from src.stt.parakeet_stt import ParakeetSTT
     from src.stt.whisper_fast import FastWhisperSTT
+    from src.stt.worker_pool import STTWorkerPool
     from src.tts.piper_tts import DualTTS, KokoroTTS
     from src.users.speaker_identifier import SpeakerIdentifier
     from src.wakeword.detector import WakeWordDetector
@@ -106,6 +108,22 @@ def _model_unknown(model):
             return bool(executor is not None and executor._broken or
                         closing is not None and closing.done() and
                         (closing.cancelled() or closing.exception() is not None))
+    if isinstance(model, STTWorkerPool):
+        closing = model._closing
+        return bool(
+            not model._workers
+            or any(_model_unknown(worker) for worker in model._workers)
+            or (closing is not None and closing.done()
+                and (closing.cancelled() or closing.exception() is not None))
+        )
+    if isinstance(model, HybridVetoSTT):
+        closing = model._closing
+        return bool(
+            _model_unknown(model._primary)
+            or _model_unknown(model._gate)
+            or (closing is not None and closing.done()
+                and (closing.cancelled() or closing.exception() is not None))
+        )
     if isinstance(model, (DualTTS, KokoroTTS)):
         with model._adapter_condition:
             active = any(lease.active for lease in model._adapter_leases)
