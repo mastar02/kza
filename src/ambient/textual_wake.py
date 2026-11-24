@@ -215,6 +215,9 @@ class TextualWakeDetector:
         min_vad: float = 0.50,
         now_fn: Callable[[], float] = time.monotonic,
         on_missed_fn: Callable[[str, np.ndarray], None] | None = None,
+        *,
+        extract_inline: bool = True,
+        max_command_words: int = 14,
     ):
         """Configurar el detector.
 
@@ -259,6 +262,8 @@ class TextualWakeDetector:
         self._min_vad = min_vad
         self._now_fn = now_fn
         self._on_missed_fn = on_missed_fn
+        self._extract_inline = extract_inline
+        self._max_command_words = max_command_words
         # Último dispatch TEXTUAL propio por room (0.0 = nunca) — dedup contra
         # re-transcripciones solapadas de la misma utterance.
         self._last_dispatch_ts: dict[str, float] = {}
@@ -274,6 +279,7 @@ class TextualWakeDetector:
         utterance_started_ts: float | None = None,
         memory_source=None,
         *,
+        vad_speech_prob: float | None = None,
         audio_provenance=None,
         transcript_provenance=None,
         transcript_span=None,
@@ -372,13 +378,34 @@ class TextualWakeDetector:
             )
             return False
 
-        if vad_prob is not None and vad_prob < self._min_vad:
+        effective_vad = (
+            max(vad_prob, vad_speech_prob)
+            if (vad_prob is not None and vad_speech_prob is not None)
+            else (vad_speech_prob if vad_speech_prob is not None else vad_prob)
+        )
+        if effective_vad is not None and effective_vad < self._min_vad:
             logger.info(
                 f"[TextualWake] skip room={room_id} source={source} "
-                f"speaker={speaker} decision=low_vad vad={vad_prob:.2f} "
+                f"speaker={speaker} decision=low_vad vad={effective_vad:.2f} "
                 f"min_vad={self._min_vad:.2f} chars={len(text)}"
             )
             return False
+
+        dispatch_text = text
+        inline_conversation = False
+        if self._extract_inline:
+            from src.ambient.inline_wake import extract_inline_command
+
+            inline = extract_inline_command(
+                text,
+                variants=self._variants,
+                max_edit_distance=self._max_edit_distance,
+                max_command_words=self._max_command_words,
+            )
+            if inline is not None:
+                inline_conversation = inline.embedded_in_conversation
+                if inline.embedded_in_conversation and inline.command_text:
+                    dispatch_text = inline.command_text
 
         if self._on_missed_fn is not None:
             try:
@@ -391,14 +418,15 @@ class TextualWakeDetector:
         event = CommandEvent(
             audio=audio,
             room_id=room_id,
-            wake_text=text,
-            transcript=CapturedTranscript.from_audio(text, TranscriptSource.AMBIENT, audio,
+            wake_text=dispatch_text,
+            transcript=CapturedTranscript.from_audio(dispatch_text, TranscriptSource.AMBIENT, audio,
                 transcript_provenance=transcript_provenance, transcript_span=transcript_span,
                 transcript_truncated=transcript_truncated),
             audio_provenance=audio_provenance,
             capture_complete=True,
             wake_score=1.0,
             textual_wake=True,
+            inline_conversation=inline_conversation,
             **({"capture_id": memory_source.capture_id, "conversation_id": memory_source.conversation_id,
                 "captured_at": memory_source.captured_at, "source_expires_at": memory_source.expires_at}
                if memory_source is not None else {}),

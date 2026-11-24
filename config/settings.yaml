@@ -2073,9 +2073,14 @@ ambient:
     preroll_ms: 500
     max_segment_s: 30.0
     min_speech_ms: 300
+    # Solapamiento de audio al cortar por max_segment_s (charla continua >30s)
+    # para no perder palabras justo en el borde del segmento. 0 = comportamiento clásico.
+    overlap_ms: 800
   speaker:
     min_audio_s: 0.8
     embeddings_dir: "./data/users"
+    # Canal explícito para SpeakerTagger / previews (0=Conference, 1=ASR).
+    channel: 0
   classifier:
     tv_tolerance_rad: 0.35
     min_stability: 0.6
@@ -2141,6 +2146,12 @@ ambient:
     # exponga la media de voz sin cola. min_vad: 0.0 = gate off (rollback
     # sin deploy).
     min_vad: 0.50
+    # Habilitar wake textual inline también en segmentos que cerraron por tope
+    # max_segment_s (charlas continuas sin pausa de 700ms).
+    allow_incomplete_segments: true
+    # Extraer solo la cláusula "Nexa <acción>" cuando aparece incrustada en una charla.
+    extract_inline: true
+    max_command_words: 14
 
 # Code-Index — búsqueda semántica del codebase para agentes (spec 2026-07-04).
 # Servicio SEPARADO (kza-code-index.service, :9515); el pipeline de voz NO lo

@@ -59,6 +59,7 @@ class AmbientTranscriber:
         privacy=None,
         close_timeout_s: float = 1,
         speaker_col: int = 0,
+        allow_incomplete_textual_wake: bool = False,
         *, owns_segmenters: bool = False,
     ):
         self._tap = tap
@@ -67,6 +68,7 @@ class AmbientTranscriber:
         self._stt = ambient_stt
         self._tagger = tagger
         self._speaker_col = int(speaker_col)
+        self._allow_incomplete_textual_wake = bool(allow_incomplete_textual_wake)
         self._doa = doa_estimator
         self._classifier = classifier
         self._store = store
@@ -541,7 +543,7 @@ class AmbientTranscriber:
             # (encode FLAC + shutil.disk_usage) y no puede quedar en serie
             # por delante de un dispatch de cara al usuario, ni un fallo del
             # UPDATE de audio_path puede tragarse un "nexa" real.
-            if self._textual_wake is not None and seg.complete:
+            if self._textual_wake is not None and (seg.complete or self._allow_incomplete_textual_wake):
                 self._require_live(capture_source)
                 try:
                     # review PR #16: `seg.t0` es wall-clock (tap.py stampea
@@ -561,6 +563,14 @@ class AmbientTranscriber:
                         from src.memory.fact_ledger import MemoryOrigin, MemorySource
                         provenance["memory_source"] = MemorySource(utt.capture_id, utt.conversation_id,
                                                                    utt.t0, utt.expires_at, MemoryOrigin.AMBIENT)
+                    wake_kwargs = {}
+                    if getattr(seg, "vad_speech_prob", None) is not None:
+                        import inspect
+                        sig = inspect.signature(self._textual_wake.maybe_dispatch)
+                        if "vad_speech_prob" in sig.parameters or any(
+                            p.kind is inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+                        ):
+                            wake_kwargs["vad_speech_prob"] = seg.vad_speech_prob
                     await self._textual_wake.maybe_dispatch(
                         room_id, text, source, speaker,
                         audio=selection.mono_from(seg.audio) if selection is not None else self._stt.asr_mono(seg.audio),
@@ -570,6 +580,7 @@ class AmbientTranscriber:
                         transcript_truncated=False if selection is not None else None,
                         vad_prob=seg.vad_prob,
                         utterance_started_ts=utterance_started_ts,
+                        **wake_kwargs,
                         **provenance,
                     )
                 except Exception as error:
@@ -803,6 +814,7 @@ def build_ambient_path(
                 preroll_ms=seg_cfg.get("preroll_ms", 500),
                 max_segment_s=seg_cfg.get("max_segment_s", 30.0),
                 min_speech_ms=seg_cfg.get("min_speech_ms", 300),
+                overlap_ms=seg_cfg.get("overlap_ms", 0),
             )
         except BaseException:
             if issubclass(type(predictor), _SileroPredictor):
@@ -887,6 +899,7 @@ def build_ambient_path(
     store.audio_inflight = archiver.is_writing
 
     tap = MultiChannelTap(clock=privacy.ledger.clock if privacy is not None else None)
+    tw_cfg = ambient_cfg.get("textual_wake", {}) or {}
     transcriber = AmbientTranscriber(
         tap=tap,
         segmenter_factory=segmenter_factory,
@@ -902,6 +915,7 @@ def build_ambient_path(
         archiver=archiver,
         privacy=privacy,
         speaker_col=int(sp_cfg.get("channel", 0)),
+        allow_incomplete_textual_wake=bool(tw_cfg.get("allow_incomplete_segments", False)),
     )
     if register_stt_borrower is not None:
         register_stt_borrower(transcriber.begin_close)

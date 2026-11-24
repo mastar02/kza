@@ -107,6 +107,10 @@ class CommandEvent:
     # El router NO toma grammar fast-path: el texto ya contiene "nexa" (así
     # matcheó) y un verbo+luz alucinado ejecutaba luces fantasma.
     textual_wake: bool = False
+    # True cuando "Nexa <acción>" se extrajo incrustado dentro de una charla
+    # continua (hay texto conversacional antes o después del comando). Evita
+    # abrir FollowUpMode intrusivo tras ejecutar la acción inline.
+    inline_conversation: bool = False
     # Silero probability of the wake frame and what opened the capture
     # ("wake", "follow_up", "barge_in", "inline"; None for untagged producers).
     # The single-room AudioLoop tags "wake" and "follow_up" and leaves wake_vad unset.

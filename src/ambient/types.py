@@ -37,6 +37,9 @@ class RawSegment:
     # el no_speech_prob del turbo está degenerado (~1e-10 siempre, verificado
     # 2026-06-07); este mean SÍ discrimina voz near-field vs TV/silencio.
     vad_prob: float = 0.0
+    # Promedio de Silero SOLO sobre chunks clasificados como voz (sin dilución
+    # por la cola de close_silence_ms), útil para comandos cortos inline.
+    vad_speech_prob: float | None = None
     # A duration limit may close storage, but cannot finalize a voice command.
     complete: bool = True
     input_source: MemorySource | None = field(default=None, repr=False)

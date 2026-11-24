@@ -329,6 +329,7 @@ class UtteranceSegmenter:
         preroll_ms: int = 500,
         max_segment_s: float = 30.0,
         min_speech_ms: int = 300,
+        overlap_ms: int = 0,
         *, owns_vad_predictor: bool = False,
     ):
         self._vad_predict = vad_predict
@@ -340,14 +341,17 @@ class UtteranceSegmenter:
         self.close_silence_ms = close_silence_ms
         self.max_segment_s = max_segment_s
         self.min_speech_ms = min_speech_ms
+        self.overlap_ms = max(0, int(overlap_ms))
 
         chunk_ms = 80.0  # CHUNK_SIZE=1280 @ 16kHz — mismo del pipeline
+        self._overlap_chunks = max(0, int(round(self.overlap_ms / chunk_ms)))
         self._preroll: deque[tuple[float, np.ndarray, bool, CaptureOpening | None]] = deque(
-            maxlen=max(0, int(round(preroll_ms / chunk_ms)))
+            maxlen=max(0, int(round(preroll_ms / chunk_ms)), self._overlap_chunks)
         )
         self._in_speech = False
         self._buf: list[tuple[float, np.ndarray, bool, CaptureOpening | None]] = []
         self._probs: list[float] = []  # prob Silero por chunk del buffer
+        self._speech_probs: list[float] = []  # prob Silero solo en chunks con voz
         self._silence_ms = 0.0
         self._speech_ms = 0.0
         self._col_warned = False
@@ -382,6 +386,7 @@ class UtteranceSegmenter:
         self._preroll.clear()
         self._buf.clear()
         self._probs.clear()
+        self._speech_probs.clear()
         self._in_speech = False
         self._silence_ms = self._speech_ms = 0.0
         self._vad_opening = None
@@ -457,6 +462,7 @@ class UtteranceSegmenter:
                 # vad_prob promedia los chunks evaluados in_speech; el
                 # pre-roll (silencio previo) queda fuera a propósito.
                 self._probs = [prob]
+                self._speech_probs = [prob]
                 self._preroll.clear()
                 self._silence_ms = 0.0
                 self._speech_ms = chunk_ms
@@ -469,6 +475,7 @@ class UtteranceSegmenter:
         self._buf.append((ts, chunk, tts_active, opening))
         self._probs.append(prob)
         if is_speech:
+            self._speech_probs.append(prob)
             self._silence_ms = 0.0
             self._speech_ms += chunk_ms
         else:
@@ -484,9 +491,17 @@ class UtteranceSegmenter:
     def _close(self, *, complete: bool = True) -> RawSegment | None:
         buf, self._buf = self._buf, []
         probs, self._probs = self._probs, []
+        speech_probs, self._speech_probs = self._speech_probs, []
         self._in_speech = False
         self._silence_ms = 0.0
         speech_ms, self._speech_ms = self._speech_ms, 0.0
+        # Preserve trailing audio overlap across forced max_segment_s boundaries
+        # so words spoken across a 30s split are not lost in continuous speech.
+        carry_overlap = (
+            list(buf[-self._overlap_chunks:])
+            if (not complete and self._overlap_chunks > 0 and buf)
+            else []
+        )
         # Silero stateful: reset de la GRU en el límite de utterance (doc
         # oficial). Opcional vía getattr — los predictores fake no lo exponen.
         reset_fn = getattr(self._vad_predict, "reset", None)
@@ -501,6 +516,12 @@ class UtteranceSegmenter:
         else:
             self._state_since = None
             self._vad_opening = None
+        if carry_overlap:
+            self._preroll.clear()
+            self._preroll.extend(carry_overlap)
+            self._state_since = carry_overlap[0][0]
+            if carry_overlap[-1][3] is not None:
+                self._vad_opening = carry_overlap[-1][3]
         if not buf or speech_ms < self.min_speech_ms:
             return None  # blip: menos voz que min_speech_ms → descartar
         t0 = buf[0][0]
@@ -512,9 +533,11 @@ class UtteranceSegmenter:
         audio = np.concatenate([c for _, c, _, _ in buf], axis=0)
         during_tts = any(t for _, _, t, _ in buf)
         vad_prob = float(sum(probs) / len(probs)) if probs else 0.0
+        vad_speech_prob = float(sum(speech_probs) / len(speech_probs)) if speech_probs else None
         self._segment_generation += 1
         return RawSegment(
             t0=t0, t1=t1, audio=audio, during_tts=during_tts, vad_prob=vad_prob,
+            vad_speech_prob=vad_speech_prob,
             complete=complete,
             input_opening=opening, segment_generation=self._segment_generation,
         )

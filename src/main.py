@@ -2216,6 +2216,8 @@ async def build_application(
                 max_edit_distance=_textual_wake_cfg.get("max_edit_distance", 1),
                 min_vad=_textual_wake_cfg.get("min_vad", 0.50),
                 on_missed_fn=_submit_missed,
+                extract_inline=bool(_textual_wake_cfg.get("extract_inline", True)),
+                max_command_words=int(_textual_wake_cfg.get("max_command_words", 14)),
             )
             ambient_path.transcriber.attach_textual_wake(textual_wake_detector)
             logger.info(
