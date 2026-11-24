@@ -17,6 +17,7 @@ from src.home_assistant.operations import action_parameters
 from src.orchestrator.dispatcher import RequestDispatcher
 from src.reminders.reminder_scheduler import ReminderScheduler
 from src.reminders.reminder_store import ReminderScope, ReminderStore
+from src.rooms.room_context import RoomConfig
 from src.routines.factory import build_routine_scheduler
 from src.routines.models import parse_routine_spec, spec_to_dict
 from tests.integration.test_home_control_policy import ObservedHA
@@ -270,6 +271,47 @@ async def test_catalog_uses_shared_selection_and_intersects_technical_bounds(typ
     assert "set_temperature" not in next(entity for entity in (await catalog.snapshot()).entities if entity.domain == "climate").capabilities
     unselected = await HomeCatalogService(ha, {}).snapshot()
     assert all(entity.capabilities == () for entity in unselected.entities)
+
+
+@pytest.mark.parametrize(("system_unit", "sensor_unit", "sensor_state", "climate_temp", "room_temp"), [
+    ("°C", "°C", "0", 31, 0),
+    ("°C", "°F", "72", 31, 31),
+    ("°C", "°C", "nan", 31, 31),
+    ("°C", "°C", "unavailable", float("inf"), None),
+    ("°F", "°F", "72", 72, None),
+])
+def test_home_catalog_serializes_only_configured_finite_temperature_and_humidity(
+    typed_graph, monkeypatch, system_unit, sensor_unit, sensor_state, climate_temp, room_temp,
+):
+    ha, actions = typed_graph
+    ha.unit = system_unit
+    ha.states["climate.test_ac"]["attributes"].update(current_temperature=climate_temp, hvac_action="idle")
+    for entity_id, value, unit in (
+        ("sensor.test_temperature", sensor_state, sensor_unit),
+        ("sensor.test_humidity", "51.5", "%"),
+        ("sensor.internal", "19", "°C"),
+    ):
+        ha.states[entity_id] = {"entity_id": entity_id, "state": value, "attributes": {"unit_of_measurement": unit}}
+
+    room = RoomConfig("living", "Sala", "la sala", default_light="light.test_lamp", default_climate="climate.test_ac",
+                      temperature_sensor="sensor.test_temperature", humidity_sensor="sensor.test_humidity")
+    monkeypatch.setenv("KZA_DASHBOARD_TOKEN", "test-session")
+    dashboard = DashboardAPI(ha_client=ha, home_actions=actions, home_rooms={"living": room})
+    with TestClient(dashboard.app) as client:
+        response = client.get("/api/home/catalog", headers={"Authorization": "Bearer test-session"})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    projection, = data["rooms"]
+    assert (projection["current_temperature"], projection["current_humidity"]) == (room_temp, 51.5)
+    assert (projection["default_light"], projection["default_climate"]) == (room.default_light, room.default_climate)
+    entities = {entity["entity_id"]: entity for entity in data["entities"]}
+    climate = entities[room.default_climate]
+    assert climate["current_temperature"] == (31 if system_unit == "°C" and climate_temp == 31 else None)
+    assert climate["hvac_action"] == "idle"
+    assert entities[room.temperature_sensor]["current_temperature"] == (0 if sensor_state == "0" else None)
+    assert entities[room.humidity_sensor]["current_humidity"] == 51.5
+    assert entities["sensor.internal"]["current_temperature"] is None
+    assert entities["sensor.internal"]["current_humidity"] is None
 
 
 async def test_temperature_confirmation_cannot_accept_an_unrequested_mode_change(typed_graph):

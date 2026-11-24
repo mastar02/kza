@@ -7,14 +7,14 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
-from src.home_assistant.ha_client import HomeAssistantClient, get_home_capabilities
 from src.core.observation import Observation
-from src.home_assistant.control_policy import HomeControlPolicy
-from src.home_assistant.capability_service import HomeCapabilityService
-from src.home_assistant.operations import finite_number
 from src.home_assistant.capability_projection import HomeControlLimits
-from src.home_assistant.capability_projection import selected_capabilities as selected_capabilities
 from src.home_assistant.capability_projection import projected_capabilities as projected_capabilities
+from src.home_assistant.capability_projection import selected_capabilities as selected_capabilities
+from src.home_assistant.capability_service import HomeCapabilityService
+from src.home_assistant.control_policy import HomeControlPolicy
+from src.home_assistant.ha_client import HomeAssistantClient, get_home_capabilities
+from src.home_assistant.operations import finite_number
 from src.rooms.room_context import RoomConfig
 
 
@@ -38,6 +38,9 @@ class HomeEntity:
     color_temp_kelvin: int | None = None
     position: int | None = None
     observation: Observation | None = None
+    current_temperature: float | None = None
+    current_humidity: float | None = None
+    hvac_action: str | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +50,18 @@ class HomeRoom:
     room_id: str
     name: str
     entity_ids: tuple[str, ...]
+    current_temperature: float | None = None
+    current_humidity: float | None = None
+    default_light: str | None = None
+    default_climate: str | None = None
+
+
+def _sensor_reading(value: str) -> float | None:
+    try:
+        reading = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return reading if math.isfinite(reading) else None
 
 
 @dataclass(frozen=True)
@@ -122,6 +137,8 @@ class HomeCatalogService:
         unit = snapshot.temperature_unit
         explicit: dict[str, list[str]] = defaultdict(list)
         alias_rooms: dict[str, set[str]] = defaultdict(set)
+        temperature_sensors = {room.temperature_sensor for room in self._rooms.values()}
+        humidity_sensors = {room.humidity_sensor for room in self._rooms.values()}
         for room_id, room in self._rooms.items():
             for attribute in (
                 "default_light", "default_climate", "default_cover", "default_media_player",
@@ -158,6 +175,21 @@ class HomeCatalogService:
             capability = snapshot.entity(entity_id)
             capabilities, limits = capability.effective_operations(now), capability.limits
             attributes = state.get("attributes", {})
+            domain = entity_id.partition(".")[0]
+            current_temperature = current_humidity = hvac_action = None
+            if domain == "climate":
+                reading = attributes.get("current_temperature")
+                if unit == "°C" and finite_number(reading):
+                    current_temperature = reading
+                action = attributes.get("hvac_action")
+                if action in ("off", "idle", "cooling", "heating", "drying", "fan", "preheating", "defrosting"):
+                    hvac_action = action
+            elif domain == "sensor":
+                sensor_unit = attributes.get("unit_of_measurement")
+                if entity_id in temperature_sensors and sensor_unit == "°C":
+                    current_temperature = _sensor_reading(state["state"])
+                if entity_id in humidity_sensors and sensor_unit == "%":
+                    current_humidity = _sensor_reading(state["state"])
             brightness = attributes.get("brightness")
             brightness_pct = None
             if (
@@ -170,7 +202,7 @@ class HomeCatalogService:
             name = grants[entity_id].display_name if entity_id in grants and grants[entity_id].scene_effects else attributes.get("friendly_name")
             changed_at = state.get("last_changed")
             entity = HomeEntity(
-                entity_id=entity_id, domain=entity_id.partition(".")[0],
+                entity_id=entity_id, domain=domain,
                 name=name if isinstance(name, str) else entity_id,
                 state=state["state"], brightness_pct=brightness_pct,
                 room_id=room_id, area_id=area_id, capabilities=capabilities,
@@ -181,6 +213,7 @@ class HomeCatalogService:
                 temperature=attributes.get("temperature") if unit == "°C" and finite_number(attributes.get("temperature")) else None,
                 color_temp_kelvin=attributes.get("color_temp_kelvin") if type(attributes.get("color_temp_kelvin")) is int else None,
                 position=attributes.get("current_position") if type(attributes.get("current_position")) is int else None,
+                current_temperature=current_temperature, current_humidity=current_humidity, hvac_action=hvac_action,
             )
             entities.append(entity)
             if room_id is not None:
@@ -189,16 +222,29 @@ class HomeCatalogService:
             observed_at=states.observed_at, stale=not observation.current(now),
             observation=observation, registry_observation=registry_observation,
             selection_observation=snapshot.selection_observation.as_of(now),
-            rooms=self._room_dtos(room_entities), entities=tuple(entities),
+            rooms=self._room_dtos(room_entities, {entity.entity_id: entity for entity in entities}), entities=tuple(entities),
             unassigned_entities=tuple(entity for entity in entities if entity.room_id is None),
             reason=";".join(dict.fromkeys(reasons)) or None,
         )
 
-    def _room_dtos(self, entity_ids: Mapping[str, list[str]]) -> tuple[HomeRoom, ...]:
-        return tuple(
-            HomeRoom(room_id, room.name, tuple(entity_ids.get(room_id, ())))
-            for room_id, room in self._rooms.items()
-        )
+    def _room_dtos(
+        self, entity_ids: Mapping[str, list[str]], entities: Mapping[str, HomeEntity],
+    ) -> tuple[HomeRoom, ...]:
+        rooms = []
+        for room_id, room in self._rooms.items():
+            temperature_sensor = entities.get(room.temperature_sensor or "")
+            humidity_sensor = entities.get(room.humidity_sensor or "")
+            climate = entities.get(room.default_climate or "")
+            temperature = temperature_sensor.current_temperature if temperature_sensor and temperature_sensor.domain == "sensor" else None
+            if temperature is None and climate and climate.domain == "climate":
+                temperature = climate.current_temperature
+            rooms.append(HomeRoom(
+                room_id, room.name, tuple(entity_ids.get(room_id, ())),
+                current_temperature=temperature,
+                current_humidity=humidity_sensor.current_humidity if humidity_sensor else None,
+                default_light=room.default_light, default_climate=room.default_climate,
+            ))
+        return tuple(rooms)
 
     async def aclose(self) -> None:
         """Drain a locally created reader; injected shared readers belong to the graph."""

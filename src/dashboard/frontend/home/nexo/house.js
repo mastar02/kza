@@ -1,4 +1,4 @@
-// Geometry adapted from approved NEXO reference d686fcde; illustrative only.
+// Geometry adapted from the approved NEXO illustration d686fcde.
 import * as THREE from './vendor/three.module.min.js';
 const ROTATE_STEP = Math.PI / 12; // WCAG 2.5.7: the rotate buttons cover yaw only, in fixed 15 degree steps; tilt stays on drag and the Plano/3D switch.
 const DEFAULT_YAW = .68;
@@ -8,16 +8,65 @@ const ROOM_LAYOUT = {
   bedroom:{x:3.55,z:-2.05,w:4.6,d:3.7,pin:[3.5,1.2,-2.2]},
   office:{x:2.55,z:2.1,w:2.6,d:3.55,pin:[2.25,1.2,2.1]},
   bathroom:{x:5.05,z:2.1,w:1.95,d:3.55,pin:[5.15,1.3,2.05]},
+  hall:{x:-.45,z:-2.05,w:2.9,d:3.7,pin:[-.5,1.2,-2.1]},
   garden:{x:7.7,z:0,w:2.5,d:8.2,pin:[7.9,.5,1.5]}
 };
+const ROOM_BINDINGS = new Map([
+  ['living', 'living'], ['cocina', 'kitchen'], ['kitchen', 'kitchen'],
+  ['cuarto', 'bedroom'], ['bedroom', 'bedroom'], ['escritorio', 'office'], ['office', 'office'],
+  ['bano', 'bathroom'], ['bathroom', 'bathroom'], ['balcon', 'garden'], ['garden', 'garden'],
+  ['hall', 'hall'], ['escalera', 'hall']
+]);
+const THERMAL_ACTIONS = {
+  cooling: ['Enfriando', 0x71bdff], heating: ['Calefaccionando', 0xffad77],
+  fan: ['Ventilando', 0x62e8cd], drying: ['Deshumidificando', 0xb5a6ff],
+  preheating: ['Precalentando', 0xffad77], defrosting: ['Descongelando', 0xffad77]
+};
+const THERMAL_MODES = {
+  cool: ['Modo frío', 0x71bdff], heat: ['Modo calor', 0xffad77], fan_only: THERMAL_ACTIONS.fan,
+  dry: ['Modo seco', 0xb5a6ff], auto: ['Modo automático', 0x62e8cd], heat_cool: ['Modo frío y calor', 0x62e8cd]
+};
+const NEUTRAL_THERMAL = 0x8097a8;
+const degrees = value => Number.isFinite(value) ? `${value} °C` : null;
 
-/** Render the approved illustration without binding example rooms to real devices. */
-export function createHouse({container,onReady=()=>{}}) {
+function lightReading(room, entities) {
+  const lights = entities.filter(entity => entity.domain === 'light' && entity.available && entity.state === 'on');
+  const primary = lights.find(entity => entity.entity_id === room.default_light) ?? lights[0];
+  const kelvin = primary?.color_temp_kelvin;
+  return {
+    on: lights.length,
+    fraction: (lights.length ? Math.max(...lights.map(entity =>
+      Number.isFinite(entity.brightness_pct) ? THREE.MathUtils.clamp(entity.brightness_pct, 0, 100) : 100)) : 0) / 100,
+    color: kelvin < 3300 && kelvin > 0 ? 0xffc885 : kelvin >= 4800 ? 0xadd5ff : 0xf1f1ff
+  };
+}
+
+function thermalReading(room, entities) {
+  const units = entities.filter(entity => entity.domain === 'climate');
+  const unit = units.find(entity => entity.entity_id === room.default_climate) ?? (units.length === 1 ? units[0] : null);
+  const actual = degrees(room.current_temperature ?? unit?.current_temperature);
+  if (!unit?.available || ['unknown', 'unavailable'].includes(unit.state)) {
+    return { actual, objective: null, hasUnit: !!unit, active: false, status: unit ? 'Estado desconocido' : '', color: NEUTRAL_THERMAL };
+  }
+  const objective = degrees(unit.temperature);
+  const effect = Object.hasOwn(THERMAL_ACTIONS, unit.hvac_action) ? THERMAL_ACTIONS[unit.hvac_action]
+    : !unit.hvac_action && Object.hasOwn(THERMAL_MODES, unit.state) ? THERMAL_MODES[unit.state] : null;
+  const active = unit.state !== 'off' && !!effect;
+  return {
+    actual, objective, hasUnit: true, active,
+    status: active ? effect[0] : unit.state === 'off' || unit.hvac_action === 'off' ? 'Apagado' : 'En pausa',
+    color: active ? effect[1] : NEUTRAL_THERMAL
+  };
+}
+
+/** Render the illustration with live state for explicitly bound rooms. */
+export function createHouse({container,pins,onSelect=()=>{},onReady=()=>{}}) {
   let renderer,scene,observer,materials={},rafId=0,pointerId=null,destroyed=false;
   const listeners=new AbortController();
   function destroy(){
     if(destroyed)return;
     destroyed=true;cancelAnimationFrame(rafId);observer?.disconnect();listeners.abort();delete container.dataset.yaw;
+    pins?.replaceChildren();
     const canvas=renderer?.domElement;
     if(pointerId!==null&&canvas?.hasPointerCapture?.(pointerId))canvas.releasePointerCapture(pointerId);
     const geometries=new Set(),allMaterials=new Set(Object.values(materials)),textures=new Set();
@@ -46,7 +95,7 @@ export function createHouse({container,onReady=()=>{}}) {
   const camera=new THREE.OrthographicCamera(-12,12,8,-8,.1,100);
   const target=new THREE.Vector3(.7,.1,0);
   let yaw=DEFAULT_YAW,tilt=.78,zoom=1.1,currentYaw=yaw,currentTilt=tilt,currentZoom=zoom;
-  let width=0,height=0,dirty=true,dragging=false,startX=0,startY=0;
+  let width=0,height=0,dirty=true,ready=true,rendered=false;
   const hemisphere=new THREE.HemisphereLight(0xc9ddff,0x243137,1.25);scene.add(hemisphere);
   const keyLight=new THREE.DirectionalLight(0xe0ecff,1.8);keyLight.position.set(-4,14,8);keyLight.castShadow=true;
   Object.assign(keyLight.shadow.camera,{left:-15,right:15,top:13,bottom:-13,near:1,far:38});
@@ -72,15 +121,17 @@ export function createHouse({container,onReady=()=>{}}) {
   const baseEdges=new THREE.LineSegments(new THREE.EdgesGeometry(base.geometry),new THREE.LineBasicMaterial({color:0x4e817f,transparent:true,opacity:.5}));baseEdges.position.copy(base.position);house.add(baseEdges);
   box(15.9,.05,10.1,1,-.12,0,mat('ground',0x293d40,.95));
   box(12.4,.16,8.5,0,-.08,0,mat('foundation',0x4b6070));
+  const floorMeshes = new Map();
   for(const [id,r] of Object.entries(ROOM_LAYOUT)){
     if(id==='garden')continue;
-    const fm=new THREE.MeshStandardMaterial({color:id==='bathroom'?0x667d86:(id==='living'?0x697168:0x5f6868),roughness:.84,emissive:0x000000,emissiveIntensity:.04});
-    box(r.w,.05,r.d,r.x,.03,r.z,fm);
+    const floorColors = {bathroom:0x667d86,living:0x697168,hall:0x65706d};
+    const fm=new THREE.MeshStandardMaterial({color:floorColors[id] ?? 0x5f6868,roughness:.84,emissive:0x000000,emissiveIntensity:0});
+    floorMeshes.set(id, box(r.w,.05,r.d,r.x,.03,r.z,fm));
+    if(id==='hall')continue;
     if(id!=='bathroom')for(let i=-Math.floor(r.d/.23)/2;i<r.d/.23/2;i++){
       box(r.w,.006,.012,r.x,.085,r.z+i*.23,mat('floorline',0x363e41,.95),house,false);
     }
   }
-  box(2.9,.05,3.7,-.45,.03,-2.05,mat('diningfloor',0x65706d));
   wall(12.4,1.9,.14,0,-4.2);wall(.15,1.55,8.4,-6.2,0);wall(.15,1.55,8.4,6.2,0);
   wall(12.4,.25,.14,0,4.2);
   wall(.13,1.25,3.6,1.05,-2.35);wall(.13,.65,2.3,1.05,3.05);
@@ -142,7 +193,7 @@ export function createHouse({container,onReady=()=>{}}) {
   box(1.3,.65,.42,5.3,.1,.52,wood);box(1.38,.07,.48,5.3,.75,.52,porcelain);cyl(.22,.17,.09,5.3,.82,.52,porcelain);
   box(.035,1.15,.78,4.1,.1,1.15,windowGlass);cyl(.15,.15,.4,5.32,.15,1.75,porcelain);sphere(.26,5.32,.57,1.72,porcelain).scale.set(1,.3,1.3);
   // Terrace, pool and garden.
-  box(2.5,.04,8.2,7.67,-.035,0,mat('terrace',0x61716a,.95));
+  floorMeshes.set('garden', box(2.5,.04,8.2,7.67,-.035,0,mat('terrace',0x61716a,.95)));
   for(let i=0;i<25;i++)box(2.45,.009,.018,7.67,.008,-3.95+i*.33,mat('deckline',0x2d4c4a),house,false);
   box(1.95,.12,3.55,7.7,.03,-1.82,mat('poolRim',0x819b99));box(1.71,.04,3.3,7.7,.16,-1.82,new THREE.MeshStandardMaterial({color:0x28787d,metalness:.3,roughness:.12,emissive:0x1d8b95,emissiveIntensity:.35}));
   for(let i=0;i<8;i++)strip([6.89,.203,-3.35+i*.4],[8.51,.203,-3.35+i*.4],0x5ca6aa,.006);
@@ -151,9 +202,8 @@ export function createHouse({container,onReady=()=>{}}) {
   cyl(.32,.32,.06,7.65,.49,1.1,wood);cyl(.04,.07,.45,7.65,.04,1.1,black);
   for(const [x,z,s] of [[-6.65,-4.6,1.3],[8.7,4.1,1],[8.65,-4.35,1.3],[-6.65,4.6,.75]])plant(x,z,s,-.07);
   for(let i=0;i<9;i++){const shrub=sphere(.28,-4.8+i*1.25,.1,-4.7,leafMat);shrub.scale.set(1.4,.6,.8);}
-  const airUnitPositions={living:[-6.05,1.15,2.0,Math.PI/2],kitchen:[-4.2,1.48,-4.04,0],bedroom:[3.5,1.48,-4.04,0],office:[3.81,.66,2.0,-Math.PI/2],bathroom:[6.04,1.05,2.0,-Math.PI/2]};
+  const airUnitPositions={living:[-6.05,1.15,2.0,Math.PI/2],kitchen:[-4.2,1.48,-4.04,0],bedroom:[3.5,1.48,-4.04,0],office:[3.81,.66,2.0,-Math.PI/2],bathroom:[6.04,1.05,2.0,-Math.PI/2],hall:[-.5,1.48,-4.04,0],garden:[6.35,1.05,2,Math.PI/2]};
   function createAirUnit(id){
-    if(!airUnitPositions[id])return null;
     const [x,y,z,rotation]=airUnitPositions[id];const group=new THREE.Group();group.position.set(x,y,z);group.rotation.y=rotation;house.add(group);
     box(1.05,.24,.2,0,0,0,mat('acBody',0xaebec6,.45),group);box(.83,.025,.025,0,.045,.108,black,group);
     for(let i=0;i<4;i++)box(.78,.009,.025,0,.087+i*.025,.108,mat('acGrille',0x637b8b,.6),group,false);
@@ -165,7 +215,142 @@ export function createHouse({container,onReady=()=>{}}) {
     }
     return {group,led,air,lines};
   }
-  for (const id of Object.keys(airUnitPositions)) { const unit=createAirUnit(id); unit.led.material.color.set(0x42576d); unit.air.visible=false; }
+  const glowCanvas = document.createElement('canvas');
+  glowCanvas.width = glowCanvas.height = 64;
+  const context = glowCanvas.getContext('2d');
+  const radial = context.createRadialGradient(32,32,0,32,32,32);
+  radial.addColorStop(0,'#fff'); radial.addColorStop(1,'#ffffff00');
+  context.fillStyle = radial; context.fillRect(0,0,64,64);
+  const glowTexture = new THREE.CanvasTexture(glowCanvas);
+  const visuals = new Map();
+  for (const [zone, room] of Object.entries(ROOM_LAYOUT)) {
+    const { x, z, w, d, pin } = room;
+    const light = new THREE.PointLight(0xffffff, 0, 8, 2);
+    light.position.set(x, 2.4, z); house.add(light);
+    const glow = new THREE.Mesh(new THREE.PlaneGeometry(w,d), new THREE.MeshBasicMaterial({
+      map:glowTexture, transparent:true, opacity:0, depthWrite:false, blending:THREE.AdditiveBlending
+    }));
+    glow.rotation.x = -Math.PI / 2; glow.position.set(x,.14,z); glow.visible = false; house.add(glow);
+    const bulbMaterial = new THREE.MeshBasicMaterial();
+    const dots = [-.24, 0, .24].map(offset => {
+      const dot = sphere(.065, pin[0] + offset, pin[1] - .23, pin[2], bulbMaterial);
+      dot.visible = false;
+      return dot;
+    });
+    const thermalFloor = new THREE.Mesh(new THREE.PlaneGeometry(w,d), new THREE.MeshBasicMaterial({
+      transparent:true, opacity:0, depthWrite:false
+    }));
+    thermalFloor.rotation.x = -Math.PI / 2; thermalFloor.position.set(x,.14,z);
+    thermalFloor.visible = false; house.add(thermalFloor);
+    const corners = [[-1,-1],[1,-1],[1,1],[-1,1]].map(([a,b]) => new THREE.Vector3(x+a*w/2,.15,z+b*d/2));
+    const outline = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(corners), new THREE.LineBasicMaterial());
+    outline.visible = false; house.add(outline);
+    const airUnit = createAirUnit(zone); airUnit.group.visible = false;
+    visuals.set(zone, {light,glow,dots,thermalFloor,outline,airUnit});
+  }
+
+  const stage = pins?.parentElement;
+  const obstacles = [...(stage?.querySelectorAll('.map-tools, .view-switch, .map-brand, .map-hint') ?? [])];
+  const pinPosition = new THREE.Vector3();
+  const gap = 4;
+  const offsets = [];
+  for (const y of [0,-16,16,-34,34,-54,54,-78,78,-110,110,-145,145]) {
+    for (const x of [0,-24,24,-52,52,-84,84,-124,124]) offsets.push([x,y]);
+  }
+  offsets.sort(([x1,y1],[x2,y2]) => Math.hypot(x1,y1) - Math.hypot(x2,y2));
+  let bindings = [], signature;
+  function projectPins() {
+    if (!stage || !bindings.length) return;
+    const stageRect = stage.getBoundingClientRect();
+    const occupied = obstacles.map(control => {
+      const rect = control.getBoundingClientRect();
+      return {left:rect.left-stageRect.left,right:rect.right-stageRect.left,top:rect.top-stageRect.top,bottom:rect.bottom-stageRect.top};
+    });
+    for (const binding of bindings) {
+      const { pin, zone } = binding;
+      pinPosition.set(...ROOM_LAYOUT[zone].pin).project(camera);
+      const x = (pinPosition.x + 1) * width / 2, y = (1 - pinPosition.y) * height / 2;
+      const w = pin.offsetWidth, h = pin.offsetHeight;
+      let position;
+      for (const [dx,dy] of offsets) {
+        const left = THREE.MathUtils.clamp(x+dx-w/2, gap, width-w-gap);
+        const top = THREE.MathUtils.clamp(y+dy-h/2, gap, height-h-gap);
+        const right = left+w, bottom = top+h;
+        if (!occupied.some(rect => left < rect.right+gap && right > rect.left-gap && top < rect.bottom+gap && bottom > rect.top-gap)) {
+          position = {left,top,right,bottom}; break;
+        }
+      }
+      pin.style.visibility = position ? '' : 'hidden';
+      if (position) {
+        occupied.push(position);
+        pin.style.transform = `translate(${position.left}px, ${position.top}px)`;
+      }
+    }
+  }
+
+  function update({catalog,layer,selected}) {
+    if (destroyed) return;
+    const entities = new Map(catalog?.entities.map(entity => [entity.entity_id, entity]));
+    const climate = layer === 'climate';
+    const rooms = (catalog?.rooms ?? []).filter(room => ROOM_BINDINGS.has(room.room_id)).map(room => {
+      const devices = room.entity_ids.map(id => entities.get(id)).filter(Boolean);
+      return {
+        id:room.room_id, name:room.name, zone:ROOM_BINDINGS.get(room.room_id), selected:room.room_id === selected,
+        reading:climate ? thermalReading(room, devices) : lightReading(room, devices)
+      };
+    }).sort((a,b) => Number(b.selected) - Number(a.selected));
+    const nextSignature = JSON.stringify([climate, rooms]);
+    if (nextSignature === signature) return rooms.length;
+    signature = nextSignature;
+    const byZone = new Map();
+    const fragment = document.createDocumentFragment();
+    bindings = rooms.map(room => {
+      if (!byZone.has(room.zone)) byZone.set(room.zone, room);
+      const pin = document.createElement('button');
+      pin.type = 'button'; pin.tabIndex = -1; pin.className = 'room-pin'; pin.dataset.roomId = room.id;
+      pin.setAttribute('aria-pressed', String(room.selected));
+      const title = document.createElement('strong'); title.textContent = room.name; pin.append(title);
+      const reading = document.createElement('span');
+      const { actual, objective, status, on, fraction } = room.reading;
+      reading.textContent = climate ? [actual && `${actual} actual`, objective && `${objective} objetivo`, status].filter(Boolean).join(' · ')
+        : on ? `Luz · ${Math.round(fraction*100)} %` : '';
+      if (reading.textContent) pin.append(reading);
+      fragment.append(pin);
+      return { ...room, pin };
+    });
+    pins?.replaceChildren(fragment);
+    for (const [zone, visual] of visuals) {
+      const room = byZone.get(zone);
+      const {light,glow,dots,thermalFloor,outline,airUnit} = visual;
+      const reading = room?.reading;
+      const fraction = climate ? 0 : reading?.fraction ?? 0;
+      const color = reading?.color ?? 0xffffff;
+      light.intensity = fraction*18; light.color.set(color);
+      glow.visible = fraction > 0; glow.material.color.set(color); glow.material.opacity = fraction*.46;
+      dots.forEach((dot,index) => {
+        dot.visible = fraction > 0 && index < reading.on;
+        dot.material.color.set(color);
+        dot.scale.setScalar(.6+fraction*.6);
+      });
+      const thermal = climate && !!room;
+      const floor = floorMeshes.get(zone);
+      floor.material.emissive.set(color); floor.material.emissiveIntensity = thermal ? (reading.active ? .15 : .03) : fraction*.2;
+      thermalFloor.visible = thermal;
+      thermalFloor.material.color.set(color); thermalFloor.material.opacity = reading?.active ? .24 : .10;
+      outline.visible = !!room && (climate || room.selected);
+      outline.material.color.set(room?.selected ? 0x62e8cd : color);
+      airUnit.group.visible = thermal && reading.hasUnit;
+      airUnit.air.visible = thermal && reading.active;
+      airUnit.led.material.color.set(airUnit.air.visible ? color : 0x42576d);
+      for (const line of airUnit.lines) line.material.color.set(color);
+    }
+    dirty = true;
+    return rooms.length;
+  }
+  pins?.addEventListener('click', event => {
+    const pin = event.target.closest('.room-pin');
+    if (ready && pin) onSelect(pin.dataset.roomId);
+  }, {signal:listeners.signal});
   function resize(){if(destroyed)return;width=container.clientWidth;height=container.clientHeight;if(!width||!height)return;renderer.setSize(width,height,false);dirty=true;}
   observer=new ResizeObserver(resize);observer.observe(container);resize();
   const boundsCorners=[];
@@ -188,22 +373,64 @@ export function createHouse({container,onReady=()=>{}}) {
   function frame(time){
     if(destroyed)return;
     rafId=requestAnimationFrame(frame);
-    if(document.hidden||time-lastTime<30)return;
+    if(!ready||!width||!height||document.hidden||time-lastTime<30)return;
     lastTime=time;
     const diff=Math.abs(currentYaw-yaw)+Math.abs(currentTilt-tilt)+Math.abs(currentZoom-zoom);
     if(diff>.0001){const ease=reducedMotion||motionQuery.matches?1:.13;currentYaw+=(yaw-currentYaw)*ease;currentTilt+=(tilt-currentTilt)*ease;currentZoom+=(zoom-currentZoom)*ease;dirty=true;}
-    if(!dirty)return;cameraUpdate();renderer.render(scene,camera);dirty=false;
+    if(!dirty)return;
+    cameraUpdate();renderer.render(scene,camera);projectPins();dirty=false;rendered=true;
   }
   rafId=requestAnimationFrame(frame);
   const canvas=renderer.domElement;
   const listen=(event,callback,options={})=>canvas.addEventListener(event,callback,{...options,signal:listeners.signal});
-  listen('pointerdown',event=>{if(event.button!==0)return;pointerId=event.pointerId;dragging=true;startX=event.clientX;startY=event.clientY;canvas.setPointerCapture(pointerId);});
-  listen('pointermove',event=>{if(!dragging)return;const dx=event.clientX-startX,dy=event.clientY-startY;yaw-=dx*.006;publishYaw();tilt=THREE.MathUtils.clamp(tilt+dy*.003,.12,1.18);startX=event.clientX;startY=event.clientY;dirty=true;});
-  const stopDrag=()=>{dragging=false;if(pointerId!==null&&canvas.hasPointerCapture(pointerId))canvas.releasePointerCapture(pointerId);pointerId=null;};
-  listen('pointerup',stopDrag);listen('pointercancel',stopDrag);listen('lostpointercapture',()=>{dragging=false;pointerId=null;});
+  const raycaster = new THREE.Raycaster();
+  const pointer = new THREE.Vector2(), hit = new THREE.Vector3();
+  const floorPlane = new THREE.Plane(new THREE.Vector3(0,1,0),0);
+  let startX, startY, lastX, lastY, travelled;
+  listen('pointerdown', event => {
+    if (!ready || event.button !== 0 || pointerId !== null) return;
+    pointerId = event.pointerId; travelled = 0;
+    startX = lastX = event.clientX; startY = lastY = event.clientY;
+    canvas.setPointerCapture(pointerId);
+  });
+  function movePointer(event) {
+    const before = travelled;
+    travelled += Math.hypot(event.clientX-lastX,event.clientY-lastY);
+    if (travelled > 4) {
+      yaw -= (event.clientX - (before > 4 ? lastX : startX))*.006; publishYaw();
+      tilt = THREE.MathUtils.clamp(tilt + (event.clientY - (before > 4 ? lastY : startY))*.003,.12,1.18);
+      dirty = true;
+    }
+    lastX = event.clientX; lastY = event.clientY;
+  }
+  listen('pointermove', event => { if (event.pointerId === pointerId) movePointer(event); });
+  function stopDrag(event) {
+    if (event.pointerId !== pointerId) return;
+    pointerId = null;
+    if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  }
+  listen('pointerup', event => {
+    if (event.pointerId !== pointerId) return;
+    const onFloor = travelled + Math.hypot(event.clientX-lastX,event.clientY-lastY) <= 4;
+    if (!onFloor) movePointer(event);
+    stopDrag(event);
+    if (!onFloor || !ready || !rendered || !bindings.length) return;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    pointer.set((event.clientX-rect.left)/rect.width*2-1,1-(event.clientY-rect.top)/rect.height*2);
+    raycaster.setFromCamera(pointer,camera);
+    if (!raycaster.ray.intersectPlane(floorPlane,hit)) return;
+    const room = bindings.find(({zone}) => {
+      const {x,z,w,d} = ROOM_LAYOUT[zone];
+      return Math.abs(hit.x-x) <= w/2 && Math.abs(hit.z-z) <= d/2;
+    });
+    if (room) onSelect(room.id);
+  });
+  listen('pointercancel', stopDrag); listen('lostpointercapture', stopDrag);
   listen('wheel',event=>{if(event.ctrlKey||event.metaKey){event.preventDefault();zoom=THREE.MathUtils.clamp(zoom-event.deltaY*.002,.65,1.65);dirty=true;}},{passive:false});
-  listen('webglcontextlost',event=>{event.preventDefault();onReady(false);});
-  listen('webglcontextrestored',()=>{dirty=true;onReady(true);});
+  listen('webglcontextlost',event=>{event.preventDefault();ready=false;if(pins)pins.hidden=true;onReady(false);});
+  listen('webglcontextrestored',()=>{ready=true;if(pins)pins.hidden=false;dirty=true;onReady(true);});
+  if (pins) pins.hidden = false;
   onReady(true);
   return {
     setView(view){if(destroyed)return;tilt=view==='top'?.025:.78;yaw=DEFAULT_YAW;publishYaw();zoom=1.1;dirty=true;},
@@ -211,13 +438,13 @@ export function createHouse({container,onReady=()=>{}}) {
     rotate(direction){if(destroyed)return;yaw+=(direction<0?1:-1)*ROTATE_STEP;if(motionQuery.matches)currentYaw=yaw;publishYaw();dirty=true;},
     yaw(){return destroyed?null:yaw;},
     zoom(delta){if(destroyed)return;zoom=THREE.MathUtils.clamp(zoom+delta,.65,1.65);dirty=true;},
-    reset(){if(destroyed)return;yaw=DEFAULT_YAW;publishYaw();tilt=.78;zoom=1.1;dirty=true;},destroy
+    reset(){if(destroyed)return;yaw=DEFAULT_YAW;publishYaw();tilt=.78;zoom=1.1;dirty=true;},update,destroy
   };
   } catch {
     destroy();
     const fallback=document.createElement('div');fallback.className='house-fallback';
     fallback.innerHTML='<svg viewBox="0 0 800 480" aria-hidden="true"><g transform="translate(390 220) scale(1 .58) rotate(30)"><rect x="-260" y="-180" width="520" height="360" rx="5" fill="#233545" stroke="#62e8cd" stroke-width="2"/><path d="M-260-180h520v360M-260-180v360M-260 0h520M20-180v360M150 0v180M-100-180V0" fill="none" stroke="#9caabc" stroke-width="14"/><rect x="-220" y="50" width="160" height="60" rx="9" fill="#7c8fb0"/><rect x="60" y="-130" width="140" height="95" rx="7" fill="#c4b89a"/></g></svg>';
     container.append(fallback);onReady(false);
-    return {setView(){},zoom(){},rotate(){},yaw(){return null;},reset(){},destroy(){fallback.remove();}};
+    return {setView(){},zoom(){},rotate(){},yaw(){return null;},reset(){},update(){},destroy(){fallback.remove();}};
   }
 }

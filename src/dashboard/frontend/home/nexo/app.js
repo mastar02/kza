@@ -220,6 +220,7 @@ function lockAuthentication(value) {
 }
 function destroyHouse() {
   house?.destroy(); house = null;
+  updateHouse();
   document.body.classList.remove('map-expanded');
   byId('expand-map').setAttribute('aria-expanded', 'false');
 }
@@ -236,7 +237,8 @@ function retire(message = '', { endSession = true } = {}) {
   actions.clear(); destroyHouse(); catalog = clock = lastError = staleFocus = null; roomId = undefined; activeView = null;
   byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
   byId('view-transition-status').hidden = true;
-  for (const id of ['room-list', 'room-controls', 'action-list', 'app-nav', 'rail-nav']) byId(id).replaceChildren();
+  for (const id of ['room-list', 'room-controls', 'global-scenes', 'action-list', 'app-nav', 'rail-nav']) byId(id).replaceChildren();
+  byId('global-scenes').hidden = true;
   for (const id of ['lights-total', 'entities-total', 'rooms-total', 'room-count']) byId(id).textContent = '—';
   byId('nexo-workspace').hidden = true; byId('login-panel').hidden = false;
   byId('logout').hidden = true;
@@ -253,8 +255,8 @@ function freshness() {
 }
 function entityById(id) { return catalog?.entities?.find(entity => entity.entity_id === id) || catalog?.unassigned_entities?.find(entity => entity.entity_id === id); }
 function observedValue(entity) {
-  if (entity.domain === 'climate') return Number.isFinite(entity.temperature) ? `${entity.temperature} °C · objetivo` : 'Temperatura objetivo desconocida';
-  if (entity.domain === 'light') return Number.isFinite(entity.brightness_pct) ? `${entity.brightness_pct} % · brillo observado` : 'Brillo desconocido';
+  if (entity.domain === 'climate') return Number.isFinite(entity.temperature) ? `${entity.temperature} °C · objetivo` : entity.state === 'off' ? 'Apagado' : 'Temperatura objetivo desconocida';
+  if (entity.domain === 'light') return Number.isFinite(entity.brightness_pct) ? `${entity.brightness_pct} % · brillo observado` : ({ off: 'Apagada', on: 'Brillo desconocido' })[entity.state] || 'Estado desconocido';
   if (entity.domain === 'cover') return Number.isFinite(entity.position) ? `${entity.position} % · abierto` : 'Posición desconocida';
   return null;
 }
@@ -263,6 +265,12 @@ function renderObservedValue(output, entity) {
     output.replaceChildren(node('strong', '', `${entity.temperature} °C`), node('span', '', ' · objetivo'));
   } else output.textContent = observedValue(entity);
 }
+function renderCurrentTemperature(output, entity) {
+  const room = catalog?.rooms.find(item => item.room_id === entity?.room_id);
+  const temperature = entity?.current_temperature ?? room?.current_temperature;
+  output.hidden = !Number.isFinite(temperature);
+  output.textContent = output.hidden ? '' : `${temperature} °C · actual`;
+}
 function updateObservedCards() {
   for (const card of document.querySelectorAll('.device-card[data-entity-id]')) {
     const entity = entityById(card.dataset.entityId);
@@ -270,6 +278,8 @@ function updateObservedCards() {
     if (entity) card.querySelector('h3').textContent = entity.name;
     const value = card.querySelector('.device-value');
     if (value) { if (entity) renderObservedValue(value, entity); else value.textContent = 'Estado desconocido'; }
+    const current = card.querySelector('.device-current');
+    if (current) renderCurrentTemperature(current, entity);
   }
   const heading = byId('room-controls').querySelector('.selected-room-heading');
   if (heading) heading.textContent = catalog.rooms.find(room => room.room_id === roomId)?.name || 'Sin ambiente asignado';
@@ -325,11 +335,65 @@ async function execute(id, operation, values, errorNode) {
   await actions.execute(id, operation, values);
   if (session.can('home:read')) poller?.refresh();
 }
+function bindControl(control, entity, operation) {
+  control.dataset.control = ''; control.dataset.entityId = entity.entity_id; control.dataset.operation = operation;
+}
+function actionFeedback(target, entity, operation) {
+  const error = node('p', 'control-error'); error.setAttribute('role', 'alert');
+  target.append(error);
+  appendReceipt(target, entity, operation);
+  return error;
+}
+function appendReceipt(target, entity, operation) {
+  const receipt = node('p', 'action-receipt'); receipt.dataset.receipt = '';
+  receipt.dataset.entityId = entity.entity_id; receipt.dataset.operation = operation; receipt.setAttribute('role', 'status');
+  target.append(receipt);
+}
+function submitAction(entity, operation, values, error) {
+  void execute(entity.entity_id, operation, values, error).catch(() => {
+    if (session.active()) error.textContent = 'No se pudo consultar el resultado. Actualizá para verificarlo.';
+  });
+}
+function touchChoices(entity, operation, fields, inputs, error) {
+  const choices = node('div', 'touch-choices');
+  const field = fields[0];
+  if (operation === 'set_temperature') {
+    for (const [direction, label, text] of [[-1, 'Bajar', '−'], [1, 'Subir', '+']]) {
+      const step = button(text, () => {
+        const current = entityById(entity.entity_id);
+        if (!current) return;
+        const { min, max, step } = core.controlFields(current, operation)[0];
+        const target = current.temperature ?? min;
+        const top = Math.floor((max - min) / step + 1e-7);
+        const index = Math.max(0, Math.min(top, Math.round((target - min) / step) + direction));
+        const temperature = Number((min + index * step).toFixed(8));
+        if (temperature !== current.temperature) submitAction(entity, operation, { temperature }, error);
+      }, 'thermostat-step');
+      step.setAttribute('aria-label', `${label} temperatura objetivo de ${entity.name}`);
+      bindControl(step, entity, operation); choices.append(step);
+    }
+  } else {
+    const presets = operation === 'set_hvac_mode' ? field.options : [
+      [2700, 'Cálida 2700 K'], [4000, 'Natural 4000 K'], [5000, 'Fría 5000 K']
+    ].filter(([value]) => core.validControlValue(field, value));
+    for (const [value, label] of presets) {
+      const preset = button(label, () => {
+        inputs.get(field.name).value = value;
+        submitAction(entity, operation, { [field.name]: value }, error);
+      }, 'touch-preset');
+      bindControl(preset, entity, operation); choices.append(preset);
+    }
+  }
+  return choices;
+}
 function deviceCard(entity, expanded = new Set()) {
   const card = node('article', 'device-card panel'); card.dataset.entityId = entity.entity_id; card.dataset.domain = entity.domain;
   const heading = node('div', 'device-heading'); heading.append(icon(entity.domain === 'climate' ? 'climate' : entity.domain === 'cover' ? 'blind' : 'bulb'));
   const title = node('div'); title.append(node('h3', '', entity.name), node('p', 'device-state', state.entityState(entity))); heading.append(title); card.append(heading);
   if (observedValue(entity) !== null) { const value = node('p', 'device-value'); renderObservedValue(value, entity); card.append(value); }
+  if (entity.domain === 'climate') {
+    const current = node('p', 'device-current'); renderCurrentTemperature(current, entity); card.append(current);
+  }
   const operations = (entity.capabilities || []).filter(operation => Object.hasOwn(core.OPERATION_LABELS, operation));
   if (!operations.length) card.append(node('p', 'fine-print', 'No hay controles autorizados para este dispositivo.'));
   const binary = node('div', 'power-actions'); card.append(binary);
@@ -350,23 +414,28 @@ function deviceCard(entity, expanded = new Set()) {
         const value = ({ brightness_pct: entity.brightness_pct, color_temp_kelvin: entity.color_temp_kelvin, temperature: entity.temperature, position: entity.position })[field.name];
         if (Number.isFinite(value) && !field.optional) input.value = value;
         input.required = !field.optional;
-        if (field.name === 'brightness_pct' && Number.isFinite(value) && !field.optional) {
+        if (operation === 'brightness') {
           input.type = 'range';
-          const output = node('output', 'range-output', `${value} %`);
-          input.addEventListener('input', () => { output.textContent = `${input.value} %`; }); label.append(output);
+          input.value = Number.isFinite(value) ? value : field.min;
+          const output = node('output', 'range-output', `${input.value} %`);
+          input.addEventListener('input', () => { output.textContent = `${input.value} %`; });
+          input.addEventListener('change', () => form.requestSubmit());
+          label.append(output);
         }
       }
-      input.dataset.control = ''; input.dataset.entityId = entity.entity_id; input.dataset.operation = operation;
+      bindControl(input, entity, operation);
       label.append(input); form.append(label); inputs.set(field.name, input);
     }
     const submit = node('button', fields.length ? 'apply-button' : 'operation-button', core.OPERATION_LABELS[operation]); submit.type = 'submit';
-    submit.dataset.control = ''; submit.dataset.entityId = entity.entity_id; submit.dataset.operation = operation; form.append(submit);
-    const error = node('p', 'control-error'); error.setAttribute('role', 'alert'); form.append(error);
-    const receipt = node('p', 'action-receipt'); receipt.dataset.receipt = ''; receipt.dataset.entityId = entity.entity_id; receipt.dataset.operation = operation; receipt.setAttribute('role', 'status'); form.append(receipt);
+    bindControl(submit, entity, operation); form.append(submit);
+    const error = actionFeedback(form, entity, operation);
+    if (['set_temperature', 'set_hvac_mode', 'color_temp_kelvin'].includes(operation)) {
+      form.insertBefore(touchChoices(entity, operation, fields, inputs, error), submit);
+    }
     form.addEventListener('submit', event => {
       event.preventDefault();
       const values = Object.fromEntries(fields.map(field => { const input = inputs.get(field.name); return [field.name, field.options ? input.value : input.value === '' ? null : input.valueAsNumber]; }));
-      execute(entity.entity_id, operation, values, error).catch(() => { if (session.active()) error.textContent = 'No se pudo consultar el resultado. Actualizá para verificarlo.'; });
+      submitAction(entity, operation, values, error);
     });
     if (!fields.length) { form.classList.add('binary-operation'); binary.append(form); }
     else if (operation === 'color_temp_kelvin') {
@@ -378,7 +447,49 @@ function deviceCard(entity, expanded = new Set()) {
 }
 function selectedEntities() {
   const values = roomId === null ? catalog?.unassigned_entities || [] : state.roomEntities(catalog, roomId, 'all');
-  return values.filter(entity => layer === 'all' || entity.domain === (layer === 'climate' ? 'climate' : 'light'));
+  const authorized = values.filter(entity => entity.capabilities?.length);
+  const entities = authorized.length ? authorized : values;
+  const domains = layer === 'climate' ? ['climate'] : ['light', 'switch', 'scene'];
+  const visible = entities.filter(entity => layer === 'all' || domains.includes(entity.domain));
+  return visible.length || authorized.length ? visible : values;
+}
+function quickToggle(room) {
+  const climate = layer === 'climate', domain = climate ? 'climate' : 'light';
+  const entities = state.roomEntities(catalog, room.room_id, 'all').filter(entity => entity.domain === domain);
+  function toggle(entity) {
+    if (climate) {
+      const modes = entity.control_limits?.hvac_modes ?? [];
+      const onMode = modes.find(mode => mode !== 'off');
+      if (!entity.capabilities?.includes('set_hvac_mode') || !modes.includes('off') || !onMode) return null;
+      const on = entity.state !== 'off' && !['unknown', 'unavailable'].includes(entity.state);
+      return { entity, operation: 'set_hvac_mode', on, values: { hvac_mode: on ? 'off' : onMode } };
+    }
+    if (!entity.capabilities?.some(operation => operation === 'turn_on' || operation === 'turn_off')) return null;
+    const on = entity.state === 'on', operation = on ? 'turn_off' : 'turn_on';
+    return { entity, operation, on, values: {} };
+  }
+  const candidates = entities.map(toggle).filter(Boolean);
+  const preferred = room[climate ? 'default_climate' : 'default_light'];
+  const choice = candidates.find(entry => entry.entity.entity_id === preferred) ?? (candidates.length === 1 ? candidates[0] : null);
+  return choice?.entity.capabilities.includes(choice.operation) ? choice : null;
+}
+function renderGlobalScenes() {
+  const section = byId('global-scenes');
+  const scenes = session.can('home:control') ? catalog.unassigned_entities.filter(entity =>
+    entity.room_id === null && entity.domain === 'scene' && entity.capabilities?.includes('activate_scene')) : [];
+  const focused = document.activeElement.closest('#global-scenes [data-control]')?.dataset.entityId;
+  section.hidden = !scenes.length; section.replaceChildren();
+  if (!scenes.length) return;
+  section.append(node('h2', '', 'Escenas del hogar'));
+  const strip = node('div', 'scene-strip'); section.append(strip);
+  for (const entity of scenes) {
+    const item = node('div', 'scene-tile'), operation = 'activate_scene';
+    const control = button(entity.name, () => submitAction(entity, operation, {}, error), 'operation-button');
+    bindControl(control, entity, operation); item.append(control);
+    const error = actionFeedback(item, entity, operation);
+    strip.append(item);
+  }
+  return [...strip.querySelectorAll('button')].find(control => control.dataset.entityId === focused);
 }
 function renderControls() {
   if (!catalog || !session.can('home:read')) return;
@@ -394,7 +505,15 @@ function renderControls() {
   if (!catalog.entities.length) all.append(node('p', 'panel empty-panel', 'No hay dispositivos en el catálogo actual.'));
   updateReceipts();
 }
-function renderCatalog() {
+function selectRoom(id) {
+  if (roomId === id || (id !== null && !catalog?.rooms.some(room => room.room_id === id))) return;
+  roomId = id; renderCatalog(true);
+}
+function updateHouse() {
+  const linked = house?.update({ catalog, layer, selected: roomId });
+  document.querySelector('.live-badge').textContent = linked ? 'EN VIVO' : 'ILUSTRACIÓN';
+}
+function renderCatalog(forceControls = false) {
   if (!catalog || !session.can('home:read')) return;
   const rooms = catalog.rooms;
   const previousRoom = roomId;
@@ -402,22 +521,42 @@ function renderCatalog() {
   byId('rooms-total').textContent = String(rooms.length); byId('room-count').textContent = String(rooms.length);
   byId('entities-total').textContent = String(catalog.entities.length);
   byId('lights-total').textContent = String(catalog.entities.filter(entity => entity.domain === 'light' && entity.available && entity.state === 'on').length);
-  const list = byId('room-list'); list.replaceChildren();
-  function addRoom(id, name, count) {
-    const control = button('', () => { roomId = id; renderCatalog(); }, 'room-choice'); control.classList.toggle('active', id === roomId); control.setAttribute('aria-pressed', String(id === roomId));
+  const list = byId('room-list');
+  const focus = document.activeElement.closest('#room-list button');
+  let replacement;
+  list.replaceChildren();
+  function addRoom(id, name, count, quick) {
+    const row = node('div', 'room-row');
+    const control = button('', () => selectRoom(id), 'room-choice'); control.classList.toggle('active', id === roomId); control.setAttribute('aria-pressed', String(id === roomId));
     if (id !== null) control.dataset.roomId = id;
-    control.append(icon('house')); const text = node('span'); text.append(node('strong', '', name), node('small', '', `${count} dispositivo${count === 1 ? '' : 's'}`)); control.append(text); list.append(control);
+    control.append(icon('house')); const title = node('span'); title.append(node('strong', '', name), node('small', '', `${count} dispositivo${count === 1 ? '' : 's'}`)); control.append(title); row.append(control);
+    if (focus?.classList.contains('room-choice') && focus.dataset.roomId === control.dataset.roomId) replacement = control;
+    if (quick) {
+      const { entity, operation, on, values } = quick;
+      const power = button('', () => submitAction(entity, operation, values, error), 'room-power');
+      bindControl(power, entity, operation);
+      power.setAttribute('role', 'switch'); power.setAttribute('aria-checked', String(on));
+      power.setAttribute('aria-label', `${layer === 'climate' ? 'Clima' : 'Luz'} de ${name} · ${entity.name}`);
+      power.append(icon(layer === 'climate' ? 'climate' : 'bulb')); row.append(power);
+      const error = actionFeedback(row, entity, operation);
+      if (entity.domain === 'light') appendReceipt(row, entity, on ? 'turn_on' : 'turn_off');
+      if (focus?.classList.contains('room-power') && focus.dataset.entityId === entity.entity_id) replacement = power;
+    }
+    list.append(row);
   }
-  for (const room of rooms) addRoom(room.room_id, room.name, room.entity_ids.length);
+  for (const room of rooms) addRoom(room.room_id, room.name, room.entity_ids.length, session.can('home:control') && quickToggle(room));
   if (catalog.unassigned_entities.length) addRoom(null, 'Sin ambiente', catalog.unassigned_entities.length);
   if (!rooms.length && !catalog.unassigned_entities.length) list.append(node('p', 'empty-panel', 'No hay ambientes en el catálogo.'));
   // Refreshing an observation must not discard a keyboard user's draft or focus.
   // A control disabled by stale data keeps its draft until fresh data re-enables it.
   const focused = document.activeElement?.closest('.operation-form') || (staleFocus?.isConnected ? staleFocus.closest('.operation-form') : null);
   const stillSelected = !focused?.closest('#room-controls') || selectedEntities().some(entity => entity.entity_id === focused.dataset.entityId);
-  if (!focused || previousRoom !== roomId || !entityById(focused.dataset.entityId) || !stillSelected) renderControls();
+  if (forceControls || !focused || previousRoom !== roomId || !entityById(focused.dataset.entityId) || !stillSelected) renderControls();
   else updateObservedCards();
-  updateTemporal();
+  const sceneFocus = renderGlobalScenes();
+  updateHouse();
+  updateReceipts();
+  (replacement ?? sceneFocus)?.focus({ preventScroll: true });
 }
 function renderNavigation() {
   const navigation = [
@@ -517,11 +656,12 @@ async function activate(view, push = true, force = false) {
     if (view === 'home') openNotices();
     if (view === 'home' && !house) {
       byId('map-loading').hidden = false;
-      house = createHouse({ container: byId('house-canvas'), onReady(ready) {
+      house = createHouse({ container: byId('house-canvas'), pins: byId('room-pins'), onSelect: selectRoom, onReady(ready) {
         byId('map-loading').hidden = true;
         for (const id of ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'rotate-left', 'rotate-right', 'reset-view']) byId(id).disabled = !ready;
       } });
       cameraView('3d', false);
+      updateHouse();
     }
     if (!auxiliaryView(view)) renderControls();
     return true;
@@ -624,7 +764,7 @@ byId('refresh').addEventListener('click', () => {
 for (const control of byId('layer-tabs').querySelectorAll('[data-layer]')) control.addEventListener('click', () => {
   layer = control.dataset.layer;
   for (const item of byId('layer-tabs').querySelectorAll('[data-layer]')) { const active = item === control; item.classList.toggle('active', active); item.setAttribute('aria-pressed', String(active)); }
-  renderControls();
+  renderCatalog(true);
 });
 for (const [id, callback] of [
   ['view-3d', () => cameraView('3d')], ['view-top', () => cameraView('top')],

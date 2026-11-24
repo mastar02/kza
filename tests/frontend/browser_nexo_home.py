@@ -20,6 +20,9 @@ from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import (
     DashboardAuthority, DashboardRole, EvaluationModality, EvaluationSample,
 )
+from src.home_assistant.control_policy import EntityGrant, HomeControlPolicy
+from src.home_assistant.effect_plans import scene_effects_from_states
+from src.home_assistant.home_actions import HomeActionService
 from src.reminders.reminder_scheduler import ReminderScheduler, notice_body, notice_request_id
 from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderStore
 from src.rooms.room_context import RoomConfig
@@ -87,8 +90,10 @@ async def login(page: Page, token: str, label: str) -> None:
 HOME_CONTROLS = (
     ('#app-nav [data-view=home]', None), ('#app-nav [data-view=actions]', None), ('#refresh', None),
     ('#view-3d', None), ('#view-top', None), ('#zoom-in', None), ('#zoom-out', None), ('#reset-view', None),
-    ('#expand-map', None), ('#layer-tabs [data-layer=lights]', None), ('#room-list [data-room-id=living]', None),
-    ('#room-controls input[name=temperature]', None), ('#logout', None),
+    ('#expand-map', None), ('#global-scenes button', 'Lectura'), ('#layer-tabs [data-layer=lights]', None),
+    ('#room-list [data-room-id=living]', None),
+    ('#room-list [role=switch][data-entity-id="climate.test_ac"]', None),
+    ('#room-controls input[name=temperature]', None), ('#room-controls .thermostat-step', None), ('#logout', None),
 )
 # U4: no surface links to the retired legacy views or the technical panel.
 LEGACY_LINKS = ("document.querySelectorAll('a[href*=\"legacy.html\"], a[href^=\"/obs\"], a[href=\"/index.html\"], "
@@ -237,6 +242,43 @@ ROTATE_STEP = math.pi / 12
 HOUSE_YAW = "parseFloat(document.querySelector('#house-canvas').dataset.yaw)"
 
 
+async def check_live_map(page: Page) -> None:
+    """Select a bound room with a pin and the floor, using actual pointer events."""
+    await page.wait_for("document.querySelectorAll('#room-pins button').length===3")
+    assert await page.evaluate("""[...document.querySelectorAll('#room-pins button')].every(pin=>{
+      const r=pin.getBoundingClientRect();
+      return pin.type==='button'&&pin.tabIndex===-1&&r.width>=44&&r.height>=44&&!pin.querySelector('img');
+    }) && document.querySelector('.live-badge').textContent==='EN VIVO'
+       && !!document.querySelector('#room-pins [data-room-id=escalera]')
+       && !!document.querySelector('#room-list [data-room-id=annex]')
+       && !document.querySelector('#room-pins [data-room-id=annex]')""")
+    await page.evaluate("document.querySelector('#map-stage').scrollIntoView({block:'center'})")
+    point = await page.evaluate("""(()=>{const r=document.querySelector('#room-pins [data-room-id=kitchen]').getBoundingClientRect();
+      return {x:r.left+r.width/2,y:r.top+r.height/2}})()""")
+    mouse = {'button': 'left', 'clickCount': 1, **point}
+    await page.command('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, **mouse})
+    await page.command('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, **mouse})
+    await page.wait_for("document.querySelector('#room-list [data-room-id=kitchen]').getAttribute('aria-pressed')==='true'")
+
+    await page.evaluate("""document.querySelector('#room-list [data-room-id=living]').click();
+      document.querySelector('#view-top').click()""")
+    await asyncio.sleep(1.2)
+    point = await page.evaluate("""(()=>{const pins=document.querySelector('#room-pins');
+      const r=pins.querySelector('[data-room-id=kitchen]').getBoundingClientRect();
+      pins.style.visibility='hidden';return {x:r.left+r.width/2,y:r.top+r.height/2}})()""")
+    mouse = {'button': 'left', 'clickCount': 1, **point}
+    await page.command('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, **mouse})
+    await page.command('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'buttons': 1, **{**mouse, 'x': point['x'] + 5}})
+    await page.command('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'buttons': 1, **mouse})
+    await page.command('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, **mouse})
+    assert await page.evaluate("document.querySelector('#room-list [data-room-id=living]').getAttribute('aria-pressed')==='true'")
+    await page.command('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, **mouse})
+    await page.command('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, **mouse})
+    await page.wait_for("document.querySelector('#room-list [data-room-id=kitchen]').getAttribute('aria-pressed')==='true'")
+    await page.evaluate("""document.querySelector('#room-pins').style.visibility='';
+      document.querySelector('#room-list [data-room-id=living]').click();document.querySelector('#reset-view').click()""")
+
+
 async def _key(page: Page, key: str, code: str, key_code: int, text: str | None = None) -> None:
     extra = {'text': text} if text else {}
     await dispatch_key(page, 'keyDown' if text else 'rawKeyDown', key, code, key_code, **extra)
@@ -371,6 +413,15 @@ async def main() -> None:
     for entity, name in [("light.test_lamp", "Luz principal"), ("climate.test_ac", "Aire acondicionado"), ("cover.test_blind", "Persiana")]:
         ha.states[entity]["attributes"]["friendly_name"] = name
     ha.states['light.test_lamp']['attributes'].update(brightness=166, color_temp_kelvin=2700)
+    ha.states['climate.test_ac']['attributes']['hvac_action'] = 'cooling'
+    ha.states['sensor.test_temperature'] = {'entity_id': 'sensor.test_temperature', 'state': '24.5',
+                                           'attributes': {'unit_of_measurement': '°C'}}
+    ha.states['scene.test_reading'] = {'entity_id': 'scene.test_reading', 'state': 'unknown',
+                                      'attributes': {'entity_id': ['light.test_lamp']}}
+    grants = await actions.policy.snapshot_grants()
+    reading = EntityGrant('scene.test_reading', frozenset({'activate_scene'}), display_name='Lectura',
+                          scene_effects=scene_effects_from_states({'light.test_lamp': {'state': 'on'}}))
+    actions = HomeActionService(ha, policy=HomeControlPolicy((*grants, reading)))
     requests = []
     with tempfile.TemporaryDirectory(prefix="kza-nexo-", dir=browser_data) as temporary:
         directory = Path(temporary)
@@ -387,8 +438,11 @@ async def main() -> None:
         selection = EvaluationSample("vf_" + "a" * 64, frozenset({"b" * 64}), frozenset({EvaluationModality.AUDIO_PREVIEW}), time.time() + 180)
         evaluator = await authority.issue_credential(root, subject="synthetic-evaluator", role=DashboardRole.EVALUATOR, expires_at=time.time() + 180, samples=(selection,))
         rooms = {
-            "living": RoomConfig("living", "Sala de estar", "la sala", default_light="light.test_lamp", default_cover="cover.test_blind"),
+            "living": RoomConfig("living", "Sala de estar", "la sala", default_light="light.test_lamp",
+                                 default_cover="cover.test_blind", temperature_sensor="sensor.test_temperature"),
             "kitchen": RoomConfig("kitchen", "Cocina", "la cocina", default_climate="climate.test_ac"),
+            "escalera": RoomConfig("escalera", "Escalera", "la escalera"),
+            "annex": RoomConfig("annex", "Cocina", "el anexo"),
         }
         notice_store = ReminderStore(str(directory / 'reminders.db'))
         await notice_store.initialize()
@@ -491,6 +545,8 @@ async def main() -> None:
                     assert not any(request["path"] in {"/api/users", "/api/voices", "/api/home/microphones", "/api/conversations"} for request in requests[marker:])
                     await screenshot(page, evidence / "home-desktop.png")
                     webgl = await page.evaluate("!!document.querySelector('#house-canvas canvas')")
+                    assert webgl, 'The live pin and raycast require WebGL in this harness'
+                    await check_live_map(page)
 
                     await page.evaluate("document.querySelector('#room-controls button[data-operation=turn_on]').click()")
                     await page.wait_for("document.querySelector('#room-controls [data-receipt][data-operation=turn_on]').dataset.status==='confirmed'")
@@ -498,9 +554,30 @@ async def main() -> None:
                     await page.evaluate("(()=>{const details=document.querySelector('#room-controls .advanced-control');details.open=true;const input=details.querySelector('[name=color_temp_kelvin]');input.value='3000';input.closest('form').requestSubmit()})()")
                     await page.wait_for("document.querySelector('#room-controls [data-receipt][data-operation=color_temp_kelvin]').dataset.status==='confirmed'")
                     assert ha.sends[-1][3] == {'color_temp_kelvin': 3000}
+                    ha.states['light.test_lamp']['attributes'].pop('brightness')
+                    await page.wait_for("document.querySelector('#room-list [role=switch][data-operation=turn_off]')?.getAttribute('aria-checked')==='true'")
+                    await page.evaluate("document.querySelector('#room-list [role=switch][data-operation=turn_off]').click()")
+                    await page.wait_for("""document.querySelector('#room-list [role=switch][data-operation=turn_on]')?.getAttribute('aria-checked')==='false'
+                      && document.querySelector('#room-controls .device-value').textContent==='Apagada'""")
+                    assert ha.sends[-1][1:3] == ('turn_off', 'light.test_lamp')
+                    assert await page.evaluate("""(()=>{const slider=document.querySelector('#room-controls input[name=brightness_pct]');
+                      return slider.type==='range' && slider.value===slider.min && slider.closest('label').querySelector('output').textContent===slider.min+' %';})()""")
+                    await page.evaluate("""(()=>{const slider=document.querySelector('#room-controls input[name=brightness_pct]');
+                      slider.value='35';slider.dispatchEvent(new Event('input'));slider.dispatchEvent(new Event('change'));})()""")
+                    await page.wait_for("document.querySelector('#room-controls [data-receipt][data-operation=brightness]').dataset.status==='confirmed'")
+                    assert ha.sends[-1][2:] == ('light.test_lamp', {'brightness_pct': 35})
+                    await page.evaluate("document.querySelector('#global-scenes [data-operation=activate_scene]').click()")
+                    await page.wait_for("document.querySelector('#global-scenes [data-receipt]').dataset.status==='confirmed'")
+                    assert ha.sends[-1][1:3] == ('turn_on', 'light.test_lamp')
                     await page.evaluate("document.querySelector('#layer-tabs [data-layer=climate]').click();document.querySelector('#room-list [data-room-id=kitchen]').click()")
                     await page.wait_for("document.querySelector('#room-controls input[name=temperature]')")
                     assert await page.evaluate("document.querySelector('#room-controls .device-value').textContent==='22 °C · objetivo'")
+                    assert await page.evaluate("""document.querySelector('#room-controls .device-current').textContent==='31 °C · actual'
+                      && document.querySelector('#room-pins [data-room-id=kitchen]').textContent.includes('Enfriando')""")
+                    for label, target in (('+', 22.5), ('−', 22)):
+                        await page.evaluate(f"[...document.querySelectorAll('#room-controls .thermostat-step')].find(button=>button.textContent==={json.dumps(label)}).click()")
+                        await page.wait_for(f"document.querySelector('#room-controls .device-value').textContent==='{target} °C · objetivo'")
+                        assert ha.sends[-1][2:] == ('climate.test_ac', {'temperature': target})
                     await page.evaluate("(()=>{const input=document.querySelector('#room-controls input[name=temperature]');input.focus();input.value='23.5';document.querySelector('#refresh').click()})()")
                     ha.states['climate.test_ac']['attributes']['temperature'] = 21
                     await page.wait_for("document.querySelector('#room-controls .device-value').textContent==='21 °C · objetivo'")
@@ -744,6 +821,10 @@ async def main() -> None:
                     result = {"passed": True, "synthetic_fixture": True, "actual_chromium_http_login": True,
                               "roles": ["home", "evaluator", "operator"], "home_effects": len(ha.sends),
                               "webgl_illustration": webgl, "individual_sessions": True,
+                              "live_home_checks": ["exact bindings including escalera; unbound room stays in list",
+                                                   "pin and floor pointer selection; movement over 4 px does not select",
+                                                   "quick room switch, off-state brightness slider, global scene receipt",
+                                                   "observed climate temperature and one-touch setpoint steps"],
                               "checks": ["bootstrap no private prefetch", "hidden bootstrap sends no catalog", "role permissions before requests", "independent light/climate typed effects", "focused drafts preserve current observed labels", "lost POST and in_progress receipt reconcile by poll without repost", "camera visual and ARIA agree", "visible model between renders", "navigation releases renderer/RAF", "320px and 390px no horizontal overflow", "operator session has no /obs link", "logout clears before pending HTTP and blocks crossed login", "failed logout stays hidden across reload", "session expires before fresh catalog", "held catalog past expiry disables and marks entity controls, fresh data restores focus and draft", "no entity observation lapses between refreshes during audits"],
                               "staleness": {**staleness_check, "stale_episodes_during_audits": len(stale_episodes)},
                               "notice_checks": ["real shared-only list and dismiss", "initial and post-dismiss empty state", "pending and uncertain delivery labels",
