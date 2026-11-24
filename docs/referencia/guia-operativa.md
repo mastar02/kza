@@ -147,7 +147,7 @@ python tools/code_search.py "cómo se maneja el timeout de HA al boot"
   - `scripts/kza_quota.py` — telemetría real de cuotas de las 4 suscripciones (`claude` en cuenta `claude-1`, `codex` balanceado entre `codex` y `codex-2`, `muse`, `agy`).
   - `scripts/kza_router.py` — enrutamiento dinámico vía OpenAI Decisions API (`gpt-6-luna`, 0 output tokens) con fallback determinista local, exclusión cross-model por **familia real** (`anthropic`|`openai`|`meta`|`google`), tier estándar en Codex (sin `/fast`), `outcome` y `report`.
   - `scripts/kza_seat.py` — `open`, `status`, `close`, `sync-templates` (solo enlaza `kza-*.md`; jamás toca `tu-*` ni `gsm-*`).
-- **Carga de API Key en macOS Keychain (si se crea una entrada nueva):** usar siempre `read -rs` (nunca `security add-generic-password -w` interactivo, porque `getpass` BSD trunca silenciosamente a 128 bytes):
+- **Carga y activación de API Key en macOS Keychain (opt-in explícito):** usar siempre `read -rs` (nunca `security add-generic-password -w` interactivo, porque `getpass` BSD trunca silenciosamente a 128 bytes) y habilitar con `KZA_USE_KEYCHAIN=1` o `"use_keychain": true` en `~/.local/state/kza-router/policy.json`:
   ```bash
   read -rs OPENAI_KEY && security add-generic-password -U -a "$USER" -s "kza-openai-decisions" -w "$OPENAI_KEY" && unset OPENAI_KEY
   ```

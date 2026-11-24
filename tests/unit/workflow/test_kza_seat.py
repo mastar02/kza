@@ -381,11 +381,21 @@ def test_reused_alias_archives_stale_report_and_outcome_errors_preserve_closed_s
         )
     assert Path(seat["worktree"]).exists()
 
-    with pytest.raises(ValueError, match="--rounds requires --approved"):
+    with pytest.raises(ValueError, match="--approved and --rounds"):
         kza_seat.close_seat(
             alias="kza-qa-reuse",
             done_readonly=True,
             rounds=2,
+            repo_root=repo,
+            state_dir=state_dir,
+        )
+    assert Path(seat["worktree"]).exists()
+
+    with pytest.raises(ValueError, match="--approved and --rounds"):
+        kza_seat.close_seat(
+            alias="kza-qa-reuse",
+            done_readonly=True,
+            approved=True,
             repo_root=repo,
             state_dir=state_dir,
         )
@@ -412,3 +422,106 @@ def test_reused_alias_archives_stale_report_and_outcome_errors_preserve_closed_s
     assert saved["outcome_recorded"] is False
     assert "disk full" in saved["outcome_error"]
     assert not Path(seat["worktree"]).exists()
+
+
+def test_parallel_open_during_close_outcome_is_preserved_and_legacy_created_at_checked(
+    tmp_path: Path,
+) -> None:
+    import os
+
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    wt_root = tmp_path / "worktrees"
+    state_dir = tmp_path / "state"
+    orig_run = kza_seat._run
+    counter = {"n": 0}
+
+    def _fake_run(cmd: list[str], **kwargs):
+        if cmd[:2] == ["hc", "run"]:
+            counter["n"] += 1
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"address": f"t{counter['n']}"}), "")
+        if cmd[:2] in (["hc", "kill"], ["hc", "rm"]):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return orig_run(cmd, **kwargs)
+
+    with (
+        mock.patch.object(kza_seat, "_run", side_effect=_fake_run),
+        mock.patch.object(kza_seat, "_rename_herdr_tab_no_focus", return_value="tb1"),
+    ):
+        seat1 = kza_seat.open_seat(
+            alias="kza-qa-par1",
+            role="kza-qa",
+            task="Audit A",
+            exclude_families=["google"],
+            offline=True,
+            allow_quota_emergency=True,
+            space_id="sp-test",
+            parent_terminal_id="t0",
+            repo_root=repo,
+            worktree_root=wt_root,
+            state_dir=state_dir,
+        )
+
+    rep1 = Path(seat1["report_path"])
+    rep1.write_text("# Report 1\nAPROBADO\n", encoding="utf-8")
+
+    orig_record = kza_seat.kza_router.record_outcome
+
+    def _interleaved_record_outcome(**kwargs):
+        with (
+            mock.patch.object(kza_seat, "_run", side_effect=_fake_run),
+            mock.patch.object(kza_seat, "_rename_herdr_tab_no_focus", return_value="tb2"),
+        ):
+            kza_seat.open_seat(
+                alias="kza-qa-par2",
+                role="kza-qa",
+                task="Audit B",
+                exclude_families=["google"],
+                offline=True,
+                allow_quota_emergency=True,
+                space_id="sp-test",
+                parent_terminal_id="t0",
+                repo_root=repo,
+                worktree_root=wt_root,
+                state_dir=state_dir,
+            )
+        return orig_record(**kwargs)
+
+    with (
+        mock.patch.object(kza_seat, "_hc_get_terminal", return_value={"state": "live", "status": {"state": "done"}}),
+        mock.patch.object(kza_seat, "_run", side_effect=_fake_run),
+        mock.patch.object(kza_seat.kza_router, "record_outcome", side_effect=_interleaved_record_outcome),
+    ):
+        closed1 = kza_seat.close_seat(
+            alias="kza-qa-par1",
+            done_readonly=True,
+            approved=True,
+            rounds=1,
+            repo_root=repo,
+            state_dir=state_dir,
+        )
+
+    assert closed1["status"] == "closed"
+    assert closed1["outcome_recorded"] is True
+    seats_after = json.loads((state_dir / "seats.json").read_text(encoding="utf-8"))
+    assert "kza-qa-par1" in seats_after and seats_after["kza-qa-par1"]["status"] == "closed"
+    assert "kza-qa-par2" in seats_after and seats_after["kza-qa-par2"]["status"] == "open"
+
+    # Legacy seat without opened_epoch still rejects reports predating created_at.
+    seats_after["kza-qa-par2"].pop("opened_epoch", None)
+    (state_dir / "seats.json").write_text(json.dumps(seats_after), encoding="utf-8")
+    rep2 = Path(seats_after["kza-qa-par2"]["report_path"])
+    rep2.write_text("# Old legacy report\nAPROBADO\n", encoding="utf-8")
+    old_ts = kza_seat.kza_quota._parse_timestamp(seats_after["kza-qa-par2"]["created_at"]) - 30.0
+    os.utime(rep2, (old_ts, old_ts))
+
+    with mock.patch.object(
+        kza_seat, "_hc_get_terminal", return_value={"state": "live", "status": {"state": "done"}}
+    ):
+        with pytest.raises(RuntimeError, match="stale report"):
+            kza_seat.close_seat(
+                alias="kza-qa-par2",
+                done_readonly=True,
+                repo_root=repo,
+                state_dir=state_dir,
+            )

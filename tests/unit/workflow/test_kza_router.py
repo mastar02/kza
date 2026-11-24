@@ -427,3 +427,42 @@ def test_keychain_requires_explicit_opt_in_and_uses_kza_default_service(
     key2, src2 = kza_router.resolve_openai_api_key(state_dir=tmp_path)
     assert key2 == "sk-test-kc" and src2 == "keychain:kza-custom-kc"
     assert called_services == ["kza-custom-kc"]
+
+    # Explicit boolean false leaves Keychain off without calling security.
+    (tmp_path / "policy.json").write_text(json.dumps({"use_keychain": False}), encoding="utf-8")
+    key3, src3 = kza_router.resolve_openai_api_key(state_dir=tmp_path)
+    assert key3 is None and src3 == "none"
+    assert called_services == ["kza-custom-kc"]
+
+    # Truthy strings, non-bool ints, or malformed JSON fail closed before calling security.
+    for bad_payload in (
+        json.dumps({"use_keychain": "false"}),
+        json.dumps({"use_keychain": "0"}),
+        json.dumps({"use_keychain": 1}),
+        "{broken-json",
+    ):
+        (tmp_path / "policy.json").write_text(bad_payload, encoding="utf-8")
+        with pytest.raises(RuntimeError):
+            kza_router.resolve_openai_api_key(state_dir=tmp_path)
+    assert called_services == ["kza-custom-kc"]
+
+    # Claude binary matches selected_account even when claude-2 is explicitly requested.
+    snap_claude2 = {
+        "quota_emergency": False,
+        "eligible_runtimes": ["claude"],
+        "subscriptions": {
+            "claude": {"weight": 1.0, "excluded": False, "status": "ok", "details": {"selected_account": "claude-2"}},
+            "codex": {"weight": 0.0, "excluded": True, "status": "excluded"},
+            "muse": {"weight": 0.0, "excluded": True, "status": "excluded"},
+            "agy": {"weight": 0.0, "excluded": True, "status": "excluded"},
+        },
+    }
+    dec_c2 = kza_router.route_task(
+        role="kza-privacy",
+        summary="Verify account parity",
+        offline=True,
+        state_dir=tmp_path / "clean",
+        quota_snapshot=snap_claude2,
+    )
+    assert dec_c2["selected_account"] == "claude-2"
+    assert dec_c2["cli_command"][0] == "claude-2"

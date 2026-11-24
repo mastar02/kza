@@ -20,6 +20,7 @@ Subcommands:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -28,9 +29,10 @@ import subprocess
 import sys
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -129,6 +131,24 @@ def _load_seats(state_dir: Path) -> dict[str, dict[str, Any]]:
 
 def _save_seats(state_dir: Path, seats: dict[str, dict[str, Any]]) -> None:
     kza_quota._atomic_write_json(_seats_file(state_dir), seats)
+
+
+@contextmanager
+def _locked_seats_txn(state_dir: Path) -> Iterator[dict[str, dict[str, Any]]]:
+    """Acquire an exclusive flock on `<state_dir>/seats.lock`, reload seats, and atomically save on exit."""
+    kza_quota._ensure_private_dir(state_dir)
+    lock_path = state_dir / "seats.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        seats = _load_seats(state_dir)
+        yield seats
+        _save_seats(state_dir, seats)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def resolve_herdr_space_id(space_name: str = DEFAULT_SPACE_NAME) -> str:
@@ -472,8 +492,10 @@ def open_seat(
             "routing_source": decision["source"],
             "ensure_manifest": sorted(DEFAULT_ENSURE_MANIFEST),
         }
-        seats[alias] = seat_record
-        _save_seats(sdir, seats)
+        with _locked_seats_txn(sdir) as latest_seats:
+            if alias in latest_seats and latest_seats[alias].get("status") == "open":
+                raise RuntimeError(f"Seat '{alias}' is already open.")
+            latest_seats[alias] = seat_record
         return seat_record
     except Exception:
         _rollback()
@@ -500,8 +522,10 @@ def close_seat(
     validate_alias(alias)
     if rounds is not None and rounds < 1:
         raise ValueError("rounds must be >= 1.")
-    if rounds is not None and approved is None:
-        raise ValueError("--rounds requires --approved true|false.")
+    if (approved is None) != (rounds is None):
+        raise ValueError(
+            "Both --approved and --rounds must be provided together when recording an outcome on close."
+        )
 
     rroot = repo_root or _repo_root()
     sdir = state_dir or kza_router._state_dir()
@@ -545,8 +569,10 @@ def close_seat(
                 f"Refusing to close seat '{alias}': missing or empty report at '{report_raw}'. "
                 "Ensure the worker wrote its report, or pass --allow-missing-report / --abandon."
             )
-        opened_epoch = seat.get("opened_epoch")
-        if opened_epoch is not None and rpath.stat().st_mtime < float(opened_epoch):
+        min_epoch = seat.get("opened_epoch")
+        if min_epoch is None:
+            min_epoch = kza_quota._parse_timestamp(seat.get("created_at"))
+        if min_epoch is not None and rpath.stat().st_mtime < float(min_epoch):
             raise RuntimeError(
                 f"Refusing to close seat '{alias}': stale report at '{report_raw}' predates this seat launch."
             )
@@ -594,17 +620,25 @@ def close_seat(
         del_flag = "-d" if (merged and not abandon) else "-D"
         _run(["git", "branch", del_flag, branch], cwd=rroot, check=False)
 
-    seat["status"] = "abandoned" if abandon else "closed"
-    seat["closed_at"] = datetime.now(tz=timezone.utc).isoformat()
-    seat["close_mode"] = (
+    decision_id = str(seat.get("decision_id") or "")
+    closed_at = datetime.now(tz=timezone.utc).isoformat()
+    close_mode = (
         "abandon"
         if abandon
         else ("done-readonly" if done_readonly else ("merged" if merged else "merged-squash"))
     )
-    seats[alias] = seat
-    _save_seats(sdir, seats)
+    new_status = "abandoned" if abandon else "closed"
 
-    decision_id = str(seat.get("decision_id") or "")
+    with _locked_seats_txn(sdir) as latest_seats:
+        cur = latest_seats.get(alias)
+        if cur and (not decision_id or cur.get("decision_id") == decision_id):
+            seat = {**cur, "status": new_status, "closed_at": closed_at, "close_mode": close_mode}
+        else:
+            seat["status"] = new_status
+            seat["closed_at"] = closed_at
+            seat["close_mode"] = close_mode
+        latest_seats[alias] = seat
+
     if record_seat_outcome and decision_id and approved is not None:
         eff_rounds = rounds if rounds is not None else 1
         try:
@@ -612,22 +646,29 @@ def close_seat(
                 decision_id=decision_id,
                 rounds=eff_rounds,
                 approved=approved,
-                notes=outcome_notes or f"seat:{alias}:{seat['close_mode']}",
+                notes=outcome_notes or f"seat:{alias}:{close_mode}",
                 state_dir=sdir,
                 skip_if_exists=True,
             )
-            seat["outcome_recorded"] = True
-            seat.pop("outcome_error", None)
-            seats[alias] = seat
-            _save_seats(sdir, seats)
         except OSError as exc:
-            seat["outcome_recorded"] = False
-            seat["outcome_error"] = str(exc)
-            seats[alias] = seat
-            _save_seats(sdir, seats)
+            with _locked_seats_txn(sdir) as latest_seats:
+                cur = latest_seats.get(alias)
+                if cur and cur.get("decision_id") == decision_id and cur.get("status") != "open":
+                    cur["outcome_recorded"] = False
+                    cur["outcome_error"] = str(exc)
+                    latest_seats[alias] = cur
+                    seat = dict(cur)
             raise RuntimeError(
                 f"Seat '{alias}' closed cleanly, but recording outcome failed: {exc}"
             ) from exc
+
+        with _locked_seats_txn(sdir) as latest_seats:
+            cur = latest_seats.get(alias)
+            if cur and cur.get("decision_id") == decision_id and cur.get("status") != "open":
+                cur["outcome_recorded"] = True
+                cur.pop("outcome_error", None)
+                latest_seats[alias] = cur
+                seat = dict(cur)
 
     return seat
 

@@ -376,6 +376,7 @@ def build_cli_command(
     role: str,
     *,
     codex_binary: str = "codex",
+    claude_binary: str = "claude",
     effort_override: str | None = None,
 ) -> list[str]:
     """Build mandatory unattended CLI invocation flags with safety-guard hooks."""
@@ -422,7 +423,7 @@ def build_cli_command(
 
     if candidate.runtime == "claude":
         return [
-            "claude",
+            claude_binary,
             "--setting-sources",
             "user,project",
             "--model",
@@ -474,14 +475,20 @@ def resolve_openai_api_key(state_dir: Path | None = None) -> tuple[str | None, s
     if kza_kc == "0" or th_kc == "0":
         return None, "disabled"
 
-    policy: dict[str, Any] = {}
-    try:
-        policy = _load_policy_dict(state_dir)
-    except RuntimeError:
-        policy = {}
+    policy = _load_policy_dict(state_dir)
+    raw_use_kc = policy.get("use_keychain", False)
+    if not isinstance(raw_use_kc, bool):
+        raise RuntimeError(
+            f"Invalid 'use_keychain' in {_state_dir(state_dir) / 'policy.json'}: expected JSON boolean."
+        )
+    raw_kc_service = policy.get("keychain_service")
+    if raw_kc_service is not None and (not isinstance(raw_kc_service, str) or not raw_kc_service.strip()):
+        raise RuntimeError(
+            f"Invalid 'keychain_service' in {_state_dir(state_dir) / 'policy.json'}: expected non-empty string."
+        )
 
-    policy_use_kc = bool(policy.get("use_keychain", False))
-    policy_kc_service = str(policy.get("keychain_service") or "").strip()
+    policy_use_kc = raw_use_kc
+    policy_kc_service = raw_kc_service.strip() if isinstance(raw_kc_service, str) else ""
 
     if not (kza_kc == "1" or th_kc == "1" or policy_use_kc):
         return None, "none"
@@ -908,10 +915,12 @@ def route_task(
     else:
         selected_account = selected.runtime
 
+    claude_binary = "claude-2" if selected_account == "claude-2" else "claude"
     cli_command = build_cli_command(
         selected,
         role,
         codex_binary=codex_binary,
+        claude_binary=claude_binary,
         effort_override=effective_effort,
     )
     decision_id = f"kza-dec-{uuid.uuid4().hex[:12]}"
