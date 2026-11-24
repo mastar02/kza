@@ -142,12 +142,18 @@ def test_safe_cli_flags_per_runtime_read_only_vs_write() -> None:
 
     for role in ("kza-qa", "kza-ui", "kza-pregate", "kza-analista", "kza-privacy", "kza-dev", "kza-ops"):
         codex_cmd = kza_router.build_cli_command(codex_sol, role)
+        assert codex_cmd[0] == "codex"
         assert "--no-daemon" in codex_cmd
         assert "-a" in codex_cmd and "never" in codex_cmd
         assert "-s" in codex_cmd and "danger-full-access" in codex_cmd
         assert "--dangerously-bypass-hook-trust" in codex_cmd
         assert "read-only" not in codex_cmd
-        assert "service_tier=fast" in codex_cmd
+        assert "service_tier=fast" not in codex_cmd
+
+        codex2_cmd = kza_router.build_cli_command(codex_sol, role, codex_binary="codex-2", effort_override="medium")
+        assert codex2_cmd[0] == "codex-2"
+        assert "model_reasoning_effort=medium" in codex2_cmd
+        assert "service_tier=fast" not in codex2_cmd
 
         muse_cmd = kza_router.build_cli_command(by_rt["muse"], role)
         assert "--yolo" in muse_cmd
@@ -170,7 +176,7 @@ def test_safe_cli_flags_per_runtime_read_only_vs_write() -> None:
         assert "plan" not in agy_cmd
 
     terra_ui = kza_router.build_cli_command(codex_terra, "kza-ui")
-    assert "--no-daemon" in terra_ui and "service_tier=fast" in terra_ui and "danger-full-access" in terra_ui
+    assert "--no-daemon" in terra_ui and "service_tier=fast" not in terra_ui and "danger-full-access" in terra_ui
 
     astra_pre = kza_router.build_cli_command(codex_astra, "kza-pregate")
     assert "--no-daemon" in astra_pre and "service_tier=fast" not in astra_pre
@@ -183,10 +189,11 @@ def test_safe_cli_flags_per_runtime_read_only_vs_write() -> None:
         quota_weights={"codex": 1.0},
         excluded_families=[],
     )
-    assert "/fast on" in payload["input"] and "service_tier=fast" in payload["input"]
+    assert payload["input"].startswith(kza_router.STATIC_ROUTING_PREAMBLE)
+    assert "service_tier=fast" not in payload["input"]
     choice_map = {ch["value"]: ch["description"] for ch in payload["questions"][0]["choices"]}
-    assert "service_tier=fast" in choice_map["codex:gpt-6.2-sol"]
-    assert "service_tier=fast" in choice_map["codex:gpt-6.1-terra"]
+    assert "service_tier=fast" not in choice_map["codex:gpt-6.2-sol"]
+    assert "service_tier=fast" not in choice_map["codex:gpt-6.1-terra"]
     assert "service_tier=fast" not in choice_map["codex:gpt-6.2-astra"]
 
     with pytest.raises(ValueError, match="Unsupported role"):
@@ -290,3 +297,101 @@ def test_allowed_runtimes_policy_blocks_disallowed_even_under_emergency(tmp_path
             state_dir=tmp_path,
             quota_snapshot=_healthy_quota_snapshot(),
         )
+
+
+def test_cacheable_preamble_codex2_account_propagation_and_rigor_effort(tmp_path: Path) -> None:
+    assert len(kza_router.STATIC_ROUTING_PREAMBLE) >= 4800
+    cands = list(kza_router.DEFAULT_CATALOG[:4])
+    p1 = kza_router.build_decisions_payload(
+        role="kza-dev",
+        complexity="medium",
+        sanitized_summary="Task A",
+        candidates=cands,
+        quota_weights={"claude": 0.9, "codex": 1.0},
+        excluded_families=[],
+    )
+    p2 = kza_router.build_decisions_payload(
+        role="kza-qa",
+        complexity="high",
+        sanitized_summary="Task B",
+        candidates=cands,
+        quota_weights={"claude": 0.8, "codex": 0.95},
+        excluded_families=["anthropic"],
+    )
+    marker = "\n\n--- LIVE ROUTING REQUEST ---\n"
+    assert p1["input"].split(marker)[0] == p2["input"].split(marker)[0]
+
+    snap_codex2 = {
+        "quota_emergency": False,
+        "eligible_runtimes": ["claude", "codex", "muse", "agy"],
+        "subscriptions": {
+            "claude": {"weight": 0.9, "excluded": False, "status": "ok", "details": {"selected_account": "claude-1"}},
+            "codex": {
+                "weight": 1.0,
+                "excluded": False,
+                "status": "ok",
+                "details": {"selected_account": "codex-2", "selected_cli": "codex-2"},
+            },
+            "muse": {"weight": 0.9, "excluded": False, "status": "ok"},
+            "agy": {"weight": 0.85, "excluded": False, "status": "ok"},
+        },
+    }
+
+    def _pick_astra_high_rigor(payload: dict, api_key: str) -> dict:
+        return {
+            "model": "gpt-6-luna",
+            "answers": [
+                {
+                    "name": "selected_candidate",
+                    "type": "choice",
+                    "choice": "codex:gpt-6.2-astra",
+                    "probabilities": [{"value": "codex:gpt-6.2-astra", "probability": 0.88}],
+                },
+                {"name": "task_rigor", "type": "score", "score": 3.6},  # 1-based = 4.6 >= 4.2
+            ],
+            "usage": {"input_tokens": 1300, "input_tokens_details": {"cached_tokens": 1024}, "output_tokens": 0},
+        }
+
+    dec_up = kza_router.route_task(
+        role="kza-dev",
+        summary="Tricky async concurrency fix",
+        complexity="medium",
+        state_dir=tmp_path,
+        quota_snapshot=snap_codex2,
+        api_caller=_pick_astra_high_rigor,
+        api_key_override="test-key",
+    )
+    assert dec_up["selected_account"] == "codex-2"
+    assert dec_up["cli_command"][0] == "codex-2"
+    assert dec_up["effort"] == "medium"
+    assert dec_up["effective_effort"] == "high"
+    assert "model_reasoning_effort=high" in dec_up["cli_command"]
+    assert "service_tier=fast" not in dec_up["cli_command"]
+
+    def _pick_sol_low_rigor(payload: dict, api_key: str) -> dict:
+        return {
+            "model": "gpt-6-luna",
+            "answers": [
+                {
+                    "name": "selected_candidate",
+                    "type": "choice",
+                    "choice": "codex:gpt-6.2-sol",
+                    "probabilities": [{"value": "codex:gpt-6.2-sol", "probability": 0.85}],
+                },
+                {"name": "task_rigor", "type": "score", "score": 0.5},  # 1-based = 1.5 <= 2.2
+            ],
+            "usage": {"input_tokens": 1300, "input_tokens_details": {"cached_tokens": 1024}, "output_tokens": 0},
+        }
+
+    dec_down = kza_router.route_task(
+        role="kza-dev",
+        summary="Small typo fix in helper",
+        complexity="low",
+        state_dir=tmp_path,
+        quota_snapshot=snap_codex2,
+        api_caller=_pick_sol_low_rigor,
+        api_key_override="test-key",
+    )
+    assert dec_down["effort"] == "high"
+    assert dec_down["effective_effort"] == "medium"
+    assert "model_reasoning_effort=medium" in dec_down["cli_command"]

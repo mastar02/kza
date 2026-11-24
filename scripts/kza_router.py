@@ -62,18 +62,11 @@ class ModelCandidate:
     fast_mode: bool = False
 
 
-_CODEX_FAST_MODEL_RE = re.compile(r"(?:^|-)(?:sol|terra)(?:$|-)", re.IGNORECASE)
-
-
 def uses_codex_fast_mode(candidate: ModelCandidate) -> bool:
-    """Return True when Codex should launch with `/fast on` (`-c service_tier=fast`).
-
-    Applies to Codex `sol` and `terra` models (or any Codex candidate with
-    `fast_mode=True` in the catalog).
-    """
+    """Return True only when a Codex candidate explicitly enables `fast_mode=True`."""
     if candidate.runtime != "codex":
         return False
-    return bool(candidate.fast_mode or _CODEX_FAST_MODEL_RE.search(candidate.model))
+    return bool(candidate.fast_mode)
 
 
 # Catalog derived from verified Mac CLI models and role benchmarks.
@@ -120,7 +113,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
         model="gpt-6.2-sol",
         family="openai",
         effort="high",
-        capability_notes="Deep Python/async systems engineering, complex debugging, rigorous QA and invariant proofs; runs with Codex /fast on (service_tier=fast, ~2x speed, higher quota rate).",
+        capability_notes="Deep Python/async systems engineering, complex debugging, rigorous QA and invariant proofs (standard Codex tier).",
         role_suitability={
             "kza-analista": 0.93,
             "kza-dev": 0.97,
@@ -130,7 +123,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
             "kza-ui": 0.84,
             "kza-ops": 0.93,
         },
-        fast_mode=True,
+        fast_mode=False,
     ),
     ModelCandidate(
         candidate_id="codex:gpt-6.2-astra",
@@ -156,7 +149,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
         model="gpt-6.1-terra",
         family="openai",
         effort="medium",
-        capability_notes="Specialized desktop/browser computer-use and visual E2E verification (NEXO UI, interactive PC checks); runs with Codex /fast on (service_tier=fast, ~1.5x speed).",
+        capability_notes="Specialized desktop/browser computer-use and visual E2E verification (NEXO UI, interactive PC checks; standard Codex tier).",
         role_suitability={
             "kza-analista": 0.72,
             "kza-dev": 0.75,
@@ -166,7 +159,7 @@ DEFAULT_CATALOG: tuple[ModelCandidate, ...] = (
             "kza-ui": 0.98,
             "kza-ops": 0.78,
         },
-        fast_mode=True,
+        fast_mode=False,
     ),
     ModelCandidate(
         candidate_id="muse:muse-wonder-full-1.0",
@@ -357,19 +350,48 @@ def load_catalog(catalog_path: Path | None = None) -> list[ModelCandidate]:
     return list(by_id.values())
 
 
-def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
+def resolve_effective_effort(
+    candidate: ModelCandidate,
+    role: str,
+    complexity: str,
+    task_rigor: float | None,
+) -> str:
+    """Calibrate runtime reasoning effort using `gpt-6-luna` task_rigor (1..5)."""
+    if task_rigor is None:
+        return candidate.effort
+    if task_rigor >= 4.2 and candidate.effort == "medium":
+        return "high"
+    if (
+        task_rigor <= 2.2
+        and complexity == "low"
+        and role in {"kza-dev", "kza-ops", "kza-pregate"}
+        and candidate.effort == "high"
+    ):
+        return "medium"
+    return candidate.effort
+
+
+def build_cli_command(
+    candidate: ModelCandidate,
+    role: str,
+    *,
+    codex_binary: str = "codex",
+    effort_override: str | None = None,
+) -> list[str]:
     """Build mandatory unattended CLI invocation flags with safety-guard hooks."""
     if role not in ALL_ROLES:
         raise ValueError(f"Unsupported role '{role}'")
 
+    eff = effort_override or candidate.effort
+
     if candidate.runtime == "codex":
         cmd = [
-            "codex",
+            codex_binary,
             "--no-daemon",
             "-m",
             candidate.model,
             "-c",
-            f"model_reasoning_effort={candidate.effort}",
+            f"model_reasoning_effort={eff}",
         ]
         if uses_codex_fast_mode(candidate):
             cmd.extend(["-c", "service_tier=fast"])
@@ -390,7 +412,7 @@ def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
             "--model",
             candidate.model,
             "--effort",
-            candidate.effort,
+            eff,
             "--yolo",
             "--contributor-mode",
             "off",
@@ -406,7 +428,7 @@ def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
             "--model",
             candidate.model,
             "--effort",
-            candidate.effort,
+            eff,
             "--permission-mode",
             "bypassPermissions",
         ]
@@ -417,7 +439,7 @@ def build_cli_command(candidate: ModelCandidate, role: str) -> list[str]:
             "--model",
             candidate.model,
             "--effort",
-            candidate.effort,
+            eff,
             "--dangerously-skip-permissions",
             "--mode",
             "auto",
@@ -433,11 +455,11 @@ def resolve_openai_api_key() -> tuple[str | None, str]:
     if env_key:
         return env_key, "env:OPENAI_API_KEY"
 
-    use_kc = (
-        os.environ.get("KZA_USE_KEYCHAIN", "").strip() == "1"
-        or os.environ.get("THERMOUY_USE_KEYCHAIN", "").strip() == "1"
-    )
-    if not use_kc:
+    kza_kc = os.environ.get("KZA_USE_KEYCHAIN", "").strip()
+    th_kc = os.environ.get("THERMOUY_USE_KEYCHAIN", "").strip()
+    if kza_kc == "0" or th_kc == "0":
+        return None, "disabled"
+    if sys.platform != "darwin" and kza_kc != "1" and th_kc != "1":
         return None, "none"
 
     service = os.environ.get("KZA_KEYCHAIN_SERVICE", "").strip() or DEFAULT_KEYCHAIN_SERVICE
@@ -494,6 +516,47 @@ def normalize_score_1_based(raw_score: Any, num_levels: int = 5) -> float | None
     return round(max(1.0, min(float(num_levels), val)), 2)
 
 
+# Static cacheable prefix (>1,100 tokens) kept byte-identical across all `gpt-6-luna` calls.
+STATIC_ROUTING_PREAMBLE = """You are the KZA Multi-Console Orchestrator Router.
+Your objective is to select the single best runtime+model candidate and rate the required reasoning rigor (`task_rigor` from 1 to 5) for an isolated engineering or verification seat in the KZA project.
+
+=== 1. KZA SYSTEM CONTEXT & HARD INVARIANTS ===
+KZA is a local-first Spanish voice assistant integrated with Home Assistant, built on Python 3.13 asyncio pipelines, GPU-accelerated wakeword/STT/TTS/LLM services (cuda:0 / cuda:1), SQLite persistence with durable retirement/tombstone barriers, strict speaker/persona/account/consent separation, NEXO web UI, and bytecode-compiled CPython 3.13 production releases (`scripts/build_runtime.py`).
+Critical invariants that all specialist seats must uphold:
+- Async non-blocking I/O: never block the asyncio event loop with synchronous file, network, or heavy CPU calls.
+- Dependency injection & config centralization: constructor DI, dataclasses/enums, centralized `config/settings.yaml`, no `print()` in `src/`.
+- Privacy & authority separation: voice identity, persona profile, user account, admin roles, and consent withdrawal/erasure must remain strictly isolated; ACK only after real storage/SDK handle completion; zero leakage of audio, transcripts, embeddings, secrets, `.env`, or `/home/kza/*` paths.
+- Worktree isolation & verification rigor: write seats operate on dedicated `seat/<alias>` branches; read-only gates run on detached `HEAD` with `dirty=0` and must cite real `file:line` evidence and executed test results without hiding regressions behind hollow mocks.
+- Cross-model auditing: `kza-qa` and `kza-privacy` enforce strict exclusion by real model family (`anthropic`, `openai`, `meta`, `google`). Notice that Claude models served via Agy (`agy:claude-opus-5-5-high`, `agy:claude-sonnet-5-5-medium`) belong to the `anthropic` family, not `google`.
+
+=== 2. KZA SPECIALIST ROLES ===
+1. `kza-analista` (read-only, detached HEAD): Pre-Task Spec Gate. Investigates codebase, tests, and canonical architecture docs to emit a concise `<= 2 KB` specification covering exact scope, applicable invariants, concrete verification plan, and truly ambiguous open decisions.
+2. `kza-dev` (read-write, `seat/<alias>` branch): Application implementation specialist. Writes clean Python 3.13 async code, JS/HTML NEXO UI code, and real unit/integration tests with atomic commits. High Round-1 QA pass rate is essential: avoid half-tested patches, missing edge-case guards, or unrequested scope creep.
+3. `kza-ops` (read-write, `seat/<alias>` branch): CI/CD, GitHub Actions, bytecode packaging (`scripts/build_runtime.py`), local Mac orchestration/hooks tooling, and operational runbooks.
+4. `kza-pregate` (read-only, detached HEAD): Fast hygiene pre-review before expensive cross-model QA. Checks spec conformance, diff cleanliness, obvious invariant violations, and affected tests.
+5. `kza-qa` (read-only, detached HEAD): Independent cross-model QA gate with 4 integrated lenses: (1) correctness/design/types/async concurrency, (2) silent failures/swallowed exceptions/unsafe fallbacks, (3) test rigor/coverage/real execution without hiding bugs, (4) comment/doc/PR-claim consistency. Emits proportional `APROBADO` vs `BLOQUEA`.
+6. `kza-privacy` (read-only, detached HEAD): Independent privacy, authority, and release gate. Audits voice/persona/account/consent boundaries, durable erasure/tombstone/lease barriers, self-contained bytecode releases, and zero PII/secret exposure.
+7. `kza-ui` (read-only, detached HEAD): Real browser/desktop E2E verification specialist (NEXO UI, local HTTP flows, auth/session transitions, responsive layout, capture/privacy states, visual evidence).
+
+=== 3. PROPORTIONALITY & QUOTA OPTIMIZATION POLICY ===
+Four subscriptions are active: `claude` (single KZA account `claude-1`), `codex` (multi-account load-balanced across `codex` and `codex-2` on standard tier without `/fast`), `muse` (`muse-wonder-full-1.0`, `muse-wonder-1.0`), and `agy` (`gemini-4-*` and Agy-hosted Claude).
+Follow strict proportionality to maximize Round-1 quality per quota unit across the full fleet:
+- Reserve flagship heavyweights (`claude:claude-opus-5-5`, `codex:gpt-6.2-sol`, `muse:muse-wonder-full-1.0`, `agy:gemini-4-neon-high`, `agy:gemini-4-hydrogen-high`, `agy:claude-opus-5-5-high`) for `complexity=high`, multi-module architecture, subtle async/concurrency bugs, privacy/authority gates (`kza-privacy`), deep 4-lens `kza-qa`, or high-rigor specs.
+- Prefer efficient medium-tier specialists (`claude:claude-sonnet-5-5`, `codex:gpt-6.2-astra`, `muse:muse-wonder-1.0`, `agy:gemini-4-carbon-medium`, `agy:claude-sonnet-5-5-medium`) for `kza-pregate`, `kza-ops` tooling, `complexity=low` or cleanly scoped `complexity=medium` tasks, and routine checks—unless the task summary reveals subtle concurrency, security, or privacy risk.
+- For `kza-ui`, evaluate browser/computer-use strength alongside real quota weights: `codex:gpt-6.1-terra` excels at interactive desktop/browser E2E flows, while `agy:gemini-4-neon-high` and `agy:gemini-4-carbon-medium` offer strong multimodal UI inspection, and `claude:claude-opus-5-5` handles multimodal DOM/privacy checks when other families are excluded or depleted.
+- Respect `quota_weight` seriously: when one subscription has a noticeably healthier `quota_weight` (for example `1.00` vs `0.75` or lower) and comparable role suitability, shift work toward the healthier subscription to keep all four fleets balanced and prevent hitting 5h/7d ceilings.
+- Notice Codex operates on standard tier (`service_tier` default, `/fast` disabled) to preserve weekly quota capacity across `codex` and `codex-2`.
+
+=== 4. TASK RIGOR SCORING RUBRIC (`task_rigor`) & ROUND-1 QUALITY SIGNALS ===
+Score `task_rigor` accurately using the five calibrated levels rather than defaulting every task near 4.8:
+- `1_minimal`: purely mechanical edits, typo fixes, formatting, trivial docstring/config updates with near-zero regression surface.
+- `2_low`: small, single-file, well-bounded helper changes or focused unit-test additions with clear local contracts.
+- `3_medium`: standard multi-file feature/bugfix work, pre-gates, CI/ops scripts, or scoped UI checks without deep concurrency or authority risk.
+- `4_high`: complex async/concurrency flows, cross-module refactors, multi-lens `kza-qa` audits, nuanced `kza-analista` specs, or end-to-end NEXO session/privacy flows.
+- `5_critical`: release-gating audits, privacy/authority/consent/erasure boundary changes (`kza-privacy`), SQLite durability/tombstone invariants, or production-safety changes.
+Remember that Round-1 approval (`>= 85%` target) depends on matching specialist strengths to task risk: if a `kza-dev` task involves subtle asyncio lifecycle, cancellation, locking, or persistence barriers, prioritize high-precision candidates even at `complexity=medium`; if a task is clean, local, and well-specified, prefer medium-tier specialists to preserve flagship quota for high-rigor gates and complex engineering."""
+
+
 def build_decisions_payload(
     *,
     role: str,
@@ -505,18 +568,16 @@ def build_decisions_payload(
 ) -> dict[str, Any]:
     """Construct the live `POST /v1/decisions` request payload for `gpt-6-luna`.
 
-    Respects verified live contract details:
-    - Top-level fields: `model`, `input`, `questions`.
-    - Each question uses `name`, `type`, `instructions`.
-    - `type: "choice"` uses `choices: [{"value", "description"}]`.
-    - `type: "score"` levels carry ONLY `{"label", "description"}` (NO `"value"`).
+    Places `STATIC_ROUTING_PREAMBLE` at the front of `input` so OpenAI prompt
+    caching hits on the >1,024-token prefix, and appends the variable request
+    details and eligible candidates at the tail.
     """
     cand_lines = []
     choice_items = []
     for c in candidates:
         qw = quota_weights.get(c.runtime, 0.0)
         suit = c.role_suitability.get(role, 0.80)
-        fast_tag = ", codex_fast=/fast on (service_tier=fast)" if uses_codex_fast_mode(c) else ""
+        fast_tag = ", codex_fast=enabled" if uses_codex_fast_mode(c) else ""
         desc = (
             f"runtime={c.runtime}, family={c.family}, effort={c.effort}{fast_tag}, "
             f"quota_weight={qw:.2f}, benchmark_prior={suit:.2f}; {c.capability_notes}"
@@ -524,18 +585,17 @@ def build_decisions_payload(
         cand_lines.append(f"- {c.candidate_id}: {desc}")
         choice_items.append({"value": c.candidate_id, "description": desc})
 
-    input_text = (
-        f"Project: KZA (local voice assistant for Home Assistant, Python 3.13 async, privacy/authority invariants).\n"
+    dynamic_section = (
         f"Role: {role} ({'read-only' if role in READ_ONLY_ROLES else 'read-write'}).\n"
-        f"Complexity: {complexity}.\n"
+        f"Complexity hint: {complexity}.\n"
         f"Excluded model families (cross-model guard): {', '.join(excluded_families) or 'none'}.\n"
-        f"Runtime policy: Codex sol and terra models run with `/fast on` (`-c service_tier=fast`: faster latency, higher quota consumption rate); factor this into speed vs quota trade-offs.\n"
         f"Task summary (sanitized): {sanitized_summary}\n"
         f"Eligible candidates with real subscription quota weights (higher = healthier quota) "
         f"and documented capability/benchmark priors:\n"
         + "\n".join(cand_lines)
         + "\nChoose the single candidate maximizing expected Round-1 quality per quota unit."
     )
+    input_text = f"{STATIC_ROUTING_PREAMBLE}\n\n--- LIVE ROUTING REQUEST ---\n{dynamic_section}"
 
     score_levels = [
         {"label": "1_minimal", "description": "Trivial/mechanical task"},
@@ -787,12 +847,15 @@ def route_task(
                 task_rigor = rigor
                 eligible_ids = {c.candidate_id for c in eligible}
                 if probs:
-                    # Combine Decisions API probability with real quota weight for tie-breaking & safety.
-                    weighted_probs = {
-                        cid: prob * (0.35 + 0.65 * max(0.05, quota_weights.get(next(c.runtime for c in eligible if c.candidate_id == cid), 0.1)))
-                        for cid, prob in probs.items()
-                        if cid in eligible_ids
-                    }
+                    # Gentle tie-breaking by quota health without double-penalizing healthy subscriptions.
+                    weighted_probs: dict[str, float] = {}
+                    for cid, prob in probs.items():
+                        if cid not in eligible_ids:
+                            continue
+                        rt = next(c.runtime for c in eligible if c.candidate_id == cid)
+                        qw = max(0.05, quota_weights.get(rt, 0.1))
+                        mult = (0.85 + 0.15 * qw) if qw >= 0.25 else (0.50 + 0.50 * qw)
+                        weighted_probs[cid] = prob * mult
                     if weighted_probs:
                         selected_id = max(weighted_probs.items(), key=lambda kv: kv[1])[0]
                         source = f"openai-decisions:{DECISIONS_MODEL}"
@@ -810,7 +873,23 @@ def route_task(
         selected_id = max(det_scores.items(), key=lambda kv: kv[1])[0]
 
     selected = next(c for c in eligible if c.candidate_id == selected_id)
-    cli_command = build_cli_command(selected, role)
+    effective_effort = resolve_effective_effort(selected, role, complexity, task_rigor)
+    codex_details = (subs.get("codex", {}).get("details") or {}) if isinstance(subs.get("codex"), dict) else {}
+    claude_details = (subs.get("claude", {}).get("details") or {}) if isinstance(subs.get("claude"), dict) else {}
+    codex_binary = str(codex_details.get("selected_cli") or "codex")
+    if selected.runtime == "codex":
+        selected_account = str(codex_details.get("selected_account") or "codex")
+    elif selected.runtime == "claude":
+        selected_account = str(claude_details.get("selected_account") or "claude-1")
+    else:
+        selected_account = selected.runtime
+
+    cli_command = build_cli_command(
+        selected,
+        role,
+        codex_binary=codex_binary,
+        effort_override=effective_effort,
+    )
     decision_id = f"kza-dec-{uuid.uuid4().hex[:12]}"
     estimated_cost = _estimate_cost_usd(api_usage)
 
@@ -827,10 +906,12 @@ def route_task(
         "quota_emergency": quota_emergency_used,
         "excluded_families": excluded_fams,
         "selected_candidate": selected.candidate_id,
+        "selected_account": selected_account,
         "runtime": selected.runtime,
         "model": selected.model,
         "family": selected.family,
         "effort": selected.effort,
+        "effective_effort": effective_effort,
         "fast_mode": uses_codex_fast_mode(selected),
         "cli_command": cli_command,
         "quota_weights": quota_weights,
@@ -847,6 +928,23 @@ def route_task(
     return record
 
 
+def has_recorded_outcome(decision_id: str, state_dir: Path | None = None) -> bool:
+    """Return True if an outcome event already exists for `decision_id`."""
+    log_path = _state_dir(state_dir) / "decisions.jsonl"
+    if not log_path.is_file():
+        return False
+    for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        if decision_id not in line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and obj.get("type") == "outcome" and obj.get("decision_id") == decision_id:
+            return True
+    return False
+
+
 def record_outcome(
     *,
     decision_id: str,
@@ -854,11 +952,18 @@ def record_outcome(
     approved: bool,
     notes: str = "",
     state_dir: Path | None = None,
+    skip_if_exists: bool = False,
 ) -> dict[str, Any]:
     """Append an outcome event linked to a prior decision_id."""
     if rounds < 1:
         raise ValueError("rounds must be >= 1.")
     sdir = _state_dir(state_dir)
+    if skip_if_exists and has_recorded_outcome(decision_id, state_dir=sdir):
+        return {
+            "type": "outcome",
+            "decision_id": decision_id,
+            "already_recorded": True,
+        }
     event = {
         "type": "outcome",
         "decision_id": decision_id,

@@ -153,6 +153,23 @@ def test_close_guards_working_foreign_dirt_and_merge_ancestry(tmp_path: Path) ->
                 state_dir=state_dir,
             )
 
+    # Guard 1b: refuse closing when report file is missing or empty.
+    with mock.patch.object(
+        kza_seat, "_hc_get_terminal", return_value={"state": "live", "status": {"state": "done"}}
+    ):
+        with pytest.raises(RuntimeError, match="missing or empty report"):
+            kza_seat.close_seat(
+                alias="kza-dev-guard",
+                merged=True,
+                base_ref="main",
+                repo_root=repo,
+                state_dir=state_dir,
+            )
+
+    rpath = Path(seat["report_path"])
+    rpath.parent.mkdir(parents=True, exist_ok=True)
+    rpath.write_text("# Dev Report\nImplemented feature.txt cleanly.\n", encoding="utf-8")
+
     # Guard 2: detect foreign dirt outside ensure_manifest (specifically `.serena/memories/extra.md`).
     serena_mem = wt / ".serena" / "memories" / "extra.md"
     serena_mem.parent.mkdir(parents=True, exist_ok=True)
@@ -183,7 +200,6 @@ def test_close_guards_working_foreign_dirt_and_merge_ancestry(tmp_path: Path) ->
                 state_dir=state_dir,
             )
 
-    # Merge into main -> now `--merged` succeeds cleanly!
     subprocess.run(["git", "merge", "--ff-only", "seat/kza-dev-guard"], cwd=str(repo), check=True, capture_output=True)
     with (
         mock.patch.object(kza_seat, "_hc_get_terminal", return_value={"state": "live", "status": {"state": "done"}}),
@@ -198,4 +214,61 @@ def test_close_guards_working_foreign_dirt_and_merge_ancestry(tmp_path: Path) ->
         )
     assert closed["status"] == "closed"
     assert closed["close_mode"] == "merged"
+    assert closed["outcome_recorded"] is True
     assert not wt.exists()
+
+    # Verify outcome was written once and is not duplicated on subsequent record_outcome(skip_if_exists=True).
+    lines = [json.loads(l) for l in (state_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    outcomes = [o for o in lines if o.get("type") == "outcome" and o.get("decision_id") == seat["decision_id"]]
+    assert len(outcomes) == 1
+    assert outcomes[0]["round1_approved"] is True
+
+
+def test_open_seat_requires_exclude_family_on_gate_roles(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    wt_root = tmp_path / "worktrees"
+    state_dir = tmp_path / "state"
+
+    for role in ("kza-qa", "kza-privacy"):
+        with pytest.raises(ValueError, match="exclude-family"):
+            kza_seat.open_seat(
+                alias=f"{role}-nofam",
+                role=role,
+                task="Audit diff",
+                offline=True,
+                allow_quota_emergency=True,
+                repo_root=repo,
+                worktree_root=wt_root,
+                state_dir=state_dir,
+                dry_run=True,
+            )
+
+    dry = kza_seat.open_seat(
+        alias="kza-qa-cross",
+        role="kza-qa",
+        task="Audit diff",
+        exclude_families=["google"],
+        offline=True,
+        allow_quota_emergency=True,
+        repo_root=repo,
+        worktree_root=wt_root,
+        state_dir=state_dir,
+        dry_run=True,
+    )
+    assert dry["dry_run"] is True
+    assert dry["decision"]["excluded_families"] == ["google"]
+
+    dry_override = kza_seat.open_seat(
+        alias="kza-privacy-same",
+        role="kza-privacy",
+        task="Audit diff",
+        allow_same_family=True,
+        offline=True,
+        allow_quota_emergency=True,
+        repo_root=repo,
+        worktree_root=wt_root,
+        state_dir=state_dir,
+        dry_run=True,
+    )
+    assert dry_override["dry_run"] is True

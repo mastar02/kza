@@ -49,6 +49,7 @@ DEFAULT_HERDR_TEMPLATES_DIR = Path.home() / ".config" / "herdr-core" / "template
 
 ALIAS_RE = re.compile(r"^kza-[a-z0-9][a-z0-9_-]{1,27}$")
 FORBIDDEN_PREFIXES = ("tu-", "gsm-", "hl-", "sm-")
+CROSS_MODEL_GATE_ROLES: frozenset[str] = frozenset({"kza-qa", "kza-privacy"})
 
 # Files expected to exist/appear transiently in a worktree without counting as foreign dirt.
 DEFAULT_ENSURE_MANIFEST: frozenset[str] = frozenset(
@@ -270,6 +271,7 @@ def open_seat(
     branch: str | None = None,
     complexity: str = "medium",
     exclude_families: list[str] | None = None,
+    allow_same_family: bool = False,
     allow_quota_emergency: bool = False,
     offline: bool = False,
     space_id: str | None = None,
@@ -283,6 +285,11 @@ def open_seat(
     validate_alias(alias)
     if role not in kza_router.ALL_ROLES:
         raise ValueError(f"Unknown role '{role}'. Expected one of {sorted(kza_router.ALL_ROLES)}.")
+    if role in CROSS_MODEL_GATE_ROLES and not exclude_families and not allow_same_family:
+        raise ValueError(
+            f"Role '{role}' requires at least one --exclude-family for strict cross-model auditing "
+            "(or pass --allow-same-family explicitly)."
+        )
 
     rroot = repo_root or _repo_root()
     wroot = worktree_root or Path(os.environ.get("KZA_WORKTREE_ROOT", str(DEFAULT_WORKTREE_ROOT)))
@@ -435,9 +442,11 @@ def open_seat(
             "report_path": str(report_path),
             "decision_id": decision["decision_id"],
             "selected_candidate": decision["selected_candidate"],
+            "selected_account": decision.get("selected_account"),
             "runtime": decision["runtime"],
             "model": decision["model"],
             "family": decision["family"],
+            "effective_effort": decision.get("effective_effort", decision.get("effort")),
             "routing_source": decision["source"],
             "ensure_manifest": sorted(DEFAULT_ENSURE_MANIFEST),
         }
@@ -456,11 +465,16 @@ def close_seat(
     merged_squash: bool = False,
     done_readonly: bool = False,
     abandon: bool = False,
+    allow_missing_report: bool = False,
+    rounds: int = 1,
+    approved: bool | None = None,
+    outcome_notes: str = "",
+    record_seat_outcome: bool = True,
     base_ref: str = "HEAD",
     repo_root: Path | None = None,
     state_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Close a KZA seat enforcing live status, cleanliness, and merge safety guards."""
+    """Close a KZA seat enforcing live status, report presence, cleanliness, and merge safety guards."""
     validate_alias(alias)
     rroot = repo_root or _repo_root()
     sdir = state_dir or kza_router._state_dir()
@@ -493,6 +507,16 @@ def close_seat(
             raise RuntimeError(
                 f"Refusing to close seat '{alias}': terminal {terminal_id} is '{live_state}'. "
                 "Wait for completion or pass --abandon."
+            )
+
+    # Guard 1b: require non-empty report file unless --abandon or --allow-missing-report.
+    if not abandon and not allow_missing_report:
+        report_raw = seat.get("report_path")
+        rpath = Path(report_raw) if report_raw else None
+        if not rpath or not rpath.is_file() or rpath.stat().st_size == 0:
+            raise RuntimeError(
+                f"Refusing to close seat '{alias}': missing or empty report at '{report_raw}'. "
+                "Ensure the worker wrote its report, or pass --allow-missing-report / --abandon."
             )
 
     wt_path = Path(seat["worktree"])
@@ -545,6 +569,23 @@ def close_seat(
         if abandon
         else ("done-readonly" if done_readonly else ("merged" if merged else "merged-squash"))
     )
+
+    eff_approved = approved
+    if eff_approved is None and not abandon and not read_only and (merged or merged_squash):
+        eff_approved = True
+
+    decision_id = str(seat.get("decision_id") or "")
+    if record_seat_outcome and decision_id and eff_approved is not None:
+        kza_router.record_outcome(
+            decision_id=decision_id,
+            rounds=rounds,
+            approved=eff_approved,
+            notes=outcome_notes or f"seat:{alias}:{seat['close_mode']}",
+            state_dir=sdir,
+            skip_if_exists=True,
+        )
+        seat["outcome_recorded"] = True
+
     seats[alias] = seat
     _save_seats(sdir, seats)
     return seat
@@ -636,6 +677,7 @@ def main(argv: list[str] | None = None) -> int:
     p_open.add_argument("--branch", default=None, help="Branch name for write roles (default seat/<alias>).")
     p_open.add_argument("--complexity", choices=("low", "medium", "high"), default="medium")
     p_open.add_argument("--exclude-family", action="append", default=[], choices=kza_router.FAMILIES)
+    p_open.add_argument("--allow-same-family", action="store_true", help="Override cross-model guard on gate roles.")
     p_open.add_argument("--allow-quota-emergency", action="store_true")
     p_open.add_argument("--offline", action="store_true")
     p_open.add_argument("--space-id", default=None)
@@ -652,6 +694,11 @@ def main(argv: list[str] | None = None) -> int:
     p_close.add_argument("--merged-squash", action="store_true", help="Close squash-merged write seat.")
     p_close.add_argument("--done-readonly", action="store_true", help="Close completed read-only seat.")
     p_close.add_argument("--abandon", action="store_true", help="Force close even if working/blocked/dirty.")
+    p_close.add_argument("--allow-missing-report", action="store_true", help="Allow closing without a non-empty report file.")
+    p_close.add_argument("--rounds", type=int, default=1, help="Number of rounds before approval (for KPI outcome).")
+    p_close.add_argument("--approved", type=kza_router._parse_bool, default=None, help="Whether seat deliverable was approved (true|false).")
+    p_close.add_argument("--outcome-notes", default="", help="Optional outcome note saved to decisions.jsonl.")
+    p_close.add_argument("--no-outcome", action="store_true", help="Skip recording outcome on close.")
     p_close.add_argument("--base-ref", default="HEAD", help="Base ref for --merged ancestry check.")
     p_close.add_argument("--json", action="store_true")
 
@@ -672,6 +719,7 @@ def main(argv: list[str] | None = None) -> int:
                 branch=args.branch,
                 complexity=args.complexity,
                 exclude_families=args.exclude_family,
+                allow_same_family=args.allow_same_family,
                 allow_quota_emergency=args.allow_quota_emergency,
                 offline=args.offline,
                 space_id=args.space_id,
@@ -710,6 +758,11 @@ def main(argv: list[str] | None = None) -> int:
                 merged_squash=args.merged_squash,
                 done_readonly=args.done_readonly,
                 abandon=args.abandon,
+                allow_missing_report=args.allow_missing_report,
+                rounds=args.rounds,
+                approved=args.approved,
+                outcome_notes=args.outcome_notes,
+                record_seat_outcome=not args.no_outcome,
                 base_ref=args.base_ref,
                 state_dir=args.state_dir,
             )

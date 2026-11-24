@@ -23,14 +23,17 @@ def _write_json(path: Path, data: dict) -> None:
 
 
 def test_weight_policy_progressive_and_hard_exclusions() -> None:
-    w_low, ex_low, _ = kza_quota.compute_window_weight(69.9, 50.0)
-    assert w_low == 1.0
-    assert ex_low is False
+    w_zero, ex_zero, _ = kza_quota.compute_window_weight(0.0, 0.0)
+    assert w_zero == 1.0
+    assert ex_zero is False
 
+    w_50, ex_50, _ = kza_quota.compute_window_weight(50.0, 20.0)
     w_70, ex_70, _ = kza_quota.compute_window_weight(70.0, 40.0)
     w_85, ex_85, _ = kza_quota.compute_window_weight(85.0, 40.0)
-    assert ex_70 is False and ex_85 is False
-    assert 0.15 <= w_85 < w_70 <= 1.0
+    assert ex_50 is False and ex_70 is False and ex_85 is False
+    assert 0.85 < w_50 < 1.0
+    assert w_70 == 0.85
+    assert 0.15 <= w_85 < w_70
 
     w_5h_cut, ex_5h, reason_5h = kza_quota.compute_window_weight(92.0, 10.0)
     assert w_5h_cut == 0.0 and ex_5h is True and "5h" in (reason_5h or "")
@@ -39,7 +42,7 @@ def test_weight_policy_progressive_and_hard_exclusions() -> None:
     assert w_7d_cut == 0.0 and ex_7d is True and "7d" in (reason_7d or "")
 
 
-def test_claude_multi_account_selection_and_auto_reset(tmp_path: Path) -> None:
+def test_claude_default_uses_claude1_only_and_explicit_multi_account_auto_reset(tmp_path: Path) -> None:
     now = 1_800_000_000.0
     # Account 1: 97% 7d with future reset -> excluded.
     _write_json(
@@ -60,7 +63,14 @@ def test_claude_multi_account_selection_and_auto_reset(tmp_path: Path) -> None:
         },
     )
 
-    q = kza_quota.probe_claude(tap_dir=tmp_path, now=now)
+    # Default KZA policy uses only claude-1 and ignores claude-2.
+    q_default = kza_quota.probe_claude(tap_dir=tmp_path, now=now)
+    assert q_default.excluded is True
+    assert q_default.details["selected_account"] == "claude-1"
+    assert len(q_default.details["accounts"]) == 1
+
+    # Explicit multi-account override still supports auto-reset & best-account selection.
+    q = kza_quota.probe_claude(tap_dir=tmp_path, now=now, allowed_accounts=("claude-1", "claude-2"))
     assert q.excluded is False
     assert q.weight == 1.0
     assert q.five_hour_pct == 0.0
@@ -202,3 +212,68 @@ def test_agy_honest_null_percentages_and_quota_emergency(tmp_path: Path) -> None
     )
     assert snap["quota_emergency"] is True
     assert snap["eligible_runtimes"] == []
+
+
+def test_codex_multi_account_selects_healthier_codex2_and_per_account_throttle(tmp_path: Path) -> None:
+    now = 1_800_000_000.0
+    dir1 = tmp_path / "codex1" / "2026" / "11" / "24"
+    dir2 = tmp_path / "codex2" / "2026" / "11" / "24"
+    dir1.mkdir(parents=True)
+    dir2.mkdir(parents=True)
+
+    (dir1 / "r1.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": now - 30,
+                "payload": {
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {"used_percent": 65.0, "window_minutes": 10080, "resets_at": now + 3600},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (dir2 / "r2.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": now - 60,
+                "payload": {
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {"used_percent": 0.0, "window_minutes": 10080, "resets_at": now + 7200},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    q = kza_quota.probe_codex(sessions_dirs={"codex": tmp_path / "codex1", "codex-2": tmp_path / "codex2"}, now=now)
+    assert q.excluded is False
+    assert q.weight == 1.0
+    assert q.seven_day_pct == 0.0
+    assert q.details["selected_account"] == "codex-2"
+    assert q.details["selected_cli"] == "codex-2"
+    assert len(q.details["accounts"]) == 2
+
+    # Throttling codex-2 individually fails over to primary codex.
+    state_dir = tmp_path / "state"
+    kza_quota.record_throttle("codex-2", ttl_minutes=30, reason="429 codex-2", state_dir=state_dir, now=now)
+    snap = kza_quota.collect_all_quotas(
+        state_dir=state_dir,
+        claude_tap_dir=tmp_path / "none",
+        codex_sessions_dirs={"codex": tmp_path / "codex1", "codex-2": tmp_path / "codex2"},
+        muse_runner=lambda: subprocess.CompletedProcess(
+            ["muse", "usage", "--json"], 0, json.dumps({"reason": "server_sent_no_usage", "allowance": None}), ""
+        ),
+        now=now + 10,
+    )
+    codex_sub = snap["subscriptions"]["codex"]
+    assert codex_sub["excluded"] is False
+    assert codex_sub["details"]["selected_account"] == "codex"
+    assert codex_sub["details"]["selected_cli"] == "codex"
+    assert 0.85 < codex_sub["weight"] < 0.90

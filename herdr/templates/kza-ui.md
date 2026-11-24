@@ -1,7 +1,7 @@
 ---
 name: kza-ui
 description: KZA verificación UI/browser/NEXO (enrutamiento dinámico vía kza_router.py según capacidades, benchmarks y cuotas; nunca modelo fijo).
-command: codex --no-daemon -m gpt-6.1-terra -c model_reasoning_effort=medium -c service_tier=fast -a never -s danger-full-access --dangerously-bypass-hook-trust
+command: codex --no-daemon -m gpt-6.1-terra -c model_reasoning_effort=medium -a never -s danger-full-access --dangerously-bypass-hook-trust
 ---
 
 # KZA `kza-ui` — Especialista de Verificación UI / Navegador / NEXO (Read-Only)

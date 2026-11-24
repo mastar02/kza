@@ -24,6 +24,8 @@ from typing import Any, Callable
 DEFAULT_STATE_DIR = Path.home() / ".local" / "state" / "kza-router"
 DEFAULT_CLAUDE_TAP_DIR = Path.home() / ".local" / "state" / "thermouy-router"
 DEFAULT_CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+DEFAULT_CODEX2_SESSIONS_DIR = Path.home() / ".codex-2" / "sessions"
+DEFAULT_CLAUDE_ACCOUNTS: tuple[str, ...] = ("claude-1",)
 
 PENALTY_START_PCT = 70.0
 HARD_EXCLUDE_5H_PCT = 92.0
@@ -37,6 +39,7 @@ AGY_BAND_WEIGHTS: dict[str, float] = {
 }
 
 RUNTIMES: tuple[str, ...] = ("claude", "codex", "muse", "agy")
+THROTTLE_TARGETS: tuple[str, ...] = ("claude", "codex", "codex-1", "codex-2", "muse", "agy")
 
 
 @dataclass
@@ -138,12 +141,12 @@ def compute_window_weight(
     five_hour_pct: float | None,
     seven_day_pct: float | None,
 ) -> tuple[float, bool, str | None]:
-    """Compute progressive penalty weight and hard exclusion from 5h/7d usage.
+    """Compute preventive + progressive penalty weight and hard exclusion from 5h/7d usage.
 
     Policy:
     - Hard exclusion at >=92% (5h) or >=95% (7d).
-    - Progressive penalty from 70% up to the hard threshold (weight decays from 1.0 to 0.15).
-    - Below 70% -> weight 1.0.
+    - Gentle preventive slope from 0% to 70% (weight decays linearly from 1.0 to 0.85).
+    - Progressive penalty from 70% up to the hard threshold (weight decays from 0.85 to 0.15).
     """
     if five_hour_pct is not None and five_hour_pct >= HARD_EXCLUDE_5H_PCT:
         return 0.0, True, f"5h usage {five_hour_pct:.1f}% >= {HARD_EXCLUDE_5H_PCT:.0f}%"
@@ -151,12 +154,14 @@ def compute_window_weight(
         return 0.0, True, f"7d usage {seven_day_pct:.1f}% >= {HARD_EXCLUDE_7D_PCT:.0f}%"
 
     def _curve(pct: float | None, limit: float) -> float:
-        if pct is None or pct < PENALTY_START_PCT:
+        if pct is None or pct <= 0.0:
             return 1.0
+        if pct < PENALTY_START_PCT:
+            return round(1.0 - 0.15 * (pct / PENALTY_START_PCT), 4)
         span = max(1.0, limit - PENALTY_START_PCT)
         ratio = min(1.0, (pct - PENALTY_START_PCT) / span)
-        # Smooth progressive decay from 1.0 at 70% down to 0.15 just below limit.
-        return round(max(0.15, 1.0 - 0.85 * (ratio**1.25)), 4)
+        # Smooth progressive decay from 0.85 at 70% down to 0.15 just below limit.
+        return round(max(0.15, 0.85 - 0.70 * (ratio**1.25)), 4)
 
     w5 = _curve(five_hour_pct, HARD_EXCLUDE_5H_PCT)
     w7 = _curve(seven_day_pct, HARD_EXCLUDE_7D_PCT)
@@ -195,9 +200,9 @@ def record_throttle(
     state_dir: Path | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
-    """Record a throttle TTL for a runtime in state_dir/throttles.json."""
-    if runtime not in RUNTIMES:
-        raise ValueError(f"Unknown runtime '{runtime}'. Expected one of {RUNTIMES}.")
+    """Record a throttle TTL for a runtime or account target in state_dir/throttles.json."""
+    if runtime not in THROTTLE_TARGETS:
+        raise ValueError(f"Unknown throttle target '{runtime}'. Expected one of {THROTTLE_TARGETS}.")
     if ttl_minutes <= 0:
         raise ValueError("ttl_minutes must be positive.")
     sdir = state_dir or _default_state_dir()
@@ -214,9 +219,9 @@ def record_throttle(
 
 
 def clear_throttle(runtime: str, state_dir: Path | None = None) -> bool:
-    """Clear an active throttle for a runtime."""
-    if runtime not in RUNTIMES:
-        raise ValueError(f"Unknown runtime '{runtime}'. Expected one of {RUNTIMES}.")
+    """Clear an active throttle for a runtime or account target."""
+    if runtime not in THROTTLE_TARGETS:
+        raise ValueError(f"Unknown throttle target '{runtime}'. Expected one of {THROTTLE_TARGETS}.")
     sdir = state_dir or _default_state_dir()
     active = _load_throttles(sdir, time.time())
     existed = runtime in active
@@ -273,11 +278,22 @@ def probe_claude(
     tap_dir: Path | None = None,
     throttle: dict[str, Any] | None = None,
     now: float | None = None,
+    allowed_accounts: tuple[str, ...] | list[str] | set[str] | None = None,
 ) -> SubscriptionQuota:
-    """Read atomic 0600 snapshots written by ~/.claude/statusline.sh (multi-account)."""
+    """Read atomic 0600 snapshots written by ~/.claude/statusline.sh (restricted to KZA-allowed accounts)."""
     ts = now if now is not None else time.time()
     tdir = tap_dir or Path(os.environ.get("KZA_CLAUDE_TAP_DIR", str(DEFAULT_CLAUDE_TAP_DIR)))
     files = sorted(tdir.glob("quota-*.json")) if tdir.is_dir() else []
+
+    if allowed_accounts is None:
+        env_accts = os.environ.get("KZA_CLAUDE_ACCOUNTS", "").strip()
+        allowed_set = (
+            {a.strip() for a in env_accts.split(",") if a.strip()}
+            if env_accts
+            else set(DEFAULT_CLAUDE_ACCOUNTS)
+        )
+    else:
+        allowed_set = {str(a).strip() for a in allowed_accounts if str(a).strip()}
 
     accounts: list[dict[str, Any]] = []
     best: dict[str, Any] | None = None
@@ -290,6 +306,10 @@ def probe_claude(
         if not isinstance(raw, dict):
             continue
 
+        acct_name = str(raw.get("account") or fp.stem.removeprefix("quota-"))
+        if allowed_set and acct_name not in allowed_set:
+            continue
+
         five_raw = raw.get("five_hour") if isinstance(raw.get("five_hour"), dict) else {}
         seven_raw = raw.get("seven_day") if isinstance(raw.get("seven_day"), dict) else {}
 
@@ -300,7 +320,7 @@ def probe_claude(
         weight, excluded, reason = compute_window_weight(p5, p7)
 
         acct_entry = {
-            "account": str(raw.get("account") or fp.stem.removeprefix("quota-")),
+            "account": acct_name,
             "file": str(fp),
             "timestamp": raw.get("timestamp"),
             "model": raw.get("model"),
@@ -338,7 +358,7 @@ def probe_claude(
             weight=0.75,
             excluded=False,
             source=f"claude-tap-missing:{tdir}",
-            details={"accounts": []},
+            details={"selected_account": sorted(allowed_set)[0] if allowed_set else "claude-1", "accounts": []},
         )
         return _apply_throttle(q, throttle)
 
@@ -390,16 +410,15 @@ def _extract_codex_windows(rl: dict[str, Any], now: float) -> tuple[float | None
     return p5, r5, p7, r7
 
 
-def probe_codex(
-    sessions_dir: Path | None = None,
-    throttle: dict[str, Any] | None = None,
-    now: float | None = None,
-    max_files: int = 80,
-) -> SubscriptionQuota:
-    """Read latest non-null `rate_limits` event from ~/.codex/sessions/**/*.jsonl."""
-    ts = now if now is not None else time.time()
-    sdir = sessions_dir or Path(os.environ.get("KZA_CODEX_SESSIONS_DIR", str(DEFAULT_CODEX_SESSIONS_DIR)))
-
+def _probe_codex_dir(
+    account: str,
+    cli_binary: str,
+    sdir: Path,
+    account_throttle: dict[str, Any] | None,
+    now: float,
+    max_files: int,
+) -> dict[str, Any]:
+    """Read latest non-null `rate_limits` event from one Codex sessions directory."""
     latest_event: tuple[float, Path, dict[str, Any]] | None = None
     if sdir.is_dir():
         candidates = sorted(
@@ -437,39 +456,141 @@ def probe_codex(
             if file_best is not None:
                 if latest_event is None or file_best[0] > latest_event[0]:
                     latest_event = (file_best[0], fp, file_best[1])
-                # Since files are sorted by mtime desc, once we find a populated rate_limits
-                # event newer than older files' mtimes we can stop early.
                 break
 
     if latest_event is None:
-        q = SubscriptionQuota(
-            runtime="codex",
-            status="unknown",
-            weight=0.80,
-            excluded=False,
-            source=f"codex-sessions-no-rate-limits:{sdir}",
-        )
-        return _apply_throttle(q, throttle)
-
-    ev_ts, fp, rl = latest_event
-    p5, r5, p7, r7 = _extract_codex_windows(rl, ts)
-    weight, excluded, reason = compute_window_weight(p5, p7)
-    status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
-    q = SubscriptionQuota(
-        runtime="codex",
-        status=status,
-        weight=weight,
-        excluded=excluded,
-        exclude_reason=reason,
-        five_hour_pct=p5,
-        five_hour_resets_at=r5,
-        seven_day_pct=p7,
-        seven_day_resets_at=r7,
-        source=f"codex-session:{fp.name}",
-        details={
+        entry: dict[str, Any] = {
+            "account": account,
+            "cli_binary": cli_binary,
+            "sessions_dir": str(sdir),
+            "status": "unknown",
+            "weight": 0.80,
+            "excluded": False,
+            "exclude_reason": None,
+            "five_hour_pct": None,
+            "five_hour_resets_at": None,
+            "seven_day_pct": None,
+            "seven_day_resets_at": None,
+            "throttled_until": None,
+            "throttle_reason": None,
+            "file_name": None,
+            "event_timestamp": None,
+            "limit_id": None,
+            "plan_type": None,
+        }
+    else:
+        ev_ts, fp, rl = latest_event
+        p5, r5, p7, r7 = _extract_codex_windows(rl, now)
+        weight, excluded, reason = compute_window_weight(p5, p7)
+        status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
+        entry = {
+            "account": account,
+            "cli_binary": cli_binary,
+            "sessions_dir": str(sdir),
+            "status": status,
+            "weight": weight,
+            "excluded": excluded,
+            "exclude_reason": reason,
+            "five_hour_pct": p5,
+            "five_hour_resets_at": r5,
+            "seven_day_pct": p7,
+            "seven_day_resets_at": r7,
+            "throttled_until": None,
+            "throttle_reason": None,
+            "file_name": fp.name,
             "event_timestamp": ev_ts,
             "limit_id": rl.get("limit_id"),
             "plan_type": rl.get("plan_type"),
+        }
+
+    if account_throttle:
+        entry["status"] = "throttled"
+        entry["weight"] = 0.0
+        entry["excluded"] = True
+        entry["throttled_until"] = account_throttle["expires_at"]
+        entry["throttle_reason"] = account_throttle["reason"]
+        entry["exclude_reason"] = f"active throttle: {account_throttle['reason']}"
+    return entry
+
+
+def probe_codex(
+    sessions_dir: Path | None = None,
+    sessions_dirs: dict[str, Path] | None = None,
+    throttle: dict[str, Any] | None = None,
+    account_throttles: dict[str, dict[str, Any] | None] | None = None,
+    now: float | None = None,
+    max_files: int = 80,
+) -> SubscriptionQuota:
+    """Read latest non-null `rate_limits` across Codex accounts (`codex` and `codex-2`)."""
+    ts = now if now is not None else time.time()
+    if sessions_dirs is not None:
+        target_dirs = dict(sessions_dirs)
+    elif sessions_dir is not None:
+        target_dirs = {"codex": sessions_dir}
+    else:
+        primary_dir = Path(os.environ.get("KZA_CODEX_SESSIONS_DIR", str(DEFAULT_CODEX_SESSIONS_DIR)))
+        target_dirs = {"codex": primary_dir}
+        env_c2 = os.environ.get("KZA_CODEX2_SESSIONS_DIR", "").strip()
+        if env_c2:
+            target_dirs["codex-2"] = Path(env_c2)
+        elif DEFAULT_CODEX2_SESSIONS_DIR.is_dir() or (Path.home() / ".codex-2").is_dir():
+            target_dirs["codex-2"] = DEFAULT_CODEX2_SESSIONS_DIR
+
+    acct_throt = account_throttles or {}
+    accounts: list[dict[str, Any]] = []
+    best: dict[str, Any] | None = None
+
+    for acct, sdir in target_dirs.items():
+        cli_binary = "codex-2" if acct == "codex-2" else "codex"
+        ath = acct_throt.get("codex-2") if acct == "codex-2" else (acct_throt.get("codex-1") or acct_throt.get("codex"))
+        entry = _probe_codex_dir(acct, cli_binary, sdir, ath, ts, max_files)
+        accounts.append(entry)
+        if best is None:
+            best = entry
+        else:
+            best_key = (
+                0 if best["excluded"] else 1,
+                best["weight"],
+                1 if best["status"] in ("ok", "degraded") else 0,
+                -max(best["five_hour_pct"] or 0.0, best["seven_day_pct"] or 0.0),
+                1 if best["account"] == "codex" else 0,
+            )
+            cur_key = (
+                0 if entry["excluded"] else 1,
+                entry["weight"],
+                1 if entry["status"] in ("ok", "degraded") else 0,
+                -max(entry["five_hour_pct"] or 0.0, entry["seven_day_pct"] or 0.0),
+                1 if entry["account"] == "codex" else 0,
+            )
+            if cur_key > best_key:
+                best = entry
+
+    assert best is not None
+    src = (
+        f"codex-session:{best['account']}:{best['file_name']}"
+        if best["file_name"]
+        else f"codex-sessions-no-rate-limits:{best['account']}:{best['sessions_dir']}"
+    )
+    q = SubscriptionQuota(
+        runtime="codex",
+        status=best["status"],
+        weight=best["weight"],
+        excluded=best["excluded"],
+        exclude_reason=best["exclude_reason"],
+        five_hour_pct=best["five_hour_pct"],
+        five_hour_resets_at=best["five_hour_resets_at"],
+        seven_day_pct=best["seven_day_pct"],
+        seven_day_resets_at=best["seven_day_resets_at"],
+        throttled_until=best["throttled_until"],
+        throttle_reason=best["throttle_reason"],
+        source=src,
+        details={
+            "selected_account": best["account"],
+            "selected_cli": best["cli_binary"],
+            "accounts": accounts,
+            "event_timestamp": best["event_timestamp"],
+            "limit_id": best["limit_id"],
+            "plan_type": best["plan_type"],
         },
     )
     return _apply_throttle(q, throttle)
@@ -635,6 +756,7 @@ def collect_all_quotas(
     state_dir: Path | None = None,
     claude_tap_dir: Path | None = None,
     codex_sessions_dir: Path | None = None,
+    codex_sessions_dirs: dict[str, Path] | None = None,
     muse_runner: Callable[[], subprocess.CompletedProcess[str]] | None = None,
     now: float | None = None,
 ) -> dict[str, Any]:
@@ -645,7 +767,13 @@ def collect_all_quotas(
 
     subs = {
         "claude": probe_claude(tap_dir=claude_tap_dir, throttle=throttles.get("claude"), now=ts),
-        "codex": probe_codex(sessions_dir=codex_sessions_dir, throttle=throttles.get("codex"), now=ts),
+        "codex": probe_codex(
+            sessions_dir=codex_sessions_dir,
+            sessions_dirs=codex_sessions_dirs,
+            throttle=throttles.get("codex"),
+            account_throttles={"codex-1": throttles.get("codex-1"), "codex-2": throttles.get("codex-2")},
+            now=ts,
+        ),
         "muse": probe_muse(runner=muse_runner, throttle=throttles.get("muse"), now=ts),
         "agy": probe_agy(state_dir=sdir, throttle=throttles.get("agy")),
     }
@@ -673,9 +801,11 @@ def _format_human(snapshot: dict[str, Any]) -> str:
         sub = snapshot["subscriptions"][name]
         p5 = "null" if sub["five_hour_pct"] is None else f"{sub['five_hour_pct']:.1f}%"
         p7 = "null" if sub["seven_day_pct"] is None else f"{sub['seven_day_pct']:.1f}%"
+        acct = (sub.get("details") or {}).get("selected_account")
+        acct_tag = f" | acct={acct}" if acct else ""
         extra = f" ({sub['exclude_reason']})" if sub.get("exclude_reason") else ""
         lines.append(
-            f"  - {name:6s} | status={sub['status']:11s} | weight={sub['weight']:.2f} | 5h={p5:6s} | 7d={p7:6s} | src={sub['source']}{extra}"
+            f"  - {name:6s} | status={sub['status']:11s} | weight={sub['weight']:.2f} | 5h={p5:6s} | 7d={p7:6s}{acct_tag} | src={sub['source']}{extra}"
         )
     return "\n".join(lines)
 
@@ -689,17 +819,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--codex-sessions-dir", type=Path, default=None, help="Override Codex sessions dir.")
     parser.add_argument(
         "--record-throttle",
-        choices=RUNTIMES,
+        choices=THROTTLE_TARGETS,
         default=None,
-        help="Record an active throttle TTL for a runtime.",
+        help="Record an active throttle TTL for a runtime or Codex account.",
     )
     parser.add_argument("--ttl-minutes", type=float, default=60.0, help="Throttle TTL in minutes.")
     parser.add_argument("--reason", type=str, default="rate_limit", help="Throttle reason.")
     parser.add_argument(
         "--clear-throttle",
-        choices=RUNTIMES,
+        choices=THROTTLE_TARGETS,
         default=None,
-        help="Clear active throttle for a runtime.",
+        help="Clear active throttle for a runtime or Codex account.",
     )
     parser.add_argument(
         "--set-agy-band",
