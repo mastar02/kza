@@ -1464,9 +1464,13 @@ los hace la sesión coordinadora. Sin release. Evidencia:
 `follow_up`).
 
 - En época 5 todo log nuevo es del modo release: `intent.mode = "release"`
-  (lo lee la instalación de SC-1a), `--retire-prepare-leftovers` forzado, una
-  entrada no probada bajo `slots/` rechaza salvo los dos slots heredados del
-  registro de adopción confirmado.
+  (lo lee la instalación de SC-1a) y `--retire-prepare-leftovers` queda
+  forzado. SC-1b eximía los dos slots heredados del registro de adopción
+  confirmado. Con la adopción directa en época 5 (Q4 y Q17 de
+  `grill_me_20261121`), desde 5/3 `_legacy_slot_names` también exime
+  63ea8d3 y 2c5adb4 si pasan `_superseded_census` y el registro de Q5 es
+  válido, antes del primer `intent` o registro final del retiro del día 14.
+  Esto reemplaza la cláusula de orden «before R2» de R1E-Q5.
 - P6' en `compact plan`: contrato y formato del NUEVO, época del NUEVO entre
   5 y la instalada (R1 nunca es destino), served(root) o el mismo triple;
   si no, `t0_required`, `controller_behind` o `controller_revision_conflict`
@@ -2077,9 +2081,14 @@ Decisiones del usuario `r1e_questions_20261118` (R1E-Q1 a R1E-Q5):
 - T-A17 corre el día 14 compilado con la forma de producción desde W0 hasta
   el retiro completo, y después L4 rechaza los cuatro slots con
   `legacy_retired`.
-- R2: después del día 14 el primer plan del modo release ya no ve
+- R2: después del retiro del día 14 el plan del modo release ya no ve
   `release_unproven_copy` para 63ea8d3 ni 2c5adb4
   (`test_r1e2_after_day_14_r2_s_first_release_plan_finds_no_unproven_copy`).
+  Con la adopción directa en época 5 (Q4 y Q17 de `grill_me_20261121`),
+  desde 5/3 `_legacy_slot_names` también exime 63ea8d3 y 2c5adb4 antes del
+  día 14 si pasan `_superseded_census` y el registro de Q5 es válido y
+  aún no tiene `intent` ni registro final. Esta actualización reemplaza la
+  cláusula «before R2» de R1E-Q5.
 - Runbook de R1 y DEPLOYMENT: alcance del día 14, comprobaciones y L4.
 - R1 re-fijado desde `7752570fb0e4812c5888770111eb2da59d12877a` (época 4): dos veces
   en el server y una en la Mac, idénticas, sha256

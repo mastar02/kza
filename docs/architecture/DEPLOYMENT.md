@@ -858,7 +858,7 @@ slots de R1 siguen sirviéndose: `SCHEMA_CONTRACT_EPOCH` 1, `FORMAT_EPOCH` 1,
 `LAUNCHER_CONTRACT` 3 y `RECEIPT_STATE_SCHEMA` 2 no cambian.
 
 Triple del controlador. `release.json` declara `controller_epoch`,
-`controller_revision` (`CONTROLLER_REVISION`, hoy 1) y
+`controller_revision` (`CONTROLLER_REVISION`, hoy 3) y
 `controller_sources_sha256`, el sha256 de la lista ordenada (ruta, sha256 del
 fuente) de la clausura de imports del controlador, que `build_runtime`
 calcula y también registra (`controller_sources`). La clausura sale de un
@@ -1019,18 +1019,32 @@ corriendo desde `controller/current`; `--archive` es el archivo NUEVO.
 - (e) el digest del plan, y después el intent, ligan `mode`, `release_sha256`,
   `git_commit`, `schema_contract` y el triple del NUEVO.
 
-Además, en el modo release `--retire-prepare-leftovers` queda forzado, y
-cualquier entrada intacta bajo `slots/` rechaza
-(`runtime_admission_compaction_release_unproven_copy`, con las rutas y sin
-contenido), salvo los dos slots heredados que nombra el registro de adopción
-confirmado (el contenedor de e9669ec y el slot de b0866e8; con dos registros
-confirmados, o uno cuyo nombre no es el digest de su head, no se exime
-nada). En producción hay dos slots legados más, `release_20261029T174830709997Z_63ea8d3`
-(sólo enlaces) y `release_20261028T144002Z_2c5adb4` (una copia completa
-anterior). Antes del día 14 el plan los rechazaría; el retiro Q5 del día 14
-los borra (decisión R1E-Q2/Q4/Q5 del 2026-11-18), así que el primer plan del
-modo release, que va después, ya no los ve (probado sobre la forma de
-producción en `test_r1e2_after_day_14_r2_s_first_release_plan_finds_no_unproven_copy`). Un plan rechazado no escribe nada (fila P): arreglar la causa y
+Además, en el modo release `--retire-prepare-leftovers` queda forzado. Una
+entrada intacta bajo `slots/` sin prueba rechaza con
+`runtime_admission_compaction_release_unproven_copy`, que informa las rutas
+sin su contenido. Para eximir slots, `_legacy_slot_names` exige exactamente
+un registro de adopción confirmado cuyo nombre corresponda al digest de su
+head. De ese registro obtiene el contenedor de e9669ec y el slot de b0866e8.
+
+Tras la adopción directa en época 5, Q4 y Q17 de `grill_me_20261121`
+reemplazaron la cláusula «before R2» de R1E-Q5. Desde 5/3 se puede planear
+antes del día 14. Mientras `admission/legacy-retirement` esté ausente o sea
+válido y no contenga ningún `intent` ni registro final de Q5, el plan también exime
+`release_20261029T174830709997Z_63ea8d3` y
+`release_20261028T144002Z_2c5adb4` si cada uno pasa `_superseded_census`.
+El censo exige el nombre exacto y un directorio real, sin atravesar enlaces
+simbólicos, que sólo contenga los directorios reales `runtime` y `state`.
+Debe tener un `runtime/release.json` regular con el `git_commit` esperado
+de 40 dígitos hexadecimales y el censo debe dar `other == 0`. El `state/`
+de 63ea8d3 sólo puede contener enlaces simbólicos.
+
+Con cualquier `intent` o registro final de Q5, ambos slots supersedidos
+dejan de eximirse. El retiro Q5 del día 14 los borra (R1E-Q2/Q4/Q5).
+Si `admission/legacy-retirement` es inválido, el plan no exime ningún slot.
+`test_r1e2_after_day_14_r2_s_first_release_plan_finds_no_unproven_copy`
+cubre el layout de producción antes y después de Q5.
+
+Un plan rechazado no escribe nada (fila P): arreglar la causa y
 repetir, o habilitar y arrancar la unidad, que sirve H. Qué hacer con cada
 ruta rechazada: un `slots/.prepare-*` vacío (un `start` cortado entre crear
 el directorio de staging y escribir su registro) se quita con `rmdir` y se
@@ -1514,10 +1528,10 @@ hasta la compactación (borrar sólo marca el lugar): eso es la compactación
 (SC-4c), no residuo de heap. (7) Controlador anterior a Q3 con un slot de
 Q3: `src.main` rechaza (78) si su padre no le puso los tunables, y ni
 `LAUNCHER_CONTRACT` ni `CONTROLLER_REVISION` subieron, así que ese caso no
-tiene un rechazo propio en `check_slot`; falla al arrancar el hijo. Hoy no
-pasa: no hay ningún controlador administrado publicado (`RELEASED_CONTROLLERS`
-vacío; producción corre la unidad heredada) y el primero ya trae Q3. Después,
-el triple lo cierra: Q3 cambia la clausura del controlador
+tiene un rechazo propio en `check_slot`; falla al arrancar el hijo. La
+primera release de época 5 ya incluía Q3. Desde esa release,
+`RELEASED_CONTROLLERS` fija los pares `(5, 1)`, `(5, 2)` y `(5, 3)`.
+Q3 cambia la clausura del controlador
 (`managed_launcher`, `stage_runtime`), así que con la misma revisión `plan`
 rechaza `runtime_admission_compaction_controller_revision_conflict`, y con la
 revisión subida hace falta el T0 que instala el controlador nuevo antes de
