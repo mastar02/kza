@@ -134,6 +134,23 @@ def _save_seats(state_dir: Path, seats: dict[str, dict[str, Any]]) -> None:
 
 
 @contextmanager
+def _alias_lock(state_dir: Path, alias: str) -> Iterator[None]:
+    """Acquire an exclusive per-alias flock on `<state_dir>/locks/<alias>.lock`."""
+    locks_dir = state_dir / "locks"
+    kza_quota._ensure_private_dir(locks_dir)
+    lock_path = locks_dir / f"{alias}.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+@contextmanager
 def _locked_seats_txn(state_dir: Path) -> Iterator[dict[str, dict[str, Any]]]:
     """Acquire an exclusive flock on `<state_dir>/seats.lock`, reload seats, and atomically save on exit."""
     kza_quota._ensure_private_dir(state_dir)
@@ -329,177 +346,182 @@ def open_seat(
     reports_dir = sdir / "reports"
     kza_quota._ensure_private_dir(reports_dir)
 
-    seats = _load_seats(sdir)
-    if alias in seats and seats[alias].get("status") == "open":
-        raise RuntimeError(f"Seat '{alias}' is already open.")
-
-    wt_path = wroot / alias
-    if wt_path.exists():
-        raise RuntimeError(f"Worktree path already exists: {wt_path}")
-
     read_only = role in kza_router.READ_ONLY_ROLES
     target_branch = None if read_only else (branch or f"seat/{alias}")
-
-    decision = kza_router.route_task(
-        role=role,
-        summary=task,
-        complexity=complexity,
-        exclude_families=norm_excluded,
-        allow_quota_emergency=allow_quota_emergency,
-        offline=offline,
-        state_dir=sdir,
-        record_decision=not dry_run,
-    )
-
     resolved_space = space_id or resolve_herdr_space_id()
     parent_tid = parent_terminal_id if parent_terminal_id is not None else os.environ.get("HC_TERMINAL_ID", "")
     report_path = reports_dir / f"{alias}.md"
     template_body = _read_template_body(rroot, role)
 
-    if dry_run:
-        return {
-            "dry_run": True,
-            "alias": alias,
-            "role": role,
-            "read_only": read_only,
-            "worktree": str(wt_path),
-            "branch": target_branch,
-            "ref": ref,
-            "space_id": resolved_space,
-            "report_path": str(report_path),
-            "decision": decision,
-        }
+    def _do_open() -> dict[str, Any]:
+        seats = _load_seats(sdir)
+        if alias in seats and seats[alias].get("status") == "open":
+            raise RuntimeError(f"Seat '{alias}' is already open.")
 
-    # Archive any leftover report for a reused alias so close_seat never accepts stale output.
-    if report_path.exists():
-        archive_dir = reports_dir / "archive"
-        kza_quota._ensure_private_dir(archive_dir)
-        old_mtime = int(report_path.stat().st_mtime)
-        archived_path = archive_dir / f"{alias}-{old_mtime}-{uuid.uuid4().hex[:6]}.md"
-        report_path.replace(archived_path)
+        wt_path = wroot / alias
+        if wt_path.exists():
+            raise RuntimeError(f"Worktree path already exists: {wt_path}")
 
-    opened_epoch = time.time()
-    wroot.mkdir(parents=True, exist_ok=True)
-    created_worktree = False
-    created_branch = False
-
-    def _rollback() -> None:
-        if created_worktree:
-            _run(["git", "worktree", "remove", "--force", str(wt_path)], cwd=rroot, check=False)
-        if created_branch and target_branch:
-            _run(["git", "branch", "-D", target_branch], cwd=rroot, check=False)
-
-    try:
-        if read_only:
-            _run(["git", "worktree", "add", "--detach", str(wt_path), ref], cwd=rroot, check=True)
-            created_worktree = True
-        else:
-            _run(["git", "worktree", "add", "-b", target_branch, str(wt_path), ref], cwd=rroot, check=True)
-            created_worktree = True
-            created_branch = True
-
-        # Guard: detached worktrees MUST start with tracked dirty=0 (never overwrite tracked files).
-        if read_only:
-            tracked_dirty = _run(
-                ["git", "status", "--porcelain=v1", "--untracked-files=no"],
-                cwd=wt_path,
-                check=True,
-            ).stdout.strip()
-            if tracked_dirty:
-                raise RuntimeError(
-                    f"Refusing to launch detached seat '{alias}': tracked tree is dirty:\n{tracked_dirty}"
-                )
-
-        head_sha = _run(["git", "rev-parse", "HEAD"], cwd=wt_path, check=True).stdout.strip()
-        prompt_text = build_worker_prompt(
-            alias=alias,
+        decision = kza_router.route_task(
             role=role,
-            runtime=decision["runtime"],
-            worktree_path=wt_path,
-            head_sha=head_sha,
-            report_path=report_path,
-            parent_terminal_id=parent_tid,
-            task=task,
-            template_body=template_body,
+            summary=task,
+            complexity=complexity,
+            exclude_families=norm_excluded,
+            allow_quota_emergency=allow_quota_emergency,
+            offline=offline,
+            state_dir=sdir,
+            record_decision=not dry_run,
         )
 
-        # Build `hc run` command passing safe runtime flags + launch prompt as task argument.
-        hc_cmd = [
-            "hc",
-            "run",
-            "--bg",
-            "--json",
-            "--name",
-            alias,
-            "--cwd",
-            str(wt_path),
-            "--label",
-            f"project={PROJECT_SLUG}",
-            "--label",
-            f"herdr.space={resolved_space}",
-            "--label",
-            f"kza.role={role}",
-            "--label",
-            f"kza.alias={alias}",
-            "--label",
-            f"kza.family={decision['family']}",
-            "--label",
-            f"kza.decision={decision['decision_id']}",
-        ]
-        if parent_tid:
-            hc_cmd.extend(["--parent", parent_tid])
+        if dry_run:
+            return {
+                "dry_run": True,
+                "alias": alias,
+                "role": role,
+                "read_only": read_only,
+                "worktree": str(wt_path),
+                "branch": target_branch,
+                "ref": ref,
+                "space_id": resolved_space,
+                "report_path": str(report_path),
+                "decision": decision,
+            }
 
-        # Pass runtime argv + initial prompt directly so every runtime receives its task cleanly.
-        runtime_argv = list(decision["cli_command"]) + [prompt_text]
-        hc_cmd.append("--")
-        hc_cmd.extend(runtime_argv)
+        # Archive any leftover report from a prior closed alias so close_seat never accepts stale output.
+        if report_path.exists():
+            archive_dir = reports_dir / "archive"
+            kza_quota._ensure_private_dir(archive_dir)
+            old_mtime = int(report_path.stat().st_mtime)
+            archived_path = archive_dir / f"{alias}-{old_mtime}-{uuid.uuid4().hex[:6]}.md"
+            report_path.replace(archived_path)
 
-        proc = _run(hc_cmd, cwd=rroot, check=False, timeout=20.0, env=_clean_launch_env())
-        if proc.returncode != 0:
-            err = (proc.stderr or proc.stdout or "").strip()
-            raise RuntimeError(f"`hc run` failed (rc={proc.returncode}): {err}")
+        opened_epoch = time.time()
+        wroot.mkdir(parents=True, exist_ok=True)
+        created_worktree = False
+        created_branch = False
 
-        hc_payload = json.loads(proc.stdout)
-        terminal_id = str(hc_payload.get("address") or hc_payload.get("terminal") or hc_payload.get("id") or "")
-        if not terminal_id:
-            raise RuntimeError(f"`hc run` returned no terminal address: {proc.stdout[:200]}")
+        def _rollback() -> None:
+            if created_worktree:
+                _run(["git", "worktree", "remove", "--force", str(wt_path)], cwd=rroot, check=False)
+            if created_branch and target_branch:
+                _run(["git", "branch", "-D", target_branch], cwd=rroot, check=False)
 
-        tab_id = _rename_herdr_tab_no_focus(terminal_id, alias)
+        try:
+            if read_only:
+                _run(["git", "worktree", "add", "--detach", str(wt_path), ref], cwd=rroot, check=True)
+                created_worktree = True
+            else:
+                _run(["git", "worktree", "add", "-b", target_branch, str(wt_path), ref], cwd=rroot, check=True)
+                created_worktree = True
+                created_branch = True
 
-        seat_record = {
-            "alias": alias,
-            "role": role,
-            "read_only": read_only,
-            "status": "open",
-            "created_at": datetime.now(tz=timezone.utc).isoformat(),
-            "opened_epoch": opened_epoch,
-            "terminal_id": terminal_id,
-            "tab_id": tab_id,
-            "space_id": resolved_space,
-            "parent_terminal_id": parent_tid,
-            "worktree": str(wt_path),
-            "branch": target_branch,
-            "base_ref": ref,
-            "head_sha": head_sha,
-            "report_path": str(report_path),
-            "decision_id": decision["decision_id"],
-            "selected_candidate": decision["selected_candidate"],
-            "selected_account": decision.get("selected_account"),
-            "runtime": decision["runtime"],
-            "model": decision["model"],
-            "family": decision["family"],
-            "effective_effort": decision.get("effective_effort", decision.get("effort")),
-            "routing_source": decision["source"],
-            "ensure_manifest": sorted(DEFAULT_ENSURE_MANIFEST),
-        }
-        with _locked_seats_txn(sdir) as latest_seats:
-            if alias in latest_seats and latest_seats[alias].get("status") == "open":
-                raise RuntimeError(f"Seat '{alias}' is already open.")
-            latest_seats[alias] = seat_record
-        return seat_record
-    except Exception:
-        _rollback()
-        raise
+            # Guard: detached worktrees MUST start with tracked dirty=0 (never overwrite tracked files).
+            if read_only:
+                tracked_dirty = _run(
+                    ["git", "status", "--porcelain=v1", "--untracked-files=no"],
+                    cwd=wt_path,
+                    check=True,
+                ).stdout.strip()
+                if tracked_dirty:
+                    raise RuntimeError(
+                        f"Refusing to launch detached seat '{alias}': tracked tree is dirty:\n{tracked_dirty}"
+                    )
+
+            head_sha = _run(["git", "rev-parse", "HEAD"], cwd=wt_path, check=True).stdout.strip()
+            prompt_text = build_worker_prompt(
+                alias=alias,
+                role=role,
+                runtime=decision["runtime"],
+                worktree_path=wt_path,
+                head_sha=head_sha,
+                report_path=report_path,
+                parent_terminal_id=parent_tid,
+                task=task,
+                template_body=template_body,
+            )
+
+            # Build `hc run` command passing safe runtime flags + launch prompt as task argument.
+            hc_cmd = [
+                "hc",
+                "run",
+                "--bg",
+                "--json",
+                "--name",
+                alias,
+                "--cwd",
+                str(wt_path),
+                "--label",
+                f"project={PROJECT_SLUG}",
+                "--label",
+                f"herdr.space={resolved_space}",
+                "--label",
+                f"kza.role={role}",
+                "--label",
+                f"kza.alias={alias}",
+                "--label",
+                f"kza.family={decision['family']}",
+                "--label",
+                f"kza.decision={decision['decision_id']}",
+            ]
+            if parent_tid:
+                hc_cmd.extend(["--parent", parent_tid])
+
+            # Pass runtime argv + initial prompt directly so every runtime receives its task cleanly.
+            runtime_argv = list(decision["cli_command"]) + [prompt_text]
+            hc_cmd.append("--")
+            hc_cmd.extend(runtime_argv)
+
+            proc = _run(hc_cmd, cwd=rroot, check=False, timeout=20.0, env=_clean_launch_env())
+            if proc.returncode != 0:
+                err = (proc.stderr or proc.stdout or "").strip()
+                raise RuntimeError(f"`hc run` failed (rc={proc.returncode}): {err}")
+
+            hc_payload = json.loads(proc.stdout)
+            terminal_id = str(hc_payload.get("address") or hc_payload.get("terminal") or hc_payload.get("id") or "")
+            if not terminal_id:
+                raise RuntimeError(f"`hc run` returned no terminal address: {proc.stdout[:200]}")
+
+            tab_id = _rename_herdr_tab_no_focus(terminal_id, alias)
+
+            seat_record = {
+                "alias": alias,
+                "role": role,
+                "read_only": read_only,
+                "status": "open",
+                "created_at": datetime.now(tz=timezone.utc).isoformat(),
+                "opened_epoch": opened_epoch,
+                "terminal_id": terminal_id,
+                "tab_id": tab_id,
+                "space_id": resolved_space,
+                "parent_terminal_id": parent_tid,
+                "worktree": str(wt_path),
+                "branch": target_branch,
+                "base_ref": ref,
+                "head_sha": head_sha,
+                "report_path": str(report_path),
+                "decision_id": decision["decision_id"],
+                "selected_candidate": decision["selected_candidate"],
+                "selected_account": decision.get("selected_account"),
+                "runtime": decision["runtime"],
+                "model": decision["model"],
+                "family": decision["family"],
+                "effective_effort": decision.get("effective_effort", decision.get("effort")),
+                "routing_source": decision["source"],
+                "ensure_manifest": sorted(DEFAULT_ENSURE_MANIFEST),
+            }
+            with _locked_seats_txn(sdir) as latest_seats:
+                if alias in latest_seats and latest_seats[alias].get("status") == "open":
+                    raise RuntimeError(f"Seat '{alias}' is already open.")
+                latest_seats[alias] = seat_record
+            return seat_record
+        except Exception:
+            _rollback()
+            raise
+
+    if dry_run:
+        return _do_open()
+    with _alias_lock(sdir, alias):
+        return _do_open()
 
 
 def close_seat(
@@ -529,148 +551,149 @@ def close_seat(
 
     rroot = repo_root or _repo_root()
     sdir = state_dir or kza_router._state_dir()
-    seats = _load_seats(sdir)
-    if alias not in seats:
-        raise RuntimeError(f"Seat '{alias}' not found in {sdir / 'seats.json'}.")
+    with _alias_lock(sdir, alias):
+        seats = _load_seats(sdir)
+        if alias not in seats:
+            raise RuntimeError(f"Seat '{alias}' not found in {sdir / 'seats.json'}.")
 
-    seat = seats[alias]
-    if seat.get("status") != "open":
-        raise RuntimeError(f"Seat '{alias}' is already closed (status={seat.get('status')}).")
+        seat = seats[alias]
+        if seat.get("status") != "open":
+            raise RuntimeError(f"Seat '{alias}' is already closed (status={seat.get('status')}).")
 
-    read_only = bool(seat.get("read_only"))
-    if not abandon:
-        if read_only and not done_readonly:
-            raise RuntimeError(
-                f"Read-only seat '{alias}' requires --done-readonly (or --abandon) to close."
-            )
-        if not read_only and not (merged or merged_squash):
-            raise RuntimeError(
-                f"Write seat '{alias}' requires --merged, --merged-squash, or --abandon to close."
-            )
+        read_only = bool(seat.get("read_only"))
+        if not abandon:
+            if read_only and not done_readonly:
+                raise RuntimeError(
+                    f"Read-only seat '{alias}' requires --done-readonly (or --abandon) to close."
+                )
+            if not read_only and not (merged or merged_squash):
+                raise RuntimeError(
+                    f"Write seat '{alias}' requires --merged, --merged-squash, or --abandon to close."
+                )
 
-    # Guard 1: refuse closing working/blocked seats without --abandon.
-    terminal_id = str(seat.get("terminal_id") or "")
-    live_info = _hc_get_terminal(terminal_id) if terminal_id else None
-    if live_info and live_info.get("state") == "live":
-        st_obj = live_info.get("status")
-        live_state = st_obj.get("state") if isinstance(st_obj, dict) else str(st_obj or "")
-        if live_state in ("working", "blocked") and not abandon:
-            raise RuntimeError(
-                f"Refusing to close seat '{alias}': terminal {terminal_id} is '{live_state}'. "
-                "Wait for completion or pass --abandon."
-            )
+        # Guard 1: refuse closing working/blocked seats without --abandon.
+        terminal_id = str(seat.get("terminal_id") or "")
+        live_info = _hc_get_terminal(terminal_id) if terminal_id else None
+        if live_info and live_info.get("state") == "live":
+            st_obj = live_info.get("status")
+            live_state = st_obj.get("state") if isinstance(st_obj, dict) else str(st_obj or "")
+            if live_state in ("working", "blocked") and not abandon:
+                raise RuntimeError(
+                    f"Refusing to close seat '{alias}': terminal {terminal_id} is '{live_state}'. "
+                    "Wait for completion or pass --abandon."
+                )
 
-    # Guard 1b: require non-empty fresh report file unless --abandon or --allow-missing-report.
-    if not abandon and not allow_missing_report:
-        report_raw = seat.get("report_path")
-        rpath = Path(report_raw) if report_raw else None
-        if not rpath or not rpath.is_file() or rpath.stat().st_size == 0:
-            raise RuntimeError(
-                f"Refusing to close seat '{alias}': missing or empty report at '{report_raw}'. "
-                "Ensure the worker wrote its report, or pass --allow-missing-report / --abandon."
-            )
-        min_epoch = seat.get("opened_epoch")
-        if min_epoch is None:
-            min_epoch = kza_quota._parse_timestamp(seat.get("created_at"))
-        if min_epoch is not None and rpath.stat().st_mtime < float(min_epoch):
-            raise RuntimeError(
-                f"Refusing to close seat '{alias}': stale report at '{report_raw}' predates this seat launch."
-            )
+        # Guard 1b: require non-empty fresh report file unless --abandon or --allow-missing-report.
+        if not abandon and not allow_missing_report:
+            report_raw = seat.get("report_path")
+            rpath = Path(report_raw) if report_raw else None
+            if not rpath or not rpath.is_file() or rpath.stat().st_size == 0:
+                raise RuntimeError(
+                    f"Refusing to close seat '{alias}': missing or empty report at '{report_raw}'. "
+                    "Ensure the worker wrote its report, or pass --allow-missing-report / --abandon."
+                )
+            min_epoch = seat.get("opened_epoch")
+            if min_epoch is None:
+                min_epoch = kza_quota._parse_timestamp(seat.get("created_at"))
+            if min_epoch is not None and rpath.stat().st_mtime < float(min_epoch):
+                raise RuntimeError(
+                    f"Refusing to close seat '{alias}': stale report at '{report_raw}' predates this seat launch."
+                )
 
-    wt_path = Path(seat["worktree"])
-    manifest = set(seat.get("ensure_manifest") or DEFAULT_ENSURE_MANIFEST)
+        wt_path = Path(seat["worktree"])
+        manifest = set(seat.get("ensure_manifest") or DEFAULT_ENSURE_MANIFEST)
 
-    # Guard 2: detect foreign dirt outside ensure_manifest (including .serena/memories/*).
-    if wt_path.is_dir() and not abandon:
-        foreign = check_worktree_dirt(wt_path, ensure_manifest=manifest)
-        if foreign:
-            preview = ", ".join(foreign[:10])
-            raise RuntimeError(
-                f"Refusing to close seat '{alias}': unexpected dirty/untracked files outside manifest: {preview}. "
-                "Commit/clean them or pass --abandon."
-            )
+        # Guard 2: detect foreign dirt outside ensure_manifest (including .serena/memories/*).
+        if wt_path.is_dir() and not abandon:
+            foreign = check_worktree_dirt(wt_path, ensure_manifest=manifest)
+            if foreign:
+                preview = ", ".join(foreign[:10])
+                raise RuntimeError(
+                    f"Refusing to close seat '{alias}': unexpected dirty/untracked files outside manifest: {preview}. "
+                    "Commit/clean them or pass --abandon."
+                )
 
-    # Guard 3: for write roles with --merged, verify ancestry via `git merge-base --is-ancestor`.
-    branch = seat.get("branch")
-    if not read_only and merged and not abandon:
-        if not branch:
-            raise RuntimeError(f"Write seat '{alias}' has no recorded branch to verify merge ancestry.")
-        anc = _run(["git", "merge-base", "--is-ancestor", branch, base_ref], cwd=rroot, check=False)
-        if anc.returncode != 0:
-            raise RuntimeError(
-                f"Refusing to close '{alias}' with --merged: branch '{branch}' is NOT an ancestor of '{base_ref}'. "
-                "Merge first, use --merged-squash if squash-merged, or pass --abandon."
-            )
+        # Guard 3: for write roles with --merged, verify ancestry via `git merge-base --is-ancestor`.
+        branch = seat.get("branch")
+        if not read_only and merged and not abandon:
+            if not branch:
+                raise RuntimeError(f"Write seat '{alias}' has no recorded branch to verify merge ancestry.")
+            anc = _run(["git", "merge-base", "--is-ancestor", branch, base_ref], cwd=rroot, check=False)
+            if anc.returncode != 0:
+                raise RuntimeError(
+                    f"Refusing to close '{alias}' with --merged: branch '{branch}' is NOT an ancestor of '{base_ref}'. "
+                    "Merge first, use --merged-squash if squash-merged, or pass --abandon."
+                )
 
-    # Terminate and clean up `hc` terminal if still present.
-    if terminal_id:
-        _run(["hc", "kill", terminal_id], check=False, timeout=10.0)
-        _run(["hc", "rm", terminal_id], check=False, timeout=10.0)
+        # Terminate and clean up `hc` terminal if still present.
+        if terminal_id:
+            _run(["hc", "kill", terminal_id], check=False, timeout=10.0)
+            _run(["hc", "rm", terminal_id], check=False, timeout=10.0)
 
-    # Remove worktree cleanly.
-    if wt_path.exists():
-        rm_cmd = ["git", "worktree", "remove"]
-        if abandon:
-            rm_cmd.append("--force")
-        rm_cmd.append(str(wt_path))
-        _run(rm_cmd, cwd=rroot, check=True)
+        # Remove worktree cleanly.
+        if wt_path.exists():
+            rm_cmd = ["git", "worktree", "remove"]
+            if abandon:
+                rm_cmd.append("--force")
+            rm_cmd.append(str(wt_path))
+            _run(rm_cmd, cwd=rroot, check=True)
 
-    # Delete seat branch after verified merge or explicit abandon.
-    if branch:
-        del_flag = "-d" if (merged and not abandon) else "-D"
-        _run(["git", "branch", del_flag, branch], cwd=rroot, check=False)
+        # Delete seat branch after verified merge or explicit abandon.
+        if branch:
+            del_flag = "-d" if (merged and not abandon) else "-D"
+            _run(["git", "branch", del_flag, branch], cwd=rroot, check=False)
 
-    decision_id = str(seat.get("decision_id") or "")
-    closed_at = datetime.now(tz=timezone.utc).isoformat()
-    close_mode = (
-        "abandon"
-        if abandon
-        else ("done-readonly" if done_readonly else ("merged" if merged else "merged-squash"))
-    )
-    new_status = "abandoned" if abandon else "closed"
-
-    with _locked_seats_txn(sdir) as latest_seats:
-        cur = latest_seats.get(alias)
-        if cur and (not decision_id or cur.get("decision_id") == decision_id):
-            seat = {**cur, "status": new_status, "closed_at": closed_at, "close_mode": close_mode}
-        else:
-            seat["status"] = new_status
-            seat["closed_at"] = closed_at
-            seat["close_mode"] = close_mode
-        latest_seats[alias] = seat
-
-    if record_seat_outcome and decision_id and approved is not None:
-        eff_rounds = rounds if rounds is not None else 1
-        try:
-            kza_router.record_outcome(
-                decision_id=decision_id,
-                rounds=eff_rounds,
-                approved=approved,
-                notes=outcome_notes or f"seat:{alias}:{close_mode}",
-                state_dir=sdir,
-                skip_if_exists=True,
-            )
-        except OSError as exc:
-            with _locked_seats_txn(sdir) as latest_seats:
-                cur = latest_seats.get(alias)
-                if cur and cur.get("decision_id") == decision_id and cur.get("status") != "open":
-                    cur["outcome_recorded"] = False
-                    cur["outcome_error"] = str(exc)
-                    latest_seats[alias] = cur
-                    seat = dict(cur)
-            raise RuntimeError(
-                f"Seat '{alias}' closed cleanly, but recording outcome failed: {exc}"
-            ) from exc
+        decision_id = str(seat.get("decision_id") or "")
+        closed_at = datetime.now(tz=timezone.utc).isoformat()
+        close_mode = (
+            "abandon"
+            if abandon
+            else ("done-readonly" if done_readonly else ("merged" if merged else "merged-squash"))
+        )
+        new_status = "abandoned" if abandon else "closed"
 
         with _locked_seats_txn(sdir) as latest_seats:
             cur = latest_seats.get(alias)
-            if cur and cur.get("decision_id") == decision_id and cur.get("status") != "open":
-                cur["outcome_recorded"] = True
-                cur.pop("outcome_error", None)
-                latest_seats[alias] = cur
-                seat = dict(cur)
+            if cur and (not decision_id or cur.get("decision_id") == decision_id):
+                seat = {**cur, "status": new_status, "closed_at": closed_at, "close_mode": close_mode}
+            else:
+                seat["status"] = new_status
+                seat["closed_at"] = closed_at
+                seat["close_mode"] = close_mode
+            latest_seats[alias] = seat
 
-    return seat
+        if record_seat_outcome and decision_id and approved is not None:
+            eff_rounds = rounds if rounds is not None else 1
+            try:
+                kza_router.record_outcome(
+                    decision_id=decision_id,
+                    rounds=eff_rounds,
+                    approved=approved,
+                    notes=outcome_notes or f"seat:{alias}:{close_mode}",
+                    state_dir=sdir,
+                    skip_if_exists=True,
+                )
+            except OSError as exc:
+                with _locked_seats_txn(sdir) as latest_seats:
+                    cur = latest_seats.get(alias)
+                    if cur and cur.get("decision_id") == decision_id and cur.get("status") != "open":
+                        cur["outcome_recorded"] = False
+                        cur["outcome_error"] = str(exc)
+                        latest_seats[alias] = cur
+                        seat = dict(cur)
+                raise RuntimeError(
+                    f"Seat '{alias}' closed cleanly, but recording outcome failed: {exc}"
+                ) from exc
+
+            with _locked_seats_txn(sdir) as latest_seats:
+                cur = latest_seats.get(alias)
+                if cur and cur.get("decision_id") == decision_id and cur.get("status") != "open":
+                    cur["outcome_recorded"] = True
+                    cur.pop("outcome_error", None)
+                    latest_seats[alias] = cur
+                    seat = dict(cur)
+
+        return seat
 
 
 def seat_status(*, state_dir: Path | None = None) -> list[dict[str, Any]]:
@@ -778,7 +801,7 @@ def main(argv: list[str] | None = None) -> int:
     p_close.add_argument("--abandon", action="store_true", help="Force close even if working/blocked/dirty.")
     p_close.add_argument("--allow-missing-report", action="store_true", help="Allow closing without a non-empty report file.")
     p_close.add_argument("--rounds", type=int, default=None, help="Number of rounds before approval (requires --approved).")
-    p_close.add_argument("--approved", type=kza_router._parse_bool, default=None, help="Whether seat deliverable was approved (true|false).")
+    p_close.add_argument("--approved", type=kza_router._parse_bool, default=None, help="Whether seat deliverable was approved (true|false; requires --rounds).")
     p_close.add_argument("--outcome-notes", default="", help="Optional outcome note saved to decisions.jsonl.")
     p_close.add_argument("--no-outcome", action="store_true", help="Skip recording outcome on close.")
     p_close.add_argument("--base-ref", default="HEAD", help="Base ref for --merged ancestry check.")

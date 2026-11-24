@@ -525,3 +525,123 @@ def test_parallel_open_during_close_outcome_is_preserved_and_legacy_created_at_c
                 repo_root=repo,
                 state_dir=state_dir,
             )
+
+
+def test_concurrent_same_alias_open_and_close_serialization(tmp_path: Path) -> None:
+    import threading
+
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    wt_root = tmp_path / "worktrees"
+    state_dir = tmp_path / "state"
+
+    orig_route = kza_seat.kza_router.route_task
+    orig_run = kza_seat._run
+    routing_entered = threading.Event()
+    allow_first_route = threading.Event()
+    counter = {"n": 0, "route_calls": 0}
+    lock = threading.Lock()
+
+    def _slow_first_route(**kwargs):
+        with lock:
+            counter["route_calls"] += 1
+            call_num = counter["route_calls"]
+        if call_num == 1:
+            routing_entered.set()
+            allow_first_route.wait(timeout=5.0)
+        return orig_route(**kwargs)
+
+    def _fake_run(cmd: list[str], **kwargs):
+        if cmd[:2] == ["hc", "run"]:
+            with lock:
+                counter["n"] += 1
+                tid = f"t{counter['n']}"
+            return subprocess.CompletedProcess(cmd, 0, json.dumps({"address": tid}), "")
+        if cmd[:2] in (["hc", "kill"], ["hc", "rm"]):
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        return orig_run(cmd, **kwargs)
+
+    results: list[tuple[str, object]] = []
+
+    def _open_worker(tag: str) -> None:
+        try:
+            res = kza_seat.open_seat(
+                alias="kza-qa-race",
+                role="kza-qa",
+                task=f"Audit race {tag}",
+                exclude_families=["google"],
+                offline=True,
+                allow_quota_emergency=True,
+                space_id="sp-test",
+                parent_terminal_id="t0",
+                repo_root=repo,
+                worktree_root=wt_root,
+                state_dir=state_dir,
+            )
+            results.append(("ok", res))
+        except Exception as exc:
+            results.append(("err", exc))
+
+    with (
+        mock.patch.object(kza_seat.kza_router, "route_task", side_effect=_slow_first_route),
+        mock.patch.object(kza_seat, "_run", side_effect=_fake_run),
+        mock.patch.object(kza_seat, "_rename_herdr_tab_no_focus", return_value="tb-race"),
+    ):
+        t1 = threading.Thread(target=_open_worker, args=("one",))
+        t2 = threading.Thread(target=_open_worker, args=("two",))
+        t1.start()
+        assert routing_entered.wait(timeout=5.0)
+        t2.start()
+        # Let thread 2 block on _alias_lock while thread 1 finishes opening & worker writes its report.
+        allow_first_route.set()
+        t1.join(timeout=10.0)
+        t2.join(timeout=10.0)
+
+    oks = [r for kind, r in results if kind == "ok"]
+    errs = [r for kind, r in results if kind == "err"]
+    assert len(oks) == 1 and len(errs) == 1
+    assert "already open" in str(errs[0])
+
+    # Winner writes its report; second failed open must NOT have archived/removed it.
+    winner = oks[0]
+    assert isinstance(winner, dict)
+    rep_path = Path(winner["report_path"])
+    rep_path.write_text("# Winner Report\nAPROBADO\n", encoding="utf-8")
+
+    # Concurrent close_seat calls on the same alias: exactly 1 succeeds, 1 rejects 'already closed', 1 outcome row.
+    close_results: list[tuple[str, object]] = []
+
+    def _close_worker() -> None:
+        try:
+            c = kza_seat.close_seat(
+                alias="kza-qa-race",
+                done_readonly=True,
+                approved=True,
+                rounds=1,
+                repo_root=repo,
+                state_dir=state_dir,
+            )
+            close_results.append(("ok", c))
+        except Exception as exc:
+            close_results.append(("err", exc))
+
+    with (
+        mock.patch.object(kza_seat, "_hc_get_terminal", return_value={"state": "live", "status": {"state": "done"}}),
+        mock.patch.object(kza_seat, "_run", side_effect=_fake_run),
+    ):
+        c1 = threading.Thread(target=_close_worker)
+        c2 = threading.Thread(target=_close_worker)
+        c1.start()
+        c2.start()
+        c1.join(timeout=10.0)
+        c2.join(timeout=10.0)
+
+    c_oks = [r for kind, r in close_results if kind == "ok"]
+    c_errs = [r for kind, r in close_results if kind == "err"]
+    assert len(c_oks) == 1 and len(c_errs) == 1
+    assert "already closed" in str(c_errs[0])
+    assert rep_path.is_file()
+
+    lines = [json.loads(l) for l in (state_dir / "decisions.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    outcomes = [o for o in lines if o.get("type") == "outcome" and o.get("decision_id") == winner["decision_id"]]
+    assert len(outcomes) == 1

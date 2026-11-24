@@ -296,3 +296,11 @@ def test_claude_empty_env_falls_back_to_claude1_and_empty_arg_fails(tmp_path: Pa
 
     with pytest.raises(ValueError, match="allowed_accounts cannot be empty"):
         kza_quota.probe_claude(tap_dir=tmp_path, now=now, allowed_accounts=())
+
+    monkeypatch.setenv("KZA_CLAUDE_ACCOUNTS", "claude-3")
+    with pytest.raises(ValueError, match="Unsupported Claude account"):
+        kza_quota.probe_claude(tap_dir=tmp_path, now=now)
+
+    monkeypatch.delenv("KZA_CLAUDE_ACCOUNTS", raising=False)
+    with pytest.raises(ValueError, match="Unsupported Claude account"):
+        kza_quota.probe_claude(tap_dir=tmp_path, now=now, allowed_accounts=("claude-3",))

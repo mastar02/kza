@@ -26,6 +26,7 @@ DEFAULT_CLAUDE_TAP_DIR = Path.home() / ".local" / "state" / "thermouy-router"
 DEFAULT_CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 DEFAULT_CODEX2_SESSIONS_DIR = Path.home() / ".codex-2" / "sessions"
 DEFAULT_CLAUDE_ACCOUNTS: tuple[str, ...] = ("claude-1",)
+KNOWN_CLAUDE_ACCOUNTS: frozenset[str] = frozenset({"claude-1", "claude-2"})
 
 PENALTY_START_PCT = 70.0
 HARD_EXCLUDE_5H_PCT = 92.0
@@ -296,6 +297,12 @@ def probe_claude(
         allowed_set = {str(a).strip() for a in allowed_accounts if str(a).strip()}
         if not allowed_set:
             raise ValueError("allowed_accounts cannot be empty.")
+
+    unknown = allowed_set - KNOWN_CLAUDE_ACCOUNTS
+    if unknown:
+        raise ValueError(
+            f"Unsupported Claude account(s) {sorted(unknown)}. Expected subset of {sorted(KNOWN_CLAUDE_ACCOUNTS)}."
+        )
 
     accounts: list[dict[str, Any]] = []
     best: dict[str, Any] | None = None

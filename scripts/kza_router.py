@@ -11,6 +11,7 @@ deterministically when offline/unavailable, and tracks routing outcomes/KPIs.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -19,10 +20,11 @@ import sys
 import urllib.error
 import urllib.request
 import uuid
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
@@ -978,6 +980,22 @@ def has_recorded_outcome(decision_id: str, state_dir: Path | None = None) -> boo
     return False
 
 
+@contextmanager
+def _decisions_lock(state_dir: Path) -> Iterator[None]:
+    """Acquire an exclusive flock on `<state_dir>/decisions.lock`."""
+    kza_quota._ensure_private_dir(state_dir)
+    lock_path = state_dir / "decisions.lock"
+    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
 def record_outcome(
     *,
     decision_id: str,
@@ -991,23 +1009,24 @@ def record_outcome(
     if rounds < 1:
         raise ValueError("rounds must be >= 1.")
     sdir = _state_dir(state_dir)
-    if skip_if_exists and has_recorded_outcome(decision_id, state_dir=sdir):
-        return {
+    with _decisions_lock(sdir):
+        if skip_if_exists and has_recorded_outcome(decision_id, state_dir=sdir):
+            return {
+                "type": "outcome",
+                "decision_id": decision_id,
+                "already_recorded": True,
+            }
+        event = {
             "type": "outcome",
             "decision_id": decision_id,
-            "already_recorded": True,
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+            "rounds": rounds,
+            "approved": approved,
+            "round1_approved": bool(approved and rounds == 1),
+            "notes": sanitize_summary(notes, max_len=300),
         }
-    event = {
-        "type": "outcome",
-        "decision_id": decision_id,
-        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
-        "rounds": rounds,
-        "approved": approved,
-        "round1_approved": bool(approved and rounds == 1),
-        "notes": sanitize_summary(notes, max_len=300),
-    }
-    _append_jsonl(sdir / "decisions.jsonl", event)
-    return event
+        _append_jsonl(sdir / "decisions.jsonl", event)
+        return event
 
 
 def generate_report(*, days: int = 30, state_dir: Path | None = None) -> dict[str, Any]:
