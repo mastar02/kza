@@ -1780,7 +1780,7 @@ class OutputRegistrationV2(base.DestinationRegistrationCoordinator):
             self._closing = asyncio.create_task(finish(), context=Context())
             self._closing.add_done_callback(lambda t: None if t.cancelled() else t.exception())
         try:
-            async with asyncio.timeout(1):
+            async with asyncio.timeout(5.0):
                 await asyncio.shield(self._closing)
         except TimeoutError as error:
             from src.core.owned_work import WorkCloseTimeout

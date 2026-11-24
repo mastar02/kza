@@ -35,8 +35,11 @@ class PrivacyServices:
     """Own the sole privacy writer until its native users actually finish."""
 
     def __init__(self, path: str, *, clock=None, automatic_days: float = 30,
-                 close_timeout_s: float = 1, voice_settings: VoiceProposalSettings | None = None,
+                 close_timeout_s: float = 5.0, voice_settings: VoiceProposalSettings | None = None,
                  verify_only: bool = False):
+        # Default close_timeout_s=5.0s covers V4 shutdown journal writes (3 target
+        # records + final_registry + owner_closed, each fsynced on ext4) plus closing
+        # memory_privacy.db; 1.0s routinely raced ext4 barrier latency (~1.0-1.7s).
         # SC-4a: a release-mode verification run loads and validates the authority but runs
         # no one-shot repair (erasures.recover, index_deletions.recover) and no maintenance.
         self.verify_only = verify_only is True
