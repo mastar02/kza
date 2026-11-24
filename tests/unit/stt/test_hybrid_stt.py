@@ -154,3 +154,33 @@ def test_hybrid_agreement_and_alt_text_flow_through_ambient_stt():
     assert ambient_res.text == primary.text
     assert ambient_res.alt_text == gate.text
     assert ambient_res.agreement_ratio == stt_res.agreement_ratio
+
+
+def test_stt_executor_owner_and_runtime_closure_support_hybrid_and_pool():
+    import asyncio
+    from src.application import STTExecutorOwner
+    from src.memory.runtime_closure import _native_closed, _supported_native
+    from src.stt.parakeet_stt import ParakeetSTT
+    from src.stt.whisper_fast import FastWhisperSTT
+    from src.stt.worker_pool import STTWorkerPool
+
+    async def _run():
+        pool = STTWorkerPool(
+            [FastWhisperSTT("tiny", device="cpu"), FastWhisperSTT("tiny", device="cpu")],
+            owns_workers=True,
+        )
+        gate = ParakeetSTT(model_name="nemo-parakeet-tdt-0.6b-v3", language="es")
+        hybrid = HybridVetoSTT(primary=pool, gate=gate, owns_engines=True)
+
+        owner = STTExecutorOwner()
+        owner.add_model(hybrid)
+        assert owner._capture_unreviewed is False
+        assert _supported_native(pool) is True
+        assert _supported_native(hybrid) is True
+
+        await owner.aclose()
+        assert _native_closed(pool) is True
+        assert _native_closed(hybrid) is True
+
+    asyncio.run(_run())
+

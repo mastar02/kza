@@ -160,13 +160,15 @@ class HermesReasonerOwner(_ModelResourceOwner):
 
 
 class STTExecutorOwner(_ModelResourceOwner):
-    """Own graph-created Whisper/Parakeet resources after their borrowers drain."""
+    """Own graph-created Whisper/Parakeet/Hybrid/Pool STT resources after borrowers drain."""
 
     def __init__(self) -> None:
+        from src.stt.hybrid import HybridVetoSTT
         from src.stt.parakeet_stt import ParakeetSTT
         from src.stt.whisper_fast import FastWhisperSTT
+        from src.stt.worker_pool import STTWorkerPool
 
-        super().__init__((FastWhisperSTT, ParakeetSTT))
+        super().__init__((FastWhisperSTT, ParakeetSTT, HybridVetoSTT, STTWorkerPool))
 
 
 class TTSModelOwner(_ModelResourceOwner):

@@ -46,6 +46,7 @@ class STTWorkerPool:
         self._total_ms: list[float] = [0.0] * n
         self._rr_cursor: int = 0
         self._closed: bool = False
+        self._closing: asyncio.Task | None = None
         self._cond = threading.Condition()
 
     @property
@@ -153,23 +154,24 @@ class STTWorkerPool:
     def begin_close(self) -> asyncio.Task:
         """Async retirement hook compatible with ``AmbientSTT`` and runtime closure."""
         self.request_close()
+        if self._closing is None:
+            async def _finish() -> None:
+                if not self._owns_workers:
+                    return
+                pending = []
+                for worker in self._workers:
+                    begin = getattr(worker, "begin_close", None)
+                    if callable(begin):
+                        pending.append(begin())
+                    else:
+                        close = getattr(worker, "close", None)
+                        if callable(close):
+                            pending.append(asyncio.to_thread(close))
+                if pending:
+                    await asyncio.gather(*pending)
 
-        async def _finish() -> None:
-            if not self._owns_workers:
-                return
-            pending = []
-            for worker in self._workers:
-                begin = getattr(worker, "begin_close", None)
-                if callable(begin):
-                    pending.append(begin())
-                else:
-                    close = getattr(worker, "close", None)
-                    if callable(close):
-                        pending.append(asyncio.to_thread(close))
-            if pending:
-                await asyncio.gather(*pending)
-
-        return asyncio.get_running_loop().create_task(_finish(), context=Context())
+            self._closing = asyncio.get_running_loop().create_task(_finish(), context=Context())
+        return self._closing
 
     def close(self) -> None:
         """Seal, drain in-flight calls, and close owned workers synchronously."""

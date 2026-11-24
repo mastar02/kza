@@ -170,6 +170,8 @@ class HybridVetoSTT:
         self.gate_first = gate_first
         self.fail_open = fail_open
         self._owns_engines = owns_engines
+        self._closed = False
+        self._closing = None
 
     @property
     def max_concurrency(self) -> int:
@@ -185,6 +187,7 @@ class HybridVetoSTT:
 
     def request_close(self) -> None:
         """Seal owned underlying engines without blocking."""
+        self._closed = True
         if not self._owns_engines:
             return
         for engine in (self._gate, self._primary):
@@ -198,23 +201,24 @@ class HybridVetoSTT:
         from contextvars import Context
 
         self.request_close()
+        if self._closing is None:
+            async def _finish() -> None:
+                if not self._owns_engines:
+                    return
+                pending = []
+                for engine in (self._gate, self._primary):
+                    begin = getattr(engine, "begin_close", None)
+                    if callable(begin):
+                        pending.append(begin())
+                    else:
+                        close = getattr(engine, "close", None)
+                        if callable(close):
+                            pending.append(asyncio.to_thread(close))
+                if pending:
+                    await asyncio.gather(*pending)
 
-        async def _finish() -> None:
-            if not self._owns_engines:
-                return
-            pending = []
-            for engine in (self._gate, self._primary):
-                begin = getattr(engine, "begin_close", None)
-                if callable(begin):
-                    pending.append(begin())
-                else:
-                    close = getattr(engine, "close", None)
-                    if callable(close):
-                        pending.append(asyncio.to_thread(close))
-            if pending:
-                await asyncio.gather(*pending)
-
-        return asyncio.get_running_loop().create_task(_finish(), context=Context())
+            self._closing = asyncio.get_running_loop().create_task(_finish(), context=Context())
+        return self._closing
 
     def close(self) -> None:
         """Close owned underlying engines cleanly."""

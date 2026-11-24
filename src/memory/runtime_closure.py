@@ -42,8 +42,10 @@ def _native_closed(model, *, asynchronous: bool = True) -> bool:
     """Read positive terminal receipts of the supported C lifecycle classes."""
     from src.llm.hermes_reasoner import HermesCliReasoner
     from src.llm.reasoner import FastRouter, HttpReasoner
+    from src.stt.hybrid import HybridVetoSTT
     from src.stt.parakeet_stt import ParakeetSTT
     from src.stt.whisper_fast import FastWhisperSTT
+    from src.stt.worker_pool import STTWorkerPool
     from src.tts.piper_tts import DualTTS, KokoroTTS, PiperTTS
     from src.users.speaker_identifier import SpeakerIdentifier
     from src.wakeword.detector import WakeWordDetector
@@ -74,6 +76,16 @@ def _native_closed(model, *, asynchronous: bool = True) -> bool:
             return bool(model._closed and model._close_finished.is_set()
                         and not model._close_failed and not model._admitted
                         and model._model is None and _finished(model._closing))
+    if type(model) is STTWorkerPool:
+        return bool(model._closed
+                    and (not asynchronous or _finished(model._closing))
+                    and bool(model._workers)
+                    and all(_native_closed(worker, asynchronous=True) for worker in model._workers))
+    if type(model) is HybridVetoSTT:
+        return bool(model._closed
+                    and (not asynchronous or _finished(model._closing))
+                    and _native_closed(model._primary, asynchronous=True)
+                    and _native_closed(model._gate, asynchronous=True))
     if type(model) in (DualTTS, KokoroTTS, PiperTTS):
         if not _adapter_closed(model, asynchronous=asynchronous):
             return False
@@ -106,8 +118,10 @@ def _native_closed(model, *, asynchronous: bool = True) -> bool:
 def _supported_native(model) -> bool:
     from src.llm.hermes_reasoner import HermesCliReasoner
     from src.llm.reasoner import FastRouter, HttpReasoner
+    from src.stt.hybrid import HybridVetoSTT
     from src.stt.parakeet_stt import ParakeetSTT
     from src.stt.whisper_fast import FastWhisperSTT
+    from src.stt.worker_pool import STTWorkerPool
     from src.tts.piper_tts import DualTTS, KokoroTTS, PiperTTS
     from src.users.speaker_identifier import SpeakerIdentifier
     from src.wakeword.detector import WakeWordDetector
@@ -115,6 +129,10 @@ def _supported_native(model) -> bool:
     if type(model) is DualTTS:
         return (model.qwen3 is None and model.kokoro in model._owned_tts_engines
                 and all(_supported_native(child) for child in model._owned_tts_engines))
+    if type(model) is STTWorkerPool:
+        return bool(model._workers) and all(_supported_native(worker) for worker in model._workers)
+    if type(model) is HybridVetoSTT:
+        return _supported_native(model._primary) and _supported_native(model._gate)
     return type(model) in (ParakeetSTT, FastWhisperSTT, KokoroTTS, PiperTTS,
                            SpeakerIdentifier, WakeWordDetector, FastRouter,
                            HttpReasoner, HermesCliReasoner)
