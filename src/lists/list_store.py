@@ -148,7 +148,7 @@ class ListStore:
             self._closing.add_done_callback(observed, context=Context())
         closing = self._closing
         try:
-            async with asyncio.timeout(1):
+            async with asyncio.timeout(5.0):
                 await asyncio.shield(closing)
         except TimeoutError as error:
             raise WorkCloseTimeout("list_store_close_pending", phase=ClosePhase.DRAIN,

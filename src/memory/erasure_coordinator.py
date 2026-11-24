@@ -49,7 +49,9 @@ class ErasureCoordinator:
     participant is implemented and its producers have the same source policy.
     """
 
-    def __init__(self, privacy: PrivacyServices, *, capacity: int = 4, close_timeout_s: float = 1):
+    def __init__(self, privacy: PrivacyServices, *, capacity: int = 4, close_timeout_s: float = 5.0):
+        # Default close_timeout_s=5.0s covers 4 sequential fsynced V4 close records
+        # (events/suggestions retention & erasure workers) which routinely take 1.1-1.5s on ext4.
         if type(capacity) is not int or not 1 <= capacity <= 32:
             raise ValueError("invalid_erasure_capacity")
         if type(close_timeout_s) not in (int, float) or not math.isfinite(close_timeout_s) or close_timeout_s <= 0:

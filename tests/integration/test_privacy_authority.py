@@ -543,12 +543,17 @@ async def test_unbound_preboot_capture_cannot_receive_a_fresh_conversation_after
 
 
 async def test_privacy_services_default_close_timeout_covers_v4_fsync_budget(tmp_path):
-    """Default close_timeout_s must leave margin for 5 fsynced V4 close records + SQLite close."""
+    """Default close_timeout_s must leave margin for fsynced V4 close records + SQLite close."""
+    from src.memory.erasure_coordinator import ErasureCoordinator
     privacy = PrivacyServices(str(tmp_path / 'privacy.db'))
+    await privacy.acall(privacy.initialize)
+    coordinator = ErasureCoordinator(privacy)
     try:
         assert privacy._close_timeout_s >= 5.0
         assert privacy._work._close_timeout_s >= 5.0
         assert privacy._close_work._close_timeout_s >= 5.0
+        assert coordinator._close_timeout_s >= 5.0
     finally:
+        await coordinator.aclose()
         await privacy.aclose()
 

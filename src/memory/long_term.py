@@ -79,7 +79,7 @@ class LongTermMemory:
 
     def __init__(self, chroma_client, collection_name: str = "user_memories", *,
                  ledger_path: str = ":memory:", clock=None, automatic_days: float = 30,
-                 shutdown_timeout_s: float = 1, privacy: PrivacyServices | None = None, index_descriptor: dict | None = None,
+                 shutdown_timeout_s: float = 5.0, privacy: PrivacyServices | None = None, index_descriptor: dict | None = None,
                  close_client: Callable[[], None] | None = None):
         if type(shutdown_timeout_s) not in (int, float) or not math.isfinite(shutdown_timeout_s) or shutdown_timeout_s <= 0:
             raise ValueError("invalid_memory_shutdown_timeout")

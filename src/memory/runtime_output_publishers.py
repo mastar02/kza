@@ -223,6 +223,10 @@ class RuntimeOutputPublishers:
 
     async def _after_close(self, exc_type, exc, traceback) -> None:
         if exc_type is not None:
+            logging.getLogger(__name__).error(
+                "[Shutdown] skipping generic publisher drain due to earlier close error (%s: %s)",
+                exc_type.__name__, exc,
+            )
             return
         await self._logging_close.close()
         for slot in self._receipts.values():

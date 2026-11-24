@@ -831,7 +831,7 @@ class EventLogger:
         """Bound observation while the shared privacy lease retains actual writes."""
         closing = self.begin_close()
         try:
-            async with asyncio.timeout(1):
+            async with asyncio.timeout(5.0):
                 await asyncio.shield(closing)
         except TimeoutError:
             raise WorkCloseTimeout('event_resources_still_running',phase=self._close_phase,
