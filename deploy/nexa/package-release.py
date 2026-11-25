@@ -72,7 +72,10 @@ def release_timestamp():
         return datetime.now(timezone.utc).isoformat()
     if not re.fullmatch(r"[0-9]+", epoch):
         raise ValueError("SOURCE_DATE_EPOCH must be non-negative integer seconds")
-    return datetime.fromtimestamp(int(epoch), timezone.utc).isoformat()
+    try:
+        return datetime.fromtimestamp(int(epoch), timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError) as error:
+        raise ValueError("SOURCE_DATE_EPOCH is outside the supported timestamp range") from error
 
 
 def assemble(args, stage, git_dirty):

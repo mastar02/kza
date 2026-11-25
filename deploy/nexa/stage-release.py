@@ -67,6 +67,8 @@ def validate(root, version, test_root):
     manifest = json.loads((root / "release-manifest.json").read_text(encoding="utf-8"))
     if manifest["version"] != version:
         raise ValueError("version differs from release manifest")
+    if not test_root and manifest.get("git_dirty") is True:
+        raise ValueError("dirty release requires test mode")
     if not test_root and not any(path.parts[0] == "frontend" and len(path.parts) > 1 for path in actual):
         raise ValueError("partial release requires test mode")
     units = (path for path in actual if path.parent == Path("systemd") and not path.name.startswith("."))

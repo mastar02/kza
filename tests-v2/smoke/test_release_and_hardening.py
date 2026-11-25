@@ -167,6 +167,21 @@ def test_release_provenance_and_reproducibility(inputs, monkeypatch):
     run_packager(inputs, deploy, "v1", dirty, "--allow-dirty")
     assert json.loads((dirty / "release-manifest.json").read_text())["git_dirty"] is True
 
+    stage = DEPLOY / "stage-release.py"
+    run(sys.executable, stage, first, inputs / "prod-clean", "v1", "")
+    rejected = run(sys.executable, stage, dirty, inputs / "prod-dirty", "v1", "", ok=False)
+    assert "dirty release requires test mode" in rejected.stderr
+    run(sys.executable, stage, dirty, inputs / "test-dirty", "v1", str(inputs))
+
+
+@pytest.mark.parametrize("epoch", ["invalid", "999999999999999999999"])
+def test_reject_invalid_source_date_epoch(inputs, monkeypatch, epoch):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", epoch)
+    out = inputs / "invalid-epoch"
+    rejected = run_packager(inputs, DEPLOY, "v1", out, "--allow-dirty", ok=False)
+    assert "SOURCE_DATE_EPOCH" in rejected.stderr
+    assert not out.exists()
+
 
 def test_package_and_switch(inputs):
     v1 = package(inputs)
