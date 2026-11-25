@@ -5,14 +5,15 @@ After=sound.target
 
 [Service]
 Type=notify
-ExecStart=/opt/nexa/current/bin/nexa-audiod --config /etc/nexa
+Environment=ORT_DYLIB_PATH=/opt/nexa/lib/libonnxruntime.so
+ExecStart=/opt/nexa/current/bin/nexa-audiod --config-dir /etc/nexa
 RuntimeDirectory=nexa
 RuntimeDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/var/lib/nexa/clips
+ReadWritePaths=/var/lib/nexa/audiod /var/lib/nexa/clips
 LockPersonality=yes
 RestrictSUIDSGID=yes
 IPAddressDeny=any

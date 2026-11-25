@@ -16,6 +16,7 @@ import sys
 import tempfile
 from threading import Event
 import time
+import tomllib
 
 import pytest
 
@@ -54,11 +55,15 @@ def test_service_units():
         if path.stem in BINARIES:
             assert s["ExecStart"].split()[0] == "/opt/nexa/current/bin/" + path.stem
             assert s["ReadWritePaths"] == {
-                "nexa-audiod": "/var/lib/nexa/clips",
+                "nexa-audiod": "/var/lib/nexa/audiod /var/lib/nexa/clips",
                 "nexa-brain": "/var/lib/nexa/household",
                 "nexa-memoryd": "/var/lib/nexa/memory",
                 "nexa-web": "/var/lib/nexa/auth",
             }[path.stem]
+        if path.stem in {"nexa-audiod", "nexa-brain"}:
+            assert s["ExecStart"].split()[1:] == ["--config-dir", "/etc/nexa"]
+        if path.stem == "nexa-audiod":
+            assert "ORT_DYLIB_PATH=/opt/nexa/lib/libonnxruntime.so" in s["Environment"].split()
         if path.stem in {"nexa-llm-fast", "nexa-dashboard-proxy"}:
             assert s["Type"] == "simple"
             assert s["RuntimeDirectoryMode"] == "0700"
@@ -67,11 +72,18 @@ def test_service_units():
             assert s["ReadWritePaths"] == "/var/lib/nexa/proxy"
         if path.stem == "nexa-llm-fast":
             assert s["RuntimeDirectory"] == "nexa-llm-fast"
-            assert s["Environment"] == "CUDA_VISIBLE_DEVICES=0"
+            assert "CUDA_VISIBLE_DEVICES=1" in s["Environment"].split()
+            assert "LD_LIBRARY_PATH=/opt/nexa/lib" in s["Environment"].split()
+            ml = tomllib.loads((ROOT / "config/nexa/nexa.toml").read_text())["ml"]
+            assert ml["command_stt_device"] == ml["tts_device"] == "cuda:1"
+            assert ml["ambient_stt_device"] == ml["speaker_encoder_device"] == "cuda:0"
+            assert ml["ambient_stt_workers"] == 2
+            assert ml["embeddings_device"] == "cpu"
         if path.stem in {"nexa-memoryd", "nexa-ml"}:
             assert s["IPAddressDeny"] == "any" and "IPAddressAllow" not in s
         if path.stem == "nexa-ml":
             assert "PYTHONDONTWRITEBYTECODE=1" in s["Environment"].split()
+            assert "PYTHONPATH=/opt/nexa/current/ml/src" in s["Environment"].split()
             assert s["WorkingDirectory"] == "/opt/nexa/current/ml"
             assert "%t/nexa/ml.sock" in s["ExecStart"]
 
@@ -103,8 +115,9 @@ def test_provisioning_and_udev():
     assert 'for grp in audio dialout video render; do' in provision
     assert re.findall(r"^\s*usermod .*", provision, re.M) == ['    usermod -aG "${grp}" "${NEXA_USER}"']
     commands = provision.replace(chr(92) + "\n", " ").splitlines()
-    assert any(line.startswith('install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 ')
-               and "/var/lib/nexa/proxy" in line.split() for line in commands)
+    for directory in ("/var/lib/nexa/proxy", "/var/lib/nexa/audiod"):
+        assert any(line.startswith('install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 ')
+                   and directory in line.split() for line in commands)
     assert "99-xvf3800-nexa.rules" in provision
     active = [line for line in rules.splitlines() if line and not line.startswith("#")]
     assert len(active) == 1

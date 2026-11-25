@@ -10,7 +10,13 @@ Thin, stateless Python 3.13 worker speaking `nexa.v1.MlService` over `$XDG_RUNTI
 
 ## GPU placement
 
-The RTX 3090 (24 GB, `cuda:0`) hosts llama-server 7B alongside two ambient Whisper large-v3 workers and one ECAPA speaker encoder for non-interactive ambient processing. The low-latency interactive path has exclusive use of `cuda:1` for Whisper Command v3-turbo and streaming Kokoro-82M.
+The Linux host has two RTX 3070 GPUs with 8 GiB each.
+
+| Device | Workload | Approximate VRAM |
+|---|---|---|
+| `cuda:1` | llama-server 7B on port 8101, Whisper Command v3-turbo and streaming Kokoro-82M | 6.7 GiB |
+| `cuda:0` | Two ambient Whisper large-v3 workers and one ECAPA-TDNN speaker encoder | 4.1 GiB |
+| CPU | BAAI/bge-m3 embeddings and ONNX inference for Parakeet, Silero and OpenWakeWord | — |
 
 ## Offline model cache
 

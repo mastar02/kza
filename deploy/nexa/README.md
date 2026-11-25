@@ -10,6 +10,12 @@ sudo bash deploy/nexa/provision-nexa-user.sh
 
 Verifica automáticamente que `nexa` **no** pertenezca a `sudo`, `adm`, `wheel` ni `docker`, asigna solo `audio,dialout,video,render`, habilita `loginctl enable-linger nexa`, instala la regla `udev` `99-xvf3800-nexa.rules` (`GROUP="nexa", MODE="0660"`), crea `/opt/nexa`, `/etc/nexa`, `/var/lib/nexa` y configura `TimeoutStopSec=30s` únicamente para el UID de `nexa`.
 
+Antes de iniciar los servicios, instalar `llama-server` en `/opt/nexa/bin/` y la
+biblioteca de ONNX Runtime en `/opt/nexa/lib/libonnxruntime.so`. La unidad
+`nexa-audiod` carga esa biblioteca mediante `ORT_DYLIB_PATH`. Guardar la clave
+de la API en `/etc/nexa/secrets/llama-api-key` (propietario `nexa:nexa`, modo
+`0600`). La unidad `nexa-llm-fast` la lee mediante `--api-key-file`.
+
 Antes del primer arranque de ML, sembrar la caché persistente
 `/var/lib/nexa/.cache` (directorio `0700`, propietario `nexa:nexa`).
 Copiar el modelo ECAPA completo, incluidos `hyperparams.yaml` y
@@ -75,5 +81,8 @@ En `/etc/nexa/nginx-proxy.conf`, configurar `pid` con la ruta absoluta a
 | Unidades | `nexa-audiod`, `nexa-ml`, `nexa-memoryd`, `nexa-brain`, `nexa-web`, `nexa-llm-fast`, `nexa-dashboard-proxy` (`nexa.target`) |
 | IPC interno | Unix Domain Sockets `$XDG_RUNTIME_DIR/nexa/{audio,ml,memory,brain}.sock` (`0600`) — **0 puertos TCP internos nuevos** |
 | Puertos TCP | Sub-rango reservado KZA `9500-9599`: `127.0.0.1:9500` (`nexa-web`), `192.168.1.2:9540` (NGINX TLS), `127.0.0.1:8101` (`nexa-llm-fast`) |
-| GPUs | `cuda:1` (`whisper-v3-turbo` + `Kokoro-82M streaming`); `cuda:0` (`llama-server 7B :8101` + `2x whisper large-v3` + `1x ECAPA`) |
+| GPUs | 2 × RTX 3070 de 8 GiB cada una |
+| `cuda:1` | `llama-server 7B :8101`, `whisper-v3-turbo` de comandos y `Kokoro-82M` en streaming (~6,7 GiB) |
+| `cuda:0` | 2 × `whisper-large-v3` ambientales y 1 × ECAPA-TDNN (~4,1 GiB) |
+| CPU | Embeddings `BAAI/bge-m3` y modelos ONNX Parakeet, Silero y OpenWakeWord |
 | Logs | `journalctl --user -u 'nexa-*' -f` (cumple R9) |
