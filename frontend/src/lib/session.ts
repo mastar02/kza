@@ -97,7 +97,12 @@ export class Session {
   #purges = new Set<() => void>()
   #checking = false
 
-  constructor(private readonly fetcher: typeof fetch = fetch) {}
+  constructor(private readonly fetcher: typeof fetch = (input, init) => globalThis.fetch(input, init)) {}
+
+  #fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const fn = this.fetcher
+    return fn(input, init)
+  }
 
   get state(): SessionState { return this.#state }
   get signal(): AbortSignal { return this.#controller.signal }
@@ -163,14 +168,14 @@ export class Session {
     try {
       if (token !== undefined) {
         try {
-          const response = await this.fetcher(authPaths.login, makeRequest({ method: 'POST', body: { token } }, owner))
+          const response = await this.#fetch(authPaths.login, makeRequest({ method: 'POST', body: { token } }, owner))
           discardBody(response)
           if (!response.ok) throw new HttpError(response.status)
         } finally {
           token = undefined
         }
       }
-      const response = await this.fetcher(authPaths.whoami, makeRequest({}, owner))
+      const response = await this.#fetch(authPaths.whoami, makeRequest({}, owner))
       owner.throwIfAborted()
       if (!response.ok) { discardBody(response); throw new HttpError(response.status) }
       const identity = identityFrom(await response.json())
@@ -200,7 +205,7 @@ export class Session {
     if (this.#remaining() <= 0) { this.retire(); return false }
     const owner = this.signal
     try {
-      const response = await this.fetcher(authPaths.whoami, makeRequest({}, owner))
+      const response = await this.#fetch(authPaths.whoami, makeRequest({}, owner))
       owner.throwIfAborted()
       if (!response.ok) { discardBody(response); throw new HttpError(response.status) }
       const current = identityFrom(await response.json())
@@ -223,7 +228,7 @@ export class Session {
     this.#clear({ status: 'checking' })
     const owner = this.signal
     try {
-      const response = await this.fetcher(authPaths.logout, makeRequest({ method: 'POST' }, owner))
+      const response = await this.#fetch(authPaths.logout, makeRequest({ method: 'POST' }, owner))
       discardBody(response)
       owner.throwIfAborted()
       if (!response.ok && response.status !== 401) throw new HttpError(response.status)
@@ -257,7 +262,7 @@ export class Session {
     if (options.verifyIdentity && !await this.revalidate()) throw new HttpError(401)
     const init = makeRequest(options, owner)
     init.signal?.throwIfAborted()
-    const response = await this.fetcher(path, init)
+    const response = await this.#fetch(path, init)
     if (owner.aborted) {
       discardBody(response)
       owner.throwIfAborted()
