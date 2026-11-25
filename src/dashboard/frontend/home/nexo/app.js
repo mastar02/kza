@@ -31,7 +31,16 @@ import './my-voice-owner.js';
 import './my-voice.js';
 import './voice-consents-owner.js';
 import './voice-consents.js';
-import { createHouse, thermalReading } from './house.js';
+
+let houseModule = null;
+let houseModulePromise = null;
+function loadHouseModule() {
+  if (houseModule) return Promise.resolve(houseModule);
+  houseModulePromise ??= import('./house.js')
+    .then(mod => { houseModule = mod; return mod; })
+    .catch(err => { houseModulePromise = null; throw err; });
+  return houseModulePromise;
+}
 
 const core = window.HomeUI, state = window.NexoState, { sectionDestination } = window.NexoSections;
 const byId = id => document.getElementById(id);
@@ -557,7 +566,7 @@ function updateRoomHeading() {
   const selected = catalog.rooms.find(room => room.room_id === roomId);
   heading.textContent = selected?.name || (catalog.unassigned_entities.some(entity => entity.domain !== 'scene') ? 'Sin ambiente' : 'Ambientes');
   const temperature = heading.nextElementSibling;
-  const thermal = selected && layer === 'climate' ? thermalReading(selected, selectedEntities()) : null;
+  const thermal = selected && layer === 'climate' && houseModule ? houseModule.thermalReading(selected, selectedEntities()) : null;
   const reading = thermal?.actual ?? (Number.isFinite(selected?.current_temperature) ? `${selected.current_temperature} °C` : null);
   temperature.textContent = [reading && `Temperatura actual · ${reading}`, thermal?.status].filter(Boolean).join(' · ');
   temperature.hidden = !temperature.textContent;
@@ -775,6 +784,8 @@ async function activate(view, push = true, force = false) {
     if (view === 'home') openNotices();
     if (view === 'home' && !house) {
       byId('map-loading').hidden = false;
+      const { createHouse } = await loadHouseModule();
+      if (!stillCurrent()) { byId('map-loading').hidden = true; return false; }
       house = createHouse({ container: byId('house-canvas'), pins: byId('room-pins'), onSelect: id => selectRoom(id, { fromMap: true }), onReady(ready) {
         byId('map-loading').hidden = true;
         for (const id of ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'rotate-left', 'rotate-right', 'reset-view']) byId(id).disabled = !ready;

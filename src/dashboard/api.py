@@ -47,7 +47,7 @@ from src.reminders.reminder_scheduler import NoticeDismissal
 from src.reminders.reminder_store import ReminderScope
 from src.dashboard.home_api import (
     LegacyHomeActionBody, execute_home_action, home_actor, register_home_disabled_root, register_home_frontend,
-    register_home_routes,
+    register_home_private_assets, register_home_routes,
 )
 from src.dashboard.home_catalog import HomeCatalogService
 from src.dashboard.live_event_bus import LiveEventBus
@@ -1501,6 +1501,8 @@ class DashboardAPI:
 
         # ==================== Static files (Frontend) ====================
 
+        register_home_private_assets(self.app, home_enabled=self.home_enabled)
+
         if self.home_enabled:
             register_home_frontend(self.app)
         else:
@@ -1715,6 +1717,8 @@ class DashboardAPI:
             host=self.host,
             port=self.port,
             log_level="info",
+            proxy_headers=True,
+            forwarded_allow_ips="127.0.0.1",
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_SECONDS,
         )
         self._server = _owned_signal_server(uvicorn)(config)

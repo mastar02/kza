@@ -190,7 +190,7 @@ def _route_permissions(
     # Explicit so a later default change cannot open them; writes stay admin.
     if path == "/api/metrics":
         return frozenset({DashboardPermission.DIAGNOSTICS_READ if read else DashboardPermission.ADMIN_MANAGE})
-    if path.startswith("/api/home/"):
+    if path.startswith("/api/home/") or path == "/home/nexo/private" or path.startswith("/home/nexo/private/"):
         return frozenset({DashboardPermission.HOME_READ if read else DashboardPermission.HOME_CONTROL})
     if path in {"/api/integrations/energy", "/api/integrations/calendar", "/api/integrations/media",
                 "/api/integrations/cameras/health"} and read:

@@ -753,7 +753,12 @@ async def main(*, without_plan: bool = False, missing_model: bool = False) -> No
                         targets = await response.json()
                     if without_plan or missing_model:
                         for name, status in (('casa.glb', 404), ('house-plan.js', 200 if missing_model else 404)):
-                            async with client.get(f'http://127.0.0.1:{port}/home/nexo/private/{name}') as response:
+                            async with client.get(f'http://127.0.0.1:{port}/home/nexo/private/{name}') as unauth:
+                                assert unauth.status == 401, (name, unauth.status)
+                            async with client.get(
+                                f'http://127.0.0.1:{port}/home/nexo/private/{name}',
+                                headers={'Authorization': f'Bearer {home.token}'},
+                            ) as response:
                                 assert response.status == status, (name, response.status)
                 target = next(target for target in targets if target["type"] == "page")
                 async with connect(target["webSocketDebuggerUrl"], max_size=None) as connection:

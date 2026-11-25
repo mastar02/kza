@@ -67,6 +67,49 @@ def build_home_services(
     )
 
 
+PRIVATE_NEXO_MEDIA_TYPES: Mapping[str, str] = {
+    ".glb": "model/gltf-binary",
+    ".js": "text/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+}
+
+
+def register_home_private_assets(app: FastAPI, *, home_enabled: bool = True) -> None:
+    """Serve local private NEXO plan/3D model assets only to authenticated ``home:read`` sessions.
+
+    Registered before static mounts so neither ``/home`` nor ``/`` can expose
+    private floorplan geometry or 3D home scans without authentication.
+    """
+    private_root = (Path(__file__).parent / "frontend" / "home" / "nexo" / "private").resolve()
+    no_store = {"Cache-Control": "no-store"}
+
+    @app.api_route("/home/nexo/private", methods=["GET", "HEAD"], include_in_schema=False)
+    async def home_private_root(
+        principal: DashboardPrincipal = Depends(require_dashboard_session),
+    ) -> Response:
+        if "home:read" not in principal.permissions:
+            raise HTTPException(status_code=403, detail="home_read_denied", headers=no_store)
+        raise HTTPException(status_code=404, detail="Not Found", headers=no_store)
+
+    @app.api_route("/home/nexo/private/{asset_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+    async def home_private_asset(
+        asset_path: str,
+        principal: DashboardPrincipal = Depends(require_dashboard_session),
+    ) -> FileResponse:
+        if "home:read" not in principal.permissions:
+            raise HTTPException(status_code=403, detail="home_read_denied", headers=no_store)
+        if not home_enabled or not asset_path or asset_path.startswith("/") or "\\" in asset_path:
+            raise HTTPException(status_code=404, detail="Not Found", headers=no_store)
+        parts = Path(asset_path).parts
+        if any(part in ("", ".", "..") for part in parts):
+            raise HTTPException(status_code=404, detail="Not Found", headers=no_store)
+        candidate = (private_root / asset_path).resolve()
+        if not candidate.is_relative_to(private_root) or not candidate.is_file():
+            raise HTTPException(status_code=404, detail="Not Found", headers=no_store)
+        media_type = PRIVATE_NEXO_MEDIA_TYPES.get(candidate.suffix.lower())
+        return FileResponse(candidate, media_type=media_type, headers=no_store)
+
+
 def register_home_frontend(app: FastAPI) -> None:
     """Register the exact home root and assets before a catch-all static mount."""
     home = Path(__file__).parent / "frontend" / "home"
@@ -174,7 +217,7 @@ def register_home_routes(
     async def private_response_policy(request: Request, call_next: RequestResponseEndpoint) -> Response:
         """Prevent storage of private responses, including handled HTTP errors."""
         response = await call_next(request)
-        if request.url.path.startswith(("/api/home/", "/api/routines/", "/api/memory", "/api/voices", "/api/conversations", "/api/ha/actions", "/api/admin/auth/credentials", "/api/admin/auth/credential-attempts")) or request.url.path == "/api/routines" or request.url.path == "/api/evaluation" or request.url.path.startswith("/api/evaluation/"):
+        if request.url.path.startswith(("/api/home/", "/home/nexo/private/", "/api/routines/", "/api/memory", "/api/voices", "/api/conversations", "/api/ha/actions", "/api/admin/auth/credentials", "/api/admin/auth/credential-attempts")) or request.url.path in ("/home/nexo/private", "/api/routines", "/api/evaluation") or request.url.path.startswith("/api/evaluation/"):
             response.headers["Cache-Control"] = "no-store"
         return response
 

@@ -66,3 +66,5 @@ sriov-migration-prompt.md
 
 # Local NEXO house plan and private verification data
 /src/dashboard/frontend/home/nexo/private/
+/kza-nexo-rediseno/
+*.glb
