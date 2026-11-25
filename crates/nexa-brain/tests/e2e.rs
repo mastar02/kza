@@ -186,6 +186,38 @@ async fn command_compound_security_and_control_permissions() -> Result {
 }
 
 #[tokio::test]
+async fn startup_honors_persisted_cloud_withdrawal_in_either_layout() -> Result {
+    for marker in [
+        "cloud-consent-withdrawn",
+        "household/cloud-consent-withdrawn",
+    ] {
+        let data = tempfile::tempdir()?;
+        std::fs::create_dir(data.path().join("household"))?;
+        std::fs::write(data.path().join(marker), "123")?;
+        let mut h = Harness::start(
+            |cfg| {
+                cfg.core.paths.data_dir = data.path().into();
+                cfg.core.llm.cloud_consent = true;
+            },
+            false,
+        )
+        .await?;
+        let mut request = Request::new(v1::Empty {});
+        request.metadata_mut().insert_bin(
+            ACTOR_METADATA,
+            MetadataValue::from_bytes(
+                &actor(Role::Operator, &[P::DiagnosticsRead]).encode_to_vec(),
+            ),
+        );
+        let status = h.client.get_cloud_consent(request).await?.into_inner();
+        assert!(status.withdrawn_latched && !status.consent_granted);
+        assert_eq!(status.updated_at_unix_ms, 123);
+        h.stop().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn streaming_barge_in_and_irreversible_cloud_withdrawal() -> Result {
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     let addr = listener.local_addr()?;
@@ -306,7 +338,7 @@ async fn streaming_barge_in_and_irreversible_cloud_withdrawal() -> Result {
             .core
             .paths
             .data_dir
-            .join("cloud-consent-withdrawn")
+            .join("household/cloud-consent-withdrawn")
             .is_file()
     );
     backend.await??;

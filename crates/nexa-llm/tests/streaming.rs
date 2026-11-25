@@ -23,12 +23,50 @@ fn endpoint(base: &str, cloud: bool) -> Endpoint {
     Endpoint {
         id: if cloud { "cloud" } else { "fast" }.into(),
         url: format!("{base}/v1/{}completions", if cloud { "chat/" } else { "" }),
+        api_key: None,
         model: "test".into(),
         cloud,
         priority: if cloud { 2 } else { 1 },
         timeout: 10 * SEC,
         idle_timeout: 3 * SEC,
     }
+}
+
+#[tokio::test]
+async fn optional_bearer_is_sensitive_in_debug_and_sent_only_when_present() -> Result {
+    let client = OpenAiClient::new(Arc::new(CloudConsentGate::new(true)))?;
+    for token in [Some("wiremock-secret"), None, Some("")] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw("data: [DONE]\n\n", "text/event-stream"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut ep = endpoint(&server.uri(), false);
+        ep.api_key = token.map(|value| value.to_owned().into());
+        if token.is_some() {
+            let debug = format!("{ep:?}");
+            assert!(debug.contains("<redacted>"));
+            assert!(!debug.contains("wiremock-secret"));
+        }
+        client
+            .stream(&ep, "hola", 1, &CancellationToken::new(), |_| {})
+            .await?;
+        let requests = server
+            .received_requests()
+            .await
+            .ok_or("recording disabled")?;
+        let auth = requests[0].headers.get("authorization");
+        assert_eq!(
+            auth.map(|value| value.to_str()).transpose()?,
+            token
+                .filter(|key| !key.is_empty())
+                .map(|_| "Bearer wiremock-secret")
+        );
+    }
+    Ok(())
 }
 
 async fn router(eps: Vec<Endpoint>, path: Option<PathBuf>) -> Result<FailoverRouter> {

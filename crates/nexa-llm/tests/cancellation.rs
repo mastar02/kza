@@ -11,6 +11,7 @@ async fn cancellation_and_withdrawal_interrupt_pending_http() -> Result {
         let ep = Endpoint {
             id: "gateway".into(),
             url: format!("http://{}/v1/chat/completions", listener.local_addr()?),
+            api_key: None,
             model: "test".into(),
             cloud: true,
             priority: 1,

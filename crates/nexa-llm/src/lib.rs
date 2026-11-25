@@ -7,7 +7,7 @@ mod router;
 mod stripper;
 
 pub use cli::run_cli;
-pub use client::{Endpoint, LlmError, OpenAiClient};
+pub use client::{ApiKey, Endpoint, LlmError, OpenAiClient};
 pub use health::Metrics;
 pub use router::FailoverRouter;
 pub use stripper::ThinkTagStripper;

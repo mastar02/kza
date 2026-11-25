@@ -1,6 +1,11 @@
 //! HTTP entry point for the Nexa control plane.
 
-use std::{io, net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    env, io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use clap::Parser;
 use nexa_config::NexaConfig;
@@ -84,11 +89,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .as_deref()
             .unwrap_or(&default_origin),
     )?;
-    let auth = AuthStore::open(&config.paths.data_dir.join("auth.db"))?;
+    let auth = AuthStore::open_in(&config.paths.data_dir)?;
     if let Ok(token) = std::env::var("KZA_DASHBOARD_TOKEN") {
         auth.bootstrap_operator(token).await?;
     }
-    let clients = Clients::uds(&config.paths.runtime_dir);
+    let runtime_dir = env::var_os("RUNTIME_DIRECTORY")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("nexa")))
+        .unwrap_or(config.paths.runtime_dir);
+    let clients = Clients::uds(&runtime_dir);
     let web = WebConfig {
         origin,
         allow_insecure_cookies: args.allow_insecure_cookies,

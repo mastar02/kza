@@ -3,7 +3,7 @@
 use std::env;
 use std::error::Error;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,7 +44,7 @@ impl Options {
         };
         while let Some(arg) = args.next() {
             match arg.to_str() {
-                Some("--config-dir") => {
+                Some("--config-dir" | "--config") => {
                     options.config = args
                         .next()
                         .map(PathBuf::from)
@@ -86,9 +86,13 @@ fn main() -> DaemonResult<()> {
 
 async fn run(options: Options) -> DaemonResult<()> {
     let bundle = LoadedBundle::load_from_dir(&options.config)?;
-    let socket = options
-        .socket
-        .unwrap_or_else(|| bundle.core.paths.runtime_dir.join(sockets::AUDIO));
+    let socket = options.socket.unwrap_or_else(|| {
+        env::var_os("RUNTIME_DIRECTORY")
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("nexa")))
+            .unwrap_or_else(|| bundle.core.paths.runtime_dir.clone())
+            .join(sockets::AUDIO)
+    });
     if options.simulation {
         let rooms = bundle
             .rooms

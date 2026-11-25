@@ -37,7 +37,7 @@ impl Options {
         let mut standalone = false;
         while let Some(argument) = args.next() {
             match argument.to_str() {
-                Some("--config-dir") => {
+                Some("--config-dir" | "--config") => {
                     config_dir = Some(PathBuf::from(args.next().ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidInput,
@@ -79,7 +79,10 @@ async fn run() -> Result<(), BrainError> {
     let config =
         tokio::task::spawn_blocking(move || LoadedBundle::load_from_dir(options.config_dir))
             .await??;
-    let runtime = &config.core.paths.runtime_dir;
+    let runtime = env::var_os("RUNTIME_DIRECTORY")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("nexa")))
+        .unwrap_or_else(|| config.core.paths.runtime_dir.clone());
     let bound = BoundControl::bind(&runtime.join(sockets::BRAIN))?;
     let token = home_token(&config.core.paths.secrets_dir, options.standalone).await?;
     let home = token
