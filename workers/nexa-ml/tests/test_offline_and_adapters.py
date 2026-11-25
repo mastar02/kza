@@ -302,11 +302,110 @@ def test_kokoro_online_mode_skips_spacy_guard() -> None:
     assert mod.calls["kpipeline"][0]["lang_code"] == "a"
 
 
-def test_spacy_probe_does_not_import_spacy() -> None:
+def test_spacy_probe_missing_module_is_false() -> None:
     from nexa_ml.tts_slot import spacy_model_installed
 
     assert spacy_model_installed("nexa_ml_definitely_missing_model") is False
-    assert spacy_model_installed("json") is True
+
+
+def _importable_model(monkeypatch: pytest.MonkeyPatch, *, spacy_available: bool) -> None:
+    """Pretend ``en_core_web_sm`` is importable (and optionally that spaCy is installed)."""
+    import importlib.machinery
+    import importlib.util
+
+    real_find_spec = importlib.util.find_spec
+    present = {"en_core_web_sm"} | ({"spacy"} if spacy_available else set())
+
+    def find_spec(name: str, *args: Any) -> Any:
+        if name in present:
+            return importlib.machinery.ModuleSpec(name, None)
+        if name == "spacy":
+            return None
+        return real_find_spec(name, *args)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+
+
+@pytest.mark.usefixtures("offline_env")
+def test_importable_model_without_distribution_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Misaki downloads when metadata is missing even if the module imports: fail before KPipeline."""
+    import importlib.metadata
+
+    from nexa_ml.tts_slot import spacy_model_installed
+
+    _importable_model(monkeypatch, spacy_available=False)
+
+    def no_dist(name: str) -> Any:
+        raise importlib.metadata.PackageNotFoundError(name)
+
+    monkeypatch.setattr(importlib.metadata, "distribution", no_dist)
+    assert spacy_model_installed("en_core_web_sm") is False
+    mod = _kokoro_09()
+    with pytest.raises(FileNotFoundError):
+        KokoroEngine("hexgrad/Kokoro-82M", "cpu", "a", kokoro_module=mod)  # default real probe
+    assert "kpipeline" not in mod.calls and "kmodel" not in mod.calls
+
+    monkeypatch.setattr(importlib.metadata, "distribution", lambda name: object())
+    assert spacy_model_installed("en_core_web_sm") is True
+
+
+@pytest.mark.usefixtures("offline_env")
+def test_spacy_is_package_false_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When spaCy is installed its own ``is_package`` (Misaki's criterion) decides."""
+    from nexa_ml.tts_slot import spacy_model_installed
+
+    _importable_model(monkeypatch, spacy_available=True)
+    verdict = {"value": False}
+    asked: list[str] = []
+    fake_util = types.ModuleType("spacy.util")
+    fake_util.is_package = lambda name: asked.append(name) or verdict["value"]
+    fake_spacy = types.ModuleType("spacy")
+    fake_spacy.util = fake_util
+    fake_spacy.cli = types.SimpleNamespace(download=lambda name: pytest.fail("download must never run"))
+    monkeypatch.setitem(sys.modules, "spacy", fake_spacy)
+    monkeypatch.setitem(sys.modules, "spacy.util", fake_util)
+
+    mod = _kokoro_09()
+    with pytest.raises(FileNotFoundError):
+        KokoroEngine("hexgrad/Kokoro-82M", "cpu", "b", kokoro_module=mod)
+    assert asked == ["en_core_web_sm"] and "kpipeline" not in mod.calls
+    verdict["value"] = True
+    assert spacy_model_installed("en_core_web_sm") is True
+
+
+@pytest.mark.usefixtures("offline_env")
+@pytest.mark.parametrize("variant", ["A", " a ", "B"])
+def test_uppercase_or_padded_english_does_not_bypass_guard(variant: str) -> None:
+    mod = _kokoro_09()
+    with pytest.raises(FileNotFoundError):
+        KokoroEngine(
+            "hexgrad/Kokoro-82M", "cpu", variant, kokoro_module=mod, spacy_installed=lambda _n: False
+        )
+    assert "kpipeline" not in mod.calls
+    engine = KokoroEngine(
+        "hexgrad/Kokoro-82M", "cpu", "e", kokoro_module=mod, spacy_installed=lambda _n: False
+    )
+    with pytest.raises(FileNotFoundError):
+        engine.pipeline(variant)
+    assert [c["lang_code"] for c in mod.calls["kpipeline"]] == ["e"]
+
+
+@pytest.mark.usefixtures("offline_env")
+@pytest.mark.parametrize("alias", ["en-us", "american", "en", "es", ""])
+def test_non_canonical_lang_alias_rejected_before_pipeline(alias: str) -> None:
+    mod = _kokoro_09()
+    with pytest.raises(ValueError):
+        KokoroEngine("hexgrad/Kokoro-82M", "cpu", alias, kokoro_module=mod, spacy_installed=lambda _n: True)
+    assert "kpipeline" not in mod.calls and "kmodel" not in mod.calls
+
+
+def test_config_tts_lang_code_canonicalised_or_rejected() -> None:
+    from nexa_ml.config import ConfigError, parse_ml_section
+
+    assert parse_ml_section({"ml": {"tts_lang_code": " A "}}).tts_lang_code == "a"
+    for alias in ("en-us", "american", "spanish"):
+        with pytest.raises(ConfigError):
+            parse_ml_section({"ml": {"tts_lang_code": alias}})
 
 
 # ---------------------------------------------------------------- SpeechBrain fetch config / manifest

@@ -19,6 +19,22 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = pathlib.Path("/etc/nexa/nexa.toml")
 _DEVICE_RE = re.compile(r"^(cpu|cuda:\d{1,2})$")
 _LANG_RE = re.compile(r"^[a-z]{2,3}$")
+KOKORO_LANG_CODES = frozenset("abefhijpz")
+
+
+def canonical_kokoro_lang(value: str) -> str:
+    """Normalise a Kokoro ``lang_code`` (``strip().lower()``) and require a canonical code.
+
+    Aliases such as ``"en-us"`` or ``"american"`` are rejected instead of silently
+    mapping onto a pipeline (they must never bypass the English G2P offline guard).
+
+    Raises:
+        ValueError: Not one of ``a b e f h i j p z`` after normalisation.
+    """
+    code = value.strip().lower()
+    if code not in KOKORO_LANG_CODES:
+        raise ValueError("lang_code must be one of a, b, e, f, h, i, j, p, z")
+    return code
 
 
 class ConfigError(ValueError):
@@ -101,6 +117,10 @@ class MlConfig:
         for name in ("command_beam_size", "ambient_beam_size"):
             if not 1 <= getattr(self, name) <= 10:
                 raise ConfigError(f"ml.{name} must be within 1..10")
+        try:
+            object.__setattr__(self, "tts_lang_code", canonical_kokoro_lang(self.tts_lang_code))
+        except ValueError as exc:
+            raise ConfigError(f"ml.tts_lang_code: {exc}") from exc
         if not _LANG_RE.match(self.stt_language):
             raise ConfigError("ml.stt_language must be an ISO 639 code")
         if not 1.0 <= self.max_audio_seconds <= 600.0:

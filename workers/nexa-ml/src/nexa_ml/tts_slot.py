@@ -14,6 +14,7 @@ shares the model with an abandoned stream.
 """
 
 import asyncio
+import importlib.metadata
 import importlib.util
 import inspect
 import logging
@@ -27,6 +28,7 @@ from typing import Any
 
 import numpy as np
 
+from nexa_ml.config import KOKORO_LANG_CODES, canonical_kokoro_lang
 from nexa_ml.offline import assert_offline_effective, reject_remote_source
 from nexa_ml.slot import InvalidInputError, ModelSlot
 
@@ -34,7 +36,6 @@ logger = logging.getLogger(__name__)
 
 TTS_SLOT_ID = "tts"
 KOKORO_SAMPLE_RATE = 24_000
-KOKORO_LANG_CODES = frozenset("abefhijpz")
 MAX_TEXT_CHARS = 2000
 _VOICE_RE = re.compile(r"^[a-z]{2}_[a-z0-9]{1,32}$")
 _END = object()
@@ -136,8 +137,24 @@ SPACY_EN_MODEL = "en_core_web_sm"  # misaki uses en_core_web_trf only with trf=T
 
 
 def spacy_model_installed(name: str) -> bool:
-    """Whether a spaCy model package is importable locally (no spaCy import, no network)."""
-    return importlib.util.find_spec(name) is not None
+    """Same criterion as misaki 0.9.4 (``spacy.util.is_package``), plus importability.
+
+    Misaki calls ``spacy.cli.download`` whenever the model's *distribution metadata*
+    is missing, even if the module itself is importable, so both must be present.
+    When spaCy is installed its own ``is_package`` decides; otherwise the identical
+    ``importlib.metadata.distribution`` lookup is used.
+    """
+    if importlib.util.find_spec(name) is None:
+        return False
+    if importlib.util.find_spec("spacy") is not None:
+        import spacy.util  # noqa: PLC0415 - only on the real (offline) Kokoro load path
+
+        return bool(spacy.util.is_package(name))
+    try:
+        importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return True
 
 
 def require_local_g2p(lang_code: str, *, offline: bool, installed: Callable[[str], bool]) -> None:
@@ -146,7 +163,7 @@ def require_local_g2p(lang_code: str, *, offline: bool, installed: Callable[[str
     Raises:
         FileNotFoundError: Offline, English G2P requested and the spaCy model is missing.
     """
-    if offline and lang_code in SPACY_G2P_LANGS and not installed(SPACY_EN_MODEL):
+    if offline and canonical_kokoro_lang(lang_code) in SPACY_G2P_LANGS and not installed(SPACY_EN_MODEL):
         raise FileNotFoundError(f"spaCy model {SPACY_EN_MODEL} is not installed (offline mode)")
 
 
@@ -183,6 +200,7 @@ class KokoroEngine:
             reject_remote_source(repo_id)
             assert_offline_effective()
         self._spacy_installed = spacy_installed
+        default_lang = canonical_kokoro_lang(default_lang)
         require_local_g2p(default_lang, offline=offline, installed=spacy_installed)
         if kokoro_module is None:
             import kokoro as kokoro_module  # noqa: PLC0415 - heavy, lazy by design
@@ -209,7 +227,13 @@ class KokoroEngine:
         self.pipeline(default_lang)
 
     def pipeline(self, lang_code: str) -> Any:
-        """Return (creating on the slot thread if needed) the pipeline for ``lang_code``."""
+        """Return (creating on the slot thread if needed) the pipeline for ``lang_code``.
+
+        Raises:
+            ValueError: Non-canonical language code.
+            FileNotFoundError: Offline English G2P without the local spaCy model.
+        """
+        lang_code = canonical_kokoro_lang(lang_code)
         pipe = self._pipelines.get(lang_code)
         if pipe is None:
             require_local_g2p(lang_code, offline=self._offline, installed=self._spacy_installed)
