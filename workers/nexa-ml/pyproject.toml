@@ -1,11 +1,16 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nexa-ml"
 version = "0.1.0"
 description = "Stateless GPU ML inference worker for Nexa v2 (Whisper, Kokoro streaming TTS, single ECAPA, BGE-M3)"
 requires-python = ">=3.13,<3.14"
+# Floors match the committed stubs (grpcio-tools 1.81.0 -> protobuf gencode 6.33.5).
 dependencies = [
-    "grpcio>=1.68.0",
-    "protobuf>=5.29.0",
+    "grpcio>=1.81.0",
+    "protobuf>=6.33.5,<7",
     "numpy>=2.0.0",
 ]
 
@@ -17,14 +22,29 @@ gpu = [
     "sentence-transformers>=3.0.0",
 ]
 dev = [
+    "grpcio-tools==1.81.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
     "ruff>=0.8.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["gpu: needs real models/CUDA (server only, never in PR CI)"]
+
 [tool.ruff]
 target-version = "py313"
 line-length = 110
+extend-exclude = ["src/nexa_ml/pb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nexa_ml"]
