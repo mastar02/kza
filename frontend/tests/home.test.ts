@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { canControl, catalogFrom, commandFor, readReceipt, submitAction } from '../src/lib/home'
-import { authPaths, Session } from '../src/lib/session'
+import { Session } from '../src/lib/session'
 import { devices, identity, json, transport } from './helpers'
 
 const sessions: Session[] = []
@@ -16,14 +16,14 @@ describe('typed home operations', () => {
     const entity = catalog.entities[0]!
     expect(canControl(session, catalog, entity, 'turn_on')).toBe(false)
     await expect(submitAction(session, catalog, entity, { operation: 'turn_on' }, 'test-id')).rejects.toMatchObject({ status: 403 })
-    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([authPaths.whoami])
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/admin/auth/whoami'])
   })
 
   it('admits only the declared parameters and confirms the original receipt', async () => {
     const home = identity(['home:read', 'home:control'])
     const receipt = { request_id: 'test-id', entity_id: 'light.fixture', status: 'confirmed' } as const
     const fetcher = transport((path, init) => {
-      if (path === authPaths.whoami) return home()
+      if (path === '/api/admin/auth/whoami') return home()
       if (init.method === 'POST') {
         expect(path).toBe('/api/home/actions')
         expect(JSON.parse(String(init.body))).toEqual({

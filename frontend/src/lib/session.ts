@@ -1,7 +1,7 @@
 export const authPaths = {
-  whoami: '/api/auth/whoami',
-  login: '/api/auth/login',
-  logout: '/api/auth/logout',
+  whoami: '/api/admin/auth/whoami',
+  login: '/api/admin/auth/login',
+  logout: '/api/admin/auth/logout',
 } as const
 
 export type Role = 'operator' | 'home' | 'evaluator'

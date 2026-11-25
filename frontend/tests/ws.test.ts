@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { Session, authPaths } from '../src/lib/session'
+import { Session } from '../src/lib/session'
 import { ReceiptSocket } from '../src/lib/ws'
 import type { Channel, SocketPath } from '../src/lib/ws'
 import { deferred, identity, json, transport } from './helpers'
@@ -37,7 +37,10 @@ async function fixture(path: SocketPath, fetcher?: typeof fetch, committed: () =
   const permissions = path === '/ws/live' ? ['conversations:read'] :
     isEvaluation ? ['evaluation:read'] : ['voices:read', 'voices:review']
   const whoami = identity(permissions, isEvaluation ? 'evaluator' : 'operator')
-  const session = new Session(fetcher ?? transport(() => whoami()))
+  const session = new Session(fetcher ?? transport(endpoint => {
+    expect(endpoint).toBe('/api/admin/auth/whoami')
+    return whoami()
+  }))
   await session.start()
   disposers.push(() => session.dispose())
   const sockets: FakeSocket[] = []
@@ -124,6 +127,26 @@ describe('WebSocket protocol 3', () => {
     expect(sockets[1]?.sent[0]?.client_id).toBe(sockets[0]?.sent[0]?.client_id)
   })
 
+  it('restores the retry budget after the recovered socket completes the v3 handshake', async () => {
+    vi.useFakeTimers()
+    const { client, socket, sockets, socketFactory } = await fixture('/ws/live')
+    socket.close(1006)
+    await vi.advanceTimersByTimeAsync(500)
+    const recovered = sockets[1]!
+    recovered.open()
+    recovered.frame(reset)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(recovered.sent.at(-1)).toMatchObject({ type: 'live_reset_ack' })
+    recovered.frame(connected)
+    expect(client.ready).toBe(true)
+
+    recovered.close(1006)
+    await vi.advanceTimersByTimeAsync(499)
+    expect(socketFactory).toHaveBeenCalledTimes(2)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(socketFactory).toHaveBeenCalledTimes(3)
+  })
+
   it.each([
     ['/ws/voices', 'voices:profiles', ['voices:captures', 'voices:profiles', 'voices:review'], ['voices:read', 'voices:review'], 'operator'],
     ['/ws/evaluation', 'evaluation:sample', ['evaluation:sample'], ['evaluation:read'], 'evaluator'],
@@ -131,7 +154,7 @@ describe('WebSocket protocol 3', () => {
     const response = deferred<Response>()
     const whoami = identity([...permissions], role)
     const fetcher = transport((endpoint, options) => {
-      if (endpoint === authPaths.whoami) return whoami()
+      if (endpoint === '/api/admin/auth/whoami') return whoami()
       expect(options.headers).toMatchObject({ 'X-KZA-Live-Connection': ids.connection })
       expect(options.cache).toBe('no-store')
       return response.promise

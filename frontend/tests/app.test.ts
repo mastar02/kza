@@ -1,7 +1,7 @@
 import { mount, unmount } from 'svelte'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import App from '../src/App.svelte'
-import { authPaths, Session } from '../src/lib/session'
+import { Session } from '../src/lib/session'
 import { clickButton, deferred, devices, identity, json, transport } from './helpers'
 
 const disposers: (() => Promise<void>)[] = []
@@ -24,7 +24,7 @@ describe('SPA', () => {
     const operator = identity(['home:read', 'tasks:read', 'memory:read', 'memory:assign',
       'admin:manage', 'auth:manage'], 'operator')
     const fetcher = transport(path => {
-      if (path === authPaths.whoami) return operator()
+      if (path === '/api/admin/auth/whoami') return operator()
       if (path === '/api/home/catalog') return json(devices())
       if (path === '/api/memory') return json({ facts: [], proposals: [] })
       if (path === '/api/reminders/notices') return json({ source: 'reminder-store', notices: [] })
@@ -52,8 +52,8 @@ describe('SPA', () => {
     let logged = false
     const authenticated = identity(['home:read'])
     const fetcher = transport((path, options) => {
-      if (path === authPaths.whoami) return logged ? authenticated() : initial.promise
-      if (path === authPaths.login) {
+      if (path === '/api/admin/auth/whoami') return logged ? authenticated() : initial.promise
+      if (path === '/api/admin/auth/login') {
         expect(options.method).toBe('POST')
         expect(JSON.parse(String(options.body))).toEqual({ token: 'fixture-token' })
         logged = true
@@ -65,7 +65,7 @@ describe('SPA', () => {
       throw new Error('Unexpected request: ' + path)
     })
     const { target } = app(fetcher)
-    await vi.waitFor(() => expect(fetcher.mock.calls.map(([url]) => url)).toEqual([authPaths.whoami]))
+    await vi.waitFor(() => expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/admin/auth/whoami']))
     initial.resolve(json({ ok: false }, 401))
     await vi.waitFor(() => expect(target.querySelector('input[name=token]')).not.toBeNull())
     expect(fetcher).toHaveBeenCalledTimes(1)
@@ -85,13 +85,13 @@ describe('SPA', () => {
   it('un 403 de los recursos 3D conserva habitaciones si whoami mantiene la autoridad', async () => {
     const home = identity(['home:read'])
     const fetcher = transport(path => {
-      if (path === authPaths.whoami) return home()
+      if (path === '/api/admin/auth/whoami') return home()
       if (path === '/api/home/catalog') return json(devices())
       if (path === '/api/home/model') return json({}, 403)
       return json({ DEFAULT_YAW: 0 })
     })
     const { target, session } = app(fetcher)
-    await vi.waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === authPaths.whoami)).toHaveLength(2))
+    await vi.waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url === '/api/admin/auth/whoami')).toHaveLength(2))
     await vi.waitFor(() => expect(target.textContent).toContain('Habitación de prueba'))
     expect(target.textContent).not.toContain('Vista 3D')
     expect(session.state.status).toBe('ready')
@@ -101,14 +101,14 @@ describe('SPA', () => {
     const fetcher = transport(() => identity(['tasks:read'])())
     const { target } = app(fetcher, '/obs')
     await vi.waitFor(() => expect(target.textContent).toContain('Esta sesión no tiene acceso a los paneles técnicos.'))
-    expect(fetcher.mock.calls.map(([url]) => url)).toEqual([authPaths.whoami])
+    expect(fetcher.mock.calls.map(([url]) => url)).toEqual(['/api/admin/auth/whoami'])
   })
 
   it.each([401, 403])('purga habitación y modelo ante %s de una operación protegida', async status => {
     const home = identity(['home:read'])
     let loseLease = false
     const fetcher = transport(path => {
-      if (path === authPaths.whoami) return home()
+      if (path === '/api/admin/auth/whoami') return home()
       if (path === '/api/home/catalog') return loseLease ? json({}, status) : json(devices())
       if (path === '/api/home/model') return new Response(new Uint8Array([1, 2, 3]))
       return json({ DEFAULT_YAW: 0 })
@@ -129,7 +129,7 @@ describe('SPA', () => {
     const model = deferred<Response>()
     const plan = deferred<Response>()
     const fetcher = transport(path => {
-      if (path === authPaths.whoami) return home()
+      if (path === '/api/admin/auth/whoami') return home()
       if (path === '/api/home/catalog') return json(devices())
       return path === '/api/home/model' ? model.promise : plan.promise
     })
@@ -138,7 +138,7 @@ describe('SPA', () => {
     model.resolve(json({ detail: 'dashboard_session_retired' }, 403))
     await vi.waitFor(() => expect(session.state.status).toBe('login'))
     expect(target.textContent).not.toContain('Habitación de prueba')
-    expect(fetcher.mock.calls.filter(([url]) => url === authPaths.whoami)).toHaveLength(1)
+    expect(fetcher.mock.calls.filter(([url]) => url === '/api/admin/auth/whoami')).toHaveLength(1)
     plan.resolve(json({ DEFAULT_YAW: 1 }))
   })
 
@@ -146,7 +146,7 @@ describe('SPA', () => {
     const expires_at = Date.now() / 1000 + 120
     let accountBinding = 'original'
     const fetcher = transport(path => {
-      if (path === authPaths.whoami) return json({ ok: true, role: 'home', subject: 'home', account_binding: accountBinding,
+      if (path === '/api/admin/auth/whoami') return json({ ok: true, role: 'home', subject: 'home', account_binding: accountBinding,
         permissions: ['memory:own:read'], expires_at })
       expect(path).toBe('/api/memory/mine')
       accountBinding = 'replacement'
@@ -156,7 +156,7 @@ describe('SPA', () => {
     await vi.waitFor(() => expect(session.state.status).toBe('login'))
     expect(target.textContent).not.toContain('Recuerdo de otra cuenta')
     expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
-      authPaths.whoami, authPaths.whoami, '/api/memory/mine', authPaths.whoami,
+      '/api/admin/auth/whoami', '/api/admin/auth/whoami', '/api/memory/mine', '/api/admin/auth/whoami',
     ])
   })
 
@@ -165,8 +165,8 @@ describe('SPA', () => {
     const logout = deferred<Response>()
     const plan = deferred<Response>()
     const fetcher = transport(path => {
-      if (path === authPaths.whoami) return authenticated()
-      if (path === authPaths.logout) return logout.promise
+      if (path === '/api/admin/auth/whoami') return authenticated()
+      if (path === '/api/admin/auth/logout') return logout.promise
       if (path === '/api/home/catalog') return json(devices())
       if (path === '/api/home/plan') return plan.promise
       return new Response(new Uint8Array([1, 2, 3]))
@@ -176,6 +176,7 @@ describe('SPA', () => {
     clickButton(target, 'Cerrar sesión')
     expect(target.textContent).not.toContain('Habitación de prueba')
     expect(session.can('home:read')).toBe(false)
+    expect(fetcher).toHaveBeenCalledWith('/api/admin/auth/logout', expect.objectContaining({ method: 'POST' }))
     plan.resolve(json({ DEFAULT_YAW: 1 }))
     logout.resolve(new Response(null, { status: 204 }))
     await vi.waitFor(() => expect(target.textContent).toContain('Sesión cerrada.'))

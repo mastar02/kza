@@ -13,6 +13,6 @@ npm run test
 npm run build
 ```
 
-The Vitest suite mounts the SPA with synthetic responses and verifies route isolation, permission gating, private asset requests, action receipts and v3 WebSocket retirement. The deployed contract requires authenticated `/api/auth/whoami`, session-bound REST responses and `live_hello` / `live_reset_ack` / `live_ack` on the three WebSocket routes.
+The Vitest suite mounts the SPA with synthetic responses and verifies route isolation, permission gating, private asset requests, action receipts and v3 WebSocket retirement. Sessions use `GET /api/admin/auth/whoami`, `POST /api/admin/auth/login`, and `POST /api/admin/auth/logout`. The three WebSocket routes use session-bound REST responses and `live_hello` / `live_reset_ack` / `live_ack`.
 
 Casa lazily loads the Three.js renderer when the 3D view is opened. The model and plan are authenticated requests to `/api/home/model` and `/api/home/plan`. Rooms remain usable when the private model cannot be rendered.

@@ -233,6 +233,7 @@ export class ReceiptSocket {
             !expected.every(channel => advertised.includes(channel))))) throw new Error('Invalid connection')
       this.#connection = frame.connection_id
       this.#phase = 'ready'
+      this.#retry = 0
       clearTimeout(this.#handshakeTimer)
       this.hooks.status('ready')
       return
