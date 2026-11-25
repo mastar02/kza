@@ -61,9 +61,19 @@ def test_service_units():
             }[path.stem]
         if path.stem in {"nexa-llm-fast", "nexa-dashboard-proxy"}:
             assert s["Type"] == "simple"
+            assert s["RuntimeDirectoryMode"] == "0700"
+        if path.stem == "nexa-dashboard-proxy":
+            assert s["RuntimeDirectory"] == "nexa-proxy"
+            assert s["ReadWritePaths"] == "/var/lib/nexa/proxy"
+        if path.stem == "nexa-llm-fast":
+            assert s["RuntimeDirectory"] == "nexa-llm-fast"
+            assert s["Environment"] == "CUDA_VISIBLE_DEVICES=0"
         if path.stem in {"nexa-memoryd", "nexa-ml"}:
             assert s["IPAddressDeny"] == "any" and "IPAddressAllow" not in s
         if path.stem == "nexa-ml":
+            assert {"PYTHONDONTWRITEBYTECODE=1", "HOME=/var/lib/nexa", "XDG_CACHE_HOME=/tmp"} <= set(
+                s["Environment"].split()
+            )
             assert s["WorkingDirectory"] == "/opt/nexa/current/ml"
             assert "%t/nexa/ml.sock" in s["ExecStart"]
 
@@ -77,6 +87,9 @@ def test_provisioning_and_udev():
     assert re.search(r'grep -qx "\$\{forbidden\}".*?exit 1\s+fi', provision, re.S)
     assert 'for grp in audio dialout video render; do' in provision
     assert re.findall(r"^\s*usermod .*", provision, re.M) == ['    usermod -aG "${grp}" "${NEXA_USER}"']
+    commands = provision.replace(chr(92) + "\n", " ").splitlines()
+    assert any(line.startswith('install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 ')
+               and "/var/lib/nexa/proxy" in line.split() for line in commands)
     assert "99-xvf3800-nexa.rules" in provision
     active = [line for line in rules.splitlines() if line and not line.startswith("#")]
     assert len(active) == 1

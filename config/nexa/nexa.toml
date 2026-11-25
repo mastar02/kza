@@ -21,6 +21,9 @@ barge_in_enabled = true
 kind = "simulation"
 
 [ml]
+# cuda:0 (RTX 3090, 24 GB) shares llama-server 7B with 2 ambient Whisper workers
+# and 1 ECAPA speaker encoder on the non-interactive ambient path.
+# cuda:1 is reserved for low-latency Whisper Command v3-turbo and streaming Kokoro-82M.
 command_stt_model = "whisper-v3-turbo"
 command_stt_device = "cuda:1"
 command_stt_compute_type = "int8_float16"

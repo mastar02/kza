@@ -8,6 +8,10 @@ Thin, stateless Python 3.13 worker speaking `nexa.v1.MlService` over `$XDG_RUNTI
 - **Zero audio hardware** (ALSA/XVF3800/MA1260 live exclusively in Rust `nexa-audiod`).
 - **Zero PyTorch in PR unit CI** (`dev` extra tests wire contracts against lightweight stubs; GPU benchmarks run separately on the server).
 
+## GPU placement
+
+The RTX 3090 (24 GB, `cuda:0`) hosts llama-server 7B alongside two ambient Whisper large-v3 workers and one ECAPA speaker encoder for non-interactive ambient processing. The low-latency interactive path has exclusive use of `cuda:1` for Whisper Command v3-turbo and streaming Kokoro-82M.
+
 ## Layout (`src/nexa_ml/`)
 | Module | Role |
 |---|---|

@@ -44,6 +44,14 @@ Los cuatro daemons Rust y el worker ML usan `Type=notify`. ML carga el código
 desde la release con el intérprete del entorno compartido en `/opt/nexa/ml-venv`.
 NGINX y llama-server son ejecutables externos y conservan `Type=simple`.
 
+En `/etc/nexa/nginx-proxy.conf`, configurar `pid` con la ruta absoluta a
+`$XDG_RUNTIME_DIR/nexa-proxy/nginx.pid` del usuario nexa (sustituir
+`$XDG_RUNTIME_DIR` por `/run/user/<UID>`). Dirigir `error_log` a `stderr` y
+`access_log` a `off` o a un archivo en `/var/lib/nexa/proxy/`. Dentro de
+`http`, asignar subdirectorios distintos de `/var/lib/nexa/proxy/` a
+`client_body_temp_path`, `proxy_temp_path`, `fastcgi_temp_path`,
+`uwsgi_temp_path` y `scgi_temp_path` para los módulos habilitados.
+
 ## 3. Registro propuesto para `docs/SERVER_CONVENTIONS.md` (y Notion pág. 8)
 
 | Campo | Valor |
@@ -53,5 +61,5 @@ NGINX y llama-server son ejecutables externos y conservan `Type=simple`.
 | Unidades | `nexa-audiod`, `nexa-ml`, `nexa-memoryd`, `nexa-brain`, `nexa-web`, `nexa-llm-fast`, `nexa-dashboard-proxy` (`nexa.target`) |
 | IPC interno | Unix Domain Sockets `$XDG_RUNTIME_DIR/nexa/{audio,ml,memory,brain}.sock` (`0600`) — **0 puertos TCP internos nuevos** |
 | Puertos TCP | Sub-rango reservado KZA `9500-9599`: `127.0.0.1:9500` (`nexa-web`), `192.168.1.2:9540` (NGINX TLS), `127.0.0.1:8101` (`nexa-llm-fast`) |
-| GPUs | `cuda:1` (`whisper-v3-turbo` + `Kokoro` + `llama-server 7B :8101`); `cuda:0` (`2x whisper large-v3` + `1x ECAPA`) |
+| GPUs | `cuda:1` (`whisper-v3-turbo` + `Kokoro-82M streaming`); `cuda:0` (`llama-server 7B :8101` + `2x whisper large-v3` + `1x ECAPA`) |
 | Logs | `journalctl --user -u 'nexa-*' -f` (cumple R9) |

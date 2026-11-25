@@ -53,6 +53,7 @@ install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 /etc/nexa/secrets
 # Mutable WAL SQLite & runtime state owned exclusively by nexa.
 install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 \
   /var/lib/nexa \
+  /var/lib/nexa/proxy \
   /var/lib/nexa/memory \
   /var/lib/nexa/household \
   /var/lib/nexa/auth \

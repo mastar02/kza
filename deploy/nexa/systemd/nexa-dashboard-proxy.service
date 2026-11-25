@@ -7,6 +7,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/sbin/nginx -c /etc/nexa/nginx-proxy.conf -g "daemon off;"
+RuntimeDirectory=nexa-proxy
+RuntimeDirectoryMode=0700
+ReadWritePaths=/var/lib/nexa/proxy
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
