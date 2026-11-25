@@ -70,8 +70,11 @@ daemon! {
     execute_routine(ExecuteRoutineRequest) -> RoutineExecutionReceipt;
     list_household_lists(ActorRequest) -> HouseholdListsSnapshot;
     mutate_household_list(HouseholdListMutationRequest) -> HouseholdListRecord;
+    sync_household_lists(ActorRequest) -> ListSyncResponse;
     list_reminders(ListRemindersRequest) -> RemindersSnapshot;
     mutate_reminder(ReminderMutationRequest) -> ReminderRecord;
+    list_reminder_notices(ActorRequest) -> ReminderNoticesResponse;
+    get_reminder_status(ActorRequest) -> ReminderStatusResponse;
     list_alerts(ActorRequest) -> AlertsSnapshot;
     ack_alert(AlertMutationRequest) -> AlertRecord;
     delete_alert(AlertMutationRequest) -> Empty;
@@ -91,6 +94,8 @@ daemon! {
 daemon! {
     Memory, TonicMemory, memory_service_client::MemoryServiceClient<Channel>;
     delete_fact(DeleteFactRequest) -> ErasureReceipt;
+    list_memory_overview(MemoryOverviewRequest) -> MemoryOverviewResponse;
+    mutate_memory_item(MemoryMutationRequest) -> MemoryMutationResponse;
     list_voice_profiles(ListVoiceProfilesRequest) -> ListVoiceProfilesResponse;
     link_voice_profile_to_person(LinkVoiceProfileRequest) -> VoiceProfile;
     set_voice_consent(SetVoiceConsentRequest) -> VoiceConsentStatus;

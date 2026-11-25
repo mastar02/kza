@@ -119,8 +119,29 @@ service! {
             server.observed.lock().unwrap().push(request.into_inner().actor.unwrap());
             Ok(Response::new(RoutinesSnapshot { routines:vec![RoutineRecord {
                 routine_id:"wire-routine".into(),name:"Wire Routine".into(),spec_json:"{}".into(),revision:7,
+                schedule_json:r#"{"at":"09:00"}"#.into(), updated_at_unix_ms:1_700_000_000_000,
                 ..Default::default()
             }]}))
+        }
+        sync_household_lists(request: ActorRequest) -> ListSyncResponse => |_server| {
+            let actor = request.into_inner().actor.unwrap();
+            assert_eq!(actor.user_id, HOME_ID);
+            assert!(actor.permissions.contains(&(Permission::TasksWrite as i32)));
+            Ok(Response::new(ListSyncResponse {payload_json:r#"{"synced":true}"#.into()}))
+        }
+        list_reminder_notices(request: ActorRequest) -> ReminderNoticesResponse => |_server| {
+            let actor = request.into_inner().actor.unwrap();
+            assert_eq!(actor.user_id, HOME_ID);
+            assert!(actor.permissions.contains(&(Permission::TasksRead as i32)));
+            Ok(Response::new(ReminderNoticesResponse {
+                payload_json:r#"{"source":"reminder-store","notices":[]}"#.into(),
+            }))
+        }
+        get_reminder_status(request: ActorRequest) -> ReminderStatusResponse => |_server| {
+            let actor = request.into_inner().actor.unwrap();
+            assert_eq!(actor.role, Role::Operator as i32);
+            assert!(actor.permissions.contains(&(Permission::DiagnosticsRead as i32)));
+            Ok(Response::new(ReminderStatusResponse {payload_json:r#"{"source":"reminder-store"}"#.into()}))
         }
         ; get_health(Empty) -> HealthResponse,
           execute_home_action(HomeActionRequest) -> HomeActionReceipt,
@@ -137,11 +158,8 @@ service! {
           execute_routine(ExecuteRoutineRequest) -> RoutineExecutionReceipt,
           list_household_lists(ActorRequest) -> HouseholdListsSnapshot,
           mutate_household_list(HouseholdListMutationRequest) -> HouseholdListRecord,
-          sync_household_lists(ActorRequest) -> ListSyncResponse,
           list_reminders(ListRemindersRequest) -> RemindersSnapshot,
           mutate_reminder(ReminderMutationRequest) -> ReminderRecord,
-          list_reminder_notices(ActorRequest) -> ReminderNoticesResponse,
-          get_reminder_status(ActorRequest) -> ReminderStatusResponse,
           list_alerts(ActorRequest) -> AlertsSnapshot,
           ack_alert(AlertMutationRequest) -> AlertRecord,
           delete_alert(AlertMutationRequest) -> Empty,
@@ -176,6 +194,36 @@ service! {
             }
             Ok(Response::new(ErasureReceipt { tombstone_recorded:true,..Default::default() }))
         }
+        mutate_memory_item(request: MemoryMutationRequest) -> MemoryMutationResponse => |_server| {
+            let request = request.into_inner();
+            let actor = request.actor.unwrap();
+            assert_eq!(actor.role, Role::Operator as i32);
+            assert!(actor.permissions.contains(&(Permission::VoicesReview as i32)));
+            let body: Value = serde_json::from_str(&request.payload_json).unwrap();
+            let payload = match request.operation.as_str() {
+                "confirm_voice_profile" => {
+                    assert_eq!(body["fingerprint_ids"], json!(["cap-a","cap-b","cap-c"]));
+                    assert!(matches!(request.target_id.as_str(), "" | "profile-target"));
+                    let revision = if request.target_id.is_empty() {
+                        assert!(body.get("expected_revision").is_none());
+                        1
+                    } else {
+                        assert_eq!(body["expected_revision"], 1);
+                        2
+                    };
+                    json!({"profile_id":"profile-target","revision":revision})
+                }
+                "correct_voice_group" => {
+                    assert_eq!(request.target_id, "group-target");
+                    assert_eq!(body["action"], "merge");
+                    assert_eq!(body["profile_ids"], json!(["profile-target"]));
+                    assert_eq!(body["expected_revisions"], json!({"group-target":2}));
+                    json!({"group_id":"group-target","revision":3})
+                }
+                _ => return Err(Status::unimplemented("memory operation")),
+            };
+            Ok(Response::new(MemoryMutationResponse {payload_json:payload.to_string()}))
+        }
         ; get_health(Empty) -> HealthResponse,
           store_fact(StoreFactRequest) -> MemoryFact,
           query_memory(QueryMemoryRequest) -> QueryMemoryResponse,
@@ -187,7 +235,6 @@ service! {
           erase_conversation(EraseConversationRequest) -> ErasureReceipt,
           set_ambient_pause(SetAmbientPauseRequest) -> AmbientControlStatus,
           list_memory_overview(MemoryOverviewRequest) -> MemoryOverviewResponse,
-          mutate_memory_item(MemoryMutationRequest) -> MemoryMutationResponse,
           get_voice_global_switch(ActorRequest) -> VoiceGlobalSwitchStatus,
           set_voice_global_switch(SetVoiceGlobalSwitchRequest) -> VoiceGlobalSwitchStatus,
           get_voice_capture_review(VoiceCaptureReviewRequest) -> VoiceCaptureReviewResponse,
@@ -292,7 +339,76 @@ async fn tonic_uds_contracts_and_failed_purge_retry() {
         Body::empty(),
     )
     .await;
-    assert_eq!(document(routines).await[0]["id"], "wire-routine");
+    let routines = document(routines).await;
+    assert_eq!(routines[0]["id"], "wire-routine");
+    assert_eq!(routines[0]["routine_id"], "wire-routine");
+    assert_eq!(routines[0]["schedule"]["at"], "09:00");
+    assert_eq!(routines[0]["updated_at_unix_ms"], 1_700_000_000_000_u64);
+
+    for (method, path, token, expected) in [
+        (
+            "POST",
+            "/api/lists/sync",
+            HOME_TOKEN,
+            json!({"synced":true}),
+        ),
+        (
+            "GET",
+            "/api/reminders/notices",
+            HOME_TOKEN,
+            json!({"source":"reminder-store","notices":[]}),
+        ),
+        (
+            "GET",
+            "/api/reminders/status",
+            OPERATOR_TOKEN,
+            json!({"source":"reminder-store"}),
+        ),
+    ] {
+        let response = call(&app, method, path, Some(token), Some(ORIGIN), Body::empty()).await;
+        assert_eq!(response.status(), StatusCode::OK, "{method} {path}");
+        assert_eq!(document(response).await, expected);
+    }
+    for (path, payload, status, revision) in [
+        (
+            "/api/voices/profiles",
+            json!({"fingerprint_ids":["cap-a","cap-b","cap-c"],"name":"Wire Name","request_id":"request"}),
+            StatusCode::OK,
+            1,
+        ),
+        (
+            "/api/voices/profiles",
+            json!({"profile_id":"profile-target","fingerprint_ids":["cap-a","cap-b","cap-c"],"expected_revision":1}),
+            StatusCode::OK,
+            2,
+        ),
+        (
+            "/api/voices/profiles",
+            json!({"fingerprint_ids":["cap-a","cap-a"]}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            0,
+        ),
+        (
+            "/api/voices/groups/corrections",
+            json!({"group_id":"group-target","action":"merge","profile_ids":["profile-target"],"expected_revisions":{"group-target":2}}),
+            StatusCode::OK,
+            3,
+        ),
+    ] {
+        let response = call(
+            &app,
+            "POST",
+            path,
+            Some(OPERATOR_TOKEN),
+            Some(ORIGIN),
+            Body::from(payload.to_string()),
+        )
+        .await;
+        assert_eq!(response.status(), status, "{path}");
+        if status.is_success() {
+            assert_eq!(document(response).await["revision"], revision);
+        }
+    }
 
     let forged = call(
         &app,
@@ -545,6 +661,84 @@ async fn websocket_v3_receipts_erasure_and_logout() {
         assert_eq!(next_json(socket).await["type"], "live_reset");
         close_policy(socket, "erasure_fence").await;
     }
+    server.abort();
+}
+
+#[tokio::test]
+async fn voice_profile_pagination_preserves_receipts_and_confirmed_delete_fences() {
+    let fixture = TestMode::new().await.unwrap();
+    let app = fixture
+        .app(Origin::parse(ORIGIN).unwrap(), false, None)
+        .unwrap();
+    let (addr, server) = serve(app.clone()).await;
+    let mut voice = connect(addr, "/ws/voices", OPERATOR_TOKEN).await.unwrap();
+    let connection = v3(&mut voice).await;
+    let read = |path: String| {
+        let app = app.clone();
+        let connection = connection.clone();
+        async move {
+            app.oneshot(
+                axum::http::Request::get(path)
+                    .header("authorization", format!("Bearer {OPERATOR_TOKEN}"))
+                    .header("x-kza-live-connection", connection)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let path = "/api/voices/profiles";
+    let first = read(path.into()).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = document(first).await;
+    let first_row = &first["snapshot"]["rows"][0];
+    let cursor = first["next_cursor"].as_str().unwrap();
+    assert_eq!(first["connection_id"], connection);
+    assert_eq!(first["snapshot"]["next_cursor"], cursor);
+    assert_eq!(first_row["id"], cursor);
+    assert!(first_row["name"].as_str().is_some());
+    let garbage = read(format!("{path}?cursor=%00")).await;
+    assert_eq!(garbage.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let second = read(format!("{path}?cursor={cursor}")).await;
+    let second = document(second).await;
+    assert_ne!(second["snapshot"]["rows"][0]["id"], cursor);
+    assert!(second["next_cursor"].is_null());
+
+    let target = format!("{path}/{cursor}");
+    let stale = call(
+        &app,
+        "DELETE",
+        &target,
+        Some(OPERATOR_TOKEN),
+        Some(ORIGIN),
+        Body::from(r#"{"expected_revision":0}"#),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    assert_eq!(read(path.into()).await.status(), StatusCode::OK);
+
+    let target = format!("{target}?expected_revision=1");
+    let deleted = call(
+        &app,
+        "DELETE",
+        &target,
+        Some(OPERATOR_TOKEN),
+        Some(ORIGIN),
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(deleted.status(), StatusCode::OK);
+    assert_eq!(document(deleted).await["deleted"], true);
+    let retired = next_json(&mut voice).await;
+    assert_eq!(retired["type"], "rest_retire");
+    assert_eq!(retired["channel"], "voices:profiles");
+    assert_eq!(next_json(&mut voice).await["type"], "live_reset");
+    close_policy(&mut voice, "erasure_fence").await;
+    assert_eq!(
+        read(path.into()).await.status(),
+        StatusCode::PRECONDITION_REQUIRED
+    );
     server.abort();
 }
 

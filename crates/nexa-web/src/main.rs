@@ -4,8 +4,10 @@ use std::{io, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use nexa_config::NexaConfig;
+#[cfg(feature = "test-mode")]
+use nexa_web::TestMode;
 use nexa_web::{
-    TestMode, WebConfig,
+    WebConfig,
     auth::{AuthStore, Origin},
     build_app,
     clients::Clients,
@@ -16,9 +18,10 @@ use nexa_web::{
 #[command(version, about)]
 struct Args {
     /// Use temporary authority and in-process fixtures on loopback.
+    #[cfg(feature = "test-mode")]
     #[arg(long)]
     test_mode: bool,
-    /// Local HTTP listener. Supports port 0 in test mode.
+    /// Local HTTP listener address.
     #[arg(long)]
     bind: Option<SocketAddr>,
     /// Browser origin including scheme, hostname and port.
@@ -30,7 +33,7 @@ struct Args {
     /// Directory containing the built Vite application.
     #[arg(long)]
     static_dir: Option<PathBuf>,
-    /// Runtime configuration file or directory used outside test mode.
+    /// Runtime configuration file or directory.
     #[arg(long, default_value = "/etc/nexa")]
     config: PathBuf,
 }
@@ -43,73 +46,80 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_ansi(ansi)
         .init();
     let args = Args::parse();
-    let production = if args.test_mode {
-        None
+    #[cfg(feature = "test-mode")]
+    if args.test_mode {
+        let bind = args
+            .bind
+            .unwrap_or(SocketAddr::from(([127, 0, 0, 1], 9500)));
+        require_loopback(bind)?;
+        let listener = tokio::net::TcpListener::bind(bind).await?;
+        let default_origin = format!("http://{}", listener.local_addr()?);
+        let origin = Origin::parse(args.origin.as_deref().unwrap_or(&default_origin))?;
+        let fixtures = TestMode::new().await?;
+        let app = fixtures.app(origin, args.allow_insecure_cookies, args.static_dir)?;
+        return serve(listener, app).await;
+    }
+
+    let path = if args.config.is_dir() {
+        args.config.join("nexa.toml")
     } else {
-        let path = if args.config.is_dir() {
-            args.config.join("nexa.toml")
-        } else {
-            args.config
-        };
-        Some(NexaConfig::load_file(path)?)
+        args.config
     };
-    let bind = match (args.bind, &production) {
-        (Some(bind), _) => bind,
-        (None, Some(config)) => format!("{}:{}", config.web.bind_host, config.web.port).parse()?,
-        (None, None) => SocketAddr::from(([127, 0, 0, 1], 9500)),
+    let config = NexaConfig::load_file(path)?;
+    let bind = match args.bind {
+        Some(bind) => bind,
+        None => format!("{}:{}", config.web.bind_host, config.web.port).parse()?,
     };
-    if (args.test_mode || args.allow_insecure_cookies) && !bind.ip().is_loopback() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "test mode and insecure cookies require a loopback listener",
-        )
-        .into());
+    if args.allow_insecure_cookies {
+        require_loopback(bind)?;
     }
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    let local = listener.local_addr()?;
-    let default_origin = match &production {
-        Some(config) => format!(
-            "https://{}",
-            SocketAddr::new(bind.ip(), config.web.proxy_tls_port)
-        ),
-        None => format!("http://{local}"),
-    };
-    let configured_origin = production
-        .as_ref()
-        .and_then(|_| std::env::var("NEXA_WEB_ORIGIN").ok());
+    let default_origin = format!(
+        "https://{}",
+        SocketAddr::new(bind.ip(), config.web.proxy_tls_port)
+    );
     let origin = Origin::parse(
         args.origin
-            .or(configured_origin)
+            .or_else(|| std::env::var("NEXA_WEB_ORIGIN").ok())
             .as_deref()
             .unwrap_or(&default_origin),
     )?;
-    let (app, _fixtures) = if let Some(config) = production {
-        let auth = AuthStore::open(&config.paths.data_dir.join("auth.db"))?;
-        if let Ok(token) = std::env::var("KZA_DASHBOARD_TOKEN") {
-            auth.bootstrap_operator(token).await?;
-        }
-        let clients = Clients::uds(&config.paths.runtime_dir);
-        let web = WebConfig {
-            origin,
-            allow_insecure_cookies: args.allow_insecure_cookies,
-            private_dir: config
-                .web
-                .home_enabled
-                .then_some(config.web.private_assets_dir),
-            static_dir: args.static_dir,
-        };
-        (
-            build_app(web, auth, clients, Arc::new(PlatformMonitor))?,
-            None,
-        )
-    } else {
-        let fixtures = TestMode::new().await?;
-        let app = fixtures.app(origin, args.allow_insecure_cookies, args.static_dir)?;
-        (app, Some(fixtures))
+    let auth = AuthStore::open(&config.paths.data_dir.join("auth.db"))?;
+    if let Ok(token) = std::env::var("KZA_DASHBOARD_TOKEN") {
+        auth.bootstrap_operator(token).await?;
+    }
+    let clients = Clients::uds(&config.paths.runtime_dir);
+    let web = WebConfig {
+        origin,
+        allow_insecure_cookies: args.allow_insecure_cookies,
+        private_dir: config
+            .web
+            .home_enabled
+            .then_some(config.web.private_assets_dir),
+        static_dir: args.static_dir,
     };
+    let app = build_app(web, auth, clients, Arc::new(PlatformMonitor))?;
+    serve(listener, app).await
+}
+
+fn require_loopback(bind: SocketAddr) -> io::Result<()> {
+    if !bind.ip().is_loopback() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "a loopback listener is required",
+        ));
+    }
+    Ok(())
+}
+
+async fn serve(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let local = listener.local_addr()?;
     #[cfg(target_os = "linux")]
     let _watchdog = notify_systemd()?;
-    tracing::info!(address = %local,test_mode = args.test_mode,"nexa-web listening");
+    tracing::info!(address = %local, "nexa-web listening");
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown())
         .await?;
