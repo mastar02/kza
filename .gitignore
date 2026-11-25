@@ -63,3 +63,6 @@ sriov-migration-prompt.md
 *.orig
 /llama.log
 /benchmarks/router/results_*.json
+
+# Local NEXO house plan and private verification data
+/src/dashboard/frontend/home/nexo/private/

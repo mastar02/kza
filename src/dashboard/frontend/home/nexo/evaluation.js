@@ -2,34 +2,41 @@
 (function (root) {
   'use strict';
   const LABELS = { audio_preview: 'Audio breve', transcript_full: 'Transcripción del segmento' };
-  function mountEvaluation({ container, controller }) {
+  function mountEvaluation({ container, controller, getSession }) {
     const doc = container.ownerDocument, store = controller.store;
     let active = true, choosing = false, rendered = null, renderedToken = null, renderedStatus = null;
+    let lastReading = null, lastGrants = null;
+    const connection = root.NexoAccess.createConnection(doc, getSession);
     let unsubscribe = () => {}, unsubscribeStore = () => {};
     function node(tag, text = '', classes = '') {
       const value = doc.createElement(tag); value.textContent = text; value.className = classes; return value;
     }
-    function button(text, handler, classes = 'identity-secondary') {
+    function button(text, handler, classes = 'btn') {
       const value = node('button', text, classes); value.type = 'button'; value.addEventListener('click', handler); return value;
     }
-    const heading = node('header', '', 'identity-heading'), copy = node('div');
-    copy.append(node('p', 'ACCESO TEMPORAL', 'eyebrow'), node('h2', 'Sólo las muestras concedidas.'),
-      node('p', 'Elegí una concesión vigente y la modalidad autorizada. Cada consulta vence con su muestra.'));
-    const refresh = button('Actualizar concesiones', () => { if (active) void controller.refresh(); });
-    heading.append(copy, refresh);
-    const status = node('p', '', 'identity-muted'); status.setAttribute('role', 'status'); status.dataset.evaluationStatus = '';
-    const form = node('form', '', 'identity-form panel'), choices = node('select'), modes = node('select');
+    const refresh = button('Actualizar permisos de muestra', () => { if (active) void controller.refresh(); });
+    const status = node('p', '', 'row-meta'); status.setAttribute('role', 'status'); status.dataset.evaluationStatus = '';
+    const form = node('form', '', 'detail'), choices = node('select'), modes = node('select');
     choices.id = 'evaluation-fingerprint'; choices.name = 'fingerprint_id';
     modes.id = 'evaluation-modality'; modes.name = 'modality';
-    for (const select of [choices, modes]) { select.style.width = '100%'; select.style.maxWidth = '100%'; select.style.minWidth = '0'; }
-    const choiceLabel = node('label', 'Muestra concedida'), modeLabel = node('label', 'Modalidad');
-    choiceLabel.htmlFor = choices.id; modeLabel.htmlFor = modes.id;
-    choiceLabel.append(choices); modeLabel.append(modes);
-    const deadline = node('p', '', 'identity-muted'), load = node('button', 'Consultar muestra', 'identity-primary'); load.type = 'submit';
-    form.append(choiceLabel, modeLabel, deadline, load);
-    const content = node('section', '', 'voice-detail-panel panel'); content.setAttribute('aria-label', 'Muestra de evaluación');
+    const choiceLabel = node('label', '', 'field'), modeLabel = node('label', '', 'field');
+    choiceLabel.append(node('span', 'Muestra autorizada'), choices);
+    modeLabel.append(node('span', 'Qué querés consultar'), modes);
+    const deadline = node('p', '', 'row-meta'), load = node('button', 'Consultar muestra', 'btn primary'); load.type = 'submit';
+    const actions = node('div', '', 'row-actions'); actions.append(load);
+    const formHeading = node('div', '', 'sistema-toolbar');
+    formHeading.append(node('h2', 'Elegir muestra'), refresh);
+    deadline.id = 'sistema-evaluation-deadline';
+    choices.setAttribute('aria-describedby', deadline.id);
+    form.append(formHeading, status, choiceLabel, modeLabel, deadline, actions);
+    const content = node('section', '', 'detail'); content.setAttribute('aria-label', 'Muestra de evaluación');
     content.dataset.evaluationSample = '';
-    const note = node('p', 'Una concesión no garantiza que el audio o el texto sigan disponibles. Este acceso no permite gestionar voces, personas ni el hogar.', 'identity-contract-note');
+    function metadataText(text) {
+      return text.replaceAll('STT', 'reconocimiento de voz').replace(' Hz', ' hercios')
+        .replace('Estado DSP desconocido.', 'No se conoce el procesamiento del audio.')
+        .replace('DSP declarado; aplicación sin verificar.', 'Se informó el procesamiento del audio, pero no se confirmó su aplicación.')
+        .replace('Estado DSP observado.', 'Se comprobó el procesamiento del audio.');
+    }
     function clearContent() {
       store.detachMedia(); content.replaceChildren(); rendered = renderedToken = renderedStatus = null; store.committed(null);
     }
@@ -40,25 +47,25 @@
       if (row === rendered && token === renderedToken && (row || renderedStatus === store.status())) return;
       clearContent();
       if (!row) {
-        const text = { loading: 'Consultando la modalidad elegida…', expired: 'La muestra venció. Actualizá las concesiones.',
+        const text = { loading: 'Consultando la modalidad elegida…', expired: 'La muestra venció. Actualizá los permisos de muestra.',
           unavailable: 'La muestra ya no está disponible o no se pudo consultar.', closed: 'La consulta se cerró.' }[store.status()]
           || 'Elegí una muestra y tocá Consultar muestra.';
-        const message = node('p', text, 'identity-empty'); message.setAttribute('role', 'status');
+        const message = node('p', text, 'empty'); message.setAttribute('role', 'status');
         renderedStatus = store.status(); content.append(message); return;
       }
       rendered = row; renderedToken = token;
-      content.append(node('p', LABELS[row.modality], 'eyebrow'), node('p', 'Muestra autorizada para esta sesión.', 'identity-muted'),
-        node('p', `Consulta vigente hasta ${new Date(row.expires_at * 1000).toLocaleString()}`, 'identity-muted'));
+      content.append(node('h2', LABELS[row.modality]),
+        node('p', `Consulta vigente hasta ${new Date(row.expires_at * 1000).toLocaleString()}`, 'row-meta'));
       if (row.modality === 'audio_preview') {
         const details = root.KzaVoicePrivacy.metadataDetails('audio', row.audio_metadata);
-        const player = root.KzaVoicePrivacy.createSamplePlayer({ doc, store, row, preload: 'none', buttonClass: 'identity-primary' });
-        content.append(player, node('p', `Audio breve · ${row.clip_duration_s.toFixed(1)} s`, 'identity-muted'));
-        content.append(...details.map(text => node('p', text, 'identity-muted')));
+        const player = root.KzaVoicePrivacy.createSamplePlayer({ doc, store, row, preload: 'none', buttonClass: 'btn primary' });
+        content.append(player, node('p', `Audio breve · ${row.clip_duration_s.toFixed(1)} s`, 'row-meta'));
+        content.append(...details.map(text => node('p', metadataText(text), 'row-meta')));
       } else {
         const details = root.KzaVoicePrivacy.metadataDetails('transcript', row.transcript_metadata);
         const transcript = node('pre', row.transcript, 'evaluation-transcript');
-        transcript.style.whiteSpace = 'pre-wrap'; transcript.style.overflowWrap = 'anywhere'; content.append(transcript);
-        content.append(...details.map(text => node('p', text, 'identity-muted')));
+        content.append(transcript);
+        content.append(...details.map(text => node('p', metadataText(text), 'row-meta')));
       }
       // The real receipt remains outstanding while these nodes or a decoder own the sample.
       store.committed(token);
@@ -67,33 +74,39 @@
       if (!active) return;
       const state = controller.snapshot(), focused = doc.activeElement;
       const choiceFocus = focused === choices, modeFocus = focused === modes;
+      if (state.status === 'real' && state.grants !== lastGrants) {
+        lastReading = Date.now(); lastGrants = state.grants;
+      }
+      connection.update(lastReading, state.status);
       choices.replaceChildren(); modes.replaceChildren();
       if (!state.grants.length) {
-        const option = node('option', state.status === 'real' ? 'Sin concesiones vigentes' : 'Catálogo no disponible'); option.value = ''; choices.append(option);
+        const option = node('option', state.status === 'real' ? 'Sin muestras autorizadas' : 'Lista no disponible'); option.value = ''; choices.append(option);
       }
-      for (const [index, grant] of state.grants.entries()) {
-        const option = node('option', `Muestra ${index + 1} · vence ${new Date(grant.expires_at * 1000).toLocaleString()}`);
-        option.value = grant.fingerprint_id; choices.append(option);
+      for (let index = 0; index < state.grants.length; index++) {
+        const option = node('option', `Muestra ${index + 1}`);
+        option.value = String(index + 1); choices.append(option);
       }
-      choices.value = state.selected?.fingerprint_id || '';
-      const grant = state.grants.find(value => value.fingerprint_id === state.selected?.fingerprint_id);
-      for (const mode of grant?.modalities || []) { const option = node('option', LABELS[mode]); option.value = mode; modes.append(option); }
+      const index = state.grants.findIndex(value => value.fingerprint_id === state.selected?.fingerprint_id);
+      choices.value = index >= 0 ? String(index + 1) : '';
+      const grant = state.grants[index];
+      for (const mode of grant?.modalities || []) { const option = node('option', mode === 'transcript_full' ? 'Transcripción' : LABELS[mode]); option.value = mode; modes.append(option); }
       modes.value = state.selected?.modality || '';
       const locked = !state.ready || state.busy || choosing;
       choices.disabled = modes.disabled = locked || !grant; load.disabled = locked || !state.selected;
       load.textContent = store.status() === 'loading' ? 'Consultando muestra…' : 'Consultar muestra';
       refresh.disabled = !state.ready || state.busy || choosing;
-      status.textContent = state.status === 'real' ? (state.grants.length ? `${state.grants.length} ${state.grants.length === 1 ? 'concesión vigente' : 'concesiones vigentes'} en esta sesión.` : 'No hay concesiones vigentes para esta sesión.')
-        : { waiting: 'Esperando el canal privado…', loading: 'Consultando concesiones…', expired: 'Las concesiones cambiaron. Actualizando…',
-          unavailable: 'No pudimos consultar las concesiones. Usá Actualizar concesiones.' }[state.status] || 'Consulta no disponible.';
-      deadline.textContent = state.selected ? `Concesión vigente hasta ${new Date(state.selected.expires_at * 1000).toLocaleString()}` : '';
+      status.textContent = state.status === 'real' ? (state.grants.length ? '' : 'No hay muestras autorizadas para esta sesión.')
+        : { waiting: 'Esperando la conexión…', loading: 'Consultando los permisos de muestra…',
+          expired: 'Los permisos de muestra cambiaron. Actualizando…',
+          unavailable: 'No pudimos consultar los permisos de muestra. Usá Actualizar permisos de muestra.' }[state.status] || 'Consulta no disponible.';
+      deadline.textContent = state.selected ? `Permiso vigente hasta ${new Date(state.selected.expires_at * 1000).toLocaleString()}` : '';
       if (choiceFocus && !choices.disabled) choices.focus(); else if (modeFocus && !modes.disabled) modes.focus();
       renderSample();
     }
     async function choose() {
       if (!active || choosing) return;
       const state = controller.snapshot();
-      const grant = state.grants.find(value => value.fingerprint_id === choices.value);
+      const grant = state.grants[choices.selectedIndex];
       if (!grant) return;
       const modality = grant.modalities.includes(modes.value) ? modes.value : grant.modalities[0];
       choosing = true; render();
@@ -107,7 +120,7 @@
       if (active && !doc.hidden && state.ready && !state.busy && !choosing && state.selected) controller.load();
     });
     try {
-      container.replaceChildren(heading, status, form, content, note);
+      container.replaceChildren(connection.panel, form, content);
       unsubscribe = controller.subscribe(render); unsubscribeStore = store.subscribe(render);
       render();
       doc.addEventListener('visibilitychange', onVisibility);

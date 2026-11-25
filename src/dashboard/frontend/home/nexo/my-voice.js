@@ -13,9 +13,10 @@
     disclosureSummary: 'Cómo funciona y qué se guarda',
   };
 
-  function mountMyVoice({ container, confirmDialog, owner, icon }) {
+  function mountMyVoice({ container, confirmDialog, owner }) {
     const doc = container.ownerDocument, Owner = root.NexoMyVoiceOwner;
     let active = true, lastAnnouncement = 0, confirmResolve = null, selectedRoom = '';
+    let lastWindowSignature, lastVerifySignature, lastControlSignature;
 
     function node(tag, className, text) {
       const element = doc.createElement(tag);
@@ -23,7 +24,7 @@
       if (text !== undefined && text !== null) element.textContent = String(text);
       return element;
     }
-    function button(text, key, callback, className = 'identity-secondary') {
+    function button(text, key, callback, className = 'btn') {
       const element = node('button', className, text); element.type = 'button'; element.dataset.key = key;
       element.addEventListener('click', () => { if (element.getAttribute('aria-disabled') !== 'true') callback(); });
       return element;
@@ -32,20 +33,19 @@
       return new Date(seconds * 1000).toLocaleTimeString('es-UY', { timeZone: 'America/Montevideo', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
     }
 
-    const section = node('section', 'memory-voice panel'); section.setAttribute('aria-labelledby', 'my-voice-title');
-    const heading = node('h3', 'memory-section-title', COPY.title); heading.id = 'my-voice-title'; heading.tabIndex = -1;
-    const top = node('div', 'memory-card-top'); const badge = node('span', 'scene-icon lavender'); badge.append(icon('mic')); top.append(badge, heading);
+    const section = node('section', 'detail memory-voice'); section.setAttribute('aria-labelledby', 'my-voice-title');
+    const heading = node('h2', 'memory-section-title', COPY.title); heading.id = 'my-voice-title'; heading.tabIndex = -1;
     const status = node('p', 'memory-note memory-voice-status'); status.id = 'my-voice-status';
     const message = node('p', 'memory-note memory-voice-message'); message.id = 'my-voice-message';
     const freshness = node('p', 'memory-note'); freshness.id = 'my-voice-freshness';
     const notice = node('p', 'memory-note memory-voice-notice'); notice.id = 'my-voice-notice'; notice.setAttribute('role', 'status');
     const live = node('p', 'memory-note memory-live'); live.id = 'my-voice-live'; live.setAttribute('aria-live', 'polite');
     const windowBox = node('div', 'memory-voice-window'); windowBox.id = 'my-voice-window';
-    const verify = node('div', 'memory-voice-verify'); verify.id = 'my-voice-verify';
-    const controls = node('div', 'memory-controls'); controls.id = 'my-voice-controls';
+    const verify = node('div', 'addrow memory-voice-verify'); verify.id = 'my-voice-verify';
+    const controls = node('div', 'row-actions memory-controls'); controls.id = 'my-voice-controls';
     const disclosure = node('details', 'memory-sources memory-voice-disclosure'); disclosure.id = 'my-voice-disclosure';
     disclosure.append(node('summary', '', COPY.disclosureSummary), node('p', 'memory-detail', Owner.OPT_IN_DISCLOSURE));
-    section.append(top, status, message, freshness, notice, live, windowBox, verify, controls, disclosure);
+    section.append(heading, status, message, freshness, notice, live, windowBox, verify, controls, disclosure);
     container.replaceChildren(section);
 
     function dialog(nodes, focusTarget, invoker, bind) {
@@ -72,20 +72,20 @@
     }
     function confirmParts(title, texts, acceptText, acceptClass) {
       const h = node('h2', '', title); h.id = 'my-voice-confirm-title';
-      const row = node('div', 'modal-actions memory-confirm-actions');
+      const row = node('div', 'row-actions memory-confirm-actions');
       const cancelButton = button('Cancelar', 'voice-confirm-cancel', () => {});
       const accept = button(acceptText, 'voice-confirm-accept', () => {}, acceptClass);
       row.append(cancelButton, accept);
-      return { nodes: [h, ...texts.map(text => node('p', 'modal-description', text)), row], cancelButton, accept };
+      return { nodes: [h, ...texts.map(text => node('p', 'memory-detail', text)), row], cancelButton, accept };
     }
     async function confirmRequest() {
-      const { nodes, cancelButton, accept } = confirmParts('Inscribirte en la memoria por voz', [Owner.OPT_IN_DISCLOSURE], 'Inscribirme', 'identity-primary');
+      const { nodes, cancelButton, accept } = confirmParts('Inscribirte en la memoria por voz', [Owner.OPT_IN_DISCLOSURE], 'Inscribirme', 'btn primary');
       const accepted = await dialog(nodes, cancelButton, 'voice-request', finish => { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); });
       if (accepted && active) await owner.requestConsent({ confirmed: true });
     }
     async function confirmRevoke() {
       const locked = owner.getState().status?.state === 'verification_locked';
-      const { nodes, cancelButton, accept } = confirmParts('Darte de baja de la memoria por voz', locked ? [COPY.revoke, COPY.locked] : [COPY.revoke], 'Darme de baja', 'identity-danger');
+      const { nodes, cancelButton, accept } = confirmParts('Darte de baja de la memoria por voz', locked ? [COPY.revoke, COPY.locked] : [COPY.revoke], 'Darme de baja', 'btn danger');
       const accepted = await dialog(nodes, cancelButton, 'voice-revoke', finish => { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); });
       if (accepted && active) await owner.revoke({ confirmed: true });
     }
@@ -105,47 +105,54 @@
       disclosure.hidden = !current?.enabled;
       // The open window: room, deadline and the phrase, kept only in memory while the view is open.
       const window = current?.enabled ? current.window : null;
-      const windowSignature = JSON.stringify(window);
-      if (windowBox.dataset.signature !== windowSignature) {
+      const rooms = state.rooms || [];
+      const windowRoom = rooms.find(room => room.room_id === window?.room_id)?.name;
+      const windowSignature = JSON.stringify([window, windowRoom]);
+      if (lastWindowSignature !== windowSignature) {
         windowBox.replaceChildren();
         if (window) {
-          const room = (state.rooms || []).find(item => item.room_id === window.room_id)?.name || 'la habitación elegida';
+          const room = windowRoom || 'la habitación elegida';
           windowBox.append(node('p', 'memory-note', `Ventana abierta en ${room} hasta las ${time(window.expires_at)}.`));
           if (window.phrase) { const phrase = node('p', 'memory-voice-phrase', '«' + window.phrase + '»'); phrase.dir = 'auto'; windowBox.append(node('p', 'memory-detail', 'Decí en voz alta, en esa habitación:'), phrase); }
           else windowBox.append(node('p', 'memory-detail', COPY.noPhrase));
         }
-        windowBox.dataset.signature = windowSignature;
+        lastWindowSignature = windowSignature;
       }
       windowBox.hidden = !window;
       // Room choice and the window button only while verification is possible.
-      const rooms = state.rooms || [];
       const verifySignature = JSON.stringify([allowed.verify, rooms, sending]);
-      if (verify.dataset.signature !== verifySignature) {
+      if (lastVerifySignature !== verifySignature) {
         const hadFocus = verify.contains(doc.activeElement) ? doc.activeElement.dataset.key : null;
         verify.replaceChildren();
         if (allowed.verify) {
           if (!rooms.some(room => room.room_id === selectedRoom)) selectedRoom = rooms[0]?.room_id || '';
-          const label = node('label', 'memory-voice-room', 'Habitación donde vas a hablar');
+          const label = node('label', 'field');
+          label.append(node('span', '', 'Habitación donde vas a hablar'));
           const select = node('select'); select.id = 'my-voice-room'; select.dataset.key = 'voice-room';
-          for (const room of rooms) { const option = node('option', '', room.name); option.value = room.room_id; option.selected = room.room_id === selectedRoom; select.append(option); }
-          select.addEventListener('change', () => { selectedRoom = select.value; });
+          for (const [index, room] of rooms.entries()) {
+            const option = node('option', '', room.name);
+            option.value = String(index);
+            option.selected = room.room_id === selectedRoom;
+            select.append(option);
+          }
+          select.addEventListener('change', () => { selectedRoom = rooms[select.selectedIndex]?.room_id ?? ''; });
           label.append(select);
-          const openWindow = button('Abrir ventana de verificación', 'voice-window', () => { void owner.openWindow(selectedRoom, { confirmed: true }); }, 'identity-primary');
+          const openWindow = button('Abrir ventana de verificación', 'voice-window', () => { void owner.openWindow(selectedRoom, { confirmed: true }); }, 'btn primary');
           openWindow.setAttribute('aria-disabled', String(sending || !rooms.length));
           verify.append(node('p', 'memory-detail', rooms.length ? COPY.window : COPY.noRooms), ...(rooms.length ? [label] : []), openWindow);
           if (hadFocus) { const target = [...verify.querySelectorAll('[data-key]')].find(element => element.dataset.key === hadFocus); target?.focus({ preventScroll: true }); }
         }
-        verify.dataset.signature = verifySignature;
+        lastVerifySignature = verifySignature;
       }
       verify.hidden = !allowed.verify;
       const controlSignature = JSON.stringify([allowed.request, allowed.revoke, sending]);
-      if (controls.dataset.signature !== controlSignature) {
+      if (lastControlSignature !== controlSignature) {
         const hadFocus = controls.contains(doc.activeElement) ? doc.activeElement.dataset.key : null;
         controls.replaceChildren();
-        if (allowed.request) { const control = button('Inscribirme…', 'voice-request', confirmRequest, 'identity-primary'); control.setAttribute('aria-disabled', String(sending)); controls.append(control); }
-        if (allowed.revoke) { const control = button('Darme de baja…', 'voice-revoke', confirmRevoke, 'identity-danger'); control.setAttribute('aria-disabled', String(sending)); controls.append(control); }
+        if (allowed.request) { const control = button('Inscribirme…', 'voice-request', confirmRequest, 'btn primary'); control.setAttribute('aria-disabled', String(sending)); controls.append(control); }
+        if (allowed.revoke) { const control = button('Darme de baja…', 'voice-revoke', confirmRevoke, 'btn danger'); control.setAttribute('aria-disabled', String(sending)); controls.append(control); }
         if (hadFocus) { const target = [...controls.querySelectorAll('[data-key]')].find(element => element.dataset.key === hadFocus); (target || heading).focus({ preventScroll: true }); }
-        controls.dataset.signature = controlSignature;
+        lastControlSignature = controlSignature;
       }
       controls.hidden = !controls.childElementCount;
       if (state.announcement && state.announcement.serial !== lastAnnouncement) { lastAnnouncement = state.announcement.serial; live.textContent = state.announcement.text; }
@@ -155,6 +162,8 @@
     render();
     return () => {
       active = false; stop();
+      lastWindowSignature = lastVerifySignature = lastControlSignature = undefined;
+      selectedRoom = '';
       if (confirmResolve) confirmResolve(false);
       if (confirmDialog.open) confirmDialog.close();
       confirmDialog.replaceChildren(); container.replaceChildren();

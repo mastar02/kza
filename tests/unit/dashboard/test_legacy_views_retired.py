@@ -47,6 +47,7 @@ def test_retired_files_are_gone_and_shared_library_stays():
     assert [name for name in RETIRED_FILES if (FRONTEND / name).exists()] == []
     for kept in ("home/index.html", "home/home.js", "home/request-id.js", "home/nexo/routines.js", "home/nexo/memory.js"):
         assert (FRONTEND / kept).is_file(), kept
+    assert (FRONTEND / "home/nexo/sections.js").is_file()
 
 
 def test_retired_urls_answer_404_and_nexo_keeps_serving(monkeypatch):
@@ -56,6 +57,7 @@ def test_retired_urls_answer_404_and_nexo_keeps_serving(monkeypatch):
             assert client.get(path).status_code == 404, path
         for path in ("/home/home.js", "/home/request-id.js", "/home/nexo/routines.js", "/home/nexo/memory.js", "/obs/"):
             assert client.get(path).status_code == 200, path
+        assert client.get("/home/nexo/sections.js").status_code == 200
         shell = client.get("/")
         assert shell.status_code == 200
         for token in ("legacy.html", 'href="/obs', "technical-link", "additional-tools", "/index.html", "home.css"):

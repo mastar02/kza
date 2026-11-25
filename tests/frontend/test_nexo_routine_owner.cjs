@@ -783,9 +783,11 @@ function proposalFixture({ role = 'operator', permissions = MANAGER, storage = m
   }
   function mount() {
     const doc = createDocument(), container = doc.createElement('div');
-    const dispose = mountRoutines({ container, dialog: doc.createElement('dialog'), confirmDialog: doc.createElement('dialog'), owner: instance, icon: icon(doc) });
-    const control = suffix => container.querySelector('[data-key="' + proposalId + ':' + suffix + '"]');
-    return { doc, container, control, dispose };
+    const dialog = doc.createElement('dialog'), confirmDialog = doc.createElement('dialog');
+    // Match app.js so the same assertions can run against the baseline renderer.
+    const dispose = mountRoutines({ container, dialog, confirmDialog, owner: instance, icon: icon(doc) });
+    const control = suffix => container.querySelector('.routine-proposal')?.querySelector('[data-key="' + suffix + '"]') ?? null;
+    return { doc, container, dialog, confirmDialog, control, dispose };
   }
   return { instance, api, server, storage, add, mount, changes: () => changes };
 }
@@ -816,6 +818,163 @@ test('T033-U3b: the proposal UI and all four routes require routines:manage and 
     }
     view.dispose();
   }
+});
+
+test('E2: Rutinas puts voice proposals before rows and exposes the persisted state as a switch', async () => {
+  const f = proposalFixture();
+  const routine = f.server.add(spec());
+  f.add();
+  const view = f.mount();
+  await f.instance.open(); await turn();
+
+  const list = view.container.querySelector('#routines-list');
+  const proposals = view.container.querySelector('#routine-proposals');
+  assert.equal(proposals.nextSibling, list.parentNode);
+  assert.ok(list.classList.contains('rows'));
+  const row = list.querySelector('.routine-card');
+  assert.ok(row.classList.contains('row'));
+  assert.equal(row.querySelector('.row-main').querySelector('.row-title').textContent, routine.name);
+
+  const controls = row.querySelector('.row-actions');
+  const active = controls.querySelector('[data-key="toggle"]');
+  assert.equal(controls.querySelector('[data-key="execute"]').textContent, 'Ejecutar ahora');
+  assert.equal(active.getAttribute('role'), 'switch');
+  assert.equal(active.getAttribute('aria-checked'), 'true');
+  assert.equal(active.textContent, 'Activa');
+  active.click(); await turn();
+  const disabled = row.querySelector('[data-key="toggle"]');
+  assert.equal(disabled.getAttribute('aria-checked'), 'false');
+  assert.equal(disabled.getAttribute('aria-label'), active.getAttribute('aria-label'));
+  assert.equal(disabled.textContent, 'Desactivada');
+  assert.equal(routine.enabled, false);
+  assert.equal(row.querySelector('[data-key="execute"]').disabled, true);
+  view.dispose();
+});
+
+test('E2: device labels never expose IDs in routine receipts, the editor, proposal previews or confirmations', async () => {
+  const f = proposalFixture();
+  const retired = 'cover.retired_blind';
+  const duplicates = ['light.kitchen_one', 'light.kitchen_two'];
+  const devices = duplicates.map(id => ({ ...lamp, entity_id: id, name: id, room_id: 'kitchen' }));
+  const handle = f.server.handle;
+  f.server.handle = (path, options) => path === '/api/home/catalog'
+    ? { rooms: [{ room_id: 'kitchen', name: 'Cocina' }], entities: devices, unassigned_entities: [] }
+    : handle(path, options);
+  f.server.hooks.push({ method: 'GET', path: '/api/home/catalog', mode: 'reject', error: failure(503) });
+  const definition = { ...spec(), actions: [...duplicates, retired].map(entity_id => ({ entity_id, operation: 'turn_on' })) };
+  const routine = f.server.add(definition);
+  routine.latest_run = f.server.run(routine.routine_id, 'uncertain', [{ index: 2, entity_id: retired, status: 'uncertain' }]);
+  f.add(null, definition);
+  const view = f.mount();
+  await f.instance.open(); await turn();
+
+  function assertNoIds(root) {
+    const attributes = ['aria-label', 'aria-description', 'aria-valuetext', 'alt', 'title', 'label'];
+    const texts = [root, ...root.descendants()].flatMap(element => [element._text, ...attributes.map(name => element.getAttribute(name) || '')]);
+    for (const text of texts) assert.doesNotMatch(text, /\b[a-z][a-z0-9_]*\.[a-z0-9_]+\b/i);
+  }
+
+  assertNoIds(view.container);
+  assert.match(visibleText(view.container), /Dispositivo sin nombre 3 · Incierta/);
+  await f.instance.refresh();
+  assertNoIds(view.container);
+  assert.match(visibleText(view.container), /Dispositivo no disponible · Incierta/);
+  const row = view.container.querySelector('.routine-card');
+  row.querySelector('[data-key="execute"]').click(); await turn();
+  assert.equal(view.confirmDialog.open, true);
+  assertNoIds(view.confirmDialog);
+  assert.match(visibleText(view.confirmDialog), /Dispositivo no disponible · Incierta/);
+  view.confirmDialog.querySelector('[data-key="confirm-cancel"]').click(); await turn();
+
+  row.querySelector('[data-key="edit"]').click(); await turn();
+  assert.equal(view.dialog.open, true);
+  assertNoIds(view.dialog);
+  const picker = view.dialog.querySelector('[data-key="action:2:entity"]');
+  assert.equal(picker.value, '3', 'the unavailable device uses a local form choice');
+  picker.dispatch('change');
+  assert.equal(f.instance.getState().draft.value.actions[2].entity_id, retired, 'the local choice resolves to the original device');
+  assert.deepEqual(picker.children.map(option => option.textContent), ['Elegí un dispositivo', 'Luz · Cocina', 'Luz 2 · Cocina', 'Dispositivo no disponible']);
+  view.dialog.querySelector('[data-key="close"]').click();
+
+  view.control('review').click(); await turn();
+  const after = view.container.querySelector('[data-proposal-diff="after"]');
+  assertNoIds(after);
+  assert.match(visibleText(after), /Luz · Cocina.*Luz 2 · Cocina.*Dispositivo no disponible/);
+  assert.ok(view.control('confirm').classList.contains('primary'));
+  assert.ok(view.control('reject').classList.contains('quiet'));
+  assert.equal(view.control('reject').textContent, 'Descartar');
+  view.dispose();
+});
+
+test('E2: device ordinals follow distinct devices across a routine without a catalog', async () => {
+  const f = proposalFixture();
+  const blind = 'cover.test_blind';
+  const handle = f.server.handle;
+  f.server.handle = (path, options) => {
+    if (path === '/api/home/catalog') throw failure(503);
+    return handle(path, options);
+  };
+  const definition = {
+    ...spec(),
+    conditions: [{ entity_id: blind, state: 'open' }],
+    actions: [
+      { entity_id: lamp.entity_id, operation: 'turn_on' },
+      { entity_id: blind, operation: 'close_cover' },
+      { entity_id: lamp.entity_id, operation: 'turn_off' },
+    ],
+  };
+  const routine = f.server.add(definition);
+  routine.latest_run = f.server.run(routine.routine_id, 'uncertain', definition.actions.map(
+    ({ entity_id }, index) => ({ entity_id, index, status: 'uncertain' })));
+  f.add(definition, { ...definition, conditions: [{ entity_id: lamp.entity_id, state: 'off' }, ...definition.conditions] });
+  const view = f.mount();
+  await f.instance.open(); await turn();
+  assert.equal(f.instance.getState().catalog, null);
+
+  const labels = (root, selector) => root.querySelector(selector).children.map(item => item.textContent);
+  view.control('review').click(); await turn();
+  const before = view.container.querySelector('[data-proposal-diff="before"]');
+  const after = view.container.querySelector('[data-proposal-diff="after"]');
+  assert.deepEqual(labels(before, 'ul'), ['Dispositivo sin nombre 1 · Abierto']);
+  assert.deepEqual(labels(after, 'ul'), ['Dispositivo sin nombre 2 · Apagado', 'Dispositivo sin nombre 1 · Abierto']);
+  const actions = ['Dispositivo sin nombre 2 · Encender', 'Dispositivo sin nombre 1 · Cerrar', 'Dispositivo sin nombre 2 · Apagar'];
+  assert.deepEqual(labels(before, 'ol'), actions);
+  assert.deepEqual(labels(after, 'ol'), actions);
+
+  const receipt = ['Dispositivo sin nombre 2 · Incierta', 'Dispositivo sin nombre 1 · Incierta', 'Dispositivo sin nombre 2 · Incierta'];
+  const row = view.container.querySelector('.routine-card');
+  assert.deepEqual(labels(row, '.routine-run-actions'), receipt);
+  row.querySelector('[data-key="execute"]').click(); await turn();
+  assert.deepEqual(labels(view.confirmDialog, '.routine-confirm-items'), receipt);
+  view.confirmDialog.querySelector('[data-key="confirm-cancel"]').click(); await turn();
+
+  row.querySelector('[data-key="edit"]').click();
+  assert.equal(view.dialog.querySelector('[data-key="condition:0:entity"]').children.at(-1).textContent, 'Dispositivo sin nombre 1');
+  assert.equal(view.dialog.querySelector('[data-key="action:0:entity"]').children.at(-1).textContent, 'Dispositivo sin nombre 2');
+  assert.equal(view.dialog.querySelector('[data-key="action:1:entity"]').children.at(-1).textContent, 'Dispositivo sin nombre 1');
+  view.dispose();
+});
+
+test('E2: condition help explains Home Assistant values while edits submit the exact text', async () => {
+  const f = proposalFixture();
+  const routine = f.server.add({ ...spec(), conditions: [{ entity_id: lamp.entity_id, state: 'open' }] });
+  const view = f.mount();
+  await f.instance.open(); await turn();
+  view.container.querySelector('[data-key="edit"]').click();
+  const control = view.dialog.querySelector('[data-key="condition:0:state"]');
+  assert.equal(control.type, 'text');
+  const help = view.dialog.querySelector('#' + control.getAttribute('aria-describedby'));
+  assert.ok(help, 'condition input references its help text');
+  assert.equal(help.textContent, 'Cerrado = closed · Abierto = open · Encendido = on · Apagado = off');
+
+  control.value = 'closed';
+  control.dispatch('input');
+  view.dialog.querySelector('form').dispatch('submit');
+  await turn();
+  const write = f.server.calls.find(call => call.method === 'PUT' && call.path === '/api/routines/r1');
+  assert.equal(write?.body.conditions[0].state, 'closed');
+  assert.equal(routine.conditions[0].state, 'closed');
+  view.dispose();
 });
 
 test('T033-U3b: preview renders both definitions without writing and retains focus through conflict, 503 and expiry', async () => {
@@ -917,7 +1076,7 @@ test('T033-U3b: a refreshed list that omits the selected proposal removes its di
     f.server.proposals.delete(proposalId);
     if (!empty) {
       const id = 'b'.repeat(32);
-      f.server.proposals.set(id, { ...proposal, summary: { ...proposal.summary, proposal_id: id } });
+      f.server.proposals.set(id, { ...proposal, summary: { ...proposal.summary, proposal_id: id, operation: 'update' } });
     }
     await f.instance.refreshProposals();
 
@@ -925,7 +1084,9 @@ test('T033-U3b: a refreshed list that omits the selected proposal removes its di
     assert.equal(state.loaded, true);
     assert.equal(state.items.length, empty ? 0 : 1);
     assert.equal(state.selected, null);
-    assert.equal(view.container.querySelector('[data-proposal-id="' + proposalId + '"]'), null);
+    const cards = view.container.querySelectorAll('.routine-proposal');
+    assert.equal(cards.length, empty ? 0 : 1);
+    if (!empty) assert.equal(cards[0].querySelector('.row-title').textContent, 'Editar rutina');
     assert.equal(view.container.querySelector('[data-proposal-diff="after"]'), null);
     assert.equal(view.control('confirm'), null);
     assert.equal(view.control('reject'), null);

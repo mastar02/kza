@@ -1,0 +1,366 @@
+:is(#people-view, #voices-view, #person-dialog, #voice-dialog, #voice-link-dialog,
+    #voice-attribution-confirm-dialog, #access-dialog.personas-access-dialog) {
+  color: var(--nexo-ink);
+  font: var(--nexo-text-body)/1.5 var(--nexo-font-body);
+  overflow-wrap: anywhere;
+}
+
+:is(#people-view, #voices-view, #voices-content, .personas-stack, .personas-section, .personas-form) {
+  display: grid;
+  gap: var(--nexo-space-3);
+  min-inline-size: 0;
+}
+
+:is(#people-view, #voices-content) {
+  gap: var(--nexo-space-5);
+}
+
+.personas-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  align-items: start;
+  gap: var(--nexo-space-4);
+}
+
+.personas-heading,
+.personas-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--nexo-space-2);
+}
+
+.personas-section {
+  border-block-start: var(--nexo-line-width) solid var(--nexo-line);
+  padding-block-start: var(--nexo-space-4);
+}
+
+:is(#people-view, #voices-view, #person-dialog, #voice-dialog, #voice-link-dialog,
+    #voice-attribution-confirm-dialog, #access-dialog.personas-access-dialog) :is(h2, h3, h4, p) {
+  margin: 0;
+}
+
+:is(#people-view, #voices-view, #person-dialog, #voice-dialog, #voice-link-dialog,
+    #voice-attribution-confirm-dialog, #access-dialog.personas-access-dialog) :is(h2, h3, h4) {
+  font-family: var(--nexo-font-heading);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: normal;
+}
+
+:is(#people-view, #voices-view, #person-dialog, #voice-dialog, #voice-link-dialog,
+    #voice-attribution-confirm-dialog, #access-dialog.personas-access-dialog) h2 {
+  font-size: var(--nexo-text-heading);
+}
+
+:is(#people-view, #voices-view, #voice-dialog) :is(h3, h4) {
+  font-size: var(--nexo-text-body);
+}
+
+:is(#people-view, #voices-view) .page-head h1 {
+  letter-spacing: normal;
+}
+
+:is(#people-view, #voices-view, #person-dialog, #voice-dialog, #voice-link-dialog,
+    #voice-attribution-confirm-dialog, #access-dialog.personas-access-dialog) :focus-visible {
+  outline: var(--nexo-focus-width) solid var(--nexo-focus);
+  outline-offset: var(--nexo-line-width-wide);
+}
+
+:is(#people-view, #voices-view) .pick:focus-visible {
+  outline-offset: calc(-1 * var(--nexo-focus-width));
+}
+
+:is(#people-view, #voices-view) .pick:hover {
+  color: var(--nexo-ink);
+}
+
+#people-view .person-role-info {
+  padding: 0;
+}
+
+#person-dialog .icon-button {
+  inline-size: auto;
+  block-size: auto;
+  color: var(--nexo-ink);
+}
+
+#people-view .identity-text-link,
+#person-dialog .identity-secondary {
+  border-color: var(--nexo-muted);
+  background: var(--nexo-card);
+  color: var(--nexo-ink);
+  font: 600 var(--nexo-text-body)/1.25 var(--nexo-font-body);
+}
+
+#people-view .identity-danger {
+  border-color: var(--nexo-danger);
+  background: var(--nexo-card);
+  color: var(--nexo-danger);
+  font: 600 var(--nexo-text-body)/1.25 var(--nexo-font-body);
+}
+
+#people-view .btn:not(:disabled):hover,
+#person-dialog .btn:not(:disabled):hover {
+  box-shadow: none;
+}
+
+#people-view .identity-text-link:not(:disabled):hover,
+#person-dialog .identity-secondary:not(:disabled):hover {
+  background: var(--nexo-segment);
+}
+
+#people-view .identity-danger:not(:disabled):hover {
+  background: var(--nexo-danger);
+  color: var(--nexo-ground);
+}
+
+#people-view :is(.identity-danger, .identity-text-link):disabled {
+  background: var(--nexo-segment);
+  color: var(--nexo-muted);
+  border-color: var(--nexo-muted);
+}
+
+#voice-connection,
+.person-dialog-status,
+.person-voice-status,
+#access-dialog.personas-access-dialog .access-dialog-status {
+  color: var(--nexo-muted);
+  font-size: var(--nexo-text-small);
+}
+
+:is(#people-view, #person-dialog, #voices-view, #voice-dialog, #access-dialog.personas-access-dialog)
+    :is(.error-message, .identity-form-error) {
+  color: var(--nexo-danger);
+  font-size: var(--nexo-text-body);
+}
+
+:is(#people-view, #person-dialog, #voices-view, #voice-dialog, #voice-link-dialog,
+    #voice-attribution-confirm-dialog, #access-dialog.personas-access-dialog)
+    :is(.row-actions, .voice-attribution-block, #voice-attribution):empty {
+  display: none;
+}
+
+/* Keep empty live regions mounted so a later update can be announced. */
+:is(#people-view, #voices-view, #voice-dialog) .identity-form-error {
+  min-block-size: 0;
+}
+
+#people-view .personas-section > .btn,
+#voices-view .voice-attribution-block > .sw {
+  justify-self: start;
+}
+
+#voices-view .voice-attribution-block > .tag {
+  justify-self: start;
+}
+
+#people-view .personas-linked-profiles {
+  max-block-size: calc(8 * var(--nexo-touch-target));
+  overflow: auto;
+}
+
+#people-view .personas-linked-profiles svg {
+  inline-size: var(--nexo-space-4);
+  block-size: var(--nexo-space-4);
+}
+
+#voices-view .personas-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+:is(#person-dialog, #voice-dialog, #voice-link-dialog, #voice-attribution-confirm-dialog, #access-dialog.personas-access-dialog) {
+  inline-size: min(calc(100% - 2 * var(--nexo-space-2)), calc(14 * var(--nexo-touch-target)));
+  max-inline-size: none;
+  max-block-size: calc(100dvh - 2 * var(--nexo-space-2));
+  padding: var(--nexo-space-4);
+  border: var(--nexo-line-width) solid var(--nexo-line);
+  border-radius: var(--nexo-radius);
+  color-scheme: var(--nexo-scheme);
+  background: var(--nexo-card);
+  box-shadow: none;
+}
+
+:is(#person-dialog, #voice-dialog, #voice-link-dialog, #voice-attribution-confirm-dialog,
+    #access-dialog.personas-access-dialog)::backdrop {
+  background: color-mix(in srgb, var(--nexo-on-accent) 70%, transparent);
+}
+
+:is(#person-dialog, #voice-dialog, #voice-link-dialog, #voice-attribution-confirm-dialog,
+    #access-dialog.personas-access-dialog) > :not(:first-child, [hidden], :empty) {
+  margin-block-start: var(--nexo-space-3);
+}
+
+:is(#person-dialog, #voice-dialog, #voice-link-dialog, #voice-attribution-confirm-dialog,
+    #access-dialog.personas-access-dialog) .modal-description {
+  color: var(--nexo-muted);
+  font-size: var(--nexo-text-body);
+  line-height: 1.5;
+}
+
+:is(#person-dialog, #voice-dialog, #voice-link-dialog, #access-dialog.personas-access-dialog)
+    :is(.field, .voice-filters) :is(input:not([type="checkbox"]), select) {
+  color-scheme: var(--nexo-scheme);
+  color: var(--nexo-ink);
+  background: var(--nexo-card);
+  border: var(--nexo-line-width) solid var(--nexo-muted);
+  border-radius: var(--nexo-radius);
+  font-family: inherit;
+  font-size: var(--nexo-text-body);
+}
+
+#voice-dialog.nexo-voice-dialog {
+  inline-size: min(calc(100% - 2 * var(--nexo-space-2)), calc(22 * var(--nexo-touch-target)));
+}
+
+#voice-dialog .nexo-voice-modal {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: var(--nexo-space-3);
+}
+
+#voice-dialog .nexo-voice-samples {
+  max-block-size: calc(10 * var(--nexo-touch-target));
+  overflow: auto;
+}
+
+#voice-dialog .review-sample {
+  display: grid;
+  grid-template-columns: var(--nexo-touch-target) minmax(0, 1fr);
+  align-items: center;
+  gap: var(--nexo-space-2);
+  padding: var(--nexo-space-3);
+  background: var(--nexo-card);
+  border-inline: 0;
+  border-block-end: 0;
+  border-block-start: var(--nexo-line-width) solid var(--nexo-line);
+  border-radius: 0;
+  cursor: default;
+}
+
+#voice-dialog .review-sample:first-child {
+  border-block-start: 0;
+}
+
+#voice-dialog .review-sample:has(input:checked) {
+  background: var(--nexo-segment);
+  border-color: var(--nexo-line);
+}
+
+#voice-dialog .nexo-voice-samples {
+  display: block;
+}
+
+#voice-dialog > button + button {
+  margin-inline-start: var(--nexo-space-2);
+}
+
+#voice-dialog .voice-sample-actions {
+  grid-column: 2 / -1;
+  margin-inline-start: 0;
+}
+
+#voice-dialog input[type="checkbox"] {
+  inline-size: var(--nexo-touch-target);
+  block-size: var(--nexo-touch-target);
+  margin: 0;
+  accent-color: var(--nexo-focus);
+}
+
+#voice-dialog audio {
+  inline-size: 100%;
+  min-block-size: var(--nexo-touch-target);
+}
+
+#voice-dialog :is(.voice-filters, .voice-evaluation-selection) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: var(--nexo-space-2);
+}
+
+#voice-dialog :is(.voice-filters, .voice-evaluation-selection) label {
+  display: grid;
+  gap: var(--nexo-space-1);
+  max-inline-size: 100%;
+  min-inline-size: 0;
+  color: var(--nexo-muted);
+  font-size: var(--nexo-text-small);
+}
+
+#voice-dialog :is(.voice-filters, .voice-evaluation-selection) label:has([type="checkbox"]) {
+  display: flex;
+  align-items: center;
+}
+
+#voice-dialog .voice-filters :is(input:not([type="checkbox"]), select) {
+  inline-size: 100%;
+  min-inline-size: 0;
+  min-block-size: var(--nexo-touch-target);
+  padding: var(--nexo-space-2);
+  font-size: var(--nexo-text-body);
+}
+
+#voice-dialog input::placeholder {
+  color: var(--nexo-muted);
+}
+
+#voice-dialog .voice-filter-status,
+#voice-dialog .voice-evaluation-selection :is(h3, p) {
+  flex-basis: 100%;
+}
+
+#voice-dialog .voice-evaluation-selection {
+  border-block-start: var(--nexo-line-width) solid var(--nexo-line);
+  padding-block-start: var(--nexo-space-3);
+}
+
+#voice-dialog .voice-filter-status,
+#voice-dialog :is(.relationship-note, .review-selection) {
+  color: var(--nexo-muted);
+  font-size: var(--nexo-text-small);
+}
+
+@media (max-width: 60rem) {
+  #voice-dialog .nexo-voice-modal {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 46rem) {
+  .personas-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :is(#people-grid, #voice-profile-list) {
+    /* Leave room for a wrapped profile row with enlarged text. */
+    max-block-size: calc(8 * var(--nexo-touch-target));
+    overflow: auto;
+  }
+
+  :is(#people-grid, #voice-profile-list) > .pick {
+    flex-shrink: 0;
+  }
+
+  #people-view .personas-linked-profiles {
+    max-block-size: calc(6 * var(--nexo-touch-target));
+  }
+}
+
+#people-view [data-person-access] a.btn {
+  display: inline-flex;
+  align-items: center;
+  color: var(--nexo-focus);
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+#people-view [data-person-access] a.btn:is(:hover, :focus-visible) {
+  color: var(--nexo-ink);
+  background: var(--nexo-segment);
+  text-decoration-thickness: 0.12em;
+}

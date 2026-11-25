@@ -1,7 +1,38 @@
 /* Session and catalog presentation; voice labels never select authority. */
 (function (root) {
   'use strict';
-  const VIEWS = { home: ['home:read'], actions: ['home:read'], routines: ['home:read'], tasks: ['tasks:read'], memory: ['memory:read'], mymemory: ['memory:own:read'], voices: ['voices:read', 'voices:review'], people: ['admin:manage'], access: ['auth:manage'], evaluation: ['evaluation:read'] };
+  const sections = typeof module !== 'undefined' && module.exports ? require('./sections.js') : root.NexoSections;
+  // One entry per line so parallel stages (Actividad, Sistema) edit different lines.
+  const VIEWS = {
+    home: ['home:read'],
+    actions: ['home:read'],
+    routines: ['home:read'],
+    tasks: ['tasks:read'],
+    activity: ['home:read'],
+    memory: ['memory:read'],
+    mymemory: ['memory:own:read'],
+    voices: ['voices:read', 'voices:review'],
+    people: ['admin:manage'],
+    access: ['auth:manage'],
+    evaluation: ['evaluation:read'],
+  };
+  const VIEW_HASHES = {
+    home: '#hogar',
+    actions: '#acciones',
+    routines: '#rutinas',
+    tasks: '#tareas',
+    activity: '#actividad',
+    memory: '#memoria',
+    mymemory: '#mis-recuerdos',
+    people: '#personas',
+    voices: '#voces',
+    access: '#accesos',
+    evaluation: '#evaluacion',
+  };
+  function resolveViewHash(hash, allowedViews) {
+    const requested = Object.keys(VIEW_HASHES).find(view => VIEW_HASHES[view] === hash) || 'home';
+    return allowedViews.includes(requested) ? requested : allowedViews[0];
+  }
   function createSession({ wall = Date.now, monotonic = () => root.performance.now() } = {}) {
     let identity = null, deadline = 0, generation = 0;
     function clear() { identity = null; deadline = 0; generation++; }
@@ -22,15 +53,19 @@
     function remaining() { return identity ? Math.max(0, Math.min(deadline - monotonic(), identity.expires - wall())) : 0; }
     function active() { return identity !== null && remaining() > 0; }
     function can(permission) { return active() && identity.permissions.has(permission); }
+    function views() {
+      return Object.keys(VIEWS).filter(view => VIEWS[view].every(can)
+        && (view !== 'activity' || ['operator', 'home'].includes(identity?.role))
+        && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')
+        // 'Mis recuerdos' is a person's own view: only household credentials bound to a person carry memory:own:read.
+        && (view !== 'mymemory' || identity?.role === 'home'));
+    }
     return { accept, clear, active, can, remaining, generation: () => generation,
-      role: () => active() ? identity.role : null,
+      role: () => active() ? identity.role : null, expiresAt: () => active() ? identity.expires : null,
       subject: () => active() ? identity.subject : null,
       routineActor: () => active() ? identity.routineActor : null,
       accountBinding: () => active() ? identity.accountBinding : null,
-      views: () => Object.keys(VIEWS).filter(view => VIEWS[view].every(can)
-        && (view !== 'evaluation' || identity?.role === 'evaluator') && (view !== 'access' || identity?.role === 'operator')
-        // 'Mis recuerdos' is a person's own view: only household credentials bound to a person carry memory:own:read.
-        && (view !== 'mymemory' || identity?.role === 'home')) };
+      views, sections: () => sections.visibleSections(views()) };
   }
   function sessionRetired(error) {
     const code = typeof error?.detail === 'string' ? error.detail : error?.detail?.code;
@@ -173,7 +208,7 @@
     if (entity.domain === 'climate') return `Modo ${MODE_LABELS[entity.state] || entity.state}`;
     return ({ on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando' })[entity.state] || entity.state || 'Estado desconocido';
   }
-  const exported = { createSession, createScopedApi, sessionRetired, canReadRoutineRuns, canExecuteRoutine,
+  const exported = { VIEW_HASHES, resolveViewHash, createSession, createScopedApi, sessionRetired, canReadRoutineRuns, canExecuteRoutine,
     ROUTINE_PROPOSALS, ROUTINE_PROPOSAL_ID, canReviewRoutineProposals,
     memoryPermission, voicePermission, roomEntities, entityState, NOTICE_LIST, NOTICE_DISMISS, canReadNotices };
   root.NexoState = exported;

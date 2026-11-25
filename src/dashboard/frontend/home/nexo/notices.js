@@ -15,30 +15,34 @@
       return element;
     }
     function setText(element, text) { if (element.textContent !== text) element.textContent = text; }
-    function button(text, callback) {
-      const control = node('button', 'identity-secondary', text);
+    function button(text, callback, className = 'btn') {
+      const control = node('button', className, text);
       control.type = 'button'; control.addEventListener('click', callback); return control;
     }
 
     const heading = node('h2', '', 'Avisos compartidos'); heading.id = 'notices-heading';
     const refresh = button('Actualizar avisos', () => { void owner.refresh(); });
-    const header = node('div', 'notice-heading'); header.append(heading, refresh);
+    const header = node('header', 'page-head'); header.append(heading, refresh);
     const status = node('p', 'notice-status'); status.setAttribute('role', 'status');
     const feedback = node('p', 'notice-feedback'); feedback.setAttribute('role', 'status');
-    const list = node('ul', 'notice-list');
+    const list = node('ul', 'rows notices-list'); list.setAttribute('role', 'list');
     const rows = new Map();
+    container.classList.add('detail');
     container.setAttribute('aria-labelledby', heading.id);
 
     function updateRow(entry, state) {
       let row = rows.get(entry.key);
       if (!row) {
-        const item = node('li', 'notice-row'), title = node('strong');
-        const meta = node('div', 'notice-meta'), time = node('time'), label = node('span', 'notice-label');
+        const item = node('li', 'row notice-row'), main = node('div', 'row-main');
+        const title = node('span', 'row-title'); title.dir = 'auto';
+        const meta = node('div', 'row-meta notices-meta'), time = node('time', 'time');
+        const label = node('span', 'tag notice-label'), actions = node('div', 'row-actions');
         meta.append(time, node('span', '', 'Ambiente no informado'));
-        item.append(title, meta, label);
-        const dismiss = button('Descartar', () => { void owner.dismiss(entry.key); });
+        main.append(title, meta, label); item.append(main);
+        const dismiss = button('Descartar', () => { void owner.dismiss(entry.key); }, 'btn quiet');
         dismiss.dataset.noticeDismiss = '';
-        row = { item, title, time, label, dismiss };
+        actions.append(dismiss);
+        row = { item, title, time, label, actions, dismiss };
         rows.set(entry.key, row);
       }
       const time = new Date(entry.trigger_at * 1000), when = triggerTime.format(time);
@@ -49,8 +53,8 @@
       if (state.canWrite && entry.status !== 'sending') {
         row.dismiss.setAttribute('aria-label', `Descartar aviso: ${title} (${when})`);
         row.dismiss.setAttribute('aria-disabled', String(state.locked));
-        if (!row.dismiss.parentNode) row.item.append(row.dismiss);
-      } else row.dismiss.remove();
+        if (!row.actions.parentNode) row.item.append(row.actions);
+      } else row.actions.remove();
       return row.item;
     }
 
@@ -68,6 +72,8 @@
         ready: ''
       };
       setText(status, messages[state.status]);
+      status.classList.toggle('empty', state.status === 'empty');
+      list.hidden = !state.notices.length;
       setText(feedback, state.feedback?.text || '');
       feedback.dataset.kind = state.feedback?.kind || '';
       const focus = document.activeElement, hadFocus = list.contains(focus);

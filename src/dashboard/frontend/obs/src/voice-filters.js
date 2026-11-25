@@ -1,6 +1,6 @@
 (function (root) {
   'use strict';
-  function mountVoiceFilters({ doc, controller, button }) {
+  function mountVoiceFilters({ doc, controller, button, roomLabel }) {
     const element = doc.createElement('div'), status = doc.createElement('p');
     const day = 86400000;
     element.className = 'voice-filters';
@@ -36,7 +36,8 @@
     const association = select('Asociación',[['','Todas'],['suggested','Con sugerencia revisada'],['unknown','Sin asociación']]);
     const listenable = field('input','Solo con audio para escuchar','checkbox');
     const search = controller.searchAllowed() ? field('input','Buscar en transcripciones','search') : null;
-    let validation = '', drawnRooms = null;
+    let validation = '', drawnRooms = null, displayedRooms = [];
+    const roomValue = (id, index) => roomLabel ? String(index) : 'room:' + id;
     function set(changes) {
       validation = '';
       controller.setFilters(changes); draw();
@@ -76,8 +77,11 @@
     }
     const clear = button('Quitar filtros',() => controller.resetFilters());
     element.append(clear,status);
-    room.addEventListener('change',() => set({room:room.value ? room.value === 'unrecorded'
-      ? {kind:'unrecorded'} : {kind:'room',id:room.value.slice(5)} : null}));
+    room.addEventListener('change', () => {
+      const value = room.value;
+      const id = value && (roomLabel ? displayedRooms[Number(value)] : value.slice(5));
+      set({room: value === 'unrecorded' ? {kind:'unrecorded'} : id ? {kind:'room',id} : null});
+    });
     for (const control of [period,since,until]) control.addEventListener('change',applyPeriod);
     group.addEventListener('change',() => set({group_state:group.value || null}));
     association.addEventListener('change',() => set({association:association.value || null}));
@@ -92,13 +96,16 @@
       const visibleRooms = selectedRoom !== null && !summary.rooms.includes(selectedRoom)
         && controller.state.captures.snapshot().length > 0
         ? [...summary.rooms,selectedRoom] : summary.rooms;
-      const roomKey = JSON.stringify(visibleRooms);
+      displayedRooms = visibleRooms;
+      const roomChoices = visibleRooms.map((id, index) => [roomValue(id, index), roomLabel ? roomLabel(id) : id]);
+      const roomKey = JSON.stringify(roomChoices);
       if (roomKey !== drawnRooms) {
         drawnRooms = roomKey;
-        options(room,[['','Todas'],...visibleRooms.map(id => ['room:'+id,id]),['unrecorded','Sin habitación registrada']]);
+        options(room, [['', 'Todas'], ...roomChoices, ['unrecorded', 'Sin habitación registrada']]);
       }
+      const selectedIndex = visibleRooms.indexOf(selectedRoom);
       room.value = filters.room?.kind === 'unrecorded' ? 'unrecorded'
-        : visibleRooms.includes(selectedRoom) ? 'room:'+selectedRoom : '';
+        : selectedIndex >= 0 ? roomValue(selectedRoom, selectedIndex) : '';
       group.value = filters.group_state ?? ''; association.value = filters.association ?? '';
       listenable.checked = filters.listenable_only;
       since.parentElement.hidden = until.parentElement.hidden = period.value !== 'custom';

@@ -21,7 +21,9 @@ import warnings
 
 
 ASSET_SUFFIXES = {".html", ".css", ".js", ".jsx", ".json", ".csv", ".svg", ".txt",
-                  ".png", ".jpg", ".ico", ".woff", ".woff2", ".ttf", ".wav"}
+                  ".png", ".jpg", ".ico", ".woff", ".woff2", ".ttf", ".wav", ".glb"}
+NEXO_PRIVATE_PLAN_DIR = PurePosixPath("src/dashboard/frontend/home/nexo/private")
+NEXO_PLAN_LOADER = str(NEXO_PRIVATE_PLAN_DIR.parent / "house-plan.js")
 
 # U3b-0d (design v3 N7, review 0d3 K2): integers the managed launcher reads
 # from release.json. They are copied from the built revision's own
@@ -422,12 +424,34 @@ def release_integers(source: bytes) -> dict:
     return values
 
 
-def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
+def _private_plan_assets(directory: Path, *, required: bool) -> dict[str, bytes]:
+    """Read the two runtime inputs as a pair. Exclude local verification fixtures."""
+    model = directory / "casa.glb"
+    plan = directory / "house-plan.js"
+    if any(path.is_symlink() for path in (directory, model, plan)):
+        raise ValueError("NEXO private plan paths must not be symlinks")
+    if not (model.is_file() and plan.is_file()):
+        if required:
+            raise FileNotFoundError(f"NEXO private plan requires casa.glb and house-plan.js in {directory}")
+        return {}
+    glb = model.read_bytes()
+    if len(glb) < 20 or glb[:8] != b"glTF\x02\x00\x00\x00" or int.from_bytes(glb[8:12], "little") != len(glb):
+        raise ValueError(f"Invalid glTF 2.0 header in {model}")
+    definitions = plan.read_bytes()
+    if not definitions.strip():
+        raise ValueError(f"NEXO private plan is empty: {plan}")
+    return {str(NEXO_PRIVATE_PLAN_DIR / model.name): glb,
+            str(NEXO_PRIVATE_PLAN_DIR / plan.name): definitions}
+
+
+def build_runtime(
+    repo: Path, output: Path, revision: str = "HEAD", *, private_plan: Path | None = None,
+) -> dict:
     """Compile tracked runtime modules and bundle assets without runtime state.
 
-    Only the selected Git revision is read. Configuration, environment files,
-    dependencies, models and data remain external to the release archive.
-    Existing output files are never replaced.
+    Runtime code comes from the selected Git revision. A complete local NEXO
+    plan is bundled if the revision supports it. An explicit private_plan
+    directory requires both files. Existing output files are never replaced.
     """
     if sys.implementation.name != "cpython" or sys.version_info[:2] != (3, 13):
         raise ValueError("Build with CPython 3.13, matching the production runtime")
@@ -462,6 +486,8 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
                 continue
             if path == PurePosixPath("scripts/build_runtime.py"):
                 continue
+            if path.is_relative_to(NEXO_PRIVATE_PLAN_DIR):
+                continue
             python_module = path.suffix == ".py"
             frontend_asset = (
                 path.is_relative_to("src/dashboard/frontend")
@@ -485,6 +511,11 @@ def build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
                 sources[str(path)] = data
             else:
                 files[str(path)] = data
+        if NEXO_PLAN_LOADER in files:
+            directory = private_plan if private_plan is not None else repo / NEXO_PRIVATE_PLAN_DIR
+            files.update(_private_plan_assets(directory, required=private_plan is not None))
+        elif private_plan is not None:
+            raise ValueError("The selected revision does not support a NEXO private plan")
         if modules:
             files.update(_compile_modules(staging, modules))
 
@@ -540,8 +571,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path)
     parser.add_argument("--revision", default="HEAD")
+    parser.add_argument("--private-plan", type=Path, metavar="DIRECTORY",
+                        help="Require and bundle casa.glb and house-plan.js from DIRECTORY")
     args = parser.parse_args()
-    manifest = build_runtime(Path(__file__).resolve().parents[1], args.output, args.revision)
+    manifest = build_runtime(Path(__file__).resolve().parents[1], args.output, args.revision,
+                             private_plan=args.private_plan)
     print(json.dumps({"archive": str(args.output), "commit": manifest["git_commit"],
                       "compiled_modules": sum(p.endswith(".pyc") for p in manifest["files"]),
                       "files": len(manifest["files"])}, indent=2))

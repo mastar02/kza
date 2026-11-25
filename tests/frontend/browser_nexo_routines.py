@@ -29,12 +29,19 @@ from src.routines.factory import build_routine_scheduler
 from src.routines.models import RunStatus, parse_routine_spec
 from src.routines.proposals import ProposalOperation, RoutineProposalTray
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_support import Page, _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session, press_enter
+from tests.frontend.browser_support import (
+    FixtureRows, choose_option,
+    assert_frame_consistent,
+    VIEWPORT_HEIGHTS, WCAG_SCRIPT, Page, _press_tab, audit_view, browser_binary, press_escape,
+    browser_profile_root, evidence_directory, install_login_session, press_enter,
+)
 from tests.integration.test_typed_home_operations import typed_graph
 
 
 EVIDENCE = evidence_directory('KZA_NEXO_ROUTINES_EVIDENCE', 'data/autonomous-roadmap-20261102/t040-t041/u2-routines-browser-runs')
 WIDTHS = (320, 390, 768, 1024, 1280, 1440)
+CAPTURE_WIDTHS = (1440, 768, 390)
+ZOOM_WIDTHS = (320, 390)
 TZ = 'America/Montevideo'
 PROPOSALS = '/api/routines/proposals'
 INSTRUMENT = r"""(() => {
@@ -67,8 +74,96 @@ def run_count(database: Path, routine_id: str | None = None) -> int:
         return connection.execute('SELECT COUNT(*) FROM routine_runs WHERE routine_id = ?', (routine_id,)).fetchone()[0]
 
 
-def key(value: str) -> str:
+def field_key(value: str) -> str:
     return json.dumps(f'[data-key="{value}"]')
+
+
+async def capture_routines(page: Page, evidence: Path, state: str) -> list[dict]:
+    """Capture a stable Rutinas state and measure it with 200% text."""
+    theme = "document.querySelector('#theme-slot select')"
+    previous = await page.evaluate(f'{theme}.value')
+
+    async def choose_theme(value: str) -> None:
+        await page.evaluate(f"""(() => {{
+            const select = {theme};
+            select.value = {json.dumps(value)};
+            select.dispatchEvent(new Event('change', {{bubbles: true}}));
+        }})()""")
+        await page.evaluate("""(async () => {
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            await Promise.allSettled(document.getAnimations()
+                .filter(animation => animation instanceof CSSTransition)
+                .map(animation => animation.finished));
+        })()""")
+
+    zoom_checks = []
+    try:
+        for value in ('claro', 'oscuro'):
+            await choose_theme(value)
+            assert await page.evaluate('document.documentElement.dataset.theme') == value
+            for width in CAPTURE_WIDTHS:
+                await page.command('Emulation.setDeviceMetricsOverride', {
+                    'width': width, 'height': VIEWPORT_HEIGHTS[width],
+                    'deviceScaleFactor': 1, 'mobile': width <= 390,
+                })
+                await screenshot(page, evidence / f'rutinas-{state}-{value}-{width}.png',
+                                 full=state in ('con-datos', 'no-disponible', 'propuestas'))
+                if state == 'con-datos':
+                    await assert_frame_consistent(page, '#routines-view', value)
+                if width == 768:
+                    await assert_routines_contrast(page, state, value)
+            for width in ZOOM_WIDTHS:
+                await page.command('Emulation.setDeviceMetricsOverride', {
+                    'width': width, 'height': VIEWPORT_HEIGHTS[width],
+                    'deviceScaleFactor': 1, 'mobile': True,
+                })
+                await page.evaluate(WCAG_SCRIPT)
+                await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+                shot = f'rutinas-{state}-{value}-{width}-text200.png'
+                try:
+                    zoom = await page.evaluate('window.__kzaWcag.beginTextZoom()')
+                    await screenshot(page, evidence / shot, full=zoom['dialog'] is None)
+                finally:
+                    await page.evaluate('window.__kzaWcag.endTextZoom()')
+                zoom_checks.append({'state': state, 'theme': value, 'width': width, 'screenshot': shot, **zoom})
+    finally:
+        await choose_theme(previous)
+        await page.command('Emulation.setDeviceMetricsOverride', {
+            'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False,
+        })
+    return zoom_checks
+
+
+async def assert_routines_contrast(page: Page, state: str, theme: str) -> None:
+    """Require AA for Rutinas and its dialogs using the shared luminance audit."""
+    await page.evaluate(WCAG_SCRIPT)
+    contrast = await page.evaluate("""(() => {
+        const modal = document.querySelector('#routine-dialog[open], #routine-confirm-dialog[open]');
+        const scope = modal || document.querySelector('#routines-view');
+        const findings = window.__kzaWcag.scan([], 24, 44, []).filter(item => item.issue === 'low_contrast'
+            && item.element && scope.contains(document.querySelector(item.element)));
+        const probe = document.createElement('span');
+        probe.style.color = 'var(--nexo-ground)';
+        scope.append(probe);
+        const shellMatches = getComputedStyle(probe).color === getComputedStyle(document.body).backgroundColor;
+        probe.remove();
+        return {findings, shellMatches};
+    })()""")
+    assert contrast['shellMatches'], f'Rutinas {state}, {theme}: expected the NEXO shell palette'
+    assert contrast['findings'] == [], f'Rutinas {state}, {theme}: {contrast["findings"]}'
+
+
+async def assert_no_device_ids(page: Page, selector: str) -> None:
+    """Keep device IDs out of visible text and accessible labels, including options."""
+    matches = await page.evaluate(r"""(selector => {
+        const root = document.querySelector(selector);
+        const labels = ['aria-label', 'aria-description', 'aria-valuetext', 'title', 'alt', 'label'];
+        return [...root.querySelectorAll('*')].flatMap(el => [
+            ...[...el.childNodes].filter(node => node.nodeType === Node.TEXT_NODE).map(node => node.textContent),
+            ...labels.map(label => el.getAttribute(label) || ''),
+        ]).flatMap(text => text.match(/\b[a-z][a-z0-9_]*\.[a-z0-9_]+\b/g) || []);
+    })(""" + json.dumps(selector) + ')')
+    assert matches == [], f'Device identifiers in Rutinas labels or text: {matches}'
 
 
 async def main() -> None:
@@ -182,27 +277,55 @@ async def main() -> None:
                         await click(selector)
 
                     async def fill(field: str, value) -> None:
-                        await page.evaluate(f"(()=>{{const e=document.querySelector('#routine-dialog '+{key(field)});e.value={json.dumps(value)};"
+                        if field.endswith(':entity'):
+                            await choose_option(page, '#routine-dialog ' + json.loads(field_key(field)), value)
+                            return
+                        await page.evaluate(f"(()=>{{const e=document.querySelector('#routine-dialog '+{field_key(field)});e.value={json.dumps(value)};"
                                             "e.dispatchEvent(new Event('input',{bubbles:true}));e.dispatchEvent(new Event('change',{bubbles:true}));})()")
 
                     async def rule(method: str, path: str, mode: str) -> None:
                         await page.evaluate(f'window.__qaRules.push({json.dumps({"method": method, "path": path, "mode": mode})})')
 
-                    def card(routine_id: str, inner: str = '') -> str:
-                        return json.dumps(f'#routines-list [data-routine-id="{routine_id}"] {inner}'.strip())
+                    routine_names: dict[str, tuple[str, ...]] = {}
+                    proposal_rows = FixtureRows('#routine-proposals .routine-proposal', '.row-title')
+
+                    def card_selector(identity: str, inner: str = '') -> str:
+                        if identity not in routine_names:
+                            return proposal_rows.selector(identity, inner)
+                        labels = ','.join(f'[aria-label={json.dumps("Rutina " + name, ensure_ascii=False)}]'
+                                          for name in routine_names[identity])
+                        return f'#routines-list .routine-card:is({labels}) {inner}'.strip()
+
+                    def card(identity: str, inner: str = '') -> str:
+                        return json.dumps(card_selector(identity, inner))
+
+                    def control(identity: str, action: str) -> str:
+                        return card_selector(identity, f'[data-key="{action}"]')
+
+                    def key(value: str) -> str:
+                        return json.dumps(control(*value.rsplit(':', 1)))
 
                     async def ids() -> list[str]:
                         return [item.routine_id for item in await scheduler.get_all_routines()]
 
                     # Operator: navigation, empty state, failed save focus, preview, create.
                     await login(page, operator.token, 'Administración')
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,voices,people,actions,routines,memory,access'")
+                    assert await page.evaluate("[...document.querySelectorAll('#rail-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,routines,tasks,activity,people,memory,access'")
                     assert await page.evaluate("document.querySelectorAll('a[href*=\"legacy.html\"]').length===0")
+                    await rule('GET', '/api/routines', 'hold')
                     await click('#app-nav [data-view=routines]')
+                    await page.wait_for("window.__qaHeld === '/api/routines' && document.querySelector('#routines-freshness')?.textContent.includes('Consultando rutinas')")
+                    zoom_checks = await capture_routines(page, evidence, 'cargando')
+                    await page.evaluate('window.__qaRelease()')
                     await page.wait_for("location.hash==='#rutinas' && !document.querySelector('#routines-view').hidden && !document.querySelector('.routines-empty').hidden")
                     assert await page.evaluate("document.querySelector('.routines-empty').textContent.includes('Todavía no hay rutinas')")
+                    zoom_checks += await capture_routines(page, evidence, 'vacio')
                     checks.append('nav entry and #rutinas hash; empty state from a real empty store')
-                    await click('#routines-create')
+                    await press('#routines-create')
+                    await page.wait_for("document.querySelector('#routine-dialog').open && document.activeElement?.dataset.key==='name'")
+                    await press_escape(page)
+                    await page.wait_for("!document.querySelector('#routine-dialog').open && document.activeElement.id==='routines-create'")
+                    await press('#routines-create')
                     await page.wait_for("document.querySelector('#routine-dialog').open && document.activeElement?.dataset.key==='name'")
                     await click('#routine-dialog [data-key="save"]')
                     await page.wait_for("document.activeElement?.id==='routine-errors' && document.querySelector('#routine-errors').textContent.includes('Escribí un nombre')")
@@ -216,59 +339,79 @@ async def main() -> None:
                     await click('#routine-dialog [data-key="day:0"]')
                     await click('#routine-dialog [data-key="day:2"]')
                     await click('#routine-dialog [data-key="condition:add"]')
-                    await fill('condition:0:entity', 'cover.test_blind')
+                    await fill('condition:0:entity', 'Persiana')
                     await fill('condition:0:state', 'closed')
+                    assert await page.evaluate("""(() => {
+                        const field = document.querySelector('[data-key="condition:0:state"]');
+                        const help = document.getElementById(field.getAttribute('aria-describedby'));
+                        return field.type === 'text'
+                            && help?.textContent === 'Cerrado = closed · Abierto = open · Encendido = on · Apagado = off';
+                    })()""")
                     await click('#routine-dialog [data-key="action:add"]')
-                    await fill('action:0:entity', 'light.test_lamp')
+                    await fill('action:0:entity', 'Luz principal')
                     await fill('action:0:operation', 'turn_on')
                     await click('#routine-dialog [data-key="action:add"]')
-                    await fill('action:1:entity', 'cover.test_blind')
+                    await fill('action:1:entity', 'Persiana')
                     await fill('action:1:operation', 'open_cover')
                     await click('#routine-dialog [data-key="preview"]')
                     await page.wait_for("document.querySelector('#routine-dialog .routine-preview')?.textContent.includes('Vista previa · sin guardar ni ejecutar')")
                     assert await page.evaluate("document.querySelector('#routine-dialog .routine-preview').textContent.includes('Lu, Mi · 22:30')")
                     assert await ids() == [], 'preview writes nothing'
+                    await assert_no_device_ids(page, '#routine-dialog')
                     checks.append('preview normalizes without writing')
+                    zoom_checks += await capture_routines(page, evidence, 'editor')
                     audits = {}
                     audits['rutinas-editor'] = await audit_view(page, evidence, 'rutinas-editor', (
                         ('#routine-dialog [data-key=name]', None), ('#routine-dialog [data-key="day:6"]', None), ('#routine-dialog [data-key="action:1:up"]', None),
-                        ('#routine-dialog [data-key=preview]', None), ('#routine-dialog [data-key=save]', None)), screenshot, widths=WIDTHS)
+                        ('#routine-dialog [data-key=preview]', None), ('#routine-dialog [data-key=save]', None)), screenshot, widths=WIDTHS, text_zoom=True)
                     await click('#routine-dialog [data-key="save"]')
                     await page.wait_for("!document.querySelector('#routine-dialog').open && document.querySelectorAll('#routines-list .routine-card').length===1")
                     [main_id] = await ids()
-                    assert await page.evaluate(f"document.querySelector({card(main_id)}).textContent.includes('Revisión 1') && document.querySelector({card(main_id)}).textContent.includes('Lu, Mi · 22:30 · Montevideo')")
-                    assert await page.evaluate("document.querySelector('#routines-live').textContent.includes('Revisión 1')")
+                    routine_names[main_id] = ('Noche tranquila', 'Noche', 'Noche larga', 'Cambio de otra sesión',
+                                              'Renombrada en el servidor', 'Rutina revisada por voz')
+                    saved = await scheduler.get_routine(main_id)
+                    assert saved is not None and saved.spec.conditions[0].state == 'closed'
+                    assert await page.evaluate(f"document.querySelector({card(main_id)}).textContent.includes('Versión 1') && document.querySelector({card(main_id)}).textContent.includes('Lu, Mi · 22:30 · Montevideo')")
+                    assert await page.evaluate("document.querySelector('#routines-live').textContent.includes('Versión 1')")
                     checks.append('create through the dialog persists revision 1; live region announces it')
+                    checks.append('condition help translates known states; save preserves the exact Home Assistant value')
 
                     # Edit (remove the condition so runs are not skipped), disable/enable.
-                    await press(f'{json.loads(card(main_id))} [data-key="{main_id}:edit"]')
+                    await press(control(main_id, 'edit'))
                     await page.wait_for("document.querySelector('#routine-dialog').open")
                     await click('#routine-dialog [data-key="condition:0:remove"]')
                     await fill('name', 'Noche')
                     await click('#routine-dialog [data-key="save"]')
-                    await page.wait_for(f"!document.querySelector('#routine-dialog').open && document.querySelector({card(main_id)}).textContent.includes('Revisión 2')")
-                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{main_id}:edit'"), 'focus returns to the invoking control'
-                    await press(f'[data-key="{main_id}:toggle"]')
-                    await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Desactivada') && document.querySelector({card(main_id)}).textContent.includes('Revisión 3')")
-                    await press(f'[data-key="{main_id}:toggle"]')
-                    await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Revisión 4')")
+                    await page.wait_for(f"!document.querySelector('#routine-dialog').open && document.querySelector({card(main_id)}).textContent.includes('Versión 2')")
+                    assert await page.evaluate(f"document.activeElement===document.querySelector({key(main_id + ':edit')})"), 'focus returns to the invoking control'
+                    await press(control(main_id, 'toggle'))
+                    await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Desactivada') && document.querySelector({card(main_id)}).textContent.includes('Versión 3')")
+                    assert await page.evaluate(f"document.querySelector({key(main_id + ':toggle')}).getAttribute('aria-checked')==='false'")
+                    await press(control(main_id, 'toggle'))
+                    await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Versión 4')")
                     checks.append('edit, disable and enable through CAS revisions')
+                    assert await page.evaluate(f"document.querySelector({key(main_id + ':toggle')}).getAttribute('aria-checked')==='true'")
+                    tree = await page.command('Accessibility.getFullAXTree')
+                    assert any(node.get('role', {}).get('value') == 'switch'
+                               and node.get('name', {}).get('value') == 'Activa o desactivada: Noche'
+                               for node in tree['nodes'])
+                    checks.append('the switch exposes the saved state and a stable accessible name')
 
                     # Execute, then a lost execute response survives a reload and is consulted, not resent.
                     sends = len(ha.sends)
-                    await press(f'[data-key="{main_id}:execute"]')
+                    await press(control(main_id, 'execute'))
                     await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Resultado de tu intento') && document.querySelector({card(main_id, '[data-run-status=succeeded]')})")
                     assert run_count(database, main_id) == 1 and len(ha.sends) == sends + 2
                     await rule('POST', f'/api/routines/{main_id}/execute', 'drop')
-                    await press(f'[data-key="{main_id}:execute"]')
-                    await page.wait_for(f"document.querySelector({card(main_id, '[data-routine-notice]')})?.textContent.startsWith('Resultado pendiente de consulta. No se pudo contactar')")
+                    await press(control(main_id, 'execute'))
+                    await page.wait_for(f"document.querySelector({card(main_id, '.routine-notice')})?.textContent.startsWith('Resultado pendiente de consulta. No se pudo contactar')")
                     stored = await page.evaluate(f"JSON.parse(sessionStorage.getItem('kza:routine-attempt:{main_id}'))")
                     assert stored['state'] == 'unresolved' and stored['request_id']
                     assert run_count(database, main_id) == 2, ('the server committed the lost send', run_count(database, main_id), requests[-6:])
                     await page.command('Page.reload')
                     await page.wait_for(f"document.querySelector('#routines-view')?.hidden === false && document.querySelector({card(main_id)})?.textContent.includes('Resultado pendiente de consulta')")
-                    assert await page.evaluate(f"!document.querySelector('[data-key=\"{main_id}:execute\"]')"), 'no fresh one-click execute while unresolved'
-                    await press(f'[data-key="{main_id}:consult"]')
+                    assert await page.evaluate(f"!document.querySelector({key(main_id + ':execute')})"), 'no fresh one-click execute while unresolved'
+                    await press(control(main_id, 'consult'))
                     await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Resultado de tu intento') && !document.querySelector({card(main_id)}).textContent.includes('Resultado pendiente')")
                     assert run_count(database, main_id) == 2, 'consult never resends'
                     latest = await scheduler.get_latest_run(main_id)
@@ -277,7 +420,7 @@ async def main() -> None:
 
                     # Leaving the view during an execute never aborts it.
                     await rule('POST', f'/api/routines/{main_id}/execute', 'hold')
-                    await press(f'[data-key="{main_id}:execute"]')
+                    await press(control(main_id, 'execute'))
                     await page.wait_for('window.__qaHeld')
                     await click('#app-nav [data-view=home]')
                     await page.wait_for("!document.querySelector('#home-view').hidden")
@@ -289,8 +432,8 @@ async def main() -> None:
 
                     # Another account takes over the shared session cookie (another tab), then this tab reloads.
                     await rule('POST', f'/api/routines/{main_id}/execute', 'drop')
-                    await press(f'[data-key="{main_id}:execute"]')
-                    await page.wait_for(f"document.querySelector({card(main_id, '[data-routine-notice]')})?.textContent.startsWith('Resultado pendiente de consulta')")
+                    await press(control(main_id, 'execute'))
+                    await page.wait_for(f"document.querySelector({card(main_id, '.routine-notice')})?.textContent.startsWith('Resultado pendiente de consulta')")
                     stored = await page.evaluate(f"JSON.parse(sessionStorage.getItem('kza:routine-attempt:{main_id}'))")
                     assert stored['actor'] == operator.principal.routine_actor and stored['state'] == 'unresolved'
                     runs_before_switch = run_count(database, main_id)
@@ -300,7 +443,7 @@ async def main() -> None:
                     await page.wait_for(f"document.querySelector('#routines-view')?.hidden === false && document.querySelector({card(main_id)})")
                     await page.wait_for("document.querySelector('.routine-session-notice') && !document.querySelector('.routine-session-notice').hidden")
                     assert await page.evaluate(f"sessionStorage.getItem('kza:routine-attempt:{main_id}')===null")
-                    assert await page.evaluate(f"!document.querySelector({card(main_id)}).textContent.includes('Resultado pendiente') && !document.querySelector('[data-key=\"{main_id}:retry\"]')")
+                    assert await page.evaluate(f"!document.querySelector({card(main_id)}).textContent.includes('Resultado pendiente') && !document.querySelector({key(main_id + ':retry')})")
                     await asyncio.sleep(0.5)
                     assert not any(item['method'] == 'POST' or item['path'].endswith('/attempts') for item in requests[marker:]), 'no consult or resend of the other account identity'
                     assert run_count(database, main_id) == runs_before_switch
@@ -308,8 +451,8 @@ async def main() -> None:
 
                     # R2b: the tab is only hidden (no reload) while another tab switches the shared cookie back to A.
                     await rule('POST', f'/api/routines/{main_id}/execute', 'drop')
-                    await press(f'[data-key="{main_id}:execute"]')
-                    await page.wait_for(f"document.querySelector({card(main_id, '[data-routine-notice]')})?.textContent.startsWith('Resultado pendiente de consulta')")
+                    await press(control(main_id, 'execute'))
+                    await page.wait_for(f"document.querySelector({card(main_id, '.routine-notice')})?.textContent.startsWith('Resultado pendiente de consulta')")
                     stored = await page.evaluate(f"JSON.parse(sessionStorage.getItem('kza:routine-attempt:{main_id}'))")
                     assert stored['actor'] == operator_b.principal.routine_actor and stored['state'] == 'unresolved'
                     runs_before_takeover = run_count(database, main_id)
@@ -327,27 +470,28 @@ async def main() -> None:
                     assert after and after[0]['path'] == '/api/admin/auth/whoami', after[:4]
                     assert not any(item['method'] == 'POST' and item['path'] != '/api/admin/auth/login' or item['path'].endswith('/attempts') or '/runs/' in item['path'] for item in after), after
                     assert run_count(database, main_id) == runs_before_takeover, 'nothing resent under the other account'
-                    assert await page.evaluate(f"document.querySelector('.routine-session-notice').textContent.includes('Revisá el último resultado') && !document.querySelector('[data-key=\"{main_id}:retry\"]')")
+                    assert await page.evaluate(f"document.querySelector('.routine-session-notice').textContent.includes('Revisá el último resultado') && !document.querySelector({key(main_id + ':retry')})")
                     await page.command('Page.reload')
                     await page.wait_for(f"document.querySelector('#routines-view')?.hidden === false && document.querySelector({card(main_id)})")
                     checks.append('hidden tab (no reload) while the cookie switches account: on return whoami is asked first, nothing is retried or consulted, the identity is dropped, the reminder shows and the session is re-read')
 
                     # Lost PUT: resolved by comparison, not by a second write.
-                    await press(f'[data-key="{main_id}:edit"]')
+                    await press(control(main_id, 'edit'))
                     await page.wait_for("document.querySelector('#routine-dialog').open")
                     await fill('name', 'Noche larga')
                     await rule('PUT', f'/api/routines/{main_id}', 'drop')
                     await click('#routine-dialog [data-key="save"]')
-                    await page.wait_for(f"!document.querySelector('#routine-dialog').open && document.querySelector({card(main_id)}).textContent.includes('Revisión 5') && document.querySelector({card(main_id)}).textContent.includes('El cambio se aplicó.')")
+                    await page.wait_for(f"!document.querySelector('#routine-dialog').open && document.querySelector({card(main_id)}).textContent.includes('Versión 5') && document.querySelector({card(main_id)}).textContent.includes('El cambio se aplicó.')")
                     assert sum(1 for item in requests if item['method'] == 'PUT') == 2
                     checks.append('lost PUT resolves as applied after a list read; no second PUT')
 
                     # Lost DELETE on a second routine.
                     doomed = await scheduler.register_routine(parse_routine_spec(definition('Para borrar')), actor='synthetic-seed')
+                    routine_names[doomed.routine_id] = (doomed.spec.name,)
                     await click('#routines-refresh')
                     await page.wait_for(f"document.querySelector({card(doomed.routine_id)})")
                     await rule('DELETE', f'/api/routines/{doomed.routine_id}', 'drop')
-                    await press(f'[data-key="{doomed.routine_id}:delete"]')
+                    await press(control(doomed.routine_id, 'delete'))
                     await page.wait_for("document.querySelector('#routine-confirm-dialog').open && document.activeElement?.dataset.key==='confirm-cancel'")
                     await click('#routine-confirm-dialog [data-key="confirm-accept"]')
                     await page.wait_for(f"!document.querySelector({card(doomed.routine_id)}) && document.querySelector('#routines-live').textContent==='La rutina se borró.'")
@@ -356,20 +500,24 @@ async def main() -> None:
 
                     # Uncertain latest run (scheduled, no local attempt) requires confirmation before repeating.
                     risky = await scheduler.register_routine(parse_routine_spec(definition('Incierta')), actor='synthetic-seed')
+                    routine_names[risky.routine_id] = (risky.spec.name, 'Actualizada durante la edición')
                     claim = await scheduler.store.claim_run(risky.routine_id, json.dumps(['seed']), actor='synthetic-schedule', source='schedule')
                     await scheduler.store.mark_action_sending(claim.run.run_id, 0)
                     await scheduler.store.finish_run(claim.run.run_id, RunStatus.UNCERTAIN)
                     await click('#routines-refresh')
                     await page.wait_for(f"document.querySelector({card(risky.routine_id, '[data-run-status=uncertain]')})")
-                    await press(f'[data-key="{risky.routine_id}:execute"]')
+                    await press(control(risky.routine_id, 'execute'))
                     await page.wait_for("document.querySelector('#routine-confirm-dialog').open && document.querySelector('#routine-confirm-dialog').textContent.includes('Luz principal · Incierta')")
+                    await assert_no_device_ids(page, '#routine-confirm-dialog')
+                    zoom_checks += await capture_routines(page, evidence, 'confirmacion')
                     await screenshot(page, evidence / 'uncertain-confirm.png', full=False)
                     audits['rutinas-confirmacion'] = await audit_view(page, evidence, 'rutinas-confirmacion', (
                         ('#routine-confirm-dialog [data-key=confirm-cancel]', None), ('#routine-confirm-dialog [data-key=confirm-accept]', None)), screenshot, widths=WIDTHS)
-                    await click('#routine-confirm-dialog [data-key="confirm-cancel"]')
-                    await page.wait_for("!document.querySelector('#routine-confirm-dialog').open")
+                    await press_escape(page)
+                    await page.wait_for(f"!document.querySelector('#routine-confirm-dialog').open && "
+                                        f"document.activeElement === document.querySelector({json.dumps(control(risky.routine_id, 'execute'))})")
                     assert run_count(database, risky.routine_id) == 1, 'cancel sends nothing'
-                    await press(f'[data-key="{risky.routine_id}:execute"]')
+                    await press(control(risky.routine_id, 'execute'))
                     await page.wait_for("document.querySelector('#routine-confirm-dialog').open")
                     await click('#routine-confirm-dialog [data-key="confirm-accept"]')
                     await page.wait_for(f"document.querySelector({card(risky.routine_id)}).textContent.includes('Resultado de tu intento')")
@@ -377,7 +525,7 @@ async def main() -> None:
                     checks.append('uncertain latest run gates a new execute behind an explicit confirmation')
 
                     # 409 from a concurrent change keeps the draft and focuses the explanation.
-                    await press(f'[data-key="{main_id}:edit"]')
+                    await press(control(main_id, 'edit'))
                     await page.wait_for("document.querySelector('#routine-dialog').open")
                     await fill('name', 'Mi borrador')
                     current = await scheduler.get_routine(main_id)
@@ -426,12 +574,12 @@ async def main() -> None:
 
                     await click('#routine-dialog [data-key="close"]')
                     await page.wait_for("!document.querySelector('#routine-dialog').open")
-                    await page.evaluate(f"document.querySelector('[data-key=\"{main_id}:toggle\"]').focus()")
+                    await page.evaluate(f"document.querySelector({key(main_id + ':toggle')}).focus()")
                     current = await scheduler.get_routine(main_id)
                     await scheduler.update_routine(main_id, parse_routine_spec(definition('Renombrada en el servidor')), expected_revision=current.revision, actor='synthetic-other')
                     await page.evaluate("document.querySelector('#routines-refresh').click()")
                     await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Renombrada en el servidor')")
-                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{main_id}:toggle'"), 'focus survives a rebuilt card'
+                    assert await page.evaluate(f"document.activeElement===document.querySelector({key(main_id + ':toggle')})"), 'focus survives a rebuilt card'
                     checks.append('forced refresh keeps focus in the editor field (with caret) and on a rebuilt card button')
 
                     # N1: 'Actualizar' from the keyboard keeps focus while the list is read and after it.
@@ -446,57 +594,75 @@ async def main() -> None:
                     assert await page.evaluate("document.activeElement?.id==='routines-refresh'"), 'focus kept after the refresh'
                     checks.append('N1: keyboard Enter on Actualizar keeps focus on the button during and after the read')
 
+                    # Wait for the risky run to settle before snapshotting the view's Tab sequence.
+                    risky_execute = control(risky.routine_id, 'execute')
+                    await page.wait_for(f'(e => e && !e.disabled)(document.querySelector({json.dumps(risky_execute)}))')
+                    zoom_checks += await capture_routines(page, evidence, 'con-datos')
                     audits['rutinas'] = await audit_view(page, evidence, 'rutinas', (
                         ('#app-nav [data-view=routines]', None), ('#rail-nav [data-view=access]', None), ('#routines-create', None),
-                        ('#routines-refresh', None), (f'[data-key="{main_id}:execute"]', None), (f'[data-key="{main_id}:delete"]', None)), screenshot, widths=WIDTHS)
-                    checks.append('operator rail with Rutinas: last view reachable and hit-testable at 320 px')
+                        ('#routines-refresh', None), (control(main_id, 'execute'), None),
+                        (control(main_id, 'consult'), None), (control(main_id, 'edit'), None),
+                        (control(main_id, 'toggle'), None), (control(main_id, 'delete'), None),
+                        (risky_execute, None)), screenshot, widths=WIDTHS, text_zoom=True)
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 320, 'height': 760, 'deviceScaleFactor': 2, 'mobile': True})
                     await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
-                    await asyncio.sleep(0.2)
-                    rail = await page.evaluate("""(()=>{const r=document.querySelector('#rail-nav'),b=[...r.querySelectorAll('[data-view]')];
-                      const active=r.querySelector('.active').getBoundingClientRect(),box=r.getBoundingClientRect();
-                      return {cue:r.classList.contains('more-start')||r.classList.contains('more-end'),mask:getComputedStyle(r).maskImage!=='none',
-                              sizes:b.map(x=>[Math.round(x.getBoundingClientRect().width),Math.round(x.getBoundingClientRect().height)]),
-                              activeVisible:active.left>=box.left-1&&active.right<=box.right+1}})()""")
-                    assert rail['cue'] and rail['mask'] and rail['activeVisible'], rail
-                    assert all(width >= 44 and height >= 44 for width, height in rail['sizes']), rail
-                    # Start and scrolled-middle states: the end fade lies over a partly visible next item.
-                    edge = """(()=>{const r=document.querySelector('#rail-nav'),box=r.getBoundingClientRect();
-                      const cut=[...r.querySelectorAll('[data-view]')].map(x=>x.getBoundingClientRect()).find(x=>x.left<box.right-1&&x.right>box.right+1);
-                      return {start:r.classList.contains('more-start'),end:r.classList.contains('more-end'),left:r.scrollLeft,
-                              peek:cut?Math.round(box.right-cut.left):null,cutWidth:cut?Math.round(cut.width):null}})()"""
-                    await page.evaluate("document.querySelector('#rail-nav').scrollLeft=0")
-                    await asyncio.sleep(0.2)
-                    start_state = await page.evaluate(edge)
-                    assert start_state['end'] and not start_state['start'], start_state
-                    assert start_state['peek'] is not None and 16 <= start_state['peek'] <= start_state['cutWidth'] - 16, start_state
-                    await screenshot(page, evidence / 'rail-320-start.png', full=False)
-                    await page.evaluate("(()=>{const r=document.querySelector('#rail-nav');r.scrollLeft=(r.scrollWidth-r.clientWidth)/2})()")
-                    await asyncio.sleep(0.2)
-                    middle_state = await page.evaluate(edge)
-                    assert middle_state['start'] and middle_state['end'] and middle_state['left'] > 0, middle_state
-                    await screenshot(page, evidence / 'rail-320-middle.png', full=False)
-                    assert (evidence / 'rail-320-start.png').read_bytes() != (evidence / 'rail-320-middle.png').read_bytes(), 'rail screenshots differ'
-                    # Keyboard focus on a rail item: the ring is drawn inside the button and the item is scrolled clear of the fades.
-                    await page.evaluate("document.querySelector('#rail-nav').scrollLeft=0")
-                    await page.evaluate("document.querySelectorAll('#rail-nav [data-view]')[3].focus()")
+                    nav_bounds = await page.evaluate("""(() => {
+                        const nav = document.querySelector('#rail-nav');
+                        const bounds = nav.getBoundingClientRect();
+                        return {
+                            pageFits: document.documentElement.scrollWidth <= innerWidth,
+                            links: [...nav.querySelectorAll('[data-section]')].map(link => {
+                                const box = link.getBoundingClientRect();
+                                return {width: box.width, height: box.height,
+                                        visible: box.left >= bounds.left && box.right <= bounds.right
+                                            && box.top >= 0 && box.bottom <= innerHeight,
+                                        hit: document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2) === link};
+                            }),
+                        };
+                    })()""")
+                    assert nav_bounds['pageFits'] and len(nav_bounds['links']) == 7, nav_bounds
+                    assert all(item['width'] >= 44 and item['height'] >= 44 and item['visible'] and item['hit']
+                               for item in nav_bounds['links']), nav_bounds
+                    await screenshot(page, evidence / 'navigation-320.png', full=False)
+                    await page.evaluate("document.querySelector('#rail-nav [data-section=memory]').focus()")
                     await _press_tab(page)
-                    await asyncio.sleep(0.3)
-                    ring = await page.evaluate("""(()=>{const r=document.querySelector('#rail-nav'),e=document.activeElement,box=r.getBoundingClientRect(),own=e.getBoundingClientRect(),style=getComputedStyle(e);
-                      return {rail:r.contains(e),visible:e.matches(':focus-visible'),offset:style.outlineOffset,width:style.outlineWidth,
-                              inside:own.left>=box.left+20&&own.right<=box.right-20&&own.top>=box.top&&own.bottom<=box.bottom}})()""")
-                    assert ring == {'rail': True, 'visible': True, 'offset': '-3px', 'width': '2px', 'inside': True}, ring
-                    await screenshot(page, evidence / 'rail-320-focus.png', full=False)
+                    ring = await page.evaluate("""(() => {
+                        const link = document.activeElement, style = getComputedStyle(link);
+                        return {section: link.dataset.section, visible: link.matches(':focus-visible'),
+                                offset: style.outlineOffset, width: style.outlineWidth};
+                    })()""")
+                    assert ring == {'section': 'system', 'visible': True, 'offset': '-3px', 'width': '3px'}, ring
+                    await screenshot(page, evidence / 'navigation-320-focus.png', full=False)
+                    await press_enter(page)
+                    await page.wait_for("location.hash==='#accesos' && !document.querySelector('#access-view').hidden")
+                    assert await page.evaluate("document.activeElement.matches('#rail-nav [data-section=system][aria-current=true]')")
+                    await _press_tab(page, backward=True)
+                    assert await page.evaluate("document.activeElement.dataset.section==='memory'")
+                    await click('#rail-nav [data-section=routines]')
+                    await page.wait_for("document.querySelector('#routines-list .routine-card')")
+                    # Re-entering Rutinas starts a list read that keeps Actualizar aria-disabled; wait for it to settle.
+                    await page.wait_for("document.querySelector('#routines-refresh').getAttribute('aria-disabled')==='false'")
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
-                    checks.append('320 px rail: start and scrolled-middle states differ, the end fade covers a partly visible item, keyboard focus ring drawn inside and clear of the fades')
+                    checks.append('320 px single navigation: controls fit, 44 px targets, Tab and Shift+Tab follow section order, Enter opens Sistema and retains focus')
 
                     # 503 keeps the last data and says so.
                     saved_scheduler, dashboard.scheduler = dashboard.scheduler, None
-                    await click('#routines-refresh')
+                    # Actualizar ignores clicks while a list read is in flight (aria-disabled), and re-entering Rutinas
+                    # can start one more read after the wait above. Click only when enabled and retry until the 503
+                    # notice shows; the 20 s wait below still fails closed if it never does.
+                    for _ in range(80):
+                        if await page.evaluate("document.querySelector('#routines-freshness').textContent.includes('Rutinas no disponibles')"):
+                            break
+                        if await page.evaluate("document.querySelector('#routines-refresh').getAttribute('aria-disabled')==='false'"):
+                            await click('#routines-refresh')
+                        await asyncio.sleep(0.25)
                     await page.wait_for("document.querySelector('#routines-freshness').textContent.includes('Rutinas no disponibles') && document.querySelector('#routines-freshness').textContent.includes('últimos datos')")
                     assert await page.evaluate('document.querySelectorAll("#routines-list .routine-card").length') == 2
+                    zoom_checks += await capture_routines(page, evidence, 'no-disponible')
                     dashboard.scheduler = saved_scheduler
                     checks.append('503 shows unavailability and keeps the last observation')
+                    await click('#routines-refresh')
+                    await page.wait_for("!document.querySelector('#routines-freshness').classList.contains('is-error')")
 
                     # Real voice-tray entries. Review is read-only; Enter, Tab and Enter decide.
                     previous = await scheduler.get_routine(main_id)
@@ -505,8 +671,12 @@ async def main() -> None:
                     update = tray.submit(ProposalOperation.UPDATE, conversation_id=str(uuid4()),
                                          routine_id=main_id, expected_revision=previous.revision,
                                          spec=replace(previous.spec, name='Rutina revisada por voz'))
+                    rejected_definition = definition('Rutina para rechazar')
+                    rejected_definition['conditions'] = [{'entity_id': 'cover.test_blind', 'state': 'open'}]
                     discard = tray.submit(ProposalOperation.CREATE, conversation_id=str(uuid4()),
-                                          spec=parse_routine_spec(definition('Rutina para rechazar')))
+                                          spec=parse_routine_spec(rejected_definition))
+                    await proposal_rows.bind(page, update, 'Editar rutina')
+                    await proposal_rows.bind(page, discard, 'Crear rutina')
                     await click('[data-key="proposals-refresh"]')
                     await page.wait_for(f"document.querySelector({key(update + ':review')}) && document.querySelector({key(discard + ':review')})")
                     tree = await page.command('Accessibility.getFullAXTree')
@@ -514,21 +684,23 @@ async def main() -> None:
                                node.get('name', {}).get('value') == 'Propuestas por voz' for node in tree['nodes'])
                     await page.evaluate(f"document.querySelector({key(update + ':review')}).focus()")
                     await press_enter(page)
-                    before_diff = json.dumps(f'[data-proposal-id="{update}"] [data-proposal-diff="before"]')
-                    after_diff = json.dumps(f'[data-proposal-id="{update}"] [data-proposal-diff="after"]')
+                    before_diff = card(update, '[data-proposal-diff="before"]')
+                    after_diff = card(update, '[data-proposal-diff="after"]')
                     await page.wait_for(f"document.querySelector({before_diff})?.textContent.includes({json.dumps(previous.spec.name)}) && "
                                         f"document.querySelector({after_diff})?.textContent.includes('Rutina revisada por voz')")
                     assert await scheduler.get_routine(main_id) == previous
-                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{update}:review'")
+                    assert await page.evaluate(f"document.activeElement===document.querySelector({key(update + ':review')})")
+                    zoom_checks += await capture_routines(page, evidence, 'propuestas')
+                    await assert_no_device_ids(page, '#routines-view')
                     tree = await page.command('Accessibility.getFullAXTree')
                     names = {node.get('name', {}).get('value') for node in tree['nodes'] if node.get('role', {}).get('value') == 'button'}
-                    assert {'Confirmar propuesta', 'Rechazar propuesta'} <= names
+                    assert {'Confirmar propuesta', 'Descartar'} <= names
                     await _press_tab(page)
-                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{update}:confirm'")
+                    assert await page.evaluate(f"document.activeElement===document.querySelector({key(update + ':confirm')})")
                     await rule('POST', f'{PROPOSALS}/{update}/confirm', 'drop')
                     await press_enter(page)
                     await page.wait_for(f"document.querySelector({key(update + ':confirm')})?.textContent==='Reintentar confirmación'")
-                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{update}:confirm'")
+                    assert await page.evaluate(f"document.activeElement===document.querySelector({key(update + ':confirm')})")
                     assert await page.evaluate("document.querySelector('#routine-proposals').textContent.includes('Resultado incierto')")
                     await press_enter(page)
                     await page.wait_for("document.querySelector('#routine-proposals').textContent.includes('Propuesta confirmada')")
@@ -541,9 +713,14 @@ async def main() -> None:
                     await page.evaluate(f"document.querySelector({key(discard + ':review')}).focus()")
                     await press_enter(page)
                     await page.wait_for(f"document.querySelector({key(discard + ':reject')})")
+                    rejected_condition = card(discard, '[data-proposal-diff="after"] ul li')
+                    assert await page.evaluate(
+                        f"document.querySelector({rejected_condition})?.textContent.endsWith(' · Abierto')"
+                    ), 'Expected Abierto in the proposed condition'
+                    checks.append('proposed condition open is rendered as Abierto in the after panel')
                     await _press_tab(page)
                     await _press_tab(page)
-                    assert await page.evaluate(f"document.activeElement?.dataset.key==='{discard}:reject'")
+                    assert await page.evaluate(f"document.activeElement===document.querySelector({key(discard + ':reject')})")
                     await press_enter(page)
                     await page.wait_for("document.querySelector('#routine-proposals').textContent.includes('Propuesta rechazada')")
                     assert await page.evaluate("document.activeElement?.dataset.key==='proposals-refresh'")
@@ -552,6 +729,7 @@ async def main() -> None:
                     assert len(await scheduler.get_all_routines()) == 2
                     assert run_count(database) == runs_before_proposals and len(ha.sends) == effects_before_proposals
                     checks.append('voice proposals: named region and controls, read-only before/after, keyboard confirm and replay after lost reply, keyboard reject, no run or HA effects')
+                    checks.append('device IDs are absent from visible text, options and accessible labels')
                     tray.submit(ProposalOperation.CREATE, conversation_id=str(uuid4()),
                                 spec=parse_routine_spec(definition('Propuesta reservada para revisión')))
 
@@ -568,32 +746,33 @@ async def main() -> None:
                     proposal_marker = await page.evaluate('window.__qaProposalRequests.length')
                     request_marker = len(requests)
                     await login(page, household.token, 'Acceso de hogar')
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,actions,routines'")
+                    assert await page.evaluate("[...document.querySelectorAll('#rail-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,routines,tasks,activity'")
                     await click('#app-nav [data-view=routines]')
                     await page.wait_for("document.querySelectorAll('#routines-list .routine-card').length===2")
                     assert await page.evaluate("document.querySelector('[data-routine-write=execute]') && !document.querySelector('[data-routine-write]:not([data-routine-write=execute])') && document.querySelector('#routines-create').hidden && !document.querySelector('#routine-dialog').open")
                     assert await page.evaluate("document.querySelector('.routines-permission').textContent.includes('consultar tus resultados')")
-                    assert await page.evaluate(f"!document.querySelector('[data-run-id=\"{operator_run.run_id}\"]')")
+                    assert await page.evaluate(f"!document.querySelector({card(main_id, '.routine-run')})")
                     denied = await page.evaluate(f"""Promise.all([
                       fetch('/api/routines',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({json.dumps(definition('Intento del hogar'))})}}).then(r=>r.status),
                       fetch('/api/routines/{main_id}/disable',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{expected_revision:1}})}}).then(r=>r.status),
                       fetch('/api/routines/{main_id}/runs/{operator_run.run_id}').then(r=>r.status)])""")
                     assert denied == [403, 403, 404], denied
-                    await press(f'[data-key="{main_id}:execute"]')
+                    await press(control(main_id, 'execute'))
                     await page.wait_for(f"document.querySelector({card(main_id)}).textContent.includes('Resultado de tu intento') && document.querySelector({card(main_id, '[data-run-status=succeeded]')})")
                     stored = await page.evaluate(f"JSON.parse(sessionStorage.getItem('kza:routine-attempt:{main_id}'))")
                     assert stored['actor'] == household.principal.routine_actor and stored['state'] == 'terminal'
                     assert stored['run_id'] != operator_run.run_id
                     marker = len(requests)
-                    await press(f'[data-key="{main_id}:consult"]')
-                    await page.wait_for(f"!document.querySelector('[data-key=\"{main_id}:consult\"]').disabled")
+                    await press(control(main_id, 'consult'))
+                    await page.wait_for(f"!document.querySelector({key(main_id + ':consult')}).disabled")
                     assert any(item['method'] == 'GET' and item['path'] == f"/api/routines/{main_id}/runs/{stored['run_id']}"
                                for item in requests[marker:])
                     assert [(item.routine_id, item.revision) for item in await scheduler.get_all_routines()] == before
                     assert run_count(database) == runs_before + 1
                     audits['rutinas-hogar'] = await audit_view(page, evidence, 'rutinas-hogar', (
                         ('#app-nav [data-view=routines]', None), ('#routines-refresh', None),
-                        (f'[data-key="{main_id}:execute"]', None), (f'[data-key="{main_id}:consult"]', None)), screenshot, widths=WIDTHS)
+                        (control(main_id, 'execute'), None), (control(main_id, 'consult'), None)), screenshot, widths=WIDTHS)
+                    checks.append('both themes match the NEXO shell and pass scoped visible contrast for every captured state')
                     assert await page.evaluate("!document.querySelector('#routine-proposals')")
                     assert await page.evaluate('window.__qaProposalRequests.length') == proposal_marker
                     assert not any(item['path'].startswith(PROPOSALS) for item in requests[request_marker:])
@@ -620,14 +799,31 @@ async def main() -> None:
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
                     assert page.errors == [], page.errors
 
-                    result = {'passed': True, 'synthetic_fixture': True, 'actual_chromium_http_login': True, 'real_routine_scheduler': True,
+                    zoom_evidence = evidence / 'text-zoom-rutinas.json'
+                    zoom_evidence.write_text(json.dumps(zoom_checks, indent=2) + '\n')
+                    zoom_failures = [
+                        f'{item["state"]}/{item["theme"]}/{item["width"]}px '
+                        f'(document={item["document"]}, dialog={item["dialog"]})'
+                        for item in zoom_checks if item['document'] or item['dialog']
+                    ]
+                    zoom_failures += [
+                        f'{view}/{width}px (+{item["overflow_px"]}px)'
+                        for view, audit in audits.items() for width in ZOOM_WIDTHS
+                        for item in audit['widths'][str(width)]['wcag_findings']
+                        if item['criterion'] == '1.4.4' and item['issue'] == 'increased_horizontal_overflow'
+                    ]
+                    if not zoom_failures:
+                        checks.append('no horizontal overflow at 200% text at 320/390px')
+                    result = {'passed': not zoom_failures, 'synthetic_fixture': True, 'actual_chromium_http_login': True, 'real_routine_scheduler': True,
                               'roles': ['operator', 'home', 'evaluator'], 'widths': list(WIDTHS), 'checks': checks, 'web11_focus': web11,
                               'runs_on_server': run_count(database), 'home_effects': len(ha.sends),
-                              'a11y_evidence': [f'a11y-{view}.json' for view in audits],
+                              'a11y_evidence': [f'a11y-{view}.json' for view in audits] + [zoom_evidence.name],
                               'a11y_findings': {view: len(audit['findings']) for view, audit in audits.items()},
+                              'text_zoom_failures': zoom_failures,
                               'requests': len(requests), 'javascript_exceptions': len(page.errors)}
                     (evidence / 'browser-result.json').write_text(json.dumps(result, indent=2, ensure_ascii=False) + '\n')
                     print(json.dumps(result, ensure_ascii=False))
+                    assert not zoom_failures, f'Rutinas 200% text horizontal overflow. See {zoom_evidence.name} and a11y reports.'
         finally:
             if browser is not None and browser.poll() is None:
                 browser.terminate()

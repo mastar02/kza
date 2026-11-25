@@ -103,9 +103,9 @@ async def search_voice(page, term):
     assert [(method,url.path,url.query) for method,url in page.voice_requests[marker:]] == [('POST', CAPTURE_QUERY, '')]
 
 
-async def read_transcript(page, identity, panel, text):
+async def read_transcript(page, identity, panel, text, *, selector=None):
     """Open one transcript and check the real HTTP and DOM contracts."""
-    selector = f'[data-capture-id="{identity}"] button'
+    selector = selector or f'[data-capture-id="{identity}"] button'
     marker = len(page.voice_requests)
     await click_button(page, selector,'Leer transcripción')
     target = f'document.querySelector({json.dumps(panel)})'

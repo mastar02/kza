@@ -187,8 +187,11 @@ test('panel: disclosure, verified profile, multi-profile notice, truncated note,
   assert.ok(text.includes(MULTI_PROFILE_NOTICE));
   assert.match(text, /Se muestran las primeras 256 inscripciones/);
   assert.match(text, /Interruptor encendido · funcionando/);
+  const switchButton = container.querySelector('[data-key="voice-switch"]');
+  assert.equal(switchButton.getAttribute('role'), 'switch');
+  assert.equal(switchButton.getAttribute('aria-checked'), 'true');
   const labels = buttons(container).map(button => button.textContent);
-  assert.deepEqual(labels, ['Actualizar', 'Apagar…', 'Habilitar un nuevo intento…', 'Reanudar…']);
+  assert.deepEqual(labels, ['Actualizar', 'Memoria por voz', 'Habilitar un nuevo intento…', 'Reanudar…']);
   assert.ok(buttons(container).every(button => !button.disabled));
   assert.equal(container.querySelectorAll('[data-voice-consent]').length, 3);
   // Reopen: dialog names the person; cancel sends nothing.
@@ -198,7 +201,7 @@ test('panel: disclosure, verified profile, multi-profile notice, truncated note,
   assert.deepEqual(f.writes(), []);
   // Switch off through the dialog.
   f.write(SWITCH(false, 2));
-  buttons(container).find(button => button.textContent === 'Apagar…').click(); await settle();
+  buttons(container).find(button => button.dataset.key === 'voice-switch').click(); await settle();
   assert.match(visibleText(dialog), /se cierran las ventanas de verificación abiertas/);
   dialog.querySelector('[data-key="voice-admin-accept"]').click(); await settle();
   assert.deepEqual(f.writes(), ['POST /api/memory/voice/switch']);
@@ -215,7 +218,42 @@ test('panel: with the flag off the list is replaced by the reason; no scores or 
   assert.match(text, /no habilita la memoria por voz/);
   assert.match(text, /Interruptor encendido · sin efecto/);
   assert.ok(!/puntaje|score|intentos fallidos:/i.test(text));
-  assert.deepEqual(buttons(container).map(button => button.textContent), ['Actualizar', 'Apagar…']);
+  assert.deepEqual(buttons(container).map(button => button.textContent), ['Actualizar', 'Memoria por voz']);
+  dispose();
+});
+
+test('panel: the pause reference describes only the resume action without a verified name', async () => {
+  const f = fixture();
+  f.switches.push(SWITCH());
+  f.lists.push(LIST({ suspended_profiles: [{ profile_id: P1, revision: 1 }, { profile_id: P2, revision: 1 }] }));
+  const doc = createDocument(), container = doc.createElement('div'), dialog = doc.createElement('dialog');
+  const dispose = mountVoiceConsents({ container, confirmDialog: dialog, owner: f.owner });
+  await f.owner.open(); await settle();
+  const [named, unnamed] = container.querySelectorAll('[data-voice-suspended]');
+  const namedAction = buttons(named)[0], unnamedAction = buttons(unnamed)[0];
+  assert.match(visibleText(named), /Perfil «Voz de A»/);
+  assert.doesNotMatch(visibleText(named), /Referencia/);
+  const description = unnamed.querySelector('#' + unnamedAction.getAttribute('aria-describedby'));
+  assert.equal(description.className, 'row-meta');
+  assert.equal(description.textContent, 'Referencia: ' + P2.slice(0, 8));
+  assert.equal(unnamedAction.getAttribute('aria-label'), null);
+  for (const row of [named, unnamed]) {
+    for (const element of [row, ...row.descendants()]) {
+      const attributes = [element.id, element.title, ...Object.values(element.attributes), ...Object.values(element.dataset)];
+      assert.ok(attributes.every(value => !String(value).includes(P1) && !String(value).includes(P2)),
+        'paused row attributes must exclude canonical profile UUIDs');
+    }
+  }
+  namedAction.click();
+  assert.doesNotMatch(visibleText(dialog), /Referencia/);
+  dialog.querySelector('[data-key="voice-admin-cancel"]').click();
+  assert.equal(doc.activeElement, namedAction);
+  unnamedAction.click();
+  assert.match(visibleText(dialog), /Referencia: 00000000/);
+  assert.equal(dialog.querySelector('h2').textContent, 'Reanudar propuestas por voz');
+  dialog.querySelector('[data-key="voice-admin-cancel"]').click();
+  assert.equal(doc.activeElement, unnamedAction);
+  assert.deepEqual(f.writes(), []);
   dispose();
 });
 

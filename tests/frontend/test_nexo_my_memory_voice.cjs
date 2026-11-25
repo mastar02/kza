@@ -99,7 +99,7 @@ test('view: the pending card shows the title, hour times and exactly «Descartar
   f.read(page([pending(ID('a')), item(ID('b'))]));
   const view = mountMemory(f);
   await f.owner.open(); await settle();
-  const card = view.container.querySelector(`[data-my-memory-id="${ID('a')}"]`), confirmed = view.container.querySelector(`[data-my-memory-id="${ID('b')}"]`);
+  const card = view.container.querySelectorAll('.memory-card').find(row => row.querySelector('.memory-pending-title')), confirmed = view.container.querySelectorAll('.memory-card').find(row => row.querySelector('.memory-content'));
   assert.ok(card && confirmed);
   const text = visibleText(card);
   assert.match(text, /Propuesta de voz pendiente de revisión/);
@@ -137,7 +137,7 @@ test('refresh removing an earlier memory leaves the focused card attached', asyn
   const view = mountMemory(f);
   await f.owner.open(); await settle();
   const grid = view.container.querySelector('#my-memory-facts');
-  const card = grid.children[1], control = card.querySelector(`[data-key="${ID('b')}:delete"]`);
+  const card = grid.children[1], control = card.querySelector('[data-key="delete"]');
   control.focus();
   const insert = t.mock.method(grid, 'insertBefore');
   await f.owner.refresh(); await settle();
@@ -155,7 +155,7 @@ test('view: a blocked pending card keeps its buttons focusable with aria-disable
   await f.owner.open(); await settle();
   f.write(() => new Promise(resolve => { release = () => resolve({ deleted: true }); }));
   const sending = f.owner.remove(ID('a'), { confirmed: true }); await settle();
-  const card = view.container.querySelector(`[data-my-memory-id="${ID('a')}"]`);
+  const card = view.container.querySelectorAll('.memory-card').find(row => row.querySelector('.memory-pending-title'));
   const retry = buttons(card).find(button => button.textContent.startsWith('Reintentar'));
   assert.ok(retry && retry.getAttribute('aria-disabled') === 'true' && !retry.disabled);
   retry.click(); await settle();

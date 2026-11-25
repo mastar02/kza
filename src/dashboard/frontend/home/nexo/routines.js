@@ -1,4 +1,4 @@
-/* NEXO Rutinas view: DOM only. Cards are keyed by routine and rebuilt only when
+/* NEXO Rutinas view: DOM only. Rows are keyed by routine and rebuilt only when
  * their rendered data changes; focus returns to the control with the same key. */
 (function (root) {
   'use strict';
@@ -11,45 +11,79 @@
     already_disabled: 'Último freno por voz: la rutina ya estaba desactivada.' };
   const DAYS = [['Lu', 'Lunes'], ['Ma', 'Martes'], ['Mi', 'Miércoles'], ['Ju', 'Jueves'], ['Vi', 'Viernes'], ['Sá', 'Sábado'], ['Do', 'Domingo']];
   const PROPOSAL_LABELS = { create: 'Crear rutina', update: 'Editar rutina', delete: 'Borrar rutina', enable: 'Activar rutina', disable: 'Desactivar rutina' };
+  const PARAMETER_LABELS = { brightness: 'Brillo', brightness_pct: 'Brillo (%)', color_temp_kelvin: 'Temperatura de color', temperature: 'Temperatura', hvac_mode: 'Modo del aire', position: 'Posición' };
+  const STATE_LABELS = { on: 'Encendido', off: 'Apagado', open: 'Abierto', closed: 'Cerrado', opening: 'Abriendo', closing: 'Cerrando', unavailable: 'No disponible', unknown: 'Desconocido',
+    cool: 'Frío', heat: 'Calor', dry: 'Deshumidificar', fan_only: 'Ventilación', auto: 'Automático', heat_cool: 'Frío y calor' };
+  const CONDITION_EXAMPLES = ['closed', 'open', 'on', 'off'].map(value => `${STATE_LABELS[value]} = ${value}`).join(' · ');
+  const DATE_TIME = { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Montevideo' };
 
-  function mountRoutines({ container, dialog, confirmDialog, owner, icon }) {
-    const doc = container.ownerDocument, home = root.HomeUI, routines = root.NexoRoutineOwner;
+  function mountRoutines({ container, dialog, confirmDialog, owner }) {
+    const doc = container.ownerDocument, home = root.HomeUI;
     const OPERATIONS = home.OPERATION_LABELS;
     const cards = new Map();
+    const controlKeys = new WeakMap();
     let active = true, lastAnnouncement = 0, editorSignature = null, editorInvoker = null, confirmResolve = null;
+    let deviceNames = new Map();
 
+    function recordControl(control, key) {
+      controlKeys.set(control, key);
+      control.dataset.key = key.slice(key.lastIndexOf(':') + 1);
+      return control;
+    }
+    function recordButton(text, key, callback, className = 'btn') {
+      return recordControl(button(text, '', callback, className), key);
+    }
     function node(tag, className, text) {
       const element = doc.createElement(tag);
       if (className) element.className = className;
       if (text !== undefined && text !== null) element.textContent = String(text);
       return element;
     }
-    function button(text, key, callback, className = 'identity-secondary') {
+    function button(text, key, callback, className = 'btn') {
       const element = node('button', className, text); element.type = 'button'; element.dataset.key = key;
       element.addEventListener('click', callback); return element;
     }
-    function entityName(state, id) { return (state.catalog?.entities || []).find(item => item.entity_id === id)?.name || id || 'Dispositivo sin elegir'; }
+    function deviceOrdinals(...groups) {
+      const ordinals = new Map();
+      for (const items of groups) {
+        for (const { entity_id: id } of items ?? []) {
+          if (id && !ordinals.has(id)) ordinals.set(id, ordinals.size + 1);
+        }
+      }
+      return ordinals;
+    }
+    function routineOrdinals(state, routine, extraActions) {
+      return deviceOrdinals(routine?.conditions, routine?.actions, routine?.latest_run?.actions,
+        state.attempts[routine?.routine_id]?.run?.actions, extraActions);
+    }
+    function entityName(state, id, ordinals) {
+      if (!id) return 'Dispositivo sin elegir';
+      return deviceNames.get(id) || (state.catalog ? 'Dispositivo no disponible' : 'Dispositivo sin nombre ' + ordinals.get(id));
+    }
+    function routineMessage(text) {
+      if (text === 'Actualizá el catálogo de dispositivos antes de guardar.') return 'Actualizá la lista de dispositivos antes de guardar.';
+      return text.replace(/(R|r)evisión (?=\d)/g, (_, initial) => initial === 'R' ? 'Versión ' : 'versión ');
+    }
     function scheduleText(routine) {
-      if (!routine.schedule) return 'Sólo manual';
+      if (!routine.schedule) return 'Sin horario programado';
       return routine.schedule.weekdays.map(day => DAYS[day]?.[0] || '?').join(', ') + ' · ' + routine.schedule.at + ' · Montevideo';
     }
-    function focusKey() { const element = doc.activeElement; return element && container.contains(element) || dialog.contains(element) ? element.dataset?.key || null : null; }
+    function focusKey() { const element = doc.activeElement; return element && container.contains(element) || dialog.contains(element) ? (controlKeys.get(element) || element.dataset?.key) || null : null; }
     function restoreFocus(scope, key, selection) {
       if (!key) return;
-      const target = [...scope.querySelectorAll('[data-key]')].find(element => element.dataset.key === key);
+      const target = [...scope.querySelectorAll('[data-key]')].find(element => (controlKeys.get(element) || element.dataset.key) === key);
       if (target && !target.disabled) {
         target.focus({ preventScroll: true });
         if (selection && typeof target.setSelectionRange === 'function') { try { target.setSelectionRange(...selection); } catch (_) { /* Not a text input. */ } }
       }
     }
 
-    // Static skeleton: heading, freshness, permission note, live region and grid.
-    const heading = node('div', 'identity-heading routines-heading');
+    const heading = node('header', 'page-head');
     const intro = node('div');
-    const title = node('h2', '', 'Rutinas de tu hogar.'); title.id = 'routines-title';
-    intro.append(node('p', 'eyebrow', 'TU CASA, A TU RITMO'), title, node('p', '', 'Horarios y acciones guardados en KZA. Las automatizaciones de Home Assistant no aparecen aquí.'));
-    const side = node('div', 'identity-heading-side routines-heading-side');
-    const create = button('Crear rutina', 'create', () => { editorInvoker = 'create'; void startEditor('create', replace => owner.newDraft({ replace })); }, 'identity-primary');
+    const title = node('h1', '', 'Rutinas'); title.id = 'routines-title';
+    intro.append(title, node('p', '', 'Acciones guardadas en KZA para ejecutar ahora o a una hora programada.'));
+    const side = node('div', 'row-actions');
+    const create = button('Crear rutina', 'create', () => { editorInvoker = 'create'; void startEditor('create', replace => owner.newDraft({ replace })); }, 'btn primary');
     create.id = 'routines-create';
     // aria-disabled instead of disabled: a disabled focused button drops keyboard focus to <body>.
     const refresh = button('Actualizar', 'refresh', () => { if (refresh.getAttribute('aria-disabled') !== 'true') void owner.refresh(); });
@@ -60,30 +94,39 @@
     const createNotice = node('p', 'routine-notice'); createNotice.dataset.routineNotice = 'new';
     const sessionNotice = node('p', 'routine-notice routine-session-notice'); sessionNotice.dataset.routineNotice = 'session';
     // A draft kept while its save was uncertain, offered back when the save turned out not applied.
-    const recovery = node('div', 'routine-recovery');
+    const recovery = node('div', 'detail');
     const recoveryText = node('p', 'routine-notice');
-    const recover = button('Recuperar borrador', 'recover', () => { editorInvoker = 'recover'; owner.reopenDraft(); }, 'identity-primary');
-    const discard = button('Descartar borrador', 'discard', () => owner.discardDraft());
-    recovery.append(recoveryText, recover, discard);
+    const recover = button('Recuperar borrador', 'recover', () => { editorInvoker = 'recover'; owner.reopenDraft(); }, 'btn primary');
+    const discard = button('Descartar borrador', 'discard', () => owner.discardDraft(), 'btn quiet');
+    const recoveryActions = node('div', 'row-actions');
+    recoveryActions.append(recover, discard);
+    recovery.append(recoveryText, recoveryActions);
     const live = node('p', 'routines-live'); live.id = 'routines-live'; live.setAttribute('role', 'status'); live.setAttribute('aria-live', 'polite');
-    const grid = node('div', 'routine-grid'); grid.id = 'routines-list';
-    const empty = node('p', 'identity-empty routines-empty');
-    container.replaceChildren(heading, permission, sessionNotice, freshness, createNotice, recovery, live, grid, empty);
+    const routineSection = node('section', 'routine-section');
+    const routineTitle = node('h2', '', 'Tus rutinas'); routineTitle.id = 'routines-list-title';
+    routineSection.setAttribute('aria-labelledby', routineTitle.id);
+    const list = node('div', 'rows'); list.id = 'routines-list';
+    const empty = node('p', 'empty routines-empty');
+    list.append(empty);
+    routineSection.append(routineTitle, list);
+    container.replaceChildren(heading, permission, sessionNotice, freshness, createNotice, recovery, live, routineSection);
 
-    const proposalSection = node('section'); proposalSection.id = 'routine-proposals';
-    const proposalTitle = node('h3', '', 'Propuestas por voz'); proposalTitle.id = 'routine-proposals-title';
+    const proposalSection = node('section', 'routine-section'); proposalSection.id = 'routine-proposals';
+    const proposalTitle = node('h2', '', 'Propuestas por voz'); proposalTitle.id = 'routine-proposals-title';
     proposalSection.setAttribute('aria-labelledby', proposalTitle.id);
     const proposalStatus = node('p', 'routine-notice'); proposalStatus.setAttribute('role', 'status');
     const proposalRefresh = button('Actualizar propuestas', 'proposals-refresh', () => owner.refreshProposals());
-    const proposalGrid = node('div', 'routine-grid');
-    proposalSection.append(proposalTitle, proposalRefresh, proposalStatus, proposalGrid);
+    const proposalHeading = node('header', 'routine-section-head');
+    proposalHeading.append(proposalTitle, proposalRefresh);
+    const proposalList = node('div', 'rows');
+    proposalSection.append(proposalHeading, proposalStatus, proposalList);
     let proposalSignature;
 
-    function proposalDefinition(state, label, value) {
-      const panel = node('div', 'routine-run'); panel.dataset.proposalDiff = label === 'Antes' ? 'before' : 'after';
+    function proposalDefinition(state, label, value, ordinals) {
+      const panel = node('div', 'detail routine-definition'); panel.dataset.proposalDiff = label === 'Antes' ? 'before' : 'after';
       panel.append(node('h4', '', label));
-      if (value === null) { panel.append(node('p', 'routine-detail', 'Sin definición de rutina.')); return panel; }
-      const fields = node('dl', 'routine-detail');
+      if (value === null) { panel.append(node('p', 'row-meta', 'Sin rutina.')); return panel; }
+      const fields = node('dl', 'routine-definition-fields');
       for (const [term, detail] of [
         ['Nombre', value.name], ['Descripción', value.description || 'Sin descripción'],
         ['Estado', value.enabled ? 'Activa' : 'Desactivada'], ['Horario', scheduleText(value)]
@@ -91,7 +134,10 @@
       panel.append(fields);
       if (value.conditions.length) {
         const conditions = node('ul', 'routine-run-actions');
-        for (const item of value.conditions) conditions.append(node('li', '', `${entityName(state, item.entity_id)} · ${item.state}`));
+        for (const item of value.conditions) {
+          const status = Object.hasOwn(STATE_LABELS, item.state) ? STATE_LABELS[item.state] : item.state;
+          conditions.append(node('li', '', `${entityName(state, item.entity_id, ordinals)} · ${status}`));
+        }
         panel.append(node('p', 'routine-run-caption', 'Condiciones'), conditions);
       }
       const actions = node('ol', 'routine-run-actions');
@@ -102,47 +148,51 @@
         const values = (home.OPERATION_PARAMETERS[item.operation] || []).filter(key => Object.hasOwn(item, key))
           .map(key => {
             const field = fields.find(entry => entry.name === key);
-            const label = field?.label || (key === 'brightness_pct' ? 'Brillo (%)' : key);
-            return `${label} ${field?.options?.find(([id]) => id === item[key])?.[1] ?? item[key]}`;
+            const label = field?.label || PARAMETER_LABELS[key];
+            const value = field?.options?.find(([id]) => id === item[key])?.[1]
+              ?? (key === 'hvac_mode' && Object.hasOwn(STATE_LABELS, item[key]) ? STATE_LABELS[item[key]] : item[key]);
+            return `${label} ${value}`;
           });
-        actions.append(node('li', '', [entityName(state, item.entity_id), OPERATIONS[item.operation], ...values].filter(Boolean).join(' · ')));
+        actions.append(node('li', '', [entityName(state, item.entity_id, ordinals), OPERATIONS[item.operation], ...values].filter(Boolean).join(' · ')));
       }
       panel.append(node('p', 'routine-run-caption', 'Acciones en orden'), actions);
       return panel;
     }
 
     function proposalCard(state, id, item, selected, decision) {
-      const card = node('article', 'routine-card panel'); card.dataset.proposalId = id;
-      card.append(node('h4', '', item ? PROPOSAL_LABELS[item.operation] : 'Decisión sobre una propuesta por voz'));
+      const card = node('article', 'row routine-proposal');
+      const summary = node('div', 'row-main');
+      summary.append(node('h3', 'row-title', item ? PROPOSAL_LABELS[item.operation] : 'Decisión sobre una propuesta por voz'));
       if (item && (!selected || ['pending', 'conflict', 'error'].includes(selected.status))) {
-        card.append(node('p', 'routine-detail', 'Pendiente · vence ' +
-          new Date(item.expiresAt).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short', timeZone: 'America/Montevideo' })));
+        summary.append(node('p', 'row-meta', 'Pendiente · vence ' + new Date(item.expiresAt).toLocaleString('es-UY', DATE_TIME)));
       }
+      if (decision?.message || selected?.message) summary.append(node('p', 'routine-state', decision?.message || selected.message));
+      card.append(summary);
       if (item && selected?.preview) {
-        const diff = node('section'); diff.setAttribute('aria-label', 'Vista previa de la propuesta');
-        diff.append(node('h5', '', 'Vista previa'),
-          proposalDefinition(state, 'Antes', selected.preview.before), proposalDefinition(state, 'Después', selected.preview.after));
+        const { before, after } = selected.preview;
+        const ordinals = deviceOrdinals(before?.conditions, before?.actions, after?.conditions, after?.actions);
+        const diff = node('section', 'routine-proposal-diff'); diff.setAttribute('aria-label', 'Vista previa de la propuesta');
+        diff.append(proposalDefinition(state, 'Antes', before, ordinals), proposalDefinition(state, 'Después', after, ordinals));
         card.append(diff);
       }
-      if (decision?.message || selected?.message) card.append(node('p', 'routine-state', decision?.message || selected.message));
-      const controls = node('div', 'routine-controls');
+      const controls = node('div', 'row-actions');
       if (item || decision) {
-        const review = button(selected?.loading ? 'Consultando vista previa…' : selected ? 'Volver a consultar' : 'Revisar propuesta',
+        const review = recordButton(selected?.loading ? 'Consultando vista previa…' : selected ? 'Volver a consultar' : 'Revisar propuesta',
           id + ':review', () => owner.reviewProposal(id));
         review.setAttribute('aria-disabled', String(Boolean(selected?.loading || selected && decision)));
         controls.append(review);
       }
       if (selected && decision) {
         const confirm = decision.action === 'confirm';
-        const retry = button(decision.sending ? (confirm ? 'Confirmando…' : 'Rechazando…') :
-          (confirm ? 'Reintentar confirmación' : 'Reintentar rechazo'),
+        const retry = recordButton(decision.sending ? (confirm ? 'Confirmando…' : 'Descartando…') :
+          (confirm ? 'Reintentar confirmación' : 'Reintentar descarte'),
           id + ':' + decision.action, () => owner.decideProposal(id, decision.action));
         retry.setAttribute('aria-disabled', String(decision.sending)); controls.append(retry);
       } else if (item && selected?.preview) {
         if (selected.status === 'pending' && !selected.preview.stale) {
-          controls.append(button('Confirmar propuesta', id + ':confirm', () => owner.decideProposal(id, 'confirm'), 'identity-primary'));
+          controls.append(recordButton('Confirmar propuesta', id + ':confirm', () => owner.decideProposal(id, 'confirm'), 'btn primary'));
         }
-        controls.append(button('Rechazar propuesta', id + ':reject', () => owner.decideProposal(id, 'reject')));
+        controls.append(recordButton('Descartar', id + ':reject', () => owner.decideProposal(id, 'reject'), 'btn quiet'));
       }
       card.append(controls);
       return card;
@@ -150,23 +200,23 @@
 
     function renderProposals(state) {
       const tray = state.proposals;
-      if (!tray) { proposalSection.remove(); proposalGrid.replaceChildren(); proposalSignature = undefined; return; }
-      if (!container.contains(proposalSection)) container.append(proposalSection);
+      if (!tray) { proposalSection.remove(); proposalList.replaceChildren(); proposalSignature = undefined; return; }
+      if (!container.contains(proposalSection)) container.insertBefore(proposalSection, routineSection);
       proposalRefresh.setAttribute('aria-disabled', String(tray.loading));
       const { items, decisions, selected } = tray;
-      const signature = JSON.stringify([items, decisions, selected, selected?.preview ? state.catalog?.entities : null]);
+      const signature = JSON.stringify([items, decisions, selected, selected?.preview ? [state.catalog?.entities, [...deviceNames]] : null]);
       if (signature !== proposalSignature) {
-        const focused = proposalGrid.contains(doc.activeElement), key = focused ? focusKey() : null;
+        const focused = proposalList.contains(doc.activeElement), key = focused ? focusKey() : null;
         const rows = new Map(items.map(item => [item.id, item]));
         for (const id of Object.keys(decisions)) if (!rows.has(id)) rows.set(id, null);
         if (selected && !rows.has(selected.id)) rows.set(selected.id, null);
-        proposalGrid.replaceChildren(...[...rows].map(([id, item]) =>
+        proposalList.replaceChildren(...[...rows].map(([id, item]) =>
           proposalCard(state, id, item, selected?.id === id ? selected : null, decisions[id])));
         proposalSignature = signature;
         if (focused) {
-          restoreFocus(proposalGrid, key);
-          if (selected && !proposalGrid.contains(doc.activeElement)) restoreFocus(proposalGrid, selected.id + ':review');
-          if (!proposalGrid.contains(doc.activeElement)) proposalRefresh.focus({ preventScroll: true });
+          restoreFocus(proposalList, key);
+          if (selected && !proposalList.contains(doc.activeElement)) restoreFocus(proposalList, selected.id + ':review');
+          if (!proposalList.contains(doc.activeElement)) proposalRefresh.focus({ preventScroll: true });
         }
       }
       const text = tray.error || (tray.loading ? 'Consultando propuestas…' :
@@ -174,80 +224,99 @@
       if (proposalStatus.textContent !== text) proposalStatus.textContent = text;
     }
 
-    function runBlock(state, run, caption) {
-      const block = node('div', 'routine-run'); block.dataset.runId = run.run_id;
-      block.append(node('p', 'routine-run-caption', caption));
+    function runBlock(state, run, caption, ordinals) {
+      const block = node('div', 'routine-run');
+      const scheduled = run.scheduled_for ? new Date(run.scheduled_for) : null;
+      const title = node('p', 'routine-run-caption', caption);
+      if (scheduled && Number.isFinite(scheduled.getTime())) {
+        const time = node('time', 'time', scheduled.toLocaleString('es-UY', DATE_TIME));
+        time.dateTime = scheduled.toISOString();
+        title.append(' · ', time);
+      }
+      block.append(title);
       const status = node('p', 'routine-run-status', (SOURCE_LABELS[run.source] || 'Origen desconocido') + ' · ' + (RUN_LABELS[run.status] || 'Estado desconocido'));
       status.dataset.runStatus = run.status; block.append(status);
       if (run.reason === 'routine_busy') block.append(node('p', 'routine-detail', 'La rutina ya estaba en curso.'));
       const list = node('ol', 'routine-run-actions');
       for (const item of run.actions) {
-        const line = node('li', '', entityName(state, item.entity_id) + ' · ' + (ACTION_LABELS[item.status] || 'Estado desconocido'));
+        const line = node('li', '', entityName(state, item.entity_id, ordinals) + ' · ' + (ACTION_LABELS[item.status] || 'Estado desconocido'));
         line.dataset.actionStatus = item.status; list.append(line);
       }
       block.append(list); return block;
     }
-    function cardSignature(state, routine) {
+    function cardSignature(state, routine, ordinals) {
       const id = routine.routine_id;
+      const labels = run => (run?.actions || []).map(item => entityName(state, item.entity_id, ordinals));
       return JSON.stringify([routine, state.attempts[id] || null, state.writes[id] || null, state.notices[id] || null, state.busy.includes(id), state.locked[id],
-        state.capabilities, routine.actions.map(item => entityName(state, item.entity_id)), (routine.latest_run?.actions || []).map(item => entityName(state, item.entity_id))]);
+        state.capabilities, labels(state.attempts[id]?.run), labels(routine.latest_run)]);
     }
-    function buildCard(state, routine, card) {
+    function buildCard(state, routine, card, ordinals) {
       const id = routine.routine_id, attempt = state.attempts[id], write = state.writes[id], caps = state.capabilities, locked = state.locked[id];
-      const top = node('div', 'routine-card-top');
-      const badge = node('span', 'scene-icon ' + (routine.schedule ? 'lavender' : 'mint')); badge.append(icon(routine.schedule ? 'clock' : 'bolt'));
-      const name = node('div', 'routine-card-name'); name.append(node('h3', '', routine.name), node('span', 'identity-badge', routine.enabled ? 'Activa' : 'Desactivada'));
-      top.append(badge, name); card.append(top);
-      if (routine.description) card.append(node('p', 'routine-detail', routine.description));
-      card.append(node('p', 'routine-detail', scheduleText(routine)));
-      card.append(node('p', 'routine-detail', `${routine.actions.length} ${routine.actions.length === 1 ? 'acción' : 'acciones'} · Revisión ${routine.revision}`));
-      if (write) card.append(node('p', 'routine-state', write.state === 'pending' ? 'Enviando el cambio…' : 'No sabemos si se aplicó el último cambio. Consultando…'));
-      if (attempt?.state === 'unresolved') card.append(node('p', 'routine-state', state.busy.includes(id) ? 'Enviando la ejecución…' : 'Resultado pendiente de consulta.'));
-      if (attempt?.state === 'active') card.append(node('p', 'routine-state', 'Ejecución en curso.'));
-      if (attempt?.run) card.append(runBlock(state, attempt.run, 'Resultado de tu intento'));
-      if (routine.latest_run && routine.latest_run.run_id !== attempt?.run?.run_id) card.append(runBlock(state, routine.latest_run, 'Última ejecución registrada'));
-      if (routine.latest_voice_brake) card.append(node('p', 'routine-detail', BRAKE_LABELS[routine.latest_voice_brake.status]));
-      if (attempt?.run || routine.latest_run) card.append(node('p', 'routine-footnote', '«Confirmada» es lo que informó Home Assistant; no comprueba el resultado físico.'));
-      const message = node('p', 'routine-notice', state.notices[id] || ''); message.dataset.routineNotice = id; card.append(message);
-      const controls = node('div', 'routine-controls');
+      const summary = node('div', 'row-main');
+      const title = node('h3', 'row-title', routine.name);
+      const status = routine.enabled ? 'Activa' : 'Desactivada';
+      if (!caps.manage) title.append(' ', node('span', routine.enabled ? 'tag on' : 'tag', status));
+      summary.append(title);
+      if (routine.description) summary.append(node('p', '', routine.description));
+      summary.append(node('p', 'row-meta', scheduleText(routine)),
+        node('p', 'row-meta', `${routine.actions.length} ${routine.actions.length === 1 ? 'acción' : 'acciones'} · Versión ${routine.revision}`));
+      card.append(summary);
+      const controls = node('div', 'row-actions');
       if (caps.execute) {
         const running = routine.latest_run?.status === 'running' || attempt?.state === 'active';
         if (!attempt || attempt.state === 'terminal') {
-          const run = button(attempt ? 'Ejecutar otra vez' : 'Ejecutar', id + ':execute', () => runRoutine(id), 'identity-primary');
+          const run = recordButton(attempt ? 'Ejecutar otra vez' : 'Ejecutar ahora', id + ':execute', () => runRoutine(id));
           run.disabled = locked || running || !routine.enabled; run.dataset.routineWrite = 'execute'; controls.append(run);
         } else if (attempt.state === 'unresolved') {
-          const retry = button('Reintentar este intento', id + ':retry', () => owner.retryAttempt(id));
+          const retry = recordButton('Reintentar este intento', id + ':retry', () => owner.retryAttempt(id));
           retry.disabled = state.busy.includes(id); retry.dataset.routineWrite = 'retry'; controls.append(retry);
         }
       }
       if (caps.consult && (attempt || routine.latest_run)) {
-        const consult = button('Consultar resultado', id + ':consult', () => owner.consult(id)); consult.disabled = state.busy.includes(id); controls.append(consult);
+        const consult = recordButton('Consultar resultado', id + ':consult', () => owner.consult(id)); consult.disabled = state.busy.includes(id); controls.append(consult);
       }
       if (caps.manage) {
-        const editControl = button('Editar', id + ':edit', () => { editorInvoker = id + ':edit'; void startEditor(id + ':edit', replace => owner.edit(id, { replace })); }); editControl.disabled = locked; editControl.dataset.routineWrite = 'edit';
-        const toggle = button(routine.enabled ? 'Desactivar' : 'Activar', id + ':toggle', () => owner.setEnabled(id, !routine.enabled)); toggle.disabled = locked; toggle.dataset.routineWrite = 'toggle';
-        const removal = button('Borrar', id + ':delete', () => confirmDelete(id), 'identity-danger'); removal.disabled = locked; removal.dataset.routineWrite = 'delete';
+        const editControl = recordButton('Editar', id + ':edit', () => { editorInvoker = id + ':edit'; void startEditor(id + ':edit', replace => owner.edit(id, { replace })); }); editControl.disabled = locked; editControl.dataset.routineWrite = 'edit';
+        const toggle = recordButton(status, id + ':toggle', () => owner.setEnabled(id, !routine.enabled), 'sw');
+        toggle.setAttribute('role', 'switch');
+        toggle.setAttribute('aria-checked', String(routine.enabled));
+        toggle.setAttribute('aria-label', `Activa o desactivada: ${routine.name}`);
+        toggle.disabled = locked; toggle.dataset.routineWrite = 'toggle';
+        const removal = recordButton('Borrar', id + ':delete', () => confirmDelete(id), 'btn danger'); removal.disabled = locked; removal.dataset.routineWrite = 'delete';
         controls.append(editControl, toggle, removal);
       }
       if (controls.childElementCount) card.append(controls);
-      if (!routine.enabled && caps.execute) card.append(node('p', 'routine-footnote', 'La rutina debe estar activa para iniciar una ejecución.'));
+      const receipts = node('div', 'routine-receipts');
+      if (write) receipts.append(node('p', 'routine-state', write.state === 'pending' ? 'Enviando el cambio…' : 'No sabemos si se aplicó el último cambio. Consultando…'));
+      if (attempt?.state === 'unresolved') receipts.append(node('p', 'routine-state', state.busy.includes(id) ? 'Enviando la ejecución…' : 'Resultado pendiente de consulta.'));
+      if (attempt?.state === 'active') receipts.append(node('p', 'routine-state', 'Ejecución en curso.'));
+      if (attempt?.run) receipts.append(runBlock(state, attempt.run, 'Resultado de tu intento', ordinals));
+      if (routine.latest_run && routine.latest_run.run_id !== attempt?.run?.run_id) receipts.append(runBlock(state, routine.latest_run, 'Última ejecución registrada', ordinals));
+      if (routine.latest_voice_brake) receipts.append(node('p', 'row-meta', BRAKE_LABELS[routine.latest_voice_brake.status]));
+      if (attempt?.run || routine.latest_run) receipts.append(node('p', 'routine-footnote', '«Confirmada» es lo que informó Home Assistant; no comprueba el resultado físico.'));
+      if (state.notices[id]) {
+        const message = node('p', 'routine-notice', state.notices[id]); receipts.append(message);
+      }
+      if (!routine.enabled && caps.execute) receipts.append(node('p', 'routine-footnote', 'La rutina debe estar activa para iniciar una ejecución.'));
+      if (receipts.childElementCount) card.append(receipts);
     }
     function renderCards(state) {
       const key = focusKey(), seen = new Set();
       let previous = null;
       for (const routine of state.routines) {
-        const id = routine.routine_id, signature = cardSignature(state, routine);
+        const id = routine.routine_id, ordinals = routineOrdinals(state, routine);
+        const signature = cardSignature(state, routine, ordinals);
         seen.add(id);
         let entry = cards.get(id);
-        if (!entry) { const card = node('article', 'routine-card panel'); card.dataset.routineId = id; card.setAttribute('aria-label', 'Rutina ' + routine.name); entry = { card, signature: null }; cards.set(id, entry); }
+        if (!entry) { const card = node('article', 'row routine-card'); entry = { card, signature: null }; cards.set(id, entry); }
         if (entry.signature !== signature) {
           const hadFocus = entry.card.contains(doc.activeElement);
           entry.card.replaceChildren(); entry.card.setAttribute('aria-label', 'Rutina ' + routine.name);
-          buildCard(state, routine, entry.card); entry.signature = signature;
+          buildCard(state, routine, entry.card, ordinals); entry.signature = signature;
           if (hadFocus) restoreFocus(entry.card, key);
         }
-        const expected = previous ? previous.nextSibling : grid.firstChild;
-        if (expected !== entry.card) grid.insertBefore(entry.card, expected);
+        const expected = previous ? previous.nextSibling : list.firstChild;
+        if (expected !== entry.card) list.insertBefore(entry.card, expected);
         previous = entry.card;
       }
       for (const [id, entry] of cards) if (!seen.has(id)) { entry.card.remove(); cards.delete(id); }
@@ -257,7 +326,8 @@
       const result = await owner.execute(id, { confirmed });
       if (!active || !result?.needsConfirmation) return;
       const state = owner.getState(), routine = state.routines.find(item => item.routine_id === id);
-      const items = result.needsConfirmation.map(item => entityName(state, item.entity_id) + ' · ' + (ACTION_LABELS[item.status] || 'Estado desconocido'));
+      const ordinals = routineOrdinals(state, routine, result.needsConfirmation);
+      const items = result.needsConfirmation.map(item => entityName(state, item.entity_id, ordinals) + ' · ' + (ACTION_LABELS[item.status] || 'Estado desconocido'));
       const accepted = await ask({ title: 'Repetir una ejecución incierta', body: `La última ejecución de «${routine?.name || 'la rutina'}» no se confirmó por completo. Puede que algunas acciones ya se hayan aplicado. Revisá la casa antes de repetir.`,
         items, confirm: 'Ejecutar igualmente', danger: false, invoker: id + ':execute' });
       if (accepted && active) await owner.execute(id, { confirmed: true });
@@ -274,18 +344,18 @@
     async function confirmDelete(id) {
       const routine = owner.getState().routines.find(item => item.routine_id === id);
       if (!routine) return;
-      const accepted = await ask({ title: 'Borrar rutina', body: `Vas a borrar «${routine.name}» (revisión ${routine.revision}). Sus resultados anteriores se conservan en el servidor.`, items: [], confirm: 'Borrar rutina', danger: true, invoker: id + ':delete' });
+      const accepted = await ask({ title: 'Borrar rutina', body: `Vas a borrar «${routine.name}» (versión ${routine.revision}). Sus resultados anteriores quedan guardados.`, items: [], confirm: 'Borrar rutina', danger: true, invoker: id + ':delete' });
       if (accepted && active) await owner.remove(id);
     }
     function ask({ title: heading, body, items, confirm, danger, invoker }) {
       if (confirmResolve) confirmResolve(false);
       return new Promise(resolve => {
         const titleNode = node('h2', '', heading); titleNode.id = 'routine-confirm-title';
-        const text = node('p', 'modal-description', body);
+        const text = node('p', '', body);
         const list = node('ul', 'routine-confirm-items'); items.forEach(item => list.append(node('li', '', item)));
-        const actions = node('div', 'modal-actions routine-confirm-actions');
+        const actions = node('div', 'row-actions');
         const cancelButton = button('Cancelar', 'confirm-cancel', () => finish(false));
-        const accept = button(confirm, 'confirm-accept', () => finish(true), danger ? 'identity-danger' : 'identity-primary');
+        const accept = button(confirm, 'confirm-accept', () => finish(true), danger ? 'btn danger' : 'btn primary');
         actions.append(cancelButton, accept);
         confirmDialog.replaceChildren(titleNode, text, ...(items.length ? [list] : []), actions);
         confirmDialog.setAttribute('aria-labelledby', 'routine-confirm-title');
@@ -313,10 +383,11 @@
       const value = draft.value;
       return JSON.stringify([draft.editingId, draft.editingRevision, Boolean(value.schedule), value.schedule?.weekdays || null, value.enabled,
         value.conditions.map(item => item.entity_id), value.actions.map(item => [item.entity_id, item.operation, home.controlFields(entityByIdFrom(state, item.entity_id), item.operation, item).map(field => field.name)]),
-        draft.validation, draft.error, draft.message, draft.preview, draft.saving, draft.previewing, draft.unknown, state.catalogUsable, (state.catalog?.entities || []).length]);
+        draft.validation, draft.error, draft.message, draft.preview, draft.saving, draft.previewing, draft.unknown,
+        state.catalogUsable, state.catalog?.entities.length, [...deviceNames]]);
     }
     function entityByIdFrom(state, id) { return (state.catalog?.entities || []).find(item => item.entity_id === id); }
-    function field(label, control, key, className = 'routine-field') {
+    function field(label, control, key, className = 'field') {
       const wrap = node('label', className); control.dataset.key = key;
       wrap.append(node('span', 'routine-field-label', label), control); return wrap;
     }
@@ -336,27 +407,33 @@
       if (!draft) return;
       const value = draft.value; mutator(value); owner.setDraft(value);
     }
-    function entitySelect(state, value, onChange, actionable) {
+    function entitySelect(state, value, onChange, actionable, ordinals) {
       const options = [['', 'Elegí un dispositivo'], ...(state.catalog?.entities || []).filter(item => !actionable || item.capabilities?.some(cap => Object.hasOwn(OPERATIONS, cap)))
-        .map(item => [item.entity_id, item.name || item.entity_id])];
-      if (value && !options.some(([id]) => id === value)) options.push([value, value + ' (fuera del catálogo)']);
-      return select(options, value || '', onChange);
+        .map(item => [item.entity_id, entityName(state, item.entity_id, ordinals)])];
+      if (value && !options.some(([id]) => id === value)) {
+        options.push([value, state.catalog ? 'Dispositivo no disponible' : entityName(state, value, ordinals)]);
+      }
+      const ids = new Map(options.map(([id], index) => [index ? String(index) : '', id]));
+      const choice = [...ids].find(([, id]) => id === (value || ''))?.[0];
+      return select(options.map(([, label], index) => [index ? String(index) : '', label]), choice,
+        key => onChange(ids.get(key) ?? ''));
     }
     function renderEditor(state) {
       const draft = state.draft, value = draft.value;
-      const form = node('form', 'identity-form routine-form'); form.noValidate = true;
+      const ordinals = deviceOrdinals(value.conditions, value.actions, draft.preview?.conditions, draft.preview?.actions);
+      const form = node('form', 'routine-form'); form.noValidate = true;
       const titleNode = node('h2', '', draft.editingId ? 'Editar rutina' : 'Nueva rutina'); titleNode.id = 'routine-editor-title';
-      const top = node('div', 'dialog-top routine-dialog-top'); top.append(node('p', 'eyebrow', draft.editingId ? `REVISIÓN ${draft.editingRevision}` : 'RUTINA NUEVA'));
-      form.append(top, titleNode);
-      if (!state.catalogUsable) form.append(node('p', 'routine-warning', state.catalogStatus.loading ? 'Consultando el catálogo de dispositivos…' : 'Actualizá el catálogo de dispositivos antes de guardar.'));
+      form.append(titleNode);
+      if (draft.editingId) form.append(node('p', 'row-meta', `Versión ${draft.editingRevision}`));
+      if (!state.catalogUsable) form.append(node('p', 'routine-warning', state.catalogStatus.loading ? 'Consultando los dispositivos…' : 'Actualizá la lista de dispositivos antes de guardar.'));
       const fields = node('fieldset', 'routine-fieldset'); fields.disabled = draft.saving || draft.unknown;
       fields.append(node('legend', 'routine-section', 'Datos'));
       fields.append(field('Nombre', input('text', value.name, text => update(d => { d.name = text; })), 'name'));
       fields.append(field('Descripción (opcional)', input('text', value.description, text => update(d => { d.description = text; })), 'description'));
       const enabled = input('checkbox', value.enabled, checked => update(d => { d.enabled = checked; }));
-      fields.append(field('Activa', enabled, 'enabled', 'routine-field routine-check'));
+      fields.append(field('Activa', enabled, 'enabled', 'field routine-check'));
       const when = node('fieldset', 'routine-fieldset'); when.append(node('legend', 'routine-section', 'Cuándo'));
-      when.append(field('Modo', select([['manual', 'Sólo manual'], ['scheduled', 'Horario y días']], value.schedule ? 'scheduled' : 'manual',
+      when.append(field('Modo', select([['manual', 'Sin horario programado'], ['scheduled', 'Horario y días']], value.schedule ? 'scheduled' : 'manual',
         mode => update(d => { d.schedule = mode === 'manual' ? null : { at: '', weekdays: [] }; })), 'mode'));
       if (value.schedule) {
         // Two selects instead of input[type=time]: its inner segments trap Tab and vary by browser locale.
@@ -375,7 +452,7 @@
         const days = node('div', 'routine-days'); days.setAttribute('role', 'group'); days.setAttribute('aria-label', 'Días de la semana');
         DAYS.forEach(([short, full], index) => {
           const pressed = value.schedule.weekdays.includes(index);
-          const toggle = button(short, 'day:' + index, () => update(d => { d.schedule.weekdays = pressed ? d.schedule.weekdays.filter(day => day !== index) : [...d.schedule.weekdays, index].sort((a, b) => a - b); }), 'routine-day');
+          const toggle = button(short, 'day:' + index, () => update(d => { d.schedule.weekdays = pressed ? d.schedule.weekdays.filter(day => day !== index) : [...d.schedule.weekdays, index].sort((a, b) => a - b); }), 'btn routine-day');
           toggle.setAttribute('aria-pressed', String(pressed)); toggle.setAttribute('aria-label', full); days.append(toggle);
         });
         when.append(node('p', 'routine-field-label', 'Días'), days);
@@ -383,8 +460,12 @@
       const conditions = node('fieldset', 'routine-fieldset'); conditions.append(node('legend', 'routine-section', 'Condiciones de estado (opcionales)'));
       value.conditions.forEach((item, index) => {
         const row = node('div', 'routine-row');
-        row.append(field(`Dispositivo de la condición ${index + 1}`, entitySelect(state, item.entity_id, id => update(d => { d.conditions[index].entity_id = id; }), false), `condition:${index}:entity`));
-        row.append(field(`Estado requerido de la condición ${index + 1} (por ejemplo, on)`, input('text', item.state, text => update(d => { d.conditions[index].state = text; })), `condition:${index}:state`));
+        row.append(field(`Dispositivo de la condición ${index + 1}`, entitySelect(state, item.entity_id, id => update(d => { d.conditions[index].entity_id = id; }), false, ordinals), `condition:${index}:entity`));
+        const condition = input('text', item.state, text => update(d => { d.conditions[index].state = text; }));
+        const help = node('p', 'routine-field-label', CONDITION_EXAMPLES);
+        help.id = `routine-condition-state-help-${index}`;
+        condition.setAttribute('aria-describedby', help.id);
+        row.append(field(`Estado requerido de la condición ${index + 1} (tal como lo informa Home Assistant)`, condition, `condition:${index}:state`), help);
         row.append(button(`Quitar condición ${index + 1}`, `condition:${index}:remove`, () => update(d => { d.conditions.splice(index, 1); })));
         conditions.append(row);
       });
@@ -393,8 +474,8 @@
       value.actions.forEach((item, index) => {
         const row = node('div', 'routine-row'), entity = entityByIdFrom(state, item.entity_id);
         const options = Object.entries(OPERATIONS).filter(([key]) => entity?.capabilities?.includes(key));
-        if (item.operation && !options.some(([key]) => key === item.operation)) options.unshift([item.operation, (OPERATIONS[item.operation] || item.operation) + ' (no disponible)']);
-        row.append(field(`Dispositivo de la acción ${index + 1}`, entitySelect(state, item.entity_id, id => update(d => { d.actions[index] = { entity_id: id, operation: '' }; }), true), `action:${index}:entity`));
+        if (item.operation && !options.some(([key]) => key === item.operation)) options.unshift([item.operation, (OPERATIONS[item.operation] || 'Acción') + ' (no disponible)']);
+        row.append(field(`Dispositivo de la acción ${index + 1}`, entitySelect(state, item.entity_id, id => update(d => { d.actions[index] = { entity_id: id, operation: '' }; }), true, ordinals), `action:${index}:entity`));
         row.append(field(`Operación de la acción ${index + 1}`, select([['', 'Elegí una operación'], ...options], item.operation, operation => update(d => { d.actions[index] = { entity_id: item.entity_id, operation }; })), `action:${index}:operation`));
         for (const descriptor of home.controlFields(entity, item.operation, item)) {
           const change = text => update(d => { d.actions[index][descriptor.name] = text === '' ? null : descriptor.options ? text : Number(text); });
@@ -402,7 +483,7 @@
           if (!descriptor.options) { if (Number.isFinite(descriptor.min)) control.min = descriptor.min; if (Number.isFinite(descriptor.max)) control.max = descriptor.max; control.step = descriptor.step || 1; }
           row.append(field(`${descriptor.label} de la acción ${index + 1}`, control, `action:${index}:${descriptor.name}`));
         }
-        const controls = node('div', 'routine-row-controls');
+        const controls = node('div', 'row-actions');
         const move = offset => update(d => { const entry = d.actions.splice(index, 1)[0]; d.actions.splice(index + offset, 0, entry); });
         const up = button(`Subir acción ${index + 1}`, `action:${index}:up`, () => move(-1)); up.disabled = index === 0;
         const down = button(`Bajar acción ${index + 1}`, `action:${index}:down`, () => move(1)); down.disabled = index === value.actions.length - 1;
@@ -413,21 +494,23 @@
       form.append(fields, when, conditions, actions);
       const problems = [...draft.validation, ...(draft.error ? [draft.error.message] : [])];
       const summary = node('div', 'routine-errors'); summary.id = 'routine-errors'; summary.tabIndex = -1; summary.setAttribute('role', 'alert'); summary.dataset.key = 'errors';
-      if (problems.length) { const list = node('ul'); problems.forEach(text => list.append(node('li', '', text))); summary.append(list); }
+      if (problems.length) { const list = node('ul'); problems.forEach(text => list.append(node('li', '', routineMessage(text)))); summary.append(list); }
       form.append(summary);
       if (draft.message) form.append(node('p', 'routine-state', draft.message));
       if (draft.error?.conflict) form.append(button('Descartar borrador y recargar', 'reload', () => owner.discardAndReload()));
       if (draft.preview) {
-        const panel = node('section', 'routine-preview'); panel.setAttribute('aria-label', 'Vista previa');
-        panel.append(node('p', 'identity-badge', 'Vista previa · sin guardar ni ejecutar'), node('p', 'routine-detail', scheduleText(draft.preview)));
+        const panel = node('section', 'detail routine-preview'); panel.setAttribute('aria-label', 'Vista previa');
+        panel.append(node('h3', 'row-title', 'Vista previa · sin guardar ni ejecutar'), node('p', 'row-meta', scheduleText(draft.preview)));
         const list = node('ol', 'routine-run-actions');
-        draft.preview.actions.forEach(item => list.append(node('li', '', entityName(state, item.entity_id) + ' · ' + (OPERATIONS[item.operation] || 'Operación desconocida'))));
+        for (const item of draft.preview.actions) {
+          list.append(node('li', '', entityName(state, item.entity_id, ordinals) + ' · ' + (OPERATIONS[item.operation] || 'Acción desconocida')));
+        }
         panel.append(list, node('p', 'routine-footnote', 'La vista previa no consulta el estado de los dispositivos ni evalúa condiciones.')); form.append(panel);
       }
-      const footer = node('div', 'modal-actions routine-editor-actions');
+      const footer = node('div', 'row-actions');
       const close = button('Cerrar', 'close', () => owner.closeEditor()); close.disabled = draft.saving;
       const previewButton = button(draft.previewing ? 'Consultando vista previa…' : 'Previsualizar', 'preview', () => owner.preview()); previewButton.disabled = draft.previewing || draft.unknown || !state.catalogUsable;
-      const saveButton = node('button', 'identity-primary', draft.saving ? 'Guardando…' : 'Guardar'); saveButton.type = 'submit'; saveButton.dataset.key = 'save';
+      const saveButton = node('button', 'btn primary', draft.saving ? 'Guardando…' : 'Guardar'); saveButton.type = 'submit'; saveButton.dataset.key = 'save';
       saveButton.disabled = draft.saving || draft.unknown || !state.catalogUsable;
       footer.append(close, previewButton, saveButton); form.append(footer);
       form.addEventListener('submit', async event => {
@@ -451,7 +534,10 @@
         dialog.replaceChildren(renderEditor(state)); dialog.setAttribute('aria-labelledby', 'routine-editor-title');
         editorSignature = signature;
         if (!dialog.open) { dialog.showModal(); dialog.querySelector('[data-key=name]')?.focus(); }
-        else restoreFocus(dialog, key, selection);
+        else {
+          restoreFocus(dialog, key, selection);
+          if (!dialog.contains(doc.activeElement)) dialog.querySelector('[data-key=name]')?.focus({ preventScroll: true });
+        }
       }
     }
     function onCancel(event) { event.preventDefault(); owner.closeEditor(); }
@@ -460,6 +546,9 @@
     function render() {
       if (!active) return;
       const state = owner.getState(), caps = state.capabilities;
+      deviceNames = state.catalog ? home.catalogNames({
+        rooms: state.catalog.rooms || [], entities: state.catalog.entities, unassigned_entities: state.catalog.unassigned_entities || [],
+      }) : new Map();
       create.hidden = !caps.manage; create.disabled = Boolean(state.draft?.saving) || Boolean(state.writes.new);
       refresh.setAttribute('aria-disabled', String(state.list.loading));
       permission.textContent = caps.manage ? (caps.execute ? '' : 'Tu acceso permite editar rutinas pero no ejecutarlas.') :
@@ -477,13 +566,14 @@
       recovery.hidden = !hidden;
       if (hidden) {
         recoveryText.textContent = hidden.unknown ? 'Tu borrador se conserva mientras confirmamos si se guardó.' : `Borrador conservado: ${hidden.value.name || 'sin nombre'}. ${hidden.message || ''}`.trim();
-        recover.hidden = discard.hidden = Boolean(hidden.unknown);
+        recoveryActions.hidden = Boolean(hidden.unknown);
       }
       renderCards(state);
       empty.hidden = !(state.list.loaded && !state.routines.length);
+      list.hidden = !state.routines.length && empty.hidden;
       empty.textContent = caps.manage ? 'Todavía no hay rutinas. Creá la primera con dispositivos de tu casa.' : 'Todavía no hay rutinas.';
       const announcement = state.announcement?.serial || 0;
-      if (announcement !== lastAnnouncement) { lastAnnouncement = announcement; live.textContent = state.announcement?.text || ''; }
+      if (announcement !== lastAnnouncement) { lastAnnouncement = announcement; live.textContent = routineMessage(state.announcement?.text || ''); }
       renderProposals(state);
       renderDialog(state);
     }

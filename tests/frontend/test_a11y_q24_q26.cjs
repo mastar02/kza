@@ -8,7 +8,37 @@ const { pathToFileURL } = require('node:url');
 
 const frontend = path.join(__dirname, '..', '..', 'src', 'dashboard', 'frontend');
 const read = relative => fs.readFileSync(path.join(frontend, relative), 'utf8');
-const stylesheets = ['home/nexo/style.css', 'home/nexo/kza.css', 'home/nexo/identity.css', 'home/nexo/climate.css'];
+const nexo = path.join(frontend, 'home', 'nexo');
+const stylesheets = fs.readdirSync(nexo).filter(name => name.endsWith('.css')).sort()
+  .map(name => `home/nexo/${name}`);
+const tokens = read('home/nexo/tokens.css');
+const textSizes = new Map([...tokens.matchAll(/(--nexo-text-[\w-]+):\s*([\d.]+)(px|rem);/g)]
+  .map(([, token, size, unit]) => [token, Number(size) * (unit === 'rem' ? 16 : 1)]));
+
+test('NEXO loads every stylesheet once and keeps CSS out of the page markup', () => {
+  const html = read('home/index.html');
+  const linked = [...html.matchAll(/<link rel="stylesheet" href="\/([^"]+)">/g)].map(([, name]) => name);
+  assert.deepEqual(linked.sort(), stylesheets);
+  assert.doesNotMatch(html, /<style(?:\s|>)/i);
+});
+
+test('NEXO view styles use defined tokens, with no literal colors or text below 14 px', () => {
+  const defined = new Set([...tokens.matchAll(/(--nexo-[\w-]+):/g)].map(([, name]) => name));
+  for (const file of stylesheets.filter(name => name !== 'home/nexo/tokens.css')) {
+    const css = read(file).replace(/\/\*[\s\S]*?\*\//g, '');
+    for (const [, property, value] of css.matchAll(/(?:^|[;{])\s*([\w-]+)\s*:\s*([^;{}]+)/g)) {
+      assert.doesNotMatch(value, /#(?:[\da-f]{8}|[\da-f]{6}|[\da-f]{4}|[\da-f]{3})(?![\w-])|\b(?:rgb|hsl)a?\s*\(/i,
+        `${file}: literal color in ${property}: ${value}`);
+      for (const [, token] of value.matchAll(/\bvar\(\s*(--[\w-]+)/g)) {
+        assert.ok(defined.has(token), `${file}: undefined token ${token}`);
+      }
+      if (property === 'font-size' || (property === 'font' && value.trim() !== 'inherit')) {
+        const size = /^\s*(?:[1-9]00\s+)?var\((--nexo-text-[\w-]+)\)/.exec(value)?.[1];
+        assert.ok(textSizes.get(size) >= 14, `${file}: ${property}: ${value} must use a text token of at least 14 px`);
+      }
+    }
+  }
+});
 
 test('no declared font-size in the NEXO stylesheets, home page or /obs/ is below 11 px', () => {
   for (const file of [...stylesheets, 'home/index.html', 'obs/index.html']) {
@@ -34,8 +64,9 @@ test('inline sizes below 11 px in the /obs/ views are raised by the page stylesh
 });
 
 test('phone widths keep a 16 px floor for inputs, selects and textareas', () => {
-  const css = read('home/nexo/kza.css');
-  assert.match(css, /@media\(max-width:620px\)\{[^]*?textarea\{font-size:16px!important\}/);
+  const css = read('home/nexo/base.css');
+  assert.equal(textSizes.get('--nexo-text-body'), 16);
+  assert.match(css, /@media \(max-width: 38\.75rem\)\s*\{[^]*?textarea\s*\{\s*font-size: var\(--nexo-text-body\) !important;/);
   assert.match(read('obs/index.html'), /input, select, textarea \{ font-size: 16px; \}/);
 });
 
@@ -43,13 +74,14 @@ test('voice dialog buttons and filters reach 44 px and dialogs use dynamic viewp
   const css = stylesheets.map(read).join('\n');
   assert.doesNotMatch(css, /\.nexo-voice-dialog[^{}]*\{[^}]*min-height:\s*(3\d|40)px/);
   assert.doesNotMatch(css, /#voices-view \.identity-secondary[^{}]*\{[^}]*min-height:\s*(3\d|40)px/);
-  assert.match(read('home/nexo/identity.css'), /dialog\{[^}]*max-height:calc\(100dvh - 24px\)/);
+  assert.match(read('home/nexo/base.css'), /(?:^|\n)dialog\s*\{[^}]*max-block-size: calc\(100dvh - var\(--nexo-space-6\)\)/);
+  assert.match(tokens, /--nexo-space-6: 24px;/);
   assert.match(read('obs/index.html'), /\.login-dialog \{ max-height: calc\(100dvh - 24px\); \}/);
 });
 
 test('both pages use viewport-fit=cover with safe-area insets', () => {
   for (const file of ['home/index.html', 'obs/index.html']) assert.match(read(file), /viewport-fit=cover/, file);
-  assert.match(read('home/nexo/kza.css'), /env\(safe-area-inset-bottom/);
+  assert.match(read('home/nexo/marco.css'), /env\(safe-area-inset-bottom/);
   assert.match(read('obs/index.html'), /env\(safe-area-inset-left\)/);
 });
 
@@ -63,27 +95,31 @@ test('the credential field carries entry hints', () => {
 test('Q26: rotate buttons sit in the map tools, are named buttons and stay wired to the house API', () => {
   const html = read('home/index.html');
   const tools = /<div class="map-tools">([^]*?)<\/div>/.exec(html)[1];
-  const order = [...tools.matchAll(/<button id="([a-z-]+)"/g)].map(item => item[1]);
+  const order = [...tools.matchAll(/<button\b[^>]*\bid="([a-z-]+)"/g)].map(item => item[1]);
   assert.deepEqual(order, ['zoom-in', 'zoom-out', 'rotate-left', 'rotate-right', 'reset-view', 'expand-map']);
-  assert.match(tools, /id="rotate-left" type="button" aria-label="Rotar a la izquierda"/);
-  assert.match(tools, /id="rotate-right" type="button" aria-label="Rotar a la derecha"/);
+  for (const [id, label] of [['rotate-left', 'Rotar a la izquierda'], ['rotate-right', 'Rotar a la derecha']]) {
+    const control = [...tools.matchAll(/<button\b[^>]*>/g)].find(([tag]) => tag.includes(`id="${id}"`))[0];
+    for (const attribute of ['type="button"', 'class="btn"', `aria-label="${label}"`]) assert.ok(control.includes(attribute));
+  }
   const app = read('home/nexo/app.js');
   assert.match(app, /\['rotate-left', \(\) => house\?\.rotate\(-1\)\]/);
   assert.match(app, /\['rotate-right', \(\) => house\?\.rotate\(1\)\]/);
   assert.match(app, /'zoom-out', 'rotate-left', 'rotate-right', 'reset-view'\]\) byId\(id\)\.disabled = !ready/);
-  assert.match(read('home/nexo/kza.css'), /\.map-tools button\{[^}]*width:44px;height:44px/);
+  assert.match(read('home/nexo/components.css'), /\.btn,\s*\.sw\s*\{[^}]*min-inline-size: var\(--nexo-touch-target\);[^}]*min-block-size: var\(--nexo-touch-target\)/);
+  assert.match(read('home/nexo/tokens.css'), /--nexo-touch-target: 44px/);
 });
 
 test('R2: the 16 px phone floor includes range and checkbox inputs', () => {
-  const css = read('home/nexo/kza.css');
-  assert.match(css, /input:not\(\[type=hidden\]\):not\(\[type=button\]\):not\(\[type=submit\]\),select,textarea\{font-size:16px!important\}/);
-  assert.doesNotMatch(css, /:not\(\[type=checkbox\]\):not\(\[type=radio\]\):not\(\[type=range\]\)[^{]*\{font-size:16px/);
+  const css = read('home/nexo/base.css');
+  assert.match(css, /input:not\(\[type="hidden"\], \[type="button"\], \[type="submit"\]\),\s*select,\s*textarea\s*\{\s*font-size: var\(--nexo-text-body\) !important;/);
 });
 
 test('R2: voice sample checkboxes are 44 px targets and the expanded map tools lie in a row', () => {
-  const css = read('home/nexo/kza.css');
-  assert.match(css, /\.review-sample input\[type=checkbox\]\{width:44px;height:44px/);
-  assert.match(css, /\.map-expanded \.map-tools\{flex-direction:row;flex-wrap:wrap;/);
+  assert.match(read('home/nexo/tokens.css'), /--nexo-touch-target:\s*44px;/);
+  const checkbox = read('home/nexo/personas.css').match(/#voice-dialog input\[type="checkbox"\]\s*\{([^}]+)\}/)?.[1] ?? '';
+  assert.match(checkbox, /inline-size:\s*var\(--nexo-touch-target\);/);
+  assert.match(checkbox, /block-size:\s*var\(--nexo-touch-target\);/);
+  assert.match(read('home/nexo/casa.css'), /\.map-toolbar,\s*\.view-switch,\s*\.map-tools,\s*#layer-tabs\s*\{[^}]*display: flex;[^}]*flex-wrap: wrap/);
 });
 
 test('R2: /obs/ reserves the top safe area, mutes text at AA and hints the credential field', () => {
@@ -101,8 +137,8 @@ test('R2: /obs/ reserves the top safe area, mutes text at AA and hints the crede
 
 test('Q26: without WebGL the house falls back to inert rotate/yaw and mounts no canvas', async () => {
   const saved = Object.fromEntries(['document', 'cancelAnimationFrame', 'matchMedia', 'window'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
-  const fallback = { className: '', innerHTML: '', removed: false, remove() { this.removed = true; } };
-  const container = { dataset: {}, appended: [], append(node) { this.appended.push(node); }, clientWidth: 0, clientHeight: 0 };
+  const fallback = { className: '', removed: false, setAttribute() {}, remove() { this.removed = true; } };
+  const container = { dataset: {}, after(node) { this.fallback = node; }, clientWidth: 0, clientHeight: 0 };
   Object.defineProperties(globalThis, {
     document: { value: { createElement: () => fallback, hidden: false }, configurable: true, writable: true },
     window: { value: { devicePixelRatio: 1 }, configurable: true, writable: true },
@@ -112,9 +148,9 @@ test('Q26: without WebGL the house falls back to inert rotate/yaw and mounts no 
   try {
     const { createHouse } = await import(pathToFileURL(path.join(frontend, 'home/nexo/house.js')).href);
     const ready = [];
-    const house = createHouse({ container, onReady: value => ready.push(value) });
+    const house = createHouse({ container, modelUrl: '/example.glb', onReady: value => ready.push(value) });
     assert.deepEqual(ready, [false]);
-    assert.equal(container.appended.at(-1), fallback);
+    assert.equal(container.fallback, fallback);
     assert.equal(fallback.className, 'house-fallback');
     house.rotate(1); house.rotate(-1);
     assert.equal(house.yaw(), null);

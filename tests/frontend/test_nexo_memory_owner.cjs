@@ -94,7 +94,7 @@ test('expiring the preceding proposal leaves the focused card attached', async t
   await f.owner.open(); await settle();
   const dispose = mountMemory({ container, confirmDialog: doc.createElement('dialog'), owner: f.owner, icon: icon(doc) });
   const grid = container.querySelector('#memory-proposals');
-  const card = grid.children[1], control = card.querySelector(`[data-key="${ID('b')}:reject"]`);
+  const card = grid.children[1], control = card.querySelector('[data-key="reject"]');
   control.focus();
   const insert = t.mock.method(grid, 'insertBefore');
   f.advance(2000);
@@ -1310,4 +1310,65 @@ test('R8: NEXO Personas warns about irreversible removal and /obs only lists acc
   assert.doesNotMatch(admin, /method:\s*['"]DELETE['"]/);
   assert.deepEqual(admin.match(/\/api\/admin\/users[^'"\x60\s]*/g), ['/api/admin/users/${userId}/enroll']);
   assert.ok(admin.includes('Las personas se crean y se retiran en NEXO › Personas'));
+});
+
+test('the assignment dialog numbers identical labels in server order without exposing memory IDs', async () => {
+  const { mountMemory } = require('../../src/dashboard/frontend/home/nexo/memory.js');
+  const { createDocument } = require('../mocks/dom_shim.cjs');
+  const f = operatorFixture();
+  const doc = createDocument();
+  const container = doc.createElement('section'), dialog = doc.createElement('dialog');
+  const parent = ID('a'), first = ID('b'), second = ID('c'), unique = ID('d');
+  const content = 'Recuerdo derivado sintético';
+  f.read(snap([fact(parent), fact(second, { content }), fact(first, { content }), fact(unique)]));
+  const order = [first, unique, second];
+  f.write(fail(409, {
+    code: 'memory_owner_has_dependents',
+    notice: 'Este recuerdo tiene derivados.',
+    dependents: order.map(id => ({ id, state: 'automatic' })),
+  }));
+  await f.owner.open(); await settle();
+
+  const assignments = [];
+  const owner = { ...f.owner, assign(...args) { assignments.push(args); return f.owner.assign(...args); } };
+  const dispose = mountMemory({ container, confirmDialog: dialog, owner });
+  const parentCard = container.querySelectorAll('.memory-card')
+    .find(card => card.querySelector('.memory-content')?.textContent === 'Dato sintético aaaa');
+  parentCard.querySelector('[data-key="assign"]').click();
+  const choice = dialog.querySelector('#memory-assign-person');
+  choice.value = choice.children[0].value;
+  dialog.querySelector('[data-key="confirm-accept"]').click();
+  await settle();
+
+  const items = dialog.querySelector('#memory-assign-dependents').children;
+  assert.deepEqual(items.map(item => item.textContent), [
+    content + ' · automático · 1 de 2',
+    'Dato sintético dddd · automático',
+    content + ' · automático · 2 de 2',
+  ]);
+  for (const node of [dialog, ...dialog.descendants()]) {
+    assert.doesNotMatch(node.textContent, /fact_[0-9a-f]{64}/i);
+    for (const value of [...Object.values(node.attributes), ...Object.values(node.dataset)]) {
+      assert.doesNotMatch(value, /fact_[0-9a-f]{64}/i);
+    }
+  }
+  dialog.querySelector('[data-key="confirm-cancel"]').click();
+  await settle();
+  assert.equal(f.writes().length, 1, 'only the assignment refused before the dialog');
+
+  f.write(fail(409, {
+    code: 'memory_owner_has_dependents',
+    notice: 'Este recuerdo tiene derivados.',
+    dependents: order.map(id => ({ id, state: 'automatic' })),
+  }));
+  parentCard.querySelector('[data-key="assign"]').click();
+  const nextChoice = dialog.querySelector('#memory-assign-person');
+  nextChoice.value = nextChoice.children[0].value;
+  dialog.querySelector('[data-key="confirm-accept"]').click();
+  await settle();
+  dialog.querySelector('[data-key="confirm-accept"]').click();
+  await settle();
+  assert.deepEqual(assignments.at(-1)[2].expectedDependentIds, order);
+  assert.equal(assignments.at(-1)[1], A);
+  dispose();
 });

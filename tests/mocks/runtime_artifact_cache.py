@@ -3,7 +3,7 @@
 Reduces redundant CPython 3.13 bytecode compilations across rehearsals and tests
 without changing build_runtime.py or any runtime security/reproducibility guarantee.
 
-Keyed strictly by ``<40-char-commit-sha>-<python_magic>``, synchronized with
+Git-only builds are keyed by ``<40-char-commit-sha>-<python_magic>``, synchronized with
 ``fcntl.flock`` so parallel ``pytest-xdist`` workers never rebuild the same
 immutable revision simultaneously.
 """
@@ -25,7 +25,7 @@ import tempfile
 import zlib
 from pathlib import Path
 
-from scripts.build_runtime import build_runtime
+from scripts.build_runtime import NEXO_PRIVATE_PLAN_DIR, build_runtime
 
 CACHE_DIR_ENV = "KZA_RUNTIME_ARTIFACT_CACHE_DIR"
 _EXPECTED_FORMAT = "kza-cpython-bytecode-v1"
@@ -199,11 +199,11 @@ def _load_verified_cache_entry(
 def cached_build_runtime(repo: Path, output: Path, revision: str = "HEAD") -> dict:
     """Build or reuse a content-addressed ``build_runtime`` archive when cache env is active.
 
-    Falls back directly to :func:`scripts.build_runtime.build_runtime` whenever
-    ``KZA_RUNTIME_ARTIFACT_CACHE_DIR`` is unset or empty.
+    Local plan inputs stay out of the shared, commit-keyed artifact cache.
     """
     cache_raw = os.environ.get(CACHE_DIR_ENV, "").strip()
-    if not cache_raw:
+    private_plan = Path(repo) / NEXO_PRIVATE_PLAN_DIR
+    if not cache_raw or private_plan.exists() or private_plan.is_symlink():
         return build_runtime(repo, output, revision)
 
     repo_resolved = Path(repo).resolve()

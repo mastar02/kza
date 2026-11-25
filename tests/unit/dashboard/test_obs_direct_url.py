@@ -45,6 +45,9 @@ def test_served_nexo_shell_has_no_obs_link_while_obs_stays_reachable(monkeypatch
         shell = client.get("/")
         assert shell.status_code == 200
         assert "technical-link" not in shell.text and not OBS_LINK.search(shell.text)
+        nav, = re.findall(r"<nav\b[^>]*>.*?</nav>", shell.text, re.DOTALL)
+        assert all(f'id="{element_id}"' in nav for element_id in ("app-nav", "rail-nav", "help-button", "logout", "theme-slot"))
+        assert 'aria-label="Navegación principal"' in nav
         panel = client.get("/obs/")
         assert panel.status_code == 200
         assert "<title>KZA — Panel técnico</title>" in panel.text

@@ -25,9 +25,12 @@
 
   // WCAG relative luminance in sRGB, including CSS source-over for translucent paint.
   const color = value => {
-    const parts = /^rgba?\(([^)]+)\)$/.exec(value)?.[1].split(/[, /]+/).map(Number);
-    return parts?.length >= 3 && parts.every(Number.isFinite)
-      ? [parts[0], parts[1], parts[2], parts[3] ?? 1] : null;
+    const rgb = /^rgba?\(([^)]+)\)$/.exec(value);
+    const srgb = /^color\(srgb ([^)]+)\)$/.exec(value);
+    const parts = (rgb || srgb)?.[1].split(/[, /]+/).map(Number);
+    if (!parts || parts.length < 3 || !parts.every(Number.isFinite)) return null;
+    const scale = rgb ? 1 : 255;
+    return [...parts.slice(0, 3).map(channel => Math.min(255, Math.max(0, channel * scale))), parts[3] ?? 1];
   };
   const composite = (front, back) => {
     const alpha = front[3] + back[3] * (1 - front[3]);
@@ -75,12 +78,12 @@
       if (ratio < minimum) findings.push(finding(criterion, 'low_contrast', el, {part, ratio, minimum}));
     }
   };
-  const textNodes = root => {
+  const textNodes = (root, isShown = shown) => {
     const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
     const result = [];
     while (walker.nextNode()) {
       const node = walker.currentNode, el = node.parentElement;
-      if (node.data.trim() && !el.closest('script,style,option,svg title,svg desc') && shown(el)) result.push(node);
+      if (node.data.trim() && !el.closest('script,style,option,svg title,svg desc') && isShown(el)) result.push(node);
     }
     return result;
   };
@@ -129,12 +132,15 @@
         findings.push(finding('1.4.11', 'native_control_needs_review', el, {level: 'review'}));
         continue;
       }
-      const outer = nonuniformPaint(el) ? null : background(el.parentElement), inner = background(el);
-      const border = color(style.borderTopColor);
-      const paint = !['none', 'hidden'].includes(style.borderTopStyle) && parseFloat(style.borderTopWidth) && border && inner
-        ? composite(border, inner) : inner;
-      const strongest = outer && inner && paint && contrast(paint, outer) > contrast(inner, outer) ? paint : inner;
-      checkContrast(findings, '1.4.11', el, strongest, outer, 3, 'control_boundary');
+      // The component audit measures pressed-state signals such as an inset stripe.
+      if (!el.hasAttribute('aria-pressed')) {
+        const outer = nonuniformPaint(el) ? null : background(el.parentElement), inner = background(el);
+        const border = color(style.borderTopColor);
+        const paint = !['none', 'hidden'].includes(style.borderTopStyle) && parseFloat(style.borderTopWidth) && border && inner
+          ? composite(border, inner) : inner;
+        const strongest = outer && inner && paint && contrast(paint, outer) > contrast(inner, outer) ? paint : inner;
+        checkContrast(findings, '1.4.11', el, strongest, outer, 3, 'control_boundary');
+      }
       if (el.hasAttribute('aria-pressed') || el.hasAttribute('aria-checked')) {
         findings.push(finding('1.4.11', 'state_indicator_needs_review', el, {level: 'review'}));
       }
@@ -273,19 +279,21 @@
       restoreScroll(false);
     }
   };
-  const measureText = (root, criterion, keyControls) => {
-    const nodes = textNodes(root).filter(node => !visuallyHidden(node.parentElement) && !clipping(node));
-    const controls = keyControls.map(([selector, label]) =>
-      [...root.querySelectorAll(selector)].find(el => !label || el.textContent.includes(label))).filter(el => el && shown(el));
-    const usableControls = controls.filter(usable);
+  const resizeText = (root, zoom) => {
     const elements = [root, ...root.querySelectorAll('*')].filter(el => el instanceof HTMLElement && shown(el));
     const sizes = elements.map(el => {
       const style = getComputedStyle(el);
       return [el, el.getAttribute('style'), parseFloat(style.fontSize), style.lineHeight];
     });
-    const zoom = criterion === '1.4.4', findings = [];
-    const overflow = () => document.documentElement.scrollWidth - document.documentElement.clientWidth;
-    const beforeOverflow = overflow();
+    const restore = () => {
+      for (const [el, original] of sizes) {
+        if (original !== null) {
+          el.setAttribute('style', original);
+        } else if (el.getAttribute('style') !== null) {
+          el.removeAttribute('style');
+        }
+      }
+    };
     try {
       for (const [el, , fontSize, lineHeight] of sizes) {
         const set = (property, value) => el.style.setProperty(property, value, 'important');
@@ -299,8 +307,62 @@
           if (el.matches('p,[role=paragraph]')) set('margin-block-end', '2em');
         }
       }
-      if (overflow() > Math.max(1, beforeOverflow)) {
-        findings.push(finding(criterion, 'increased_horizontal_overflow', root, {overflow_px: overflow()}));
+    } catch (error) {
+      restore();
+      throw error;
+    }
+    return restore;
+  };
+
+  const overflow = el => el.scrollWidth - el.clientWidth;
+  const horizontalOffenders = (root, left, right) => {
+    const offenders = new Map();
+    const record = (el, rect, clipFrom) => {
+      let visibleLeft = rect.left, visibleRight = rect.right;
+      if (visibleLeft >= left - 0.5 && visibleRight <= right + 0.5) return;
+      for (let parent = clipFrom; parent && parent !== root; parent = parent.parentElement) {
+        if (getComputedStyle(parent).overflowX === 'visible') continue;
+        const clipLeft = parent.getBoundingClientRect().left + parent.clientLeft;
+        visibleLeft = Math.max(visibleLeft, clipLeft);
+        visibleRight = Math.min(visibleRight, clipLeft + parent.clientWidth);
+      }
+      if (visibleRight <= visibleLeft) return;
+      const excess = Math.max(left - visibleLeft, visibleRight - right);
+      if (excess <= 0.5 || (offenders.get(el)?.excess_px ?? 0) >= excess) return;
+      offenders.set(el, {
+        element: describe(el), left: rect.left, right: rect.right, excess_px: excess,
+        client_width: el.clientWidth, scroll_width: el.scrollWidth,
+      });
+    };
+    for (const el of root.querySelectorAll('*')) {
+      if (shown(el) && !visuallyHidden(el)) record(el, el.getBoundingClientRect(), el.parentElement);
+    }
+    for (const node of textNodes(root)) {
+      if (!visuallyHidden(node.parentElement)) {
+        for (const rect of textRects(node)) record(node.parentElement, rect, node.parentElement);
+      }
+    }
+    return [...offenders.values()].sort((a, b) => b.excess_px - a.excess_px).slice(0, 8);
+  };
+  const viewportOffenders = () => horizontalOffenders(
+    document.body, -window.scrollX, document.documentElement.clientWidth - window.scrollX);
+
+  const measureText = (root, criterion, keyControls) => {
+    const nodes = textNodes(root).filter(node => !visuallyHidden(node.parentElement) && !clipping(node));
+    const controls = keyControls.map(([selector, label]) =>
+      [...root.querySelectorAll(selector)].find(el => !label || el.textContent.includes(label))).filter(el => el && shown(el));
+    const usableControls = controls.filter(usable);
+    const findings = [], documentRoot = document.documentElement;
+    const beforeOverflow = overflow(documentRoot);
+    const restore = resizeText(root, criterion === '1.4.4');
+    try {
+      const afterOverflow = overflow(documentRoot);
+      if (afterOverflow > Math.max(1, beforeOverflow)) {
+        const offenders = viewportOffenders();
+        findings.push(finding(criterion, 'increased_horizontal_overflow', root, {
+          element: offenders[0]?.element ?? 'html',
+          overflow_px: afterOverflow, before_overflow_px: beforeOverflow, offenders,
+        }));
       }
       const clipped = new Set(nodes.filter(clipping).map(node => node.parentElement));
       for (const el of clipped) findings.push(finding(criterion, 'text_newly_clipped', el));
@@ -308,15 +370,7 @@
         if (!usable(el)) findings.push(finding(criterion, 'key_control_no_longer_usable', el));
       }
     } finally {
-      for (const [el, original] of sizes) {
-        if (original !== null) {
-          el.setAttribute('style', original);
-        } else if (el.getAttribute('style') !== null) {
-          // Materialize the CSSOM changes first. Blink can otherwise clear
-          // the declarations on removal and later serialize an empty attribute.
-          el.removeAttribute('style');
-        }
-      }
+      restore();
     }
     return findings;
   };
@@ -335,47 +389,15 @@
     return [finding('4.1.3', 'live_semantics_missing', message, detail)];
   });
 
-  let focusProbe;
-  const beginModal = (selector, initialSelector) => {
-    const dialog = modal(selector);
-    const width = document.documentElement.clientWidth;
-    if (!dialog) return {found: false, width};
-    const initial = document.activeElement;
-    const candidates = [...dialog.querySelectorAll(focusable)]
-      .filter(el => shown(el) && !el.matches(':disabled') && !el.closest('[inert]') && el.tabIndex >= 0);
-    const ordered = candidates.filter(el => el.type !== 'radio' || !el.name
-      || (candidates.find(other => other.type === 'radio' && other.name === el.name && other.form === el.form && other.checked)
-        || candidates.find(other => other.type === 'radio' && other.name === el.name && other.form === el.form)) === el)
-      .sort((a, b) => (a.tabIndex || Infinity) - (b.tabIndex || Infinity));
-    focusProbe = {dialog, initial, ordered};
+  const modalOpening = (selector, initialSelector) => {
+    const dialog = modal(selector), initial = document.activeElement;
+    if (!dialog) return {found: false};
     return {
       found: true,
-      width,
+      width: document.documentElement.clientWidth,
       modal_semantics: dialog.matches(modalSelector),
-      initial_ok: !!initial && (dialog.contains(initial) && (!initialSelector || initial.matches(initialSelector))),
-      tabbables: ordered.length,
+      initial_ok: dialog.contains(initial) && (!initialSelector || initial.matches(initialSelector)),
     };
-  };
-  const focusModalStart = backward => {
-    const {ordered} = focusProbe;
-    const start = backward ? ordered.at(-1) : ordered[0];
-    start.focus({preventScroll: true});
-    return document.activeElement === start;
-  };
-  const checkModalStep = (backward, step) => {
-    const {dialog, ordered} = focusProbe;
-    if (!shown(dialog)) return 'dialog_closed';
-    if (!dialog.contains(document.activeElement)) return 'focus_escaped';
-    const offset = step % ordered.length;
-    const expected = backward ? ordered.at(-1 - offset) : ordered[offset];
-    if (document.activeElement === expected) return null;
-    return offset === 0 ? 'focus_did_not_wrap' : 'focus_out_of_order';
-  };
-  const endModal = () => {
-    const {initial} = focusProbe;
-    focusProbe = undefined;
-    if (initial === document.body) document.activeElement?.blur();
-    else if (initial?.isConnected) initial.focus({preventScroll: true});
   };
   const returnFocus = (dialogSelector, openerSelector) => {
     if (modal(dialogSelector)) return 'dialog_still_open';
@@ -384,10 +406,367 @@
     return document.activeElement === opener ? null : 'focus_not_returned';
   };
 
+  const auditedControls = interactive + ',.pick,.btn,.sw';
+  const boundaryControls = 'input:not([type=button],[type=submit],[type=reset]),select,textarea,'
+    + '[role=checkbox],[role=radio],[role=switch],[role=combobox]';
+  const stateAttributes = ['aria-pressed', 'aria-checked', 'aria-selected', 'aria-current'];
+  const transparentPaint = [0, 0, 0, 0];
+  const colorPattern = /rgba?\([^)]*\)/g;
+  const alpha = (paint, opacity) => [...paint.slice(0, 3), paint[3] * opacity];
+  const px = value => parseFloat(value) || 0;
+  const auditable = el => el.getClientRects().length > 0
+    && el.checkVisibility({visibilityProperty: true}) && !visuallyHidden(el);
+
+  // CSS opacity is applied to the entire painted group, including descendant text.
+  // Measure both ends and intermediate colors for the sRGB gradient on the map.
+  const paints = style => {
+    const fill = color(style.backgroundColor);
+    if (!fill || style.mixBlendMode !== 'normal' || style.filter !== 'none') return [];
+    if (style.backgroundImage === 'none') return [fill];
+    if (!/^(?:linear|radial)-gradient\(/.test(style.backgroundImage) || /\), \w+-gradient/.test(style.backgroundImage)) return [];
+    const stops = [...style.backgroundImage.matchAll(colorPattern)].map(([value]) => color(value));
+    if (stops.length < 2 || stops.some(stop => !stop || stop[3] !== 1)) return [];
+    return stops.slice(1).flatMap((end, index) => [0, .25, .5, .75, 1].map(t =>
+      end.map((channel, i) => channel * t + stops[index][i] * (1 - t))));
+  };
+  const paintPairs = (el, foreground, backgrounds) => {
+    let pairs = [[foreground, transparentPaint]];
+    for (let node = el; node; node = node.parentElement) {
+      // A fully opaque pair blocks the backdrop, unless this ancestor fades the group.
+      const style = getComputedStyle(node);
+      const layers = node === el && backgrounds ? backgrounds : paints(style);
+      if (!layers.length && pairs.some(pair => pair.some(paint => paint[3] < 1))) return [];
+      pairs = pairs.flatMap(pair => (layers.length ? layers : [transparentPaint]).map(layer =>
+        pair.map(paint => alpha(composite(paint, layer), +style.opacity))));
+    }
+    const base = canvasColor || (canvasColor = canvas());
+    return pairs.map(pair => pair.map(paint => composite(paint, base)));
+  };
+  const ratioFor = (el, foreground, backgrounds) => {
+    if (!foreground) return {ratio: null};
+    const pairs = paintPairs(el, foreground, backgrounds);
+    if (!pairs.length) return {ratio: null};
+    const [fg, bg] = pairs.reduce((lowest, pair) =>
+      contrast(...pair) < contrast(...lowest) ? pair : lowest);
+    const differences = pairs.map(([front, back]) => luminance(front) - luminance(back));
+    // A continuous gradient contains an equal-luminance point if the sign changes.
+    const crosses = differences.some(value => value < 0) && differences.some(value => value > 0);
+    return {ratio: crosses ? 1 : contrast(fg, bg), foreground: fg, background: bg};
+  };
+  const borders = style => ['Top', 'Right', 'Bottom', 'Left'].flatMap(side => {
+    const width = px(style['border' + side + 'Width']);
+    const paint = color(style['border' + side + 'Color']);
+    return width && paint?.[3] && !['none', 'hidden'].includes(style['border' + side + 'Style'])
+      ? [{part: 'border-' + side.toLowerCase(), paint, width}] : [];
+  });
+  const shadows = style => [...style.boxShadow.matchAll(/(rgba?\([^)]*\))([^,]*)/g)].flatMap(([, value, tail]) => {
+    const [x, y, blur, spread = 0] = tail.match(/-?[\d.]+px/g)?.map(px) || [];
+    if (blur || (!x && !y && !spread)) return [];
+    return [{part: tail.includes('inset') ? 'inset-shadow' : 'shadow', paint: color(value),
+      width: Math.max(Math.abs(x), Math.abs(y), spread), ring: !x && !y && spread > 0}];
+  });
+  const surfaces = (el, pseudo) => {
+    const style = getComputedStyle(el, pseudo);
+    return [
+      {part: 'fill', paint: color(style.backgroundColor), width: 0},
+      ...borders(style), ...shadows(style),
+    ];
+  };
+  const strongest = samples => samples.reduce((best, sample) =>
+    (sample.ratio ?? -1) > (best.ratio ?? -1) ? sample : best, {ratio: null});
+  const textSamples = el => {
+    const samples = [];
+    const add = (node, style, part) => {
+      const size = px(style.fontSize), weight = Number(style.fontWeight);
+      const minimum = size >= 24 || (size >= 56 / 3 && weight >= 700) ? 3 : 4.5;
+      const fg = color(style.color);
+      samples.push({part, minimum, ...ratioFor(node, fg && alpha(fg, part === 'placeholder' ? +style.opacity : 1))});
+    };
+    for (const node of new Set(textNodes(el, auditable).filter(node => !node.parentElement.closest('svg')
+      && textRects(node).length).map(node => node.parentElement))) {
+      add(node, getComputedStyle(node), 'text');
+    }
+    if (el.matches('select,textarea,input:not([type=radio],[type=checkbox],[type=range],[type=color],[type=file])')) {
+      if (el.value || !el.hasAttribute('placeholder')) add(el, getComputedStyle(el), 'field-text');
+      else add(el, getComputedStyle(el, '::placeholder'), 'placeholder');
+    }
+    return samples;
+  };
+
+  const focusTargets = el => [el, ...(el.matches('.room-pin') ? el.querySelectorAll('.tag') : [])];
+  const focusRings = node => {
+    const style = getComputedStyle(node), offset = px(style.outlineOffset);
+    const rings = shadows(style).filter(item => item.ring).map(item =>
+      ({...item, offset: item.part === 'inset-shadow' ? -item.width : 0}));
+    if (!['none', 'hidden', 'auto'].includes(style.outlineStyle)) {
+      rings.push({part: 'outline', paint: color(style.outlineColor), width: px(style.outlineWidth), offset});
+    }
+    return rings.filter(ring => ring.paint?.[3] && ring.width > 0).map(ring => {
+      const {offset, width, paint} = ring;
+      const outer = ratioFor(offset < -width ? node : node.parentElement, paint);
+      const inner = ratioFor(offset < 0 ? node : node.parentElement, paint);
+      const ratio = inner.ratio === null || outer.ratio === null ? null : Math.min(inner.ratio, outer.ratio);
+      return {part: ring.part, offset, width, ratio, inner, outer};
+    });
+  };
+  const focusSnapshot = el => focusTargets(el).map(focusRings);
+  const changedRingWidth = (ring, previous) => {
+    // Subtract any span that already had a ring of similar contrast. Treat
+    // outlines and shadows alike when they paint the same part of the control.
+    const end = ring.offset + ring.width;
+    let cursor = ring.offset, changed = 0;
+    for (const prior of previous.slice().sort((a, b) => a.offset - b.offset)) {
+      const priorEnd = prior.offset + prior.width;
+      if (priorEnd <= cursor || prior.offset >= end) continue;
+      const colorChanged = ['inner', 'outer'].every(side => ring[side].foreground && prior[side].foreground
+        && contrast(ring[side].foreground, prior[side].foreground) >= 3);
+      if (colorChanged) continue;
+      changed += Math.max(0, prior.offset - cursor);
+      cursor = Math.min(end, priorEnd);
+    }
+    return changed + end - cursor;
+  };
+  const focusContrast = (el, before = []) => {
+    const candidates = focusSnapshot(el).flatMap((rings, index) => rings.map(ring =>
+      ({...ring, changedWidth: before[index] ? changedRingWidth(ring, before[index]) : 0})));
+    return {...strongest(candidates.filter(ring => ring.changedWidth >= 2)), candidates};
+  };
+  const nativeBoundary = el => {
+    // Chromium paints the indicator of these platform-native widgets. The field
+    // surface, text and authored focus ring are still checked wherever present.
+    if (getComputedStyle(el).appearance === 'none') return null;
+    if (el.matches('input[type=checkbox],input[type=radio],input[type=range],input[type=color],input[type=file]')) {
+      return 'Chromium paints this native widget and its state';
+    }
+    return null;
+  };
+  const stateMarker = el => {
+    if (el.matches('.sw')) return [el, '::before'];
+    if (el.matches('.room-pin')) return [el.querySelector('.tag'), null];
+    return [el, null];
+  };
+  const statePaint = el => {
+    const [marker, pseudo] = stateMarker(el);
+    const style = getComputedStyle(marker, pseudo);
+    const samples = surfaces(marker, pseudo).flatMap(({part, paint}) => {
+      if (!paint?.[3]) return [];
+      const backdrop = pseudo ? marker : part === 'fill' || part === 'shadow' ? marker.parentElement : marker;
+      const measurement = ratioFor(backdrop, paint);
+      return [{part, paint: measurement.foreground, adjacent: measurement.background}];
+    });
+    if (pseudo === '::before') {
+      const thumb = paints(style)[0], track = color(style.backgroundColor);
+      if (thumb && track && px(style.backgroundSize) > 0) {
+        const measured = ratioFor(marker, thumb, [track]);
+        const trackPaint = ratioFor(marker, track).foreground;
+        const side = style.backgroundPositionX;
+        samples.push({part: 'thumb-' + side, paint: measured.foreground, adjacent: measured.background});
+        samples.push({part: 'track', paint: trackPaint, adjacent: measured.background});
+      }
+    }
+    return samples;
+  };
+  const compareSelection = (el, attribute) => {
+    const original = el.getAttribute(attribute), activeClass = el.classList.contains('active');
+    const active = original !== 'false';
+    const before = statePaint(el);
+    let after;
+    try {
+      if (attribute === 'aria-current') el.removeAttribute(attribute);
+      else el.setAttribute(attribute, String(!active));
+      if (activeClass) el.classList.remove('active');
+      after = statePaint(el);
+    } finally {
+      el.setAttribute(attribute, original);
+      if (activeClass) el.classList.add('active');
+    }
+    const [selected, unselected] = active ? [before, after] : [after, before];
+    return strongest(selected.flatMap(marker => {
+      if (!marker.paint || !marker.adjacent) return [];
+      const other = unselected.find(sample => sample.part === marker.part);
+      const inactive = other?.paint
+        || (marker.part.startsWith('thumb-') && unselected.find(sample => sample.part === 'track')?.paint)
+        || marker.adjacent;
+      return [{part: marker.part, ratio: Math.min(contrast(marker.paint, inactive), contrast(marker.paint, marker.adjacent)),
+        selected: marker.paint, unselected: inactive, adjacent: marker.adjacent}];
+    }));
+  };
+  const component = (el, state, before, range) => {
+    const isDisabled = disabled(el);
+    const selection = Object.fromEntries(stateAttributes.filter(attribute => el.hasAttribute(attribute))
+      .map(attribute => [attribute, el.getAttribute(attribute)]));
+    const measurements = [];
+    const exemptions = {};
+    const issues = [];
+    const check = (sample, minimum, part) => {
+      measurements.push({...sample, minimum, criterion_part: part, part: sample.part || part});
+      if (sample.ratio === null || sample.ratio < minimum) {
+        issues.push({part, ratio: sample.ratio, minimum, measured_part: sample.part});
+      }
+    };
+    const text = textSamples(el);
+    for (const sample of text) check(sample, isDisabled ? 1.01 : sample.minimum, sample.part);
+    if (state === 'normal' && el.matches('.pick')) {
+      const {top, bottom} = el.getBoundingClientRect();
+      if (textNodes(el).flatMap(textRects).some(rect => rect.top < top - 1 || rect.bottom > bottom + 1)) {
+        issues.push({part: 'selectable-row-text-overflows'});
+      }
+    }
+    const native = nativeBoundary(el);
+    const icon = el.querySelector('svg');
+    if (icon && text.length) exemptions.svg = 'Decorative SVG alongside measured visible text';
+    else if (icon) {
+      // The shared sprite uses currentColor for its strokes and no fill.
+      check(ratioFor(icon, color(getComputedStyle(icon).stroke)), isDisabled ? 1.01 : 3, 'icon');
+    }
+    if (isDisabled) {
+      exemptions.disabled = 'Inactive control; text must remain visible and its styling must change';
+      const appearance = styleSignature(el);
+      if (!shown(el)) issues.push({part: 'disabled-invisible'});
+      if (before?.signature === appearance && !native) issues.push({part: 'disabled-indistinguishable'});
+    } else {
+      if (native) exemptions.native = native;
+      if (!native && el.matches(boundaryControls)) {
+        const [marker, pseudo] = stateMarker(el);
+        const outside = pseudo ? el : el.parentElement;
+        const markerStyle = getComputedStyle(marker, pseudo);
+        const fill = color(markerStyle.backgroundColor);
+        const paintsToCheck = el.matches('input[type=range]')
+          ? [{part: 'range-track', paint: color(range?.track), width: 0}]
+          : surfaces(marker, pseudo);
+        const samples = paintsToCheck.map(sample => {
+          const paint = sample.paint && sample.part.startsWith('border') && fill && markerStyle.backgroundClip === 'border-box'
+            ? composite(sample.paint, fill) : sample.paint;
+          return {part: sample.part, ...ratioFor(outside, paint)};
+        });
+        const borderSamples = samples.filter(sample => sample.part.startsWith('border'));
+        const candidates = samples.filter(sample => !sample.part.startsWith('border'));
+        if (borderSamples.length) {
+          const least = borderSamples.reduce((worst, sample) =>
+            (sample.ratio ?? -1) < (worst.ratio ?? -1) ? sample : worst);
+          candidates.push(least);
+        }
+        check({...strongest(candidates), candidates: samples}, 3, 'control-boundary');
+        if (range) {
+          const border = color(range.thumbBorder), thumb = color(range.thumb);
+          // Chromium paints the thumb over the track and the surrounding field.
+          const overTrack = color(range.track);
+          const trackRatio = ratioFor(outside, border, overTrack && [overTrack]);
+          const outsideRatio = ratioFor(outside, thumb);
+          check(trackRatio, 3, 'range-thumb-against-track');
+          check(outsideRatio, 3, 'range-thumb-against-surroundings');
+        }
+      }
+      if (state === 'focus-visible') {
+        const focus = focusContrast(el, before?.focus);
+        check(focus, 3, 'focus-indicator');
+        if (!(focus.width >= 2)) issues.push({part: 'focus-width', width: focus.width ?? 0, minimum: 2});
+      }
+      if (state === 'normal' && !native) {
+        for (const [attr, value] of Object.entries(selection)) {
+          if (value && (attr !== 'aria-current' || value !== 'false')) {
+            check(compareSelection(el, attr), 3, attr + '-indicator');
+          }
+        }
+      }
+    }
+    return {selector: describe(el), control: controlName(el), state, selection, disabled: isDisabled,
+      measurements, exemptions, issues};
+  };
+  const styleSignature = el => {
+    const style = getComputedStyle(el);
+    return [style.color, style.backgroundColor, style.opacity, style.borderTopColor, style.backgroundImage].join('|');
+  };
+  const enabledSignature = el => {
+    const attributes = ['disabled', 'aria-disabled'].filter(name => el.hasAttribute(name))
+      .map(name => [name, el.getAttribute(name)]);
+    try {
+      for (const [name] of attributes) el.removeAttribute(name);
+      return disabled(el) ? undefined : styleSignature(el);
+    } finally {
+      for (const [name, value] of attributes) el.setAttribute(name, value);
+    }
+  };
+  const controlName = el => el.localName + (el.id ? '#' + el.id : '') + [...el.classList].map(cls => '.' + cls).join('');
+  const contrastControl = el => ({
+    selector: describe(el), control: controlName(el), disabled: disabled(el), tabbable: el.tabIndex >= 0,
+    range: el.matches('input[type=range]') && !nativeBoundary(el),
+  });
+  // A sibling can move into the old selector. Compare identifying content in the page.
+  const contrastIdentity = el => [controlName(el), el.textContent.trim(),
+    ...['role', 'type', 'name', 'href', 'aria-label', 'aria-labelledby', 'data-key'].map(name => el.getAttribute(name))];
+  let contrastProbe, contrastInitial;
+  const prepareContrast = selector => {
+    canvasColor = canvas();
+    const root = selector ? document.querySelector(selector) : scope();
+    if (!root || !auditable(root)) return null;
+    contrastInitial = document.activeElement;
+    contrastInitial?.blur();
+    contrastProbe = [...root.querySelectorAll(auditedControls)].filter(auditable);
+    return contrastProbe.map(contrastControl);
+  };
+  const rebindContrast = (index, selector) => {
+    const previous = contrastProbe[index];
+    if (previous.isConnected) return auditable(previous) ? contrastControl(previous) : null;
+    const current = document.querySelector(selector);
+    if (!current?.matches(auditedControls) || !auditable(current)) return null;
+    const identity = contrastIdentity(previous);
+    if (!contrastIdentity(current).every((value, i) => value === identity[i])) return null;
+    contrastProbe[index] = current;
+    return contrastControl(current);
+  };
+  const endContrast = () => {
+    if (contrastInitial?.isConnected && contrastInitial !== document.body) contrastInitial.focus({preventScroll: true});
+    contrastProbe = contrastInitial = undefined;
+  };
+  const measureContrast = (index, state, range, selector) => {
+    const el = contrastProbe[index];
+    if (!el.isConnected || !el.matches(selector)) return {issues: [{part: 'control-replaced'}]};
+    if (state === 'normal') {
+      const inactive = disabled(el);
+      const baseline = inactive ? {signature: enabledSignature(el)} : undefined;
+      return {measurement: component(el, inactive ? 'disabled' : state, baseline, range),
+        before: {focus: focusSnapshot(el), signature: styleSignature(el)}};
+    }
+    if (state === 'disabled') {
+      if (!('disabled' in el)) return null;
+      const before = {signature: styleSignature(el)};
+      const attribute = el.getAttribute('disabled');
+      try {
+        el.disabled = true;
+        return component(el, state, before);
+      } finally {
+        if (attribute === null) el.removeAttribute('disabled');
+        else el.setAttribute('disabled', attribute);
+      }
+    }
+    return component(el, state.name, state.before, range);
+  };
+
+  let restoreTextZoom;
   window.__kzaWcag = {
-    contrast,
+    contrast, prepareContrast, rebindContrast, measureContrast, endContrast, focusSnapshot, focusContrast, controlName,
     statuses,
-    beginModal, focusModalStart, checkModalStep, endModal, returnFocus,
+    modalOpening, returnFocus,
+    beginTextZoom() {
+      const root = scope(), documentRoot = document.documentElement;
+      const dialog = modal();
+      const before = {document: overflow(documentRoot), dialog: dialog ? overflow(dialog) : null};
+      restoreTextZoom = resizeText(root, true);
+      const documentOverflow = overflow(documentRoot), dialogOverflow = dialog ? overflow(dialog) : null;
+      const dialogLeft = dialog ? dialog.getBoundingClientRect().left + dialog.clientLeft : 0;
+      return {
+        before, document: documentOverflow, dialog: dialogOverflow,
+        offenders: documentOverflow > 0 ? viewportOffenders() : [],
+        dialog_offenders: dialogOverflow > 0
+          ? horizontalOffenders(dialog, dialogLeft - dialog.scrollLeft, dialogLeft + dialog.clientWidth - dialog.scrollLeft)
+          : [],
+      };
+    },
+    endTextZoom() {
+      restoreTextZoom?.();
+      restoreTextZoom = undefined;
+    },
     scan(keyControls, minimum, productGoal, statusMessages) {
       canvasColor = canvas() || [255, 255, 255, 1];
       const root = scope();

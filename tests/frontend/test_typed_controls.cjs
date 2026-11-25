@@ -4,6 +4,90 @@ const home = require('../../src/dashboard/frontend/home/home.js');
 
 const ac = { entity_id: 'climate.test_ac', domain: 'climate', available: true, state: 'cool', capabilities: ['set_temperature', 'set_hvac_mode'], control_limits: { temperature_min: 18.5, temperature_max: 25, temperature_step: 0.5, hvac_modes: ['off', 'cool', 'dry'] } };
 
+test('Casa assigns generic names by type and room without using entity ids', () => {
+  const entity = (entity_id, room_id, name) => ({ entity_id, domain: entity_id.split('.')[0], room_id, name });
+  const unassigned = entity('switch.one', null);
+  const devices = [
+    entity('light.one', 'living', 'Luz de lectura'),
+    entity('light.two', 'living', 'light.two'),
+    entity('light.three', 'living', '  '),
+    entity('light.four', 'kitchen', 'Interruptor light.four'),
+    entity('climate.one', 'living', '  climate.one  '),
+    entity('cover.one', 'living'),
+    unassigned,
+  ];
+  const names = home.catalogNames({
+    rooms: [{ room_id: 'living', name: 'Living' }, { room_id: 'kitchen', name: 'Cocina' }],
+    entities: devices, unassigned_entities: [unassigned, entity('switch.two', null)],
+  });
+  assert.deepEqual([...names.values()], [
+    'Luz de lectura', 'Luz · Living', 'Luz 2 · Living', 'Luz · Cocina',
+    'Aire acondicionado · Living', 'Persiana · Living', 'Interruptor', 'Interruptor 2',
+  ]);
+});
+
+test('Casa reserves readable names before numbering unnamed devices', () => {
+  const names = home.catalogNames({
+    rooms: [{ room_id: 'kitchen', name: 'Cocina' }, { room_id: 'living', name: 'Living' }],
+    entities: [
+      { entity_id: 'light.unnamed', domain: 'light', room_id: 'kitchen', name: 'light.unnamed' },
+      { entity_id: 'light.friendly', domain: 'light', room_id: 'kitchen', name: 'Luz · Cocina' },
+      ...['one', 'two', 'three'].map(id => ({ entity_id: `light.${id}`, domain: 'light', room_id: 'living' })),
+    ],
+    unassigned_entities: [],
+  });
+  assert.deepEqual([...names.values()], ['Luz 2 · Cocina', 'Luz · Cocina', 'Luz · Living', 'Luz 2 · Living', 'Luz 3 · Living']);
+});
+
+test('Casa disambiguates repeated readable names across device types in the same room', () => {
+  const names = home.catalogNames({
+    rooms: [{ room_id: 'kitchen', name: 'Cocina' }, { room_id: 'living', name: 'Living' }],
+    entities: [
+      { entity_id: 'light.counter', domain: 'light', room_id: 'kitchen', name: 'Mesada' },
+      { entity_id: 'switch.counter', domain: 'switch', room_id: 'kitchen', name: 'Mesada' },
+      { entity_id: 'light.counter_two', domain: 'light', room_id: 'kitchen', name: 'Mesada 2' },
+      { entity_id: 'light.reading', domain: 'light', room_id: 'living', name: 'Mesada' },
+    ],
+    unassigned_entities: [],
+  });
+  assert.deepEqual([...names.values()], ['Mesada', 'Mesada 3', 'Mesada 2', 'Mesada']);
+});
+
+test('Casa uses only authorized scene entries from the catalog, with no defaults', () => {
+  const scene = { entity_id: 'scene.reading', domain: 'scene', capabilities: ['activate_scene'] };
+  const assigned = { ...scene, entity_id: 'scene.dinner', room_id: 'kitchen' };
+  const entities = [scene, assigned, { ...scene, entity_id: 'light.fake' },
+    { ...scene, entity_id: 'scene.no_access', capabilities: [] }, { ...scene, entity_id: 'scene.bad_type', domain: 'switch' }];
+  assert.deepEqual(home.catalogScenes(null), []);
+  assert.deepEqual(home.catalogScenes({ entities: [], unassigned_entities: [] }), []);
+  assert.deepEqual(home.catalogScenes({ entities, unassigned_entities: [scene] }), [scene, assigned]);
+});
+
+test('Casa gives every scene in the global strip a unique name', () => {
+  const scene = (entity_id, room_id, name) => ({ entity_id, room_id, name, domain: 'scene', capabilities: ['activate_scene'] });
+  const catalog = {
+    rooms: [{ room_id: 'living', name: 'Living' }, { room_id: 'dorm', name: 'Dormitorio' }],
+    entities: [
+      scene('scene.living_cine', 'living', 'Cine'),
+      scene('scene.dorm_cine', 'dorm', 'Cine'),
+      scene('scene.living_generic', 'living'),
+      scene('scene.dorm_generic', 'dorm'),
+    ],
+    unassigned_entities: [scene('scene.global', null, 'Cine')],
+  };
+  const sceneNames = () => [...home.catalogSceneNames(home.catalogScenes(catalog), catalog.rooms, home.catalogNames(catalog)).values()];
+  const labels = sceneNames();
+  assert.equal(new Set(labels).size, labels.length);
+  assert.deepEqual(labels, ['Cine · Living', 'Cine · Dormitorio', 'Escena · Living', 'Escena · Dormitorio', 'Cine']);
+
+  catalog.rooms.push({ room_id: 'other_living', name: 'Living' });
+  catalog.entities.push(scene('scene.other_cine', 'other_living', 'Cine'));
+  catalog.unassigned_entities.push(scene('scene.cine_numbered', null, 'Cine · Living 2'));
+  const numbered = sceneNames();
+  assert.equal(new Set(numbered).size, numbered.length);
+  assert.deepEqual(numbered, [...labels.slice(0, 4), 'Cine · Living 3', 'Cine', 'Cine · Living 2']);
+});
+
 test('explicit observation expiry survives receipt and cannot be renewed by presenting it again', () => {
   const observed = Date.parse('2026-11-02T00:00:00Z');
   let elapsed = 0;

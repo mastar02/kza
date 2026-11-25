@@ -421,7 +421,7 @@ test('C06 [nexo-people]: 401, 403, 409, 503, timeout, partial-uncertain', async 
     ['401', '/401', /No se confirmó/],
     ['403', '/403', /no permite este cambio/],
     ['409', '/409-last', /último administrador/],
-    ['409-generic', '/409', /rechazó el cambio/],
+    ['409-generic', '/409', /^No se aceptó el cambio\. Revisá los datos y actualizá la lista\.$/],
     ['503', '/503', /No se confirmó/],
     ['timeout', '/timeout', /No se confirmó/],
   ]) {

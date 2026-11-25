@@ -28,18 +28,27 @@
     notMineConfirm: 'Si no fuiste vos, la devolvemos a la administración para que la revise. Vence sola en menos de 48 horas.',
   };
 
-  function mountMyMemory({ container, confirmDialog, owner, icon, returnNotice, voiceReturnNotice = '', voiceSlot = null, voiceEnabled = () => false, onVoiceChange = null }) {
+  function mountMyMemory({ container, confirmDialog, owner, returnNotice, voiceReturnNotice = '', voiceSlot = null, voiceEnabled = () => false, onVoiceChange = null }) {
     const doc = container.ownerDocument;
     const cards = new Map(), expanded = new Set();
-    let active = true, lastAnnouncement = 0, confirmResolve = null, shown = SHOW_STEP, moreFocus = null;
+    const controlKeys = new WeakMap(), cardIds = new WeakMap();
+    let active = true, lastAnnouncement = 0, confirmResolve = null, shown = SHOW_STEP, moreFocus = null, lastOrphanSignature;
 
+    function recordControl(control, key) {
+      controlKeys.set(control, key);
+      control.dataset.key = key.slice(key.lastIndexOf(':') + 1);
+      return control;
+    }
+    function recordButton(text, key, callback, className = 'btn') {
+      return recordControl(button(text, '', callback, className), key);
+    }
     function node(tag, className, text) {
       const element = doc.createElement(tag);
       if (className) element.className = className;
       if (text !== undefined && text !== null) element.textContent = String(text);
       return element;
     }
-    function button(text, key, callback, className = 'identity-secondary') {
+    function button(text, key, callback, className = 'btn') {
       const element = node('button', className, text); element.type = 'button'; element.dataset.key = key;
       element.addEventListener('click', callback); return element;
     }
@@ -60,22 +69,21 @@
         : item.state === 'proposed' ? 'Propuesta · vence ' + date(item.expires_at) : 'Automático · vence ' + date(item.expires_at);
       return (CATEGORY[item.category] || 'Otro') + ' · ' + kind;
     }
-    function focusKey() { const element = doc.activeElement; return element && container.contains(element) ? element.dataset?.key || null : null; }
+    function focusKey() { const element = doc.activeElement; return element && container.contains(element) ? (controlKeys.get(element) || element.dataset?.key) || null : null; }
     function focusByKey(key) {
       if (!key) return false;
-      const target = [...container.querySelectorAll('[data-key]')].find(element => element.dataset.key === key);
+      const target = [...container.querySelectorAll('[data-key]')].find(element => (controlKeys.get(element) || element.dataset.key) === key);
       if (target && !target.disabled) { target.focus({ preventScroll: true }); return true; }
       return false;
     }
 
-    const heading = node('div', 'identity-heading memory-heading');
+    const heading = node('div', 'page-head');
     const intro = node('div');
-    const title = node('h2', '', 'Mis recuerdos.'); title.id = 'my-memory-title';
-    intro.append(node('p', 'eyebrow', 'TUS RECUERDOS Y TU PRIVACIDAD'), title, node('p', '', COPY.what + ' ' + COPY.answers),
+    const title = node('h1', '', 'Mis recuerdos'); title.id = 'my-memory-title';
+    intro.append(title, node('p', '', COPY.what + ' ' + COPY.answers),
       node('p', '', COPY.admin), node('p', '', COPY.misattribution));
-    const side = node('div', 'identity-heading-side memory-heading-side');
     const refresh = button('Actualizar', 'refresh', () => { if (refresh.getAttribute('aria-disabled') !== 'true') void owner.reload(); }); refresh.id = 'my-memory-refresh';
-    side.append(refresh); heading.append(intro, side);
+    heading.append(intro, refresh);
     const permission = node('p', 'memory-note memory-permission');
     const sessionNotice = node('p', 'memory-note memory-session-notice'); sessionNotice.setAttribute('role', 'status');
     const freshness = node('p', 'memory-note memory-freshness'); freshness.id = 'my-memory-freshness';
@@ -83,33 +91,32 @@
     const returned = node('p', 'memory-note memory-return-notice'); returned.id = 'my-memory-return-notice';
     const live = node('p', 'memory-note memory-live'); live.id = 'my-memory-live'; live.setAttribute('role', 'status'); live.setAttribute('aria-live', 'polite');
     const incomplete = node('p', 'memory-note memory-cap');
-    const pendingTitle = node('h3', 'memory-section-title', 'Operaciones sin confirmar'); pendingTitle.tabIndex = -1;
-    const pendingList = node('div', 'memory-grid'); pendingList.id = 'my-memory-pending';
-    const listTitle = node('h3', 'memory-section-title', 'Tus recuerdos'); listTitle.id = 'my-memory-list-title'; listTitle.tabIndex = -1;
-    const grid = node('div', 'memory-grid'); grid.id = 'my-memory-facts';
+    const pendingTitle = node('h2', 'memory-section-title', 'Operaciones sin confirmar'); pendingTitle.tabIndex = -1;
+    const pendingList = node('div', 'rows memory-grid'); pendingList.id = 'my-memory-pending';
+    const listTitle = node('h2', 'memory-section-title', 'Tus recuerdos'); listTitle.id = 'my-memory-list-title'; listTitle.tabIndex = -1;
+    const grid = node('div', 'rows memory-grid'); grid.id = 'my-memory-facts';
     const more = node('div', 'memory-more');
-    const empty = node('p', 'memory-note memory-empty', COPY.empty); empty.id = 'my-memory-empty';
+    const empty = node('p', 'empty memory-empty', COPY.empty); empty.id = 'my-memory-empty';
     const sections = node('div', 'memory-sections');
     sections.append(pendingTitle, pendingList, listTitle, incomplete, grid, more, empty);
     container.replaceChildren(heading, permission, sessionNotice, freshness, returned, live, ...(voiceSlot ? [voiceSlot] : []), sections);
 
     function markerText(marker) { return marker.state === 'sending' ? 'Enviando…' : 'Sin confirmar: ' + OP_LABEL[marker.op]; }
     function pendingAction(text, key, callback, label, blocked) {
-      const control = button(text, key, () => { if (control.getAttribute('aria-disabled') !== 'true') callback(); });
+      const control = recordButton(text, key, () => { if (control.getAttribute('aria-disabled') !== 'true') callback(); });
       control.setAttribute('aria-disabled', String(blocked)); control.setAttribute('aria-label', label);
       return control;
     }
     function buildPending(state, item, card) {
       const marker = state.markers[item.id], caps = state.capabilities;
-      const top = node('div', 'memory-card-top');
-      const badge = node('span', 'scene-icon lavender'); badge.append(icon('mic'));
-      const title = node('h4', 'memory-pending-title', COPY.pendingTitle);
-      top.append(badge, title); card.append(top);
-      card.append(node('p', 'memory-detail', COPY.pendingWhat), node('p', 'memory-meta', pendingTimes(item)));
-      if (marker) { const line = node('p', 'memory-state', markerText(marker)); line.dataset.memoryMarker = marker.state; card.append(line); }
-      const message = node('p', 'memory-notice', state.notices[item.id] || ''); message.dataset.memoryNotice = item.id; card.append(message);
+      const main = node('div', 'row-main memory-card-main');
+      main.append(node('h3', 'row-title memory-pending-title', COPY.pendingTitle),
+        node('p', 'memory-detail', COPY.pendingWhat), node('p', 'row-meta', pendingTimes(item)));
+      card.append(main);
+      if (marker) { const line = node('p', 'memory-state', markerText(marker)); line.dataset.memoryMarker = marker.state; main.append(line); }
+      const message = node('p', 'memory-notice', state.notices[item.id] || ''); main.append(message);
       if (!caps.write) return;
-      const controls = node('div', 'memory-controls');
+      const controls = node('div', 'row-actions memory-controls');
       if (marker) {
         if (!marker.restored) controls.append(pendingAction('Reintentar ' + OP_LABEL[marker.op], item.id + ':retry', () => owner.retry(item.id), 'Reintentar ' + OP_LABEL[marker.op], marker.state === 'sending'));
       } else {
@@ -123,27 +130,28 @@
     function buildCard(state, item, card) {
       if (item.pending) { buildPending(state, item, card); return; }
       const marker = state.markers[item.id], caps = state.capabilities;
-      const top = node('div', 'memory-card-top');
-      const badge = node('span', 'scene-icon mint'); badge.append(icon('layers'));
-      top.append(badge, node('p', 'memory-meta', stateLine(item))); card.append(top);
-      const { text, long } = content(item); card.append(text);
+      const main = node('div', 'row-main memory-card-main');
+      const { text, long } = content(item);
+      text.classList.add('row-title');
+      main.append(text, node('p', 'row-meta', stateLine(item)));
+      card.append(main);
       if (long) {
         const open = expanded.has(item.id);
-        const toggle = button(open ? 'Ver menos' : 'Ver completo', item.id + ':expand', () => { if (expanded.has(item.id)) expanded.delete(item.id); else expanded.add(item.id); render(); });
-        toggle.setAttribute('aria-expanded', String(open)); card.append(toggle);
+        const toggle = recordButton(open ? 'Ver menos' : 'Ver completo', item.id + ':expand', () => { if (expanded.has(item.id)) expanded.delete(item.id); else expanded.add(item.id); render(); });
+        toggle.setAttribute('aria-expanded', String(open)); main.append(toggle);
       }
-      card.append(node('p', 'memory-detail', (METHOD[item.method] || 'Asignado') + ' · ' + date(item.assigned_at)));
-      if (marker) { const line = node('p', 'memory-state', markerText(marker)); line.dataset.memoryMarker = marker.state; card.append(line); }
-      const message = node('p', 'memory-notice', state.notices[item.id] || ''); message.dataset.memoryNotice = item.id; card.append(message);
-      const controls = node('div', 'memory-controls');
+      main.append(node('p', 'memory-detail', (METHOD[item.method] || 'Asignado') + ' · ' + date(item.assigned_at)));
+      if (marker) { const line = node('p', 'memory-state', markerText(marker)); line.dataset.memoryMarker = marker.state; main.append(line); }
+      const message = node('p', 'memory-notice', state.notices[item.id] || ''); main.append(message);
+      const controls = node('div', 'row-actions memory-controls');
       if (caps.write) {
         if (marker) {
-          if (!marker.restored) { const again = button('Reintentar ' + OP_LABEL[marker.op], item.id + ':retry', () => owner.retry(item.id)); again.disabled = marker.state === 'sending'; controls.append(again); }
+          if (!marker.restored) { const again = recordButton('Reintentar ' + OP_LABEL[marker.op], item.id + ':retry', () => owner.retry(item.id)); again.disabled = marker.state === 'sending'; controls.append(again); }
         } else {
           const blocked = owner.blocked(item.id);
-          const giveBack = button('No es mío…', item.id + ':return', () => confirmReturn(item.id)); giveBack.disabled = blocked;
+          const giveBack = recordButton('No es mío…', item.id + ':return', () => confirmReturn(item.id)); giveBack.disabled = blocked;
           giveBack.setAttribute('aria-label', 'No es mío: devolver este recuerdo a la administración');
-          const removal = button('Eliminar…', item.id + ':delete', () => confirmDelete(item.id), 'identity-danger'); removal.disabled = blocked;
+          const removal = recordButton('Eliminar…', item.id + ':delete', () => confirmDelete(item.id), 'btn danger'); removal.disabled = blocked;
           removal.setAttribute('aria-label', 'Eliminar este recuerdo');
           controls.append(giveBack, removal);
         }
@@ -155,14 +163,14 @@
       let previous = null, lost = null;
       // Remove departed cards first so surviving controls stay attached and keep keyboard focus.
       [...grid.children].forEach((card, index) => {
-        const id = card.dataset.myMemoryId;
+        const id = cardIds.get(card);
         if (remaining.has(id)) return;
         if (card.contains(doc.activeElement)) lost = index;
         card.remove(); cards.delete(id);
       });
       for (const item of items) {
         let entry = cards.get(item.id);
-        if (!entry) { const card = node('article', 'memory-card panel'); card.dataset.myMemoryId = item.id; card.tabIndex = -1; entry = { card, signature: null }; cards.set(item.id, entry); }
+        if (!entry) { const card = node('article', 'row memory-card'); cardIds.set(card, item.id); card.tabIndex = -1; entry = { card, signature: null }; cards.set(item.id, entry); }
         const signature = JSON.stringify([item, state.markers[item.id] || null, state.notices[item.id] || null, state.capabilities, expanded.has(item.id), owner.blocked(item.id)]);
         if (entry.signature !== signature) {
           const hadFocus = entry.card.contains(doc.activeElement);
@@ -203,13 +211,13 @@
       });
     }
     function target(item) {
-      const box = node('div', 'memory-confirm-target');
+      const box = node('div', 'detail memory-confirm-target');
       if (item.pending) box.append(node('p', 'memory-pending-title', COPY.pendingTitle), node('p', 'memory-detail', pendingTimes(item)));
       else box.append(content(item, false).text, node('p', 'memory-detail', stateLine(item)));
       return box;
     }
     function actions(acceptText, acceptClass) {
-      const row = node('div', 'modal-actions memory-confirm-actions');
+      const row = node('div', 'row-actions memory-confirm-actions');
       const cancelButton = button('Cancelar', 'confirm-cancel', () => {});
       const accept = button(acceptText, 'confirm-accept', () => {}, acceptClass);
       row.append(cancelButton, accept);
@@ -219,7 +227,7 @@
       const heading = node('h2', '', 'Eliminar este recuerdo'); heading.id = 'my-memory-confirm-title';
       const nodes = [heading];
       if (changed) { const note = node('p', 'memory-detail memory-changed', 'Los recuerdos que se eliminan junto con este cambiaron mientras decidías. Revisalos antes de confirmar.'); note.setAttribute('role', 'alert'); nodes.push(note); }
-      nodes.push(target(item), node('p', 'modal-description', 'Es definitivo: no se puede deshacer.' + (owned.length ? ' También se eliminan estos recuerdos tuyos que dependen de él:' : '')));
+      nodes.push(target(item), node('p', 'memory-detail', 'Es definitivo: no se puede deshacer.' + (owned.length ? ' También se eliminan estos recuerdos tuyos que dependen de él:' : '')));
       if (owned.length) {
         const list = node('ul', 'memory-confirm-items');
         for (const other of owned) {
@@ -241,7 +249,7 @@
       let owned = owner.ownedDependents(id), changed = false;
       // The cascade accepted must be the one sent: re-ask when a read changed it meanwhile (N5).
       for (let round = 0; round < 5; round++) {
-        const { row, cancelButton, accept } = actions('Eliminar definitivamente', 'identity-danger');
+        const { row, cancelButton, accept } = actions('Eliminar definitivamente', 'btn danger');
         const accepted = await dialog([...deleteParts(item, owned, changed), row], cancelButton, id + ':delete',
           finish => { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); });
         if (!accepted || !active) return;
@@ -258,8 +266,8 @@
       const item = owner.getState().facts.find(entry => entry.id === id);
       if (!item || !item.pending) return;
       const heading = node('h2', '', 'Descartar esta propuesta'); heading.id = 'my-memory-confirm-title';
-      const { row, cancelButton, accept } = actions('Descartar', 'identity-danger');
-      const accepted = await dialog([heading, target(item), node('p', 'modal-description', COPY.discardConfirm), row], cancelButton, id + ':discard',
+      const { row, cancelButton, accept } = actions('Descartar', 'btn danger');
+      const accepted = await dialog([heading, target(item), node('p', 'memory-detail', COPY.discardConfirm), row], cancelButton, id + ':discard',
         finish => { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); });
       if (accepted && active) await owner.remove(id, { confirmed: true });
     }
@@ -268,19 +276,19 @@
       if (!item) return;
       if (item.pending) {
         const heading = node('h2', '', 'No es mío'); heading.id = 'my-memory-confirm-title';
-        const { row, cancelButton, accept } = actions('No es mío', 'identity-primary');
+        const { row, cancelButton, accept } = actions('No es mío', 'btn primary');
         // The same N5 sentence before acting as the server returns after.
-        const accepted = await dialog([heading, target(item), node('p', 'modal-description', COPY.notMineConfirm),
-          node('p', 'modal-description memory-return-before', voiceReturnNotice), row], cancelButton, id + ':return',
+        const accepted = await dialog([heading, target(item), node('p', 'memory-detail', COPY.notMineConfirm),
+          node('p', 'memory-detail memory-return-before', voiceReturnNotice), row], cancelButton, id + ':return',
           finish => { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); });
         if (accepted && active) await owner.giveBack(id, { confirmed: true });
         return;
       }
       const heading = node('h2', '', 'No es mío'); heading.id = 'my-memory-confirm-title';
       // The same sentence before acting as after (v4 person_notice).
-      const { row, cancelButton, accept } = actions('Devolver a la administración', 'identity-primary');
-      const accepted = await dialog([heading, target(item), node('p', 'modal-description', 'Se devuelve a la administración del hogar y deja de figurar en Mis recuerdos.'),
-        node('p', 'modal-description memory-return-before', returnNotice), row], cancelButton, id + ':return',
+      const { row, cancelButton, accept } = actions('Devolver a la administración', 'btn primary');
+      const accepted = await dialog([heading, target(item), node('p', 'memory-detail', 'Se devuelve a la administración del hogar y deja de figurar en Mis recuerdos.'),
+        node('p', 'memory-detail memory-return-before', returnNotice), row], cancelButton, id + ':return',
         finish => { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); });
       if (accepted && active) await owner.giveBack(id, { confirmed: true });
     }
@@ -300,16 +308,16 @@
       const orphan = Object.entries(state.markers).filter(([id]) => !listed.has(id));
       // Rebuilt only when it changes, keeping focus on a retry control.
       const orphanSignature = JSON.stringify([orphan, orphan.map(([id]) => state.notices[id] || null), caps.write]);
-      if (pendingList.dataset.signature !== orphanSignature) {
+      if (lastOrphanSignature !== orphanSignature) {
         const key = focusKey();
         pendingList.replaceChildren(...orphan.map(([id, marker]) => {
-          const card = node('article', 'memory-card panel memory-orphan'); card.setAttribute('aria-label', 'Operación sin confirmar');
+          const card = node('article', 'row memory-card memory-orphan'); card.setAttribute('aria-label', 'Operación sin confirmar');
           card.append(node('p', 'memory-state', markerText(marker) + ' un recuerdo que no figura en la lista.'));
-          const message = node('p', 'memory-notice', state.notices[id] || ''); message.dataset.memoryNotice = id; card.append(message);
-          if (caps.write && !marker.restored) { const again = button('Reintentar ' + OP_LABEL[marker.op], id + ':retry', () => owner.retry(id)); again.disabled = marker.state === 'sending'; card.append(again); }
+          const message = node('p', 'memory-notice', state.notices[id] || ''); card.append(message);
+          if (caps.write && !marker.restored) { const again = recordButton('Reintentar ' + OP_LABEL[marker.op], id + ':retry', () => owner.retry(id)); again.disabled = marker.state === 'sending'; card.append(again); }
           return card;
         }));
-        pendingList.dataset.signature = orphanSignature;
+        lastOrphanSignature = orphanSignature;
         if (key && key.endsWith(':retry') && !focusByKey(key) && !container.contains(doc.activeElement)) listTitle.focus({ preventScroll: true });
       }
       pendingTitle.hidden = pendingList.hidden = !orphan.length || !state.loaded;

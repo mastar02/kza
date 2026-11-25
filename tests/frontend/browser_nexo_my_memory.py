@@ -33,9 +33,14 @@ from src.memory.services import build_memory_services
 from src.users.user_manager import PermissionLevel, UserManager
 from src.users.voice_ledger import VoiceReviewer
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_nexo_memory import ACTIVE_CONTROL, INSTRUMENT, TEXT_ZOOM, TEXT_ZOOM_CHECK
+from tests.frontend.browser_nexo_memory import (
+    ACTIVE_CONTROL, INSTRUMENT, TEXT_ZOOM, TEXT_ZOOM_CHECK, capture_memory_state, open_memory_hash,
+)
 from tests.frontend.browser_nexo_voices import person_link
-from tests.frontend.browser_support import Page, _press_tab, audit_view, browser_binary, browser_profile_root, evidence_directory, install_login_session
+from tests.frontend.browser_support import (
+    FixtureRows, Page, _press_tab, audit_view, browser_binary, browser_profile_root,
+    evidence_directory, install_login_session, press_escape,
+)
 from tests.mocks.memory_graph import MemoryClient
 from tests.mocks.voice_registry import ACTOR, graph as voice_graph, seed as voice_seed
 
@@ -238,14 +243,17 @@ async def main() -> None:
                         async def rule(method: str, path: str, mode: str) -> None:
                             await page.evaluate(f'window.__qaRules.push({json.dumps({"method": method, "path": path, "mode": mode})})')
 
+                        fixture_rows = FixtureRows('#my-memory-view .memory-card', '.memory-content')
+
                         def card(identity: str, inner: str = '') -> str:
-                            return json.dumps(f'#my-memory-view [data-my-memory-id="{identity}"] {inner}'.strip())
+                            return json.dumps(f'#my-memory-view ' + fixture_rows.selector(identity, inner))
 
                         def key(value: str) -> str:
-                            return f'#my-memory-view [data-key="{value}"]'
+                            identity, action = value.rsplit(':', 1)
+                            return fixture_rows.selector(identity, f'[data-key="{action}"]')
 
                         def notice(identity: str) -> str:
-                            return f"(document.querySelector({json.dumps(f'#my-memory-view [data-memory-notice=\"{identity}\"]')})?.textContent||'')"
+                            return f"(document.querySelector({card(identity, '.memory-notice')})?.textContent||'')"
 
                         async def set_hidden(hidden: bool) -> None:
                             await page.evaluate("""(hidden=>{if(!window.__qaHiddenInstalled){window.__qaHiddenInstalled=true;window.__qaHidden=false;
@@ -265,15 +273,35 @@ async def main() -> None:
 
                         # Person A: navigation, whoami first, own memories only, honest copy.
                         await login(page, home_a.token, 'Acceso de hogar')
-                        assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,actions,routines,mymemory'")
+                        assert await page.evaluate("[...document.querySelectorAll('#rail-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,routines,tasks,activity,mymemory'")
                         marker = len(requests)
+                        await rule('GET', '/api/memory/mine', 'hold-drop')
                         await click('#app-nav [data-view=mymemory]')
+                        await page.wait_for("window.__qaHeld==='/api/memory/mine' && document.querySelector('#my-memory-freshness').textContent.startsWith('Consultando')")
+                        await capture_memory_state(page, evidence, 'mis-recuerdos-cargando', '#my-memory-freshness')
+                        await page.evaluate('window.__qaRelease()')
+                        await page.wait_for("document.querySelector('#my-memory-freshness').classList.contains('is-error')")
+                        await capture_memory_state(page, evidence, 'mis-recuerdos-error', '#my-memory-freshness')
+                        await click('#my-memory-refresh')
+                        labels = [(identity, texts[name]) for identity, name in
+                                  ((a_return, 'a_return'), (a_lost, 'a_lost'), (a_held, 'a_held'),
+                                   (a_hidden, 'a_hidden'), (a_leave, 'a_leave'), (a_bidi, 'a_bidi'),
+                                   (a_parent, 'a_parent'), (b_fact, 'b_fact'))]
+                        await fixture_rows.bind_many(page, labels, prefix=True)
                         await page.wait_for(f"location.hash==='#mis-recuerdos' && !document.querySelector('#my-memory-view').hidden && document.querySelector({card(a_return)})")
                         opened = [item['path'] for item in requests[marker:] if item['path'] in ('/api/admin/auth/whoami', '/api/memory/mine')]
                         # U3b-4a-3: the voice section confirms the account on its own, so a second whoami may precede the list.
                         assert opened[0] == '/api/admin/auth/whoami' and '/api/memory/mine' in opened, opened
                         assert not any(item['path'] == '/api/memory' or item['path'].startswith('/api/memory/') and not item['path'].startswith('/api/memory/mine')
                                        for item in requests[marker:]), requests[marker:]
+                        await capture_memory_state(page, evidence, 'mis-recuerdos-con-datos', '#my-memory-facts .memory-card',
+                                                   frame_view='#my-memory-view')
+                        assert await page.evaluate("document.querySelector('#section-views').hidden && document.querySelector('#my-memory-title').textContent.startsWith('Mis recuerdos')")
+                        marker = len(requests)
+                        await open_memory_hash(page, base, 'mis-recuerdos', 'Acceso de hogar', 'my-memory-view')
+                        await page.wait_for(f"document.querySelector({card(a_return)})")
+                        assert any(item['path'] == '/api/memory/mine' and item['status'] == 200 for item in requests[marker:])
+                        assert not any(item['path'] == '/api/memory' for item in requests[marker:])
                         text = await page.evaluate("document.querySelector('#my-memory-view').innerText")
                         for phrase in ('Recuerdos que la administración del hogar te asignó. Ves solo los tuyos.',
                                        'Las cuentas de administración del hogar ven todos los recuerdos, también estos, y pueden eliminarlos o reasignarlos.',
@@ -281,8 +309,10 @@ async def main() -> None:
                                        'Si un recuerdo no es tuyo, usá «No es mío»: vuelve a la administración y no se borra.'):
                             assert phrase in text, phrase
                         assert 'borrado total' not in text.lower() and 'usa en sus respuestas' not in text
-                        ids = await page.evaluate("[...document.querySelectorAll('#my-memory-view [data-my-memory-id]')].map(n=>n.dataset.myMemoryId)")
-                        assert set(ids) == {a_return, a_lost, a_held, a_hidden, a_leave, a_bidi, a_parent}, ids
+                        labels = await page.evaluate("[...document.querySelectorAll('#my-memory-facts .memory-content')].map(n=>n.textContent)")
+                        expected = {texts[name] for name in ('a_return', 'a_lost', 'a_held', 'a_hidden', 'a_leave', 'a_bidi')}
+                        expected.add("Trabajo desde casa los viernes. Recuerdo sintético de A con un derivado.")
+                        assert len(labels) == len(expected) and set(labels) == expected, labels
                         body = await dom_text()
                         assert not any(phrase in body for phrase in foreign_texts), 'no other person\'s or household memory in the DOM'
                         assert b_fact not in body and household_fact not in body and hidden_child not in body
@@ -296,6 +326,7 @@ async def main() -> None:
 
                         # WEB-11: a concurrent deletion is reflected when the held list response reaches the view.
                         removed_id = await own('web11', 'Recuerdo sintético temporal.', person_a.user_id)
+                        await fixture_rows.bind(page, removed_id, texts['web11'])
                         await click('#my-memory-refresh')
                         await page.wait_for(f"document.querySelector({card(removed_id)})")
                         assert await memory.acall(memory.delete_fact, removed_id, MemoryReviewer('synthetic-seed-reviewer'))
@@ -306,11 +337,13 @@ async def main() -> None:
                         await page.evaluate(f"document.querySelector('{key(a_return + ':return')}').focus()")
                         await _press_tab(page)
                         focus_before = await page.evaluate(ACTIVE_CONTROL)
-                        assert focus_before == {'tag': 'BUTTON', 'key': a_return + ':delete'}, focus_before
+                        assert await page.evaluate(f"document.activeElement===document.querySelector({json.dumps(key(a_return + ':delete'))})")
+                        assert focus_before == {'tag': 'BUTTON', 'key': 'delete'}, focus_before
                         assert await page.evaluate(f"document.querySelector({card(removed_id)})?.compareDocumentPosition(document.activeElement) & Node.DOCUMENT_POSITION_FOLLOWING")
                         await page.evaluate('window.__qaRelease()')
                         await page.wait_for(f"!document.querySelector({card(removed_id)})")
                         focus_after = await page.evaluate(ACTIVE_CONTROL)
+                        assert await page.evaluate(f"document.activeElement===document.querySelector({json.dumps(key(a_return + ':delete'))})")
                         assert focus_after == focus_before, (focus_before, focus_after)
                         web11 = {'removed_card': removed_id, 'before': focus_before, 'after': focus_after}
                         checks.append('WEB-11: real Tab reaches the delete button during a refresh and focus survives removal of another card')
@@ -322,10 +355,11 @@ async def main() -> None:
                         dialog = await page.evaluate("document.querySelector('#my-memory-confirm-dialog').innerText")
                         assert memory_api.RETURN_NOTICE in dialog and 'Se devuelve a la administración del hogar' in dialog, dialog
                         audits = {}
+                        await capture_memory_state(page, evidence, 'mis-recuerdos-no-es-mio', '#my-memory-confirm-title')
                         audits['mis-recuerdos-no-es-mio'] = await audit_view(page, evidence, 'mis-recuerdos-no-es-mio', (
                             ('#my-memory-confirm-dialog [data-key=confirm-cancel]', None), ('#my-memory-confirm-dialog [data-key=confirm-accept]', None)), screenshot, widths=WIDTHS)
-                        await click('#my-memory-confirm-dialog [data-key="confirm-cancel"]')
-                        await page.wait_for(f"!document.querySelector('#my-memory-confirm-dialog').open && document.activeElement?.dataset.key==='{a_return}:return'")
+                        await press_escape(page)
+                        await page.wait_for(f"!document.querySelector('#my-memory-confirm-dialog').open && document.activeElement===document.querySelector({json.dumps(key(a_return + ':return'))})")
                         assert count('POST', f'/api/memory/mine/facts/{a_return}/return') == 0
                         await press(key(a_return + ':return'))
                         await page.wait_for("document.querySelector('#my-memory-confirm-dialog').open")
@@ -344,9 +378,10 @@ async def main() -> None:
                         assert 'No borra la conversación de origen' in dialog and 'Los viernes almuerzo' not in dialog
                         # R6: always said, whatever the visible cascade: deleted at apply time, no count reported.
                         assert CASCADE in dialog and await page.evaluate("Boolean(document.querySelector('#my-memory-delete-cascade'))"), dialog
+                        await capture_memory_state(page, evidence, 'mis-recuerdos-eliminar', '#my-memory-confirm-title')
                         audits['mis-recuerdos-eliminar'] = await audit_view(page, evidence, 'mis-recuerdos-eliminar', (
                             ('#my-memory-confirm-dialog [data-key=confirm-cancel]', None), ('#my-memory-confirm-dialog [data-key=confirm-accept]', None)), screenshot, widths=WIDTHS)
-                        await click('#my-memory-confirm-dialog [data-key="confirm-cancel"]')
+                        await press_escape(page)
                         await page.wait_for("!document.querySelector('#my-memory-confirm-dialog').open")
                         assert count('DELETE', f'/api/memory/mine/facts/{a_parent}') == 0
                         await press(key(a_parent + ':delete'))
@@ -432,7 +467,7 @@ async def main() -> None:
                         # Accessibility and reflow of the list, plus a 200% text pass.
                         audits['mis-recuerdos'] = await audit_view(page, evidence, 'mis-recuerdos', (
                             ('#app-nav [data-view=mymemory]', None), ('#my-memory-refresh', None), (key(a_hidden + ':return'), None),
-                            (key(a_hidden + ':delete'), None)), screenshot, widths=WIDTHS)
+                            (key(a_hidden + ':delete'), None)), screenshot, widths=WIDTHS, text_zoom=True)
                         zoom = {}
                         for width in ZOOM_WIDTHS:
                             await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 844, 'deviceScaleFactor': 1, 'mobile': True})
@@ -483,7 +518,7 @@ async def main() -> None:
                         assert await page.evaluate(f"sessionStorage.getItem('kza:my-memory-op:{a_hidden}')===null")
                         body = await dom_text()
                         assert 'Recuerdo sintético de A' not in body and 'Recuerdo sintético de relleno de A' not in body, "A's memories are gone under B"
-                        assert await page.evaluate("[...document.querySelectorAll('#my-memory-view [data-my-memory-id]')].map(n=>n.dataset.myMemoryId)") == [b_fact]
+                        assert await page.evaluate("[...document.querySelectorAll('#my-memory-facts .memory-content')].map(n=>n.textContent)") == [texts['b_fact']]
                         gate.set()
                         await asyncio.sleep(0.3)
                         del gates[('DELETE', f'/api/memory/mine/facts/{a_hidden}')]
@@ -495,11 +530,9 @@ async def main() -> None:
 
                         # Negative: household account without a person (voice profile linked to A grants nothing).
                         await login(page, shared.token, 'Acceso de hogar')
-                        assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,actions,routines'")
+                        assert await page.evaluate("[...document.querySelectorAll('#rail-nav [data-view]')].map(n=>n.dataset.view).join(',')==='home,routines,tasks,activity'")
                         marker = len(requests)
-                        await page.evaluate("location.hash='#mis-recuerdos'")
-                        await page.command('Page.reload')
-                        await page.wait_for("document.querySelector('#session-label').textContent==='Acceso de hogar' && !document.querySelector('#home-view').hidden")
+                        await open_memory_hash(page, base, 'mis-recuerdos', 'Acceso de hogar', 'home-view')
                         await asyncio.sleep(0.3)
                         assert not any(item['path'].startswith('/api/memory') for item in requests[marker:]), requests[marker:]
                         assert await page.evaluate("document.querySelector('#my-memory-view').hidden && !document.querySelector('#my-memory-view').children.length")
@@ -516,12 +549,25 @@ async def main() -> None:
                         await login(page, evaluator.token, 'Evaluación temporal')
                         await page.wait_for("!document.querySelector('#evaluation-view').hidden")
                         assert await page.evaluate("!document.querySelector('[data-view=mymemory]') && !document.querySelector('[data-view=memory]')")
+                        marker = len(requests)
+                        await open_memory_hash(page, base, 'mis-recuerdos', 'Evaluación temporal', 'evaluation-view')
+                        assert not any(item['path'].startswith('/api/memory') for item in requests[marker:]), requests[marker:]
                         assert await page.evaluate("fetch('/api/memory/mine').then(r=>r.status)") == 403
                         await logout()
                         await login(page, operator.token, 'Administración')
                         assert await page.evaluate("!document.querySelector('[data-view=mymemory]') && !!document.querySelector('[data-view=memory]')")
+                        marker = len(requests)
+                        await open_memory_hash(page, base, 'mis-recuerdos', 'Administración', 'home-view')
+                        assert not any(item['path'].startswith('/api/memory/mine') for item in requests[marker:]), requests[marker:]
+                        assert await page.evaluate("document.querySelector('#my-memory-view').hidden && !document.querySelector('#my-memory-view').children.length")
+                        marker = len(requests)
+                        await open_memory_hash(page, base, 'memoria', 'Administración', 'memory-view')
+                        await page.wait_for("document.querySelector('#memory-freshness')?.textContent.startsWith('Consultada')")
+                        assert any(item['path'] == '/api/memory' and item['status'] == 200 for item in requests[marker:])
+                        assert not any(item['path'].startswith('/api/memory/mine') for item in requests[marker:]), requests[marker:]
                         assert await page.evaluate("fetch('/api/memory/mine').then(r=>r.json().then(b=>[r.status,b.detail]))") == [403, 'dashboard_permission_denied']
                         await logout()
+                        checks.append('direct hashes: household uses its own source; evaluator and operator fall back with zero own-memory or own-voice requests; operator #memoria uses only the operator source')
                         checks.append('evaluator: no Mis recuerdos or Memoria entry, /api/memory/mine 403; operator: Memoria but no Mis recuerdos, /api/memory/mine 403 dashboard_permission_denied')
                         assert page.errors == [], page.errors
 

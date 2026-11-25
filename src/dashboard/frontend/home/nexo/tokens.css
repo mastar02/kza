@@ -1,0 +1,77 @@
+@font-face {
+  font-family: Inter;
+  src: url("./vendor/inter-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("./vendor/space-grotesk-latin.woff2") format("woff2");
+  font-weight: 300 700;
+  font-display: swap;
+}
+
+:root {
+  --nexo-font-body: Inter, "Segoe UI", sans-serif;
+  --nexo-font-heading: "Space Grotesk", var(--nexo-font-body);
+  --nexo-text-small: 0.875rem;
+  --nexo-text-body: 1rem;
+  --nexo-text-heading: 1.5rem;
+  --nexo-text-title: 2rem;
+  --nexo-radius-small: 4px;
+  --nexo-radius: 6px;
+  --nexo-touch-target: 44px;
+  --nexo-focus-width: 3px;
+  --nexo-line-width: 1px;
+  --nexo-line-width-wide: 2px;
+  --nexo-space-1: 4px;
+  --nexo-space-1-half: 6px;
+  --nexo-space-2: 8px;
+  --nexo-space-3: 12px;
+  --nexo-space-4: 16px;
+  --nexo-space-5: 20px;
+  --nexo-space-6: 24px;
+  --nexo-space-8: 32px;
+  --nexo-space-10: 40px;
+  --nexo-login-width: 30rem;
+  --nexo-frame-width: 112.5rem;
+  --nexo-room-panel-min: 20rem;
+  --nexo-room-panel-max: 25rem;
+  --nexo-map-height: 38.75rem;
+  --nexo-map-height-medium: 28.75rem;
+  --nexo-map-height-small: 26.25rem;
+  --nexo-pin-width: 10rem;
+  --nexo-switch-width: 9rem;
+  --nexo-device-width: 17.5rem;
+  --nexo-temperature-diameter: 9.5rem;
+  --nexo-control-width: 14rem;
+  --nexo-field-width: 12rem;
+  --nexo-text-brand: 1.4375rem;
+  --nexo-accent: #F2B33D;
+  --nexo-on-accent: #17202A;
+  --nexo-disabled-opacity: 0.72;
+
+  /* Theme selection is applied before the page renders. */
+  --nexo-scheme: dark;
+  --nexo-ground: #14171A;
+  --nexo-ink: #EEF1F3;
+  --nexo-muted: #B4BCC4;
+  --nexo-line: #3A424A;
+  --nexo-card: #1C2025;
+  --nexo-segment: #23282D;
+  --nexo-focus: #8FB4FF;
+  --nexo-danger: #FF9EA6;
+}
+
+:root[data-theme="claro"] {
+  --nexo-scheme: light;
+  --nexo-ground: #EEF0EC;
+  --nexo-ink: #17202A;
+  --nexo-muted: #3F4A55;
+  --nexo-line: #C9CEC6;
+  --nexo-card: #FFFFFF;
+  --nexo-segment: #DDE1DA;
+  --nexo-focus: #1F5FD1;
+  --nexo-danger: #A32632;
+}

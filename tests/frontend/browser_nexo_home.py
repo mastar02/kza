@@ -1,7 +1,10 @@
 """Real Chromium, individual HTTP logins, synthetic HA and shared notices for NEXO."""
 
+import argparse
 import asyncio
 import base64
+from dataclasses import replace
+from datetime import timedelta
 import json
 import math
 import os
@@ -10,6 +13,7 @@ import socket
 import subprocess
 import tempfile
 import time
+from unittest.mock import patch
 
 import aiohttp
 import uvicorn
@@ -20,6 +24,7 @@ from src.dashboard.api import DashboardAPI
 from src.dashboard.authority import (
     DashboardAuthority, DashboardRole, EvaluationModality, EvaluationSample,
 )
+from src.home_assistant import capability_service
 from src.home_assistant.control_policy import EntityGrant, HomeControlPolicy
 from src.home_assistant.effect_plans import scene_effects_from_states
 from src.home_assistant.home_actions import HomeActionService
@@ -28,13 +33,22 @@ from src.reminders.reminder_store import ReminderScope, ReminderState, ReminderS
 from src.rooms.room_context import RoomConfig
 from src.users.user_manager import PermissionLevel, UserManager
 from tests.frontend.browser_support import (
-    Page, audit_modal_focus, audit_modal_return, audit_status, audit_view, browser_binary,
-    browser_profile_root, dispatch_key, evidence_directory, press_enter, reduced_motion_house,
+    assert_frame_consistent, assert_nexo_presentation,
+    Page, audit_current_accessibility, audit_modal_focus, audit_modal_return, audit_status, audit_view,
+    browser_binary,
+    browser_profile_root, dispatch_key, evidence_directory, press_enter, press_escape, press_key, reduced_motion_house,
 )
 from tests.integration.test_typed_home_operations import typed_graph
 
 
+# Keep UI audits independent of host scheduling. The held-read scenario
+# advances the browser clock past this real deadline and checks expiry explicitly.
+CATALOG_TTL_S = 60
+
 INSTRUMENT = """(() => {
+  const wallTime = Date.now;
+  window.__qaCatalogClockOffset = 0;
+  Date.now = () => wallTime() + window.__qaCatalogClockOffset;
   const fetcher=window.fetch.bind(window);
   window.__qaDropNext=false;window.__qaDelayReceipt=false;window.__qaFailLogout=false;window.__qaHoldLogout=false;
   window.__qaLogin503=false;window.__qaLogin403=false;window.__qaLoginNetwork=false;window.__qaLoginTimeout=false;
@@ -58,6 +72,10 @@ INSTRUMENT = """(() => {
       if(!login.ok)throw new Error('Synthetic evaluator cookie switch failed');
     }
     const response=await fetcher(input,options);
+    if(path==='/home/nexo/private/casa.glb'&&window.__qaHoldModel){
+      window.__qaHoldModel=false;
+      await new Promise(resolve=>window.__qaReleaseModel=resolve);
+    }
     if(evaluatorToken)window.__qaNoticeWriteStatus=response.status;
     if(path==='/api/reminders/notices'&&window.__qaHoldNoticeResponse){
       window.__qaHoldNoticeResponse=false;
@@ -87,12 +105,20 @@ async def login(page: Page, token: str, label: str) -> None:
     assert await page.evaluate("document.querySelector('#token').value==='' && document.cookie===''")
 
 
+# The two fixture rooms named Cocina remain distinct by their ordered rows.
+LIVING_CHOICE = '#room-list .room-row:nth-child(1) .room-choice'
+KITCHEN_CHOICE = '#room-list .room-row:nth-child(2) .room-choice'
+KITCHEN_POWER = '#room-list .room-row:nth-child(2) .room-power'
+ANNEX_CHOICE = '#room-list .room-row:nth-child(4) .room-choice'
+KITCHEN_PIN = "[...document.querySelectorAll('#room-pins .room-pin')].find(pin=>pin.textContent==='Cocina')"
+
 HOME_CONTROLS = (
-    ('#app-nav [data-view=home]', None), ('#app-nav [data-view=actions]', None), ('#refresh', None),
+    ('#section-views [data-view=home]', None), ('#section-views [data-view=actions]', None), ('#refresh', None),
     ('#view-3d', None), ('#view-top', None), ('#zoom-in', None), ('#zoom-out', None), ('#reset-view', None),
+    ('#rotate-left', None), ('#rotate-right', None),
     ('#expand-map', None), ('#global-scenes button', 'Lectura'), ('#layer-tabs [data-layer=lights]', None),
-    ('#room-list [data-room-id=living]', None),
-    ('#room-list [role=switch][data-entity-id="climate.test_ac"]', None),
+    (LIVING_CHOICE, None),
+    (KITCHEN_POWER, None),
     ('#room-controls input[name=temperature]', None), ('#room-controls .thermostat-step', None), ('#logout', None),
 )
 # U4: no surface links to the retired legacy views or the technical panel.
@@ -100,13 +126,13 @@ LEGACY_LINKS = ("document.querySelectorAll('a[href*=\"legacy.html\"], a[href^=\"
                 "a[href=\"/dashboard.js\"], #technical-link, #additional-tools').length")
 # Entity controls are gated by expiring observations: audit them only while the page shows data as current.
 HOME_FRESH = ("!document.querySelector('#connection-status').classList.contains('is-stale') && "
-              "[...document.querySelectorAll('.device-card[data-entity-id]')].every(card => card.dataset.observation === 'current')")
+              "[...document.querySelectorAll('.device-card')].every(card => card.dataset.observation === 'current')")
 # Records every entity card that turns stale; without a held request, any entry is a refresh-timing flicker.
 STALE_MONITOR = ("(()=>{window.__qaStale=[];new MutationObserver(records=>{for(const record of records){const card=record.target;"
-                 "if(card.dataset.observation==='stale'&&record.oldValue!=='stale')window.__qaStale.push({entity:card.dataset.entityId,"
+                 "if(card.dataset.observation==='stale'&&record.oldValue!=='stale')window.__qaStale.push({device:card.querySelector('.device-name')?.textContent,"
                  "at:Math.round(performance.now()),status:document.querySelector('#connection-status').textContent})}})"
                  ".observe(document.body,{subtree:true,attributes:true,attributeFilter:['data-observation'],attributeOldValue:true});return true})()")
-ACTION_CONTROLS = (('#app-nav [data-view=home]', None), ('#action-list button', None), ('#refresh', None), ('#logout', None))
+ACTION_CONTROLS = (('#section-views [data-view=home]', None), ('#action-list button', None), ('#refresh', None), ('#logout', None))
 PEOPLE_CONTROLS = (('#app-nav [data-view=people]', None), ('#add-person', None), ('#refresh-people', None),
                    ('#people-grid [data-person]', None), ('#logout', None))
 NOTICE_LIST = '/api/reminders/notices'
@@ -119,14 +145,165 @@ PRIVATE_NOTICE = 'AVISO_PRIVADO_SINTETICO'
 
 
 async def screenshot(page: Page, path: Path, *, full: bool = True, scroll_top: bool = True) -> None:
+    await assert_nexo_presentation(page)
     if scroll_top:
         await page.evaluate('window.scrollTo(0,0)')
     await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
-    if await page.evaluate("!!document.querySelector('#house-canvas canvas')"):
-        assert await page.evaluate("(()=>{const canvas=document.querySelector('#house-canvas canvas'),gl=canvas.getContext('webgl2'),pixel=new Uint8Array(4);gl.readPixels(Math.floor(canvas.width/2),Math.floor(canvas.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return pixel[3]>0})()"), 'Illustration must remain visible between renders'
+    if await page.evaluate("!!document.querySelector('#house-canvas canvas') && !document.querySelector('#house-canvas + .house-fallback')"):
+        assert await page.evaluate("(()=>{const canvas=document.querySelector('#house-canvas canvas'),gl=canvas.getContext('webgl2'),pixel=new Uint8Array(4);gl.readPixels(Math.floor(canvas.width/2),Math.floor(canvas.height/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);return pixel[3]>0})()"), 'The house plan must remain visible between renders'
     result = await page.command("Page.captureScreenshot", {"format": "png", "captureBeyondViewport": full})
     path.write_bytes(base64.b64decode(result["data"]))
     path.chmod(0o600)
+
+
+async def check_floor_pixels(page: Page) -> dict:
+    """Measure two interior floor patches in the initial desktop 3D view in both themes."""
+    readings = {}
+    for theme in ('claro', 'oscuro'):
+        readings[theme] = await page.evaluate(r"""(async theme => {
+            const selector = document.querySelector('#theme-slot select');
+            selector.value = theme;
+            selector.dispatchEvent(new Event('change'));
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            const canvas = document.querySelector('#house-canvas canvas');
+            const gl = canvas.getContext('webgl2');
+            const style = getComputedStyle(canvas.closest('.map-viewport'));
+            const [center, edge] = ['--nexo-segment', '--nexo-ground'].map(property => {
+                const rgb = parseInt(style.getPropertyValue(property).trim().slice(1), 16);
+                return [rgb >> 16, (rgb >> 8) & 255, rgb & 255];
+            });
+            const pixel = new Uint8Array(4);
+            // Rectangles over the near left wood floor and the living-room tiles.
+            const patches = [
+                {x: [.375, .392, .409], y: [.655, .675, .695]},
+                {x: [.56, .58, .60], y: [.71, .725, .74]},
+            ];
+            return patches.map(({x, y}) => {
+                let luminance = 0, visible = 0, distanceFromBackdrop = 0;
+                for (const u of x) for (const v of y) {
+                    gl.readPixels(Math.floor(u * canvas.width), Math.floor((1 - v) * canvas.height),
+                        1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+                    const luma = .2126 * pixel[0] + .7152 * pixel[1] + .0722 * pixel[2];
+                    luminance += luma;
+                    if (pixel[3] >= 250 && luma >= 32) visible++;
+                    // Same ellipse as the CSS backdrop, from its center to the 75% stop.
+                    const mix = Math.min(1, Math.hypot(u - .5, v - .5) * Math.SQRT2 / .75);
+                    distanceFromBackdrop += Math.hypot(...center.map((channel, index) =>
+                        channel + (edge[index] - channel) * mix - pixel[index]));
+                }
+                const count = x.length * y.length;
+                return {mean_luminance: luminance / count, visible, count, mean_backdrop_distance: distanceFromBackdrop / count};
+            });
+        })(""" + json.dumps(theme) + ")")
+    await page.evaluate("localStorage.removeItem('nexo-theme')")
+    assert all(
+        patch['mean_luminance'] >= 60 and patch['visible'] >= 7 and patch['mean_backdrop_distance'] >= 15
+        for patches in readings.values() for patch in patches
+    ), f'3D floor must be lit and distinguishable from both theme backdrops: {readings}'
+    return readings
+
+
+async def check_context_recovery(page: Page, evidence: Path) -> None:
+    """Lose the real WebGL context with a loaded model and with a held response."""
+    paused = """(() => {
+        const status = document.querySelector('#house-canvas + .house-fallback[role=status]');
+        return status?.textContent.includes('El plano 3D se pausó') && status.getBoundingClientRect().height > 0
+            && document.querySelector('#room-pins').hidden
+            && ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'rotate-left', 'rotate-right', 'reset-view']
+                .every(id => document.getElementById(id).disabled)
+            && document.querySelector('#house-canvas canvas').getContext('webgl2').isContextLost();
+    })()"""
+    ready = """!document.querySelector('#house-canvas + .house-fallback') && !document.querySelector('#room-pins').hidden
+        && !document.querySelector('#view-top').disabled"""
+    for model_held in (False, True):
+        if model_held:
+            await page.evaluate("document.querySelector('#section-views [data-view=actions]').click()")
+            await page.wait_for("!document.querySelector('#actions-view').hidden && !document.querySelector('#house-canvas canvas')")
+            await page.evaluate("window.__qaHoldModel=true;document.querySelector('#section-views [data-view=home]').click()")
+            await page.wait_for("!!window.__qaReleaseModel && document.querySelector('#room-pins').children.length===0")
+        assert await page.evaluate("""(() => {
+            const gl = document.querySelector('#house-canvas canvas').getContext('webgl2');
+            window.__qaContext = gl.getExtension('WEBGL_lose_context');
+            if (!window.__qaContext) return false;
+            window.__qaContext.loseContext();
+            return true;
+        })()"""), 'Chromium must expose WEBGL_lose_context'
+        await page.wait_for(paused)
+        if model_held:
+            await page.evaluate("window.__qaReleaseModel();delete window.__qaReleaseModel")
+            await page.wait_for("document.querySelector('#room-pins').children.length===3")
+            assert await page.evaluate(paused), 'A model loaded during context loss must leave the camera disabled'
+        else:
+            tree = await page.command('Accessibility.getFullAXTree')
+            nodes = {node['nodeId']: node for node in tree['nodes']}
+            assert any(
+                not node['ignored'] and node.get('role', {}).get('value') == 'status'
+                and any('El plano 3D se pausó' in nodes[child].get('name', {}).get('value', '')
+                        for child in node.get('childIds', []) if child in nodes)
+                for node in nodes.values()
+            ), 'The paused viewer must expose its message in the browser accessibility tree'
+            await screenshot(page, evidence / 'hogar-contexto-perdido.png')
+        await page.evaluate("window.__qaContext.restoreContext();delete window.__qaContext")
+        await page.wait_for(ready)
+
+
+async def check_mobile_pins(page: Page) -> dict:
+    """Check that mobile pin targets fit without overlap at normal and double text size."""
+    layouts = await page.evaluate(r"""(async () => {
+        const container = document.querySelector('#room-pins');
+        const settle = () => new Promise(resolve => setTimeout(resolve, 120));
+        const measure = () => {
+            const bounds = container.getBoundingClientRect();
+            const pins = [...container.querySelectorAll('.room-pin')];
+            const rects = pins.map(pin => pin.getBoundingClientRect());
+            const targets = pins.map((pin, i) => {
+                const {left, right, top, bottom} = rects[i];
+                // Projection adds a subpixel translation. Measure the same target without
+                // that translation so DOMRect float cancellation cannot turn 44px into 43.9999px.
+                const translation = pin.style.translate;
+                pin.style.translate = 'none';
+                const {width, height} = pin.getBoundingClientRect();
+                pin.style.translate = translation;
+                const name = document.createRange();
+                name.selectNodeContents(pin.querySelector('.tag').firstChild);
+                return {room: pin.textContent, x: left - bounds.left, y: top - bounds.top, width, height,
+                    name_lines: name.getClientRects().length,
+                    inside: left >= bounds.left && right <= bounds.right && top >= bounds.top && bottom <= bounds.bottom,
+                    visible: getComputedStyle(pin).visibility === 'visible'};
+            });
+            const overlap = rects.some((a, i) => rects.slice(i + 1)
+                .some(b => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom));
+            return {targets, overlap};
+        };
+        await settle();
+        const normal = measure();
+        const sizes = [...container.querySelectorAll('*')].map(node => {
+            const style = getComputedStyle(node);
+            return [node, parseFloat(style.fontSize), style.lineHeight];
+        });
+        let doubled;
+        try {
+            for (const [node, font, line] of sizes) {
+                node.style.fontSize = 2 * font + 'px';
+                if (line.endsWith('px')) node.style.lineHeight = 2 * parseFloat(line) + 'px';
+            }
+            await settle();
+            doubled = measure();
+        } finally {
+            for (const [node] of sizes) {
+                node.style.removeProperty('font-size');
+                node.style.removeProperty('line-height');
+            }
+            await settle();
+        }
+        return {normal, doubled};
+    })()""")
+    for layout in layouts.values():
+        assert len(layout['targets']) == 3 and not layout['overlap'], layouts
+        assert all(pin['visible'] and pin['inside'] and pin['width'] >= 44 and pin['height'] >= 44
+                   for pin in layout['targets']), layouts
+    assert next(pin for pin in layouts['normal']['targets'] if pin['room'] == 'Escalera')['name_lines'] == 1, layouts
+    return layouts
 
 
 async def check_notices(page: Page, evidence: Path, store: ReminderStore, requests: list[dict]) -> dict:
@@ -208,7 +385,7 @@ Q24_PROBE = """(()=>{
     const el=node.parentElement;
     if(!el||!node.textContent.trim()||el.closest('script,style,noscript,svg,[aria-hidden=true]')||!shown(el))continue;
     textNodes++;const size=parseFloat(getComputedStyle(el).fontSize);
-    if(size<11)text.push({element:name(el),size});
+    if(size<14)text.push({element:name(el),size});
   }
   for(const el of document.querySelectorAll('input,select,textarea')){
     if(el.matches('[type=hidden],[type=button],[type=submit],[type=file]')||!shown(el))continue;
@@ -220,13 +397,36 @@ Q24_PROBE = """(()=>{
 
 
 async def audit_q24(page: Page, evidence: Path, label: str, *, restore: tuple[int, int, bool] = (1425, 1180, False)) -> dict:
-    """Assert no visible informative text is below 11 px and no phone field is below 16 px."""
+    """Assert the 14 px text floor and 16 px mobile field floor."""
     report, problems = {}, []
     for width in Q24_WIDTHS:
         await page.command('Emulation.setDeviceMetricsOverride', {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': width <= 390})
         await page.evaluate('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
         await asyncio.sleep(0.1)
         found = await page.evaluate(Q24_PROBE)
+        if label == 'hogar':
+            fit = await page.evaluate("""(() => {
+                const bad = [];
+                const buttons = [...document.querySelectorAll('#room-controls .touch-preset')];
+                if (!buttons.length) bad.push('Faltan los controles rápidos de clima');
+                for (const button of buttons) {
+                    const rect = button.getBoundingClientRect();
+                    const range = document.createRange();
+                    range.selectNodeContents(button);
+                    if ([...range.getClientRects()].some(text => text.left < rect.left || text.right > rect.right
+                        || text.top < rect.top || text.bottom > rect.bottom)) bad.push(button.textContent);
+                }
+                const stats = document.querySelector('.house-stats');
+                stats.scrollIntoView({block:'center'});
+                for (const stat of stats.querySelectorAll('dt, dd')) {
+                    const rect = stat.getBoundingClientRect();
+                    const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+                    if (hit !== stat) bad.push(stat.textContent);
+                }
+                return bad;
+            })()""")
+            problems += [f'{width}px overlapping or missing Casa content: {item}' for item in fit]
+            found['casa_fit'] = fit
         report[str(width)] = found
         assert found['textNodes'] > 0, f'Q24 {label} {width}px: the probe saw no text'
         problems += [f'{width}px text {item["size"]}px: {item["element"]}' for item in found['text']]
@@ -245,38 +445,37 @@ HOUSE_YAW = "parseFloat(document.querySelector('#house-canvas').dataset.yaw)"
 async def check_live_map(page: Page) -> None:
     """Select a bound room with a pin and the floor, using actual pointer events."""
     await page.wait_for("document.querySelectorAll('#room-pins button').length===3")
-    assert await page.evaluate("""[...document.querySelectorAll('#room-pins button')].every(pin=>{
+    assert await page.evaluate(f"""[...document.querySelectorAll('#room-pins button')].every(pin=>{{
       const r=pin.getBoundingClientRect();
       return pin.type==='button'&&pin.tabIndex===-1&&r.width>=44&&r.height>=44&&!pin.querySelector('img');
-    }) && document.querySelector('.live-badge').textContent==='EN VIVO'
-       && !!document.querySelector('#room-pins [data-room-id=escalera]')
-       && !!document.querySelector('#room-list [data-room-id=annex]')
-       && !document.querySelector('#room-pins [data-room-id=annex]')""")
+    }}) && !document.querySelector('#live-badge').hidden
+       && document.querySelector('{ANNEX_CHOICE} strong').textContent==='Cocina'
+       && [...document.querySelectorAll('#room-pins button')].map(pin=>pin.textContent).sort().join() === 'Cocina,Escalera,Sala de estar'""")
     await page.evaluate("document.querySelector('#map-stage').scrollIntoView({block:'center'})")
-    point = await page.evaluate("""(()=>{const r=document.querySelector('#room-pins [data-room-id=kitchen]').getBoundingClientRect();
-      return {x:r.left+r.width/2,y:r.top+r.height/2}})()""")
+    point = await page.evaluate(f"""(()=>{{const r=({KITCHEN_PIN}).getBoundingClientRect();
+      return {{x:r.left+r.width/2,y:r.top+r.height/2}}}})()""")
     mouse = {'button': 'left', 'clickCount': 1, **point}
     await page.command('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, **mouse})
     await page.command('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, **mouse})
-    await page.wait_for("document.querySelector('#room-list [data-room-id=kitchen]').getAttribute('aria-pressed')==='true'")
+    await page.wait_for(f"document.querySelector('{KITCHEN_CHOICE}').getAttribute('aria-pressed')==='true'")
 
-    await page.evaluate("""document.querySelector('#room-list [data-room-id=living]').click();
+    await page.evaluate(f"""document.querySelector('{LIVING_CHOICE}').click();
       document.querySelector('#view-top').click()""")
     await asyncio.sleep(1.2)
-    point = await page.evaluate("""(()=>{const pins=document.querySelector('#room-pins');
-      const r=pins.querySelector('[data-room-id=kitchen]').getBoundingClientRect();
-      pins.style.visibility='hidden';return {x:r.left+r.width/2,y:r.top+r.height/2}})()""")
+    point = await page.evaluate(f"""(()=>{{const pins=document.querySelector('#room-pins');
+      const r=({KITCHEN_PIN}).getBoundingClientRect();
+      pins.style.visibility='hidden';return {{x:r.left+r.width/2,y:r.top+r.height/2}}}})()""")
     mouse = {'button': 'left', 'clickCount': 1, **point}
     await page.command('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, **mouse})
     await page.command('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'buttons': 1, **{**mouse, 'x': point['x'] + 5}})
     await page.command('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'buttons': 1, **mouse})
     await page.command('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, **mouse})
-    assert await page.evaluate("document.querySelector('#room-list [data-room-id=living]').getAttribute('aria-pressed')==='true'")
+    assert await page.evaluate(f"document.querySelector('{LIVING_CHOICE}').getAttribute('aria-pressed')==='true'")
     await page.command('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, **mouse})
     await page.command('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, **mouse})
-    await page.wait_for("document.querySelector('#room-list [data-room-id=kitchen]').getAttribute('aria-pressed')==='true'")
-    await page.evaluate("""document.querySelector('#room-pins').style.visibility='';
-      document.querySelector('#room-list [data-room-id=living]').click();document.querySelector('#reset-view').click()""")
+    await page.wait_for(f"document.querySelector('{KITCHEN_CHOICE}').getAttribute('aria-pressed')==='true'")
+    await page.evaluate(f"""document.querySelector('#room-pins').style.visibility='';
+      document.querySelector('{LIVING_CHOICE}').click();document.querySelector('#reset-view').click()""")
 
 
 async def _key(page: Page, key: str, code: str, key_code: int, text: str | None = None) -> None:
@@ -373,10 +572,10 @@ async def audit_rotation(page: Page, evidence: Path, remount) -> dict:
     await asyncio.sleep(0.15)
     # Without WebGL the tools are disabled, not left as dead controls.
     await page.evaluate("window.__qaGetContext=HTMLCanvasElement.prototype.getContext;HTMLCanvasElement.prototype.getContext=function(){return null}")
-    await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
+    await page.evaluate("document.querySelector('#section-views [data-view=actions]').click()")
     await page.wait_for("!document.querySelector('#actions-view').hidden && !document.querySelector('#house-canvas canvas')")
-    await page.evaluate("document.querySelector('#app-nav [data-view=home]').click()")
-    await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden && !!document.querySelector('#house-canvas .house-fallback')")
+    await page.evaluate("document.querySelector('#section-views [data-view=home]').click()")
+    await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden && !!document.querySelector('#house-canvas + .house-fallback')")
     fallback = await page.evaluate("""(()=>{const state=Object.fromEntries(['rotate-left','rotate-right'].map(id=>{
       const el=document.querySelector('#'+id);el.focus();el.click();return [id,{disabled:el.disabled,focused:document.activeElement===el}]}));
       return {state,canvas:!!document.querySelector('#house-canvas canvas'),yaw:document.querySelector('#house-canvas').dataset.yaw??null}})()""")
@@ -389,7 +588,52 @@ async def audit_rotation(page: Page, evidence: Path, remount) -> dict:
     return observed
 
 
-async def main() -> None:
+async def check_without_plan(page: Page, evidence: Path, token: str, ha) -> None:
+    """Casa keeps its room choices and device actions when the model is missing."""
+    await page.wait_for("document.querySelector('#login-error')?.textContent.length > 0"
+                        " && !document.querySelector('#token').disabled")
+    await login(page, token, "Acceso de hogar")
+    await page.wait_for("""document.querySelector('#map-loading').hidden
+        && document.querySelector('#house-canvas + .house-fallback[role=status]')?.textContent
+           === 'No se pudo mostrar el plano. Podés usar la lista de ambientes.'
+        && document.querySelector('#room-list').children.length === 4""")
+    assert await page.evaluate("""!document.querySelector('#house-canvas canvas')
+        && !document.querySelector('#room-pins').children.length
+        && ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'rotate-left', 'rotate-right', 'reset-view']
+            .every(id => document.getElementById(id).disabled)""")
+    for selector, heading in ((KITCHEN_CHOICE, "Cocina"), (LIVING_CHOICE, "Sala de estar")):
+        await page.evaluate(f"document.querySelector('{selector}').focus()")
+        await press_enter(page)
+        await page.wait_for(
+            "document.querySelector('#room-controls .selected-room-heading')?.textContent==="
+            + json.dumps(heading)
+        )
+    await page.evaluate("document.querySelector('#room-controls button[data-operation=turn_on]').click()")
+    await page.wait_for("document.querySelector('#room-controls [data-receipt][data-operation=turn_on]')?.dataset.status==='confirmed'")
+    assert len(ha.sends) == 1 and ha.sends[0][1:3] == ('turn_on', 'light.test_lamp')
+
+    screenshots = []
+    for theme in ('claro', 'oscuro'):
+        await page.evaluate(f"""(() => {{
+            const select = document.querySelector('#theme-slot select');
+            select.value = '{theme}'; select.dispatchEvent(new Event('change'));
+        }})()""")
+        for width, height in ((1440, 1000), (768, 1024), (390, 844)):
+            await page.command('Emulation.setDeviceMetricsOverride', {
+                'width': width, 'height': height, 'deviceScaleFactor': 1, 'mobile': width == 390,
+            })
+            assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            name = f'hogar-sin-plano-{theme}-{width}.png'
+            await screenshot(page, evidence / name)
+            screenshots.append(name)
+    assert page.errors == [], page.errors
+    result = {"passed": True, "webgl_house": False, "room_choices": 4, "confirmed_light_actions": 1,
+              "uncaught_exceptions": len(page.errors), "screenshots": screenshots}
+    (evidence / "browser-result.json").write_text(json.dumps(result, indent=2) + '\n')
+    print(json.dumps(result))
+
+
+async def main(*, without_plan: bool = False, missing_model: bool = False) -> None:
     os.environ["KZA_DASHBOARD_TOKEN"] = "synthetic-nexo-bootstrap"
     evidence = evidence_directory("KZA_NEXO_HOME_EVIDENCE", "data/autonomous-roadmap-20261102/t047/people-browser-runs")
     evidence.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -410,33 +654,41 @@ async def main() -> None:
     binary = browser_binary()
     browser_data = browser_profile_root(mode=0o700)
     ha, actions = typed_graph.__wrapped__()
-    for entity, name in [("light.test_lamp", "Luz principal"), ("climate.test_ac", "Aire acondicionado"), ("cover.test_blind", "Persiana")]:
+    read_ha = ha.get_state_snapshot
+
+    async def catalog_fixture_snapshot():
+        snapshot = await read_ha()
+        return replace(snapshot, expires_at=snapshot.observed_at + timedelta(seconds=CATALOG_TTL_S))
+
+    ha.get_state_snapshot = catalog_fixture_snapshot
+    for entity, name in [("light.test_lamp", "Luz principal"), ("climate.test_ac", "Aire acondicionado")]:
         ha.states[entity]["attributes"]["friendly_name"] = name
     ha.states['light.test_lamp']['attributes'].update(brightness=166, color_temp_kelvin=2700)
     ha.states['climate.test_ac']['attributes']['hvac_action'] = 'cooling'
     ha.states['sensor.test_temperature'] = {'entity_id': 'sensor.test_temperature', 'state': '24.5',
                                            'attributes': {'unit_of_measurement': '°C'}}
-    ha.states['scene.test_reading'] = {'entity_id': 'scene.test_reading', 'state': 'unknown',
-                                      'attributes': {'entity_id': ['light.test_lamp']}}
+    reading_state = {'entity_id': 'scene.test_reading', 'state': 'unknown',
+                     'attributes': {'entity_id': ['light.test_lamp']}}
     grants = await actions.policy.snapshot_grants()
     reading = EntityGrant('scene.test_reading', frozenset({'activate_scene'}), display_name='Lectura',
                           scene_effects=scene_effects_from_states({'light.test_lamp': {'state': 'on'}}))
     actions = HomeActionService(ha, policy=HomeControlPolicy((*grants, reading)))
     requests = []
-    with tempfile.TemporaryDirectory(prefix="kza-nexo-", dir=browser_data) as temporary:
+    with (tempfile.TemporaryDirectory(prefix="kza-nexo-", dir=browser_data) as temporary,
+          patch.object(capability_service, 'STATE_OBSERVATION_TTL_S', CATALOG_TTL_S)):
         directory = Path(temporary)
         users = UserManager(str(directory / 'users.json'), retirement_proof=lambda identities: authority.users_retired(identities))
         admin, _ = users.add_user('Administración sintética', PermissionLevel.ADMIN)
         users.add_user('Persona de prueba', PermissionLevel.ADULT)
         unsafe_name, _ = users.add_user('Prueba <img src=x onerror=window.__personXss=true>', PermissionLevel.ADULT)
-        authority = DashboardAuthority(directory / "auth.db", session_ttl_s=120, account_provider=users.active_accounts)
+        authority = DashboardAuthority(directory / "auth.db", session_ttl_s=300, account_provider=users.active_accounts)
         await authority.initialize()
         root = authority.resolve("Bearer synthetic-nexo-bootstrap")
         assert root is not None
-        home = await authority.issue_credential(root, subject="synthetic-home", role=DashboardRole.HOME, expires_at=time.time() + 180)
-        operator = await authority.issue_credential(root, subject="synthetic-operator", role=DashboardRole.OPERATOR, expires_at=time.time() + 180)
-        selection = EvaluationSample("vf_" + "a" * 64, frozenset({"b" * 64}), frozenset({EvaluationModality.AUDIO_PREVIEW}), time.time() + 180)
-        evaluator = await authority.issue_credential(root, subject="synthetic-evaluator", role=DashboardRole.EVALUATOR, expires_at=time.time() + 180, samples=(selection,))
+        home = await authority.issue_credential(root, subject="synthetic-home", role=DashboardRole.HOME, expires_at=time.time() + 600)
+        operator = await authority.issue_credential(root, subject="synthetic-operator", role=DashboardRole.OPERATOR, expires_at=time.time() + 600)
+        selection = EvaluationSample("vf_" + "a" * 64, frozenset({"b" * 64}), frozenset({EvaluationModality.AUDIO_PREVIEW}), time.time() + 600)
+        evaluator = await authority.issue_credential(root, subject="synthetic-evaluator", role=DashboardRole.EVALUATOR, expires_at=time.time() + 600, samples=(selection,))
         rooms = {
             "living": RoomConfig("living", "Sala de estar", "la sala", default_light="light.test_lamp",
                                  default_cover="cover.test_blind", temperature_sensor="sensor.test_temperature"),
@@ -457,8 +709,13 @@ async def main() -> None:
         for route in ['/ws/voices', '/ws/evaluation']:
             dashboard.app.router.routes.insert(0, WebSocketRoute(route, unavailable_live_channel))
 
+        action_posts = []
+
         @dashboard.app.middleware("http")
         async def record_request(request, call_next):
+            if request.method == "POST" and request.url.path == "/api/home/actions":
+                body = await request.json()
+                action_posts.append({key: value for key, value in body.items() if key != "request_id"})
             if request.url.path.startswith("/api/"):
                 requests.append({"method": request.method, "path": request.url.path,
                                  "request_id": request.query_params.get("request_id")})
@@ -494,6 +751,10 @@ async def main() -> None:
                 async with aiohttp.ClientSession() as client:
                     async with client.get(f"http://127.0.0.1:{debugging}/json/list") as response:
                         targets = await response.json()
+                    if without_plan or missing_model:
+                        for name, status in (('casa.glb', 404), ('house-plan.js', 200 if missing_model else 404)):
+                            async with client.get(f'http://127.0.0.1:{port}/home/nexo/private/{name}') as response:
+                                assert response.status == status, (name, response.status)
                 target = next(target for target in targets if target["type"] == "page")
                 async with connect(target["webSocketDebuggerUrl"], max_size=None) as connection:
                     page = DiagnosticPage(connection)
@@ -501,10 +762,49 @@ async def main() -> None:
                     await page.command("Page.enable")
                     await page.command("Page.addScriptToEvaluateOnNewDocument", {"source": INSTRUMENT})
                     await page.command("Emulation.setDeviceMetricsOverride", {"width": 1425, "height": 1180, "deviceScaleFactor": 1, "mobile": False})
+                    await page.command("Emulation.setEmulatedMedia", {
+                        "features": [{"name": "prefers-color-scheme", "value": "dark"}],
+                    })
                     await page.command("Page.navigate", {"url": f"http://127.0.0.1:{port}/"})
+                    if without_plan or missing_model:
+                        await check_without_plan(page, evidence, home.token, ha)
+                        return
                     await page.wait_for("document.querySelector('#login-panel') && document.querySelector('#login-error').textContent.length>0")
+                    assert await page.evaluate("""document.documentElement.dataset.theme === 'oscuro'
+                        && document.body.classList.contains('night')
+                        && document.querySelector('#theme-slot select')?.value === 'auto'
+                        && getComputedStyle(document.documentElement).getPropertyValue('--nexo-ground').trim() === '#14171A'""")
                     assert [request["path"] for request in requests] == ["/api/admin/auth/whoami"]
                     assert await page.evaluate("document.querySelector('#token').getAttribute('aria-describedby')==='login-guidance' && document.querySelector('#login-guidance').textContent.includes('administrador del hogar') && document.querySelector('#login-guidance').textContent.includes('evaluación temporal') && document.querySelector('#login-guidance').textContent.includes('Home Assistant no funciona')")
+                    await page.evaluate("document.querySelector('.skip-link').focus()")
+                    await press_enter(page)
+                    assert await page.evaluate("document.activeElement.id === 'main'"), 'Enter on the skip link must reach main'
+                    await page.evaluate("history.replaceState({}, '', location.pathname); document.activeElement.blur()")
+                    for theme in ('claro', 'oscuro'):
+                        await page.evaluate("(value=>{const select=document.querySelector('#theme-slot select');"
+                                            "select.value=value;select.dispatchEvent(new Event('change'))})(" + json.dumps(theme) + ")")
+                        for width in (1440, 768, 390):
+                            await page.command('Emulation.setDeviceMetricsOverride',
+                                               {'width': width, 'height': 900, 'deviceScaleFactor': 1, 'mobile': width == 390})
+                            await screenshot(page, evidence / f'login-{theme}-{width}.png', full=False)
+                            if width != 768:
+                                await audit_current_accessibility(page, evidence, 'sesion')
+                            await page.evaluate("document.querySelector('#help-button').focus()")
+                            await press_enter(page)
+                            assert await page.evaluate("document.querySelector('#info-dialog').open")
+                            await screenshot(page, evidence / f'help-{theme}-{width}.png', full=False)
+                            if width != 768:
+                                focus = await audit_current_accessibility(
+                                    page, evidence, 'ayuda', '#info-dialog', initial='#dialog-close')
+                                await press_escape(page)
+                                await page.wait_for("!document.querySelector('#info-dialog').open")
+                                await audit_modal_return(page, evidence, f'ayuda-retorno-{theme}-{width}', focus,
+                                                         dialog='#info-dialog', opener='#help-button')
+                            else:
+                                await page.evaluate("document.querySelector('#dialog-done').click()")
+                                assert await page.evaluate("!document.querySelector('#info-dialog').open")
+                    await page.command('Emulation.setDeviceMetricsOverride',
+                                       {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
                     await screenshot(page, evidence / 'login-guidance.png')
                     await audit_q24(page, evidence, 'sesion')
 
@@ -524,6 +824,7 @@ async def main() -> None:
                             f"document.querySelector('#login-form').requestSubmit()"
                         )
                         await page.wait_for("document.querySelector('#login-error').textContent.length>0 && !document.querySelector('#token').disabled")
+                        await assert_nexo_presentation(page)
                         msg = await page.evaluate("document.querySelector('#login-error').textContent")
                         assert await page.evaluate("document.querySelector('#nexo-workspace').hidden && !document.querySelector('#login-panel').hidden && document.querySelector('#token').value===''"), label
                         for term in required_terms:
@@ -538,14 +839,41 @@ async def main() -> None:
                     await asyncio.sleep(0.1)
                     assert not any(request['path'] == '/api/home/catalog' for request in requests[marker:])
                     assert not any(request['path'] == NOTICE_LIST for request in requests[marker:])
+                    assert await page.evaluate("document.querySelector('#global-scenes').hidden")
                     await page.evaluate("delete document.hidden;document.dispatchEvent(new Event('visibilitychange'))")
-                    await page.wait_for("document.querySelector('#room-list [data-room-id=living]') && document.querySelector('#room-controls [data-operation=turn_on]')")
+                    await page.wait_for(f"document.querySelector('{LIVING_CHOICE}') && document.querySelector('#room-controls [data-operation=turn_on]')")
                     await page.wait_for("document.querySelector('#map-loading').hidden")
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,actions,routines,tasks'")
+                    assert await page.evaluate(r"""(() => {
+                        const view = document.querySelector('#home-view');
+                        const panel = view.querySelector('#room-controls');
+                        return panel.querySelector('.selected-room-heading').textContent === 'Sala de estar'
+                            && panel.querySelector('.room-temperature').textContent.includes('24.5 °C')
+                            && panel.querySelector('.rows .row[data-domain=cover] .device-name').textContent === 'Persiana · Sala de estar'
+                            && panel.querySelector('.rows .row[data-domain=light] .sw[aria-checked=false]')
+                            && view.querySelector('#global-scenes').hidden
+                            && !document.querySelector('.hero, .weather, .catalog-note, footer')
+                            && !/tu casa, en sintonía|control local|ilustración|tu espacio\. tu control/i.test(document.body.innerText)
+                            && !/\b(?:light|climate|cover|scene|sensor)\.test_/i.test(view.innerText)
+                            && ![...view.querySelectorAll('[aria-label]')].some(node => /\.test_/.test(node.getAttribute('aria-label')));
+                    })()""")
+                    ha.states['scene.test_reading'] = reading_state
+                    await page.evaluate("document.querySelector('#refresh').click()")
+                    await page.wait_for("!document.querySelector('#global-scenes').hidden")
+                    assert await page.evaluate("""[...document.querySelectorAll('#global-scenes button')].map(button=>button.textContent).join() === 'Lectura'""")
+                    assert await page.evaluate("[...document.querySelectorAll('#rail-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,routines,tasks,activity'")
+                    assert await page.evaluate("""(() => {
+                        const nav = document.querySelector('#app-nav');
+                        return document.querySelectorAll('nav').length === 1
+                            && nav.contains(document.querySelector('#theme-slot'))
+                            && nav.querySelector('#rail-nav [aria-current=true]')?.textContent === 'Casa'
+                            && [...nav.querySelectorAll('#section-views button')].map(node => node.textContent).join() === 'Vista de la casa,Acciones'
+                            && nav.querySelector('#section-views [aria-current=page]')?.dataset.view === 'home';
+                    })()""")
                     assert not any(request["path"] in {"/api/users", "/api/voices", "/api/home/microphones", "/api/conversations"} for request in requests[marker:])
                     await screenshot(page, evidence / "home-desktop.png")
                     webgl = await page.evaluate("!!document.querySelector('#house-canvas canvas')")
                     assert webgl, 'The live pin and raycast require WebGL in this harness'
+                    floor_pixels = await check_floor_pixels(page)
                     await check_live_map(page)
 
                     await page.evaluate("document.querySelector('#room-controls button[data-operation=turn_on]').click()")
@@ -563,17 +891,19 @@ async def main() -> None:
                     assert await page.evaluate("""(()=>{const slider=document.querySelector('#room-controls input[name=brightness_pct]');
                       return slider.type==='range' && slider.value===slider.min && slider.closest('label').querySelector('output').textContent===slider.min+' %';})()""")
                     await page.evaluate("""(()=>{const slider=document.querySelector('#room-controls input[name=brightness_pct]');
-                      slider.value='35';slider.dispatchEvent(new Event('input'));slider.dispatchEvent(new Event('change'));})()""")
+                      slider.value='34';slider.focus();})()""")
+                    await press_key(page, 'ArrowRight', 39)
                     await page.wait_for("document.querySelector('#room-controls [data-receipt][data-operation=brightness]').dataset.status==='confirmed'")
                     assert ha.sends[-1][2:] == ('light.test_lamp', {'brightness_pct': 35})
                     await page.evaluate("document.querySelector('#global-scenes [data-operation=activate_scene]').click()")
                     await page.wait_for("document.querySelector('#global-scenes [data-receipt]').dataset.status==='confirmed'")
                     assert ha.sends[-1][1:3] == ('turn_on', 'light.test_lamp')
-                    await page.evaluate("document.querySelector('#layer-tabs [data-layer=climate]').click();document.querySelector('#room-list [data-room-id=kitchen]').click()")
+                    await page.evaluate(f"document.querySelector('#layer-tabs [data-layer=climate]').click();document.querySelector('{KITCHEN_CHOICE}').click()")
                     await page.wait_for("document.querySelector('#room-controls input[name=temperature]')")
                     assert await page.evaluate("document.querySelector('#room-controls .device-value').textContent==='22 °C · objetivo'")
-                    assert await page.evaluate("""document.querySelector('#room-controls .device-current').textContent==='31 °C · actual'
-                      && document.querySelector('#room-pins [data-room-id=kitchen]').textContent.includes('Enfriando')""")
+                    assert await page.evaluate(f"""document.querySelector('#room-controls .device-current').textContent==='31 °C · actual'
+                      && document.querySelector('#room-controls .room-temperature').textContent.includes('Enfriando')
+                      && ({KITCHEN_PIN})?.getAttribute('aria-pressed')==='true'""")
                     for label, target in (('+', 22.5), ('−', 22)):
                         await page.evaluate(f"[...document.querySelectorAll('#room-controls .thermostat-step')].find(button=>button.textContent==={json.dumps(label)}).click()")
                         await page.wait_for(f"document.querySelector('#room-controls .device-value').textContent==='{target} °C · objetivo'")
@@ -587,6 +917,7 @@ async def main() -> None:
                     # climate controls are disabled and marked; fresh data re-enables them and returns focus and draft.
                     await page.evaluate("(()=>{window.__qaHeldInput=document.querySelector('#room-controls input[name=temperature]');window.__qaHoldCatalog=true;window.__qaHeldInput.focus();window.__qaHeldInput.value='22.5';document.querySelector('#refresh').click()})()")
                     await page.wait_for("!!window.__qaReleaseCatalog")
+                    await page.evaluate(f"window.__qaCatalogClockOffset = {(CATALOG_TTL_S + 1) * 1000}")
                     stale_state = "(()=>{const input=window.__qaHeldInput,card=input.closest('.device-card');return input.isConnected&&input.disabled&&card.dataset.observation==='stale'&&[...card.querySelectorAll('[data-control]')].every(control=>control.disabled)&&document.querySelector('#connection-status').classList.contains('is-stale')})()"
                     for _ in range(240):
                         if await page.evaluate(stale_state):
@@ -596,10 +927,11 @@ async def main() -> None:
                         raise AssertionError('held catalog did not expire the climate observation')
                     await audit_status(page, evidence, 'hogar', 'stale', '#connection-status')
                     held_focus = await page.evaluate("document.activeElement===window.__qaHeldInput?'retained':document.activeElement===document.body?'body':String(document.activeElement?.id||document.activeElement?.tagName)")
-                    await page.evaluate("window.__qaReleaseCatalog();delete window.__qaReleaseCatalog")
+                    await page.evaluate("window.__qaCatalogClockOffset=0;window.__qaReleaseCatalog();delete window.__qaReleaseCatalog")
                     await page.wait_for("(()=>{const input=window.__qaHeldInput;return input.isConnected&&!input.disabled&&input.closest('.device-card').dataset.observation==='current'&&!document.querySelector('#connection-status').classList.contains('is-stale')})()")
                     assert await page.evaluate("document.activeElement===window.__qaHeldInput && window.__qaHeldInput.value==='22.5'"), 'focus and draft must return with fresh data'
-                    staleness_check = {'focus_while_stale': held_focus, 'focus_restored': True, 'draft_preserved': True}
+                    staleness_check = {'fixture_ttl_s': CATALOG_TTL_S, 'clock_advance_s': CATALOG_TTL_S + 1,
+                                       'focus_while_stale': held_focus, 'focus_restored': True, 'draft_preserved': True}
                     await page.evaluate("(()=>{const input=document.querySelector('#room-controls input[name=temperature]');input.value='23.5';input.closest('form').requestSubmit()})()")
                     await page.wait_for("document.querySelector('#room-controls [data-receipt][data-operation=set_temperature]').dataset.status==='confirmed'")
                     assert ha.sends[-1][2:] == ("climate.test_ac", {"temperature": 23.5})
@@ -612,6 +944,16 @@ async def main() -> None:
                     await asyncio.sleep(0.2)
                     assert sum(request["path"] == "/api/home/actions" and request["method"] == "POST" for request in requests) == before + 1
 
+                    assert action_posts == [
+                        {'entity_id': 'light.test_lamp', 'operation': 'turn_on'},
+                        {'entity_id': 'light.test_lamp', 'operation': 'color_temp_kelvin', 'color_temp_kelvin': 3000},
+                        {'entity_id': 'light.test_lamp', 'operation': 'turn_off'},
+                        {'entity_id': 'light.test_lamp', 'operation': 'brightness', 'brightness_pct': 35},
+                        {'entity_id': 'scene.test_reading', 'operation': 'activate_scene'},
+                        *({'entity_id': 'climate.test_ac', 'operation': 'set_temperature', 'temperature': target}
+                          for target in (22.5, 22, 23.5, 24)),
+                    ]
+
                     await page.evaluate("document.querySelector('#view-top').click()")
                     assert await page.evaluate("document.querySelector('#view-top').classList.contains('active') && !document.querySelector('#view-3d').classList.contains('active') && document.querySelector('#view-top').getAttribute('aria-pressed')==='true'")
                     await page.evaluate("document.querySelector('#reset-view').click()")
@@ -621,7 +963,7 @@ async def main() -> None:
                     await asyncio.sleep(0.1)
                     assert sum(request["path"] == "/api/home/actions" and request["method"] == "POST" for request in requests) == before + 1
 
-                    await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
+                    await page.evaluate("document.querySelector('#section-views [data-view=actions]').click()")
                     await page.wait_for("!document.querySelector('#actions-view').hidden")
                     assert await page.evaluate("!document.querySelector('#house-canvas canvas') && window.__qaFrames.size===0")
                     assert await page.evaluate("!document.querySelector('#home-notices')")
@@ -631,20 +973,66 @@ async def main() -> None:
                     await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden")
 
                     async def remount_house():
-                        await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
+                        await page.evaluate("document.querySelector('#section-views [data-view=actions]').click()")
                         await page.wait_for("!document.querySelector('#actions-view').hidden && !document.querySelector('#house-canvas canvas')")
-                        await page.evaluate("document.querySelector('#app-nav [data-view=home]').click()")
+                        await page.evaluate("document.querySelector('#section-views [data-view=home]').click()")
                         await page.wait_for("!document.querySelector('#home-view').hidden && document.querySelector('#map-loading').hidden && !!document.querySelector('#house-canvas canvas') && !document.querySelector('#view-top').disabled")
 
                     motion = await reduced_motion_house(page, remount_house)
-                    audits['hogar'] = await audit_view(page, evidence, 'hogar', HOME_CONTROLS, screenshot, fresh=HOME_FRESH)
+                    audits['hogar'] = await audit_view(page, evidence, 'hogar', HOME_CONTROLS, screenshot, widths=(320, 1280, 1425), fresh=HOME_FRESH, theme='oscuro')
                     stale_episodes = await page.evaluate("window.__qaStale")
                     (evidence / 'stale-episodes.json').write_text(json.dumps({'episodes': stale_episodes, 'staleness_check': staleness_check}, indent=2) + '\n')
                     assert stale_episodes == [], f'entity observations lapsed between catalog refreshes: {stale_episodes[:5]}'
+
+                    # Supplemental captures check freshness per viewport without extending the functional monitor.
+                    themed_audits = {}
+                    mobile_pins = {}
+
+                    async def themed_screenshot(page: Page, path: Path, *, full: bool = True) -> None:
+                        await screenshot(page, path, full=full)
+                        active_theme = await page.evaluate("document.documentElement.dataset.theme")
+                        await assert_frame_consistent(page, '#home-view', active_theme)
+                        if path.stem.endswith('-390'):
+                            mobile_pins[active_theme] = await check_mobile_pins(page)
+
+                    assert await page.evaluate("""(() => {
+                        const selector = document.querySelector('#theme-slot select');
+                        const panel = document.querySelector('#room-controls');
+                        const palette = () => [getComputedStyle(panel).color, getComputedStyle(panel).backgroundColor];
+                        const dark = palette();
+                        selector.value = 'claro'; selector.dispatchEvent(new Event('change'));
+                        const light = palette();
+                        const day = document.documentElement.dataset.theme === 'claro'
+                            && !document.body.classList.contains('night') && localStorage.getItem('nexo-theme') === 'claro';
+                        selector.value = 'oscuro'; selector.dispatchEvent(new Event('change'));
+                        localStorage.removeItem('nexo-theme');
+                        return day && dark.every((color, index) => color !== light[index])
+                            && palette().every((color, index) => color === dark[index]);
+                    })()""")
+                    for theme in ('oscuro', 'claro'):
+                        await page.evaluate("""(theme => {
+                            const selector = document.querySelector('#theme-slot select');
+                            selector.value = theme; selector.dispatchEvent(new Event('change'));
+                        })(""" + json.dumps(theme) + ")")
+                        themed_audits[theme] = await audit_view(
+                            page, evidence, 'hogar', HOME_CONTROLS, themed_screenshot,
+                            widths=(1440, 768, 390), fresh=HOME_FRESH, theme=theme,
+                        )
+                    audits['hogar']['widths'].update(themed_audits['oscuro']['widths'])
+                    (evidence / 'a11y-hogar.json').write_text(
+                        json.dumps(audits['hogar'], ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
+                    assert await page.evaluate("""(() => {
+                        const selector = document.querySelector('#theme-slot select');
+                        selector.value = 'oscuro'; selector.dispatchEvent(new Event('change'));
+                        localStorage.removeItem('nexo-theme');
+                        return document.documentElement.dataset.theme === 'oscuro'
+                            && document.body.classList.contains('night');
+                    })()""")
                     # Q26 takes several seconds without catalog refreshes, so it runs after the freshness monitor is closed.
                     await audit_q24(page, evidence, 'hogar')
                     rotation = await audit_rotation(page, evidence, remount_house)
-                    await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click()")
+                    await check_context_recovery(page, evidence)
+                    await page.evaluate("document.querySelector('#section-views [data-view=actions]').click()")
                     await page.wait_for("!document.querySelector('#actions-view').hidden && document.querySelector('#action-list button')")
                     await audit_q24(page, evidence, 'acciones')
                     await remount_house()
@@ -682,11 +1070,20 @@ async def main() -> None:
                     await page.evaluate("Object.defineProperty(document,'hidden',{configurable:true,value:false})")
                     await login(page, evaluator.token, "Evaluación temporal")
                     await page.wait_for("!document.querySelector('#evaluation-view').hidden && !!document.querySelector('#app-nav [data-view=evaluation]')")
+                    assert await page.evaluate(r"""(() => {
+                        const view = document.querySelector('#evaluation-view');
+                        const fallback = view.querySelector('.page-head');
+                        return fallback?.checkVisibility()
+                            && fallback.innerText.trim().replace(/\s+/g, ' ') === 'Evaluación Sin lectura confirmada.'
+                            && !!view.querySelector('#evaluation-content:empty')
+                            && view.querySelectorAll('[role=status]').length === 1;
+                    })()"""), 'Unconfirmed Evaluation must show no session or reading data'
                     assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].every(node=>node.dataset.view==='evaluation') && !document.querySelector('#house-canvas canvas')")
                     await page.evaluate("new Promise(resolve=>{window.__qaReleaseNoticeResponse();requestAnimationFrame(()=>requestAnimationFrame(resolve))})")
                     assert await page.evaluate("document.hidden===false && document.querySelector('#home-view').hidden && !document.querySelector('#home-notices,.notice-row,[data-notice-dismiss]') && !document.body.textContent.includes('Aviso antes de cerrar sesión')")
                     assert not any(item['path'] in {NOTICE_LIST, NOTICE_DISMISS} for item in requests[marker:])
                     assert not any(request["path"].startswith('/api/home/') or request["path"] in {"/api/users", "/api/voices", "/api/conversations"} for request in requests[marker:])
+                    assert not any(request["path"].startswith('/api/evaluation/') for request in requests[marker:])
                     await page.evaluate("document.querySelector('#logout').click()")
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
 
@@ -706,9 +1103,9 @@ async def main() -> None:
 
                     await page.evaluate("delete document.hidden")
                     await login(page, operator.token, "Administración")
-                    await page.wait_for("document.querySelector('#app-nav [data-view=voices]') && document.querySelector('#room-list').children.length>0")
+                    await page.wait_for("document.querySelector('#rail-nav [data-section=people]') && document.querySelector('#room-list').children.length>0")
                     await page.wait_for(f"{NOTICES_READY} && !!document.querySelector('{PENDING_DISMISS}')")
-                    assert await page.evaluate("[...document.querySelectorAll('#app-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,voices,people,actions,routines,tasks,memory,access'")
+                    assert await page.evaluate("[...document.querySelectorAll('#rail-nav [data-view]')].map(node=>node.dataset.view).join(',')==='home,routines,tasks,activity,people,memory,access'")
                     assert not any(request['path'] == '/api/admin/users' for request in requests)
                     # D1: the technical panel stays reachable only by direct URL, never linked from NEXO.
                     assert await page.evaluate("document.querySelectorAll('a[href^=\"/obs\"], a[href*=\"//\"][href*=\"/obs\"], #technical-link').length===0")
@@ -718,6 +1115,11 @@ async def main() -> None:
                     await page.command('Emulation.setDeviceMetricsOverride', {'width': 1425, 'height': 1180, 'deviceScaleFactor': 1, 'mobile': False})
                     await page.evaluate("document.querySelector('#app-nav [data-view=people]').click()")
                     await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===3")
+                    assert await page.evaluate("""(() => {
+                        const tabs = document.querySelector('#section-views');
+                        return [...tabs.children].map(tab => tab.textContent).join() === 'Lista de personas,Voces'
+                            && tabs.querySelector('[aria-current=page]')?.dataset.view === 'people';
+                    })()""")
                     assert await page.evaluate("!document.querySelector('#people-view img') && !window.__personXss && document.querySelector('#people-grid').textContent.includes('<img')")
                     assert await page.evaluate("!document.querySelector('#house-canvas canvas') && window.__qaFrames.size===0")
                     await page.evaluate("window.__qaReleasePeople=null;window.__qaHoldPeople=true;document.querySelector('#refresh-people').click()")
@@ -728,14 +1130,21 @@ async def main() -> None:
                     await page.wait_for("document.querySelector('#people-grid').textContent.includes('Álex de prueba')")
                     await page.evaluate('window.__qaReleasePeople()')
                     assert await page.evaluate("!document.querySelector('#people-grid').textContent.includes('<img')")
+                    await page.evaluate("document.querySelector('#add-person').focus()")
+                    await press_enter(page)
+                    await page.wait_for("document.querySelector('#person-dialog').open")
+                    await audit_view(page, evidence, 'personas-editor', (('#person-form [name=personName]', None),),
+                                     screenshot, widths=(1440, 768, 390))
+                    await press_escape(page)
+                    await page.wait_for("!document.querySelector('#person-dialog').open && document.activeElement.id === 'add-person'")
                     marker = len(requests)
                     await page.evaluate("window.__qaHoldPeopleMutation=true;document.querySelector('#add-person').click();document.querySelector('#person-form [name=personName]').value='Persona creada en navegador';document.querySelector('#person-form').requestSubmit()")
                     await page.wait_for("typeof window.__qaReleasePeopleMutation==='function'")
-                    await page.evaluate("document.querySelector('#app-nav [data-view=actions]').click();document.querySelector('#app-nav [data-view=people]').click()")
+                    await page.evaluate("document.querySelector('#rail-nav [data-section=home]').click();document.querySelector('#section-views [data-view=actions]').click();document.querySelector('#rail-nav [data-section=people]').click()")
                     assert await page.evaluate("document.querySelector('#add-person').disabled && document.querySelector('#people-status').textContent.includes('Esperando')")
                     assert sum(item['path'] == '/api/admin/users' and item['method'] == 'POST' for item in requests[marker:]) == 1
                     await page.evaluate('window.__qaReleasePeopleMutation()')
-                    await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===4 && document.querySelector('#person-detail h3').textContent==='Persona creada en navegador'")
+                    await page.wait_for("document.querySelectorAll('#people-grid [data-person]').length===4 && document.querySelector('#person-detail h2').textContent==='Persona creada en navegador'")
                     created = users.get_user_by_name('Persona creada en navegador')
                     assert created is not None
                     assert sum(item['path'] == '/api/admin/users' and item['method'] == 'POST' for item in requests[marker:]) == 1
@@ -757,7 +1166,10 @@ async def main() -> None:
                     removal_focus = await audit_modal_focus(page, '#person-dialog', initial='#person-dialog .identity-secondary')
                     assert not any(item['method'] == 'DELETE' for item in requests[marker:])
                     assert personal_session.lease.current()
-                    await page.evaluate("document.querySelector('#person-dialog .identity-secondary').click()")
+                    await audit_view(page, evidence, 'personas-confirmacion', (('#person-dialog .identity-secondary', None),),
+                                     screenshot, widths=(1440, 768, 390))
+                    await press_escape(page)
+                    await page.wait_for("!document.querySelector('#person-dialog').open")
                     await audit_modal_return(page, evidence, 'personas-retirar', removal_focus,
                                              dialog='#person-dialog', opener='#person-detail .identity-danger')
                     await page.evaluate("document.querySelector('#person-detail .identity-danger').click();(()=>{const button=document.querySelector('#confirm-person-removal');button.click();button.click()})()")
@@ -765,7 +1177,10 @@ async def main() -> None:
                     assert users.get_user(created.user_id) is None
                     assert authority.resolve(personal.token) is None and not personal_session.lease.current()
                     assert sum(item['method'] == 'DELETE' for item in requests[marker:]) == 1
-                    await page.evaluate("document.querySelector('[data-person=' + CSS.escape(" + json.dumps(admin.user_id) + ") + ']').click();document.querySelector('#person-detail .identity-danger').click();document.querySelector('#confirm-person-removal').click()")
+                    await page.evaluate("""[...document.querySelectorAll('#people-grid [data-person]')]
+                        .find(card => card.querySelector('.row-title').textContent === 'Administración sintética').click();
+                        document.querySelector('#person-detail .identity-danger').click();
+                        document.querySelector('#confirm-person-removal').click()""")
                     await page.wait_for("document.querySelector('#people-status').textContent.includes('último administrador')")
                     assert users.get_user(admin.user_id) is not None
                     await page.evaluate("document.querySelector('#refresh-people').click()")
@@ -812,7 +1227,8 @@ async def main() -> None:
                     await page.evaluate("document.querySelector('#retry-logout').click()")
                     await page.wait_for("document.querySelector('#login-error').textContent==='Sesión cerrada.'")
 
-                    short = await authority.issue_credential(root, subject="synthetic-short", role=DashboardRole.HOME, expires_at=time.time() + 3)
+                    # Leave time for the real login and first catalog, then observe expiry while the view is mounted.
+                    short = await authority.issue_credential(root, subject="synthetic-short", role=DashboardRole.HOME, expires_at=time.time() + 8)
                     await login(page, short.token, "Acceso de hogar")
                     await page.wait_for("document.querySelector('#room-list').children.length>0")
                     await page.wait_for("document.querySelector('#nexo-workspace').hidden")
@@ -820,7 +1236,8 @@ async def main() -> None:
                     assert page.errors == [], page.errors
                     result = {"passed": True, "synthetic_fixture": True, "actual_chromium_http_login": True,
                               "roles": ["home", "evaluator", "operator"], "home_effects": len(ha.sends),
-                              "webgl_illustration": webgl, "individual_sessions": True,
+                              "webgl_house": webgl, "webgl_context_recovery": True, "webgl_floor_pixels": floor_pixels,
+                              "individual_sessions": True,
                               "live_home_checks": ["exact bindings including escalera; unbound room stays in list",
                                                    "pin and floor pointer selection; movement over 4 px does not select",
                                                    "quick room switch, off-state brightness slider, global scene receipt",
@@ -833,12 +1250,15 @@ async def main() -> None:
                                                 "logout clears before late response", "server rejects evaluator cookie introduced after whoami"],
                               "people_checks": ['real CRUD once per gesture', 'mutation stays pending across leave/reentry without repost', 'crossed GET keeps latest result', 'lost mutation receipt requires GET without repost', 'account level does not select dashboard role', 'cancelled confirmation has no effect', 'deletion retires every personal session', 'last admin conflict', '503 is not empty catalog', 'open dialog reports failed refresh and disables submit while preserving draft', 'names are DOM text', '320/390 reflow', 'logout clears dialog/draft/accounts before late GET under another login'],
                               "screenshots": ["home-desktop.png", "climate-desktop.png", "home-mobile.png", "people-desktop.png", "people-mobile.png"],
+                              "theme_screenshots": {theme: [width['screenshot'] for width in audit['widths'].values()]
+                                                    for theme, audit in themed_audits.items()},
+                              "mobile_pin_layout": mobile_pins,
                               "reflow_widths": {view: sorted(audit['widths'], key=int) for view, audit in audits.items()},
                               "a11y_checks": ["no horizontal overflow per C08 width", "key controls visible, enabled and hit-testable",
                                               "accessible names from the browser accessibility tree", "Tab reaches every control in document order",
                                               ":focus-visible with a visible indicator, not obscured", "44x44 CSS px touch targets at 320/390",
                                               "html lang es", "prefers-reduced-motion settles the 3D camera at once",
-                                              "Q24 text 11px and phone field 16px floors at 320/390/1440",
+                                              "Q24 text 14px and phone field 16px floors at 320/390/1440",
                                               "Q26 rotate buttons: Tab, Enter, Space, drag, reset, reduced motion, no-WebGL fallback"],
                               "a11y_evidence": [f'a11y-{view}.json' for view in audits], "reduced_motion": motion,
                               "rotation_q26": rotation,
@@ -861,4 +1281,9 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    variants = parser.add_mutually_exclusive_group()
+    variants.add_argument('--without-plan', action='store_true', help='Serve a checkout without either private file')
+    variants.add_argument('--missing-model', action='store_true', help='Serve a checkout with plan definitions only')
+    args = parser.parse_args()
+    asyncio.run(main(without_plan=args.without_plan, missing_model=args.missing_model))

@@ -18,19 +18,28 @@
   /** A dependent's label in the dialog (and on the card afterwards): its content, clamped to 120 characters. */
   const dependentLabel = content => content.length > 120 ? content.slice(0, 120).trimEnd() + '…' : content;
 
-  function mountMemory({ container, confirmDialog, owner, icon }) {
+  function mountMemory({ container, confirmDialog, owner }) {
     const doc = container.ownerDocument;
     const cards = new Map(), expanded = new Set();
+    const controlKeys = new WeakMap(), cardIds = new WeakMap(), orphanIds = new WeakMap(), orphanSignatures = new WeakMap();
     const shown = { proposals: SHOW_STEP, facts: SHOW_STEP, returned: SHOW_STEP };
-    let active = true, lastAnnouncement = 0, confirmResolve = null;
+    let active = true, lastAnnouncement = 0, confirmResolve = null, lastConfirmed = null;
 
+    function recordControl(control, key) {
+      controlKeys.set(control, key);
+      control.dataset.key = key.slice(key.lastIndexOf(':') + 1);
+      return control;
+    }
+    function recordButton(text, key, callback, className = 'btn') {
+      return recordControl(button(text, '', callback, className), key);
+    }
     function node(tag, className, text) {
       const element = doc.createElement(tag);
       if (className) element.className = className;
       if (text !== undefined && text !== null) element.textContent = String(text);
       return element;
     }
-    function button(text, key, callback, className = 'identity-secondary') {
+    function button(text, key, callback, className = 'btn') {
       const element = node('button', className, text); element.type = 'button'; element.dataset.key = key;
       element.addEventListener('click', callback); return element;
     }
@@ -61,33 +70,32 @@
     function ownerLine(state, item) {
       if (item.owner) {
         const name = personName(state, item.owner.person_id);
-        const label = name === null ? (state.people ? 'una persona que no figura en el catálogo' : 'una persona del hogar') : name;
+        const label = name === null ? (state.people ? 'una persona que ya no figura en la lista del hogar' : 'una persona del hogar') : name;
         return { text: 'Asignado a ' + label + ' · desde ' + date(item.owner.assigned_at), name };
       }
       if (item.owner_change === 'owner_returned') return { text: 'Devuelto por la persona («No es mío») · sin asignar' };
       if (item.owner_change === 'operator_unassigned') return { text: 'Sin asignar · la administración quitó la asignación' };
       return { text: 'Sin asignar' };
     }
-    function focusKey() { const element = doc.activeElement; return element && container.contains(element) ? element.dataset?.key || null : null; }
+    function focusKey() { const element = doc.activeElement; return element && container.contains(element) ? (controlKeys.get(element) || element.dataset?.key) || null : null; }
     function focusByKey(key) {
       if (!key) return false;
-      const target = [...container.querySelectorAll('[data-key]')].find(element => element.dataset.key === key);
+      const target = [...container.querySelectorAll('[data-key]')].find(element => (controlKeys.get(element) || element.dataset.key) === key);
       if (target && !target.disabled) { target.focus({ preventScroll: true }); return true; }
       return false;
     }
 
     // Static skeleton.
-    const heading = node('div', 'identity-heading memory-heading');
+    const heading = node('div', 'page-head');
     const intro = node('div');
-    const title = node('h2', '', 'Recuerdos del hogar.'); title.id = 'memory-title';
-    intro.append(node('p', 'eyebrow', 'RECUERDOS Y PRIVACIDAD'), title,
+    const title = node('h1', '', 'Recuerdos del hogar'); title.id = 'memory-title';
+    intro.append(title,
       // Pinned by tests/unit/memory/test_fact_reader_callers.py: no module outside src/memory reads facts for answers.
       node('p', '', 'KZA guarda automáticamente datos que deduce de lo que escucha en el ambiente; ese texto puede procesarse en la nube. Los conserva hasta que vencen (como máximo 30 días) o los eliminás. En esta versión KZA no usa estos recuerdos para responder. Las propuestas quedan acá hasta que las confirmes o descartes.'),
       node('p', '', 'La memoria es compartida por todo el hogar: las cuentas de administración ven y revisan los recuerdos de todos. Una cuenta del hogar vinculada a una persona ve solo los recuerdos que le asignes, en Mis recuerdos; las demás cuentas del hogar no tienen acceso.'));
-    const side = node('div', 'identity-heading-side memory-heading-side');
     // aria-disabled instead of disabled: a disabled focused button drops keyboard focus to <body>.
     const refresh = button('Actualizar', 'refresh', () => { if (refresh.getAttribute('aria-disabled') !== 'true') void owner.reload(); }); refresh.id = 'memory-refresh';
-    side.append(refresh); heading.append(intro, side);
+    heading.append(intro, refresh);
     const permission = node('p', 'memory-note memory-permission');
     const sessionNotice = node('p', 'memory-note memory-session-notice'); sessionNotice.setAttribute('role', 'status');
     const freshness = node('p', 'memory-note memory-freshness'); freshness.id = 'memory-freshness';
@@ -99,24 +107,24 @@
     const quarantine = node('p', 'memory-note');
     // Visible as well as announced: a resolved card may have left the list with its outcome.
     const live = node('p', 'memory-note memory-live'); live.id = 'memory-live'; live.setAttribute('role', 'status'); live.setAttribute('aria-live', 'polite');
-    const pendingTitle = node('h3', 'memory-section-title', 'Operaciones sin confirmar'); pendingTitle.id = 'memory-pending-title'; pendingTitle.tabIndex = -1;
-    const pendingList = node('div', 'memory-grid'); pendingList.id = 'memory-pending';
-    const returnedTitle = node('h3', 'memory-section-title', 'Devueltos por las personas'); returnedTitle.id = 'memory-returned-title'; returnedTitle.tabIndex = -1;
+    const pendingTitle = node('h2', 'memory-section-title', 'Operaciones sin confirmar'); pendingTitle.id = 'memory-pending-title'; pendingTitle.tabIndex = -1;
+    const pendingList = node('div', 'rows memory-grid'); pendingList.id = 'memory-pending';
+    const returnedTitle = node('h2', 'memory-section-title', 'Devueltos por las personas'); returnedTitle.id = 'memory-returned-title'; returnedTitle.tabIndex = -1;
     const returnedNote = node('p', 'memory-note', 'Una persona marcó estos recuerdos como «No es mío». Siguen guardados, confirmados y sin vencimiento hasta que los reasignes o los elimines.');
     const returnedStatus = node('p', 'memory-note memory-returned-status');
-    const returnedGrid = node('div', 'memory-grid'); returnedGrid.id = 'memory-returned';
+    const returnedGrid = node('div', 'rows memory-grid'); returnedGrid.id = 'memory-returned';
     const returnedMore = node('div', 'memory-more');
-    const returnedEmpty = node('p', 'memory-note memory-empty', 'No hay recuerdos devueltos.');
-    const proposalsTitle = node('h3', 'memory-section-title', 'Propuestas pendientes'); proposalsTitle.id = 'memory-proposals-title'; proposalsTitle.tabIndex = -1;
+    const returnedEmpty = node('p', 'empty memory-empty', 'No hay recuerdos devueltos.');
+    const proposalsTitle = node('h2', 'memory-section-title', 'Propuestas pendientes'); proposalsTitle.id = 'memory-proposals-title'; proposalsTitle.tabIndex = -1;
     const proposalsCap = node('p', 'memory-note memory-cap');
-    const proposalsGrid = node('div', 'memory-grid'); proposalsGrid.id = 'memory-proposals';
+    const proposalsGrid = node('div', 'rows memory-grid'); proposalsGrid.id = 'memory-proposals';
     const proposalsMore = node('div', 'memory-more');
-    const proposalsEmpty = node('p', 'memory-note memory-empty', 'No hay propuestas pendientes.');
-    const factsTitle = node('h3', 'memory-section-title', 'Recuerdos guardados'); factsTitle.id = 'memory-facts-title'; factsTitle.tabIndex = -1;
+    const proposalsEmpty = node('p', 'empty memory-empty', 'No hay propuestas pendientes.');
+    const factsTitle = node('h2', 'memory-section-title', 'Recuerdos guardados'); factsTitle.id = 'memory-facts-title'; factsTitle.tabIndex = -1;
     const factsCap = node('p', 'memory-note memory-cap');
-    const factsGrid = node('div', 'memory-grid'); factsGrid.id = 'memory-facts';
+    const factsGrid = node('div', 'rows memory-grid'); factsGrid.id = 'memory-facts';
     const factsMore = node('div', 'memory-more');
-    const factsEmpty = node('p', 'memory-note memory-empty', 'No hay recuerdos guardados.');
+    const factsEmpty = node('p', 'empty memory-empty', 'No hay recuerdos guardados.');
     const sections = node('div', 'memory-sections');
     sections.append(pendingTitle, pendingList, returnedTitle, returnedNote, returnedStatus, returnedGrid, returnedMore, returnedEmpty,
       proposalsTitle, proposalsCap, proposalsGrid, proposalsMore, proposalsEmpty, factsTitle, factsCap, factsGrid, factsMore, factsEmpty);
@@ -133,51 +141,54 @@
     }
     function buildCard(state, item, section, card) {
       const marker = state.markers[item.id], caps = state.capabilities;
-      const top = node('div', 'memory-card-top');
-      const badge = node('span', 'scene-icon ' + (item.state === 'proposed' ? 'lavender' : 'mint')); badge.append(icon(item.state === 'proposed' ? 'spark' : 'layers'));
-      const meta = node('p', 'memory-meta', stateLine(item, section === 'kept'));
-      top.append(badge, meta); card.append(top);
-      const { text, long } = content(item); card.append(text);
+      const main = node('div', 'row-main memory-card-main');
+      const { text, long } = content(item);
+      text.classList.add('row-title');
+      main.append(text, node('p', 'row-meta', stateLine(item, section === 'kept')));
+      card.append(main);
       if (long) {
         const open = expanded.has(item.id);
-        const toggle = button(open ? 'Ver menos' : 'Ver completo', item.id + ':expand', () => { if (expanded.has(item.id)) expanded.delete(item.id); else expanded.add(item.id); render(); });
-        toggle.setAttribute('aria-expanded', String(open)); card.append(toggle);
+        const toggle = recordButton(open ? 'Ver menos' : 'Ver completo', item.id + ':expand', () => { if (expanded.has(item.id)) expanded.delete(item.id); else expanded.add(item.id); render(); });
+        toggle.setAttribute('aria-expanded', String(open)); main.append(toggle);
       }
-      const ownerInfo = node('p', 'memory-detail memory-owner', ownerLine(state, item).text); ownerInfo.dataset.memoryOwner = item.id; card.append(ownerInfo);
+      const ownerInfo = node('p', 'memory-detail memory-owner', ownerLine(state, item).text); main.append(ownerInfo);
       const by = confirmedBy(state, item);
-      if (by) card.append(node('p', 'memory-detail', by));
+      if (by) main.append(node('p', 'memory-detail', by));
       const isDerived = item.sources.some(source => source.depends_on.length);
-      if (isDerived) card.append(node('p', 'memory-detail', caps.assign ? 'Derivado de otro recuerdo: no se puede asignar a una persona.' : 'Derivado de otro recuerdo.'));
+      if (isDerived) main.append(node('p', 'memory-detail', caps.assign ? 'Derivado de otro recuerdo: no se puede asignar a una persona.' : 'Derivado de otro recuerdo.'));
       if (item.sources.length) {
-        const details = node('details', 'memory-sources'); const summary = node('summary', '', 'Ver procedencia'); summary.dataset.key = item.id + ':sources';
+        const details = node('details', 'memory-sources'); const summary = node('summary', '', 'Ver procedencia'); recordControl(summary, item.id + ':sources');
         details.append(summary);
         for (const source of item.sources) details.append(node('p', 'memory-detail', (ORIGIN[source.origin] || 'Origen desconocido') + ' · ' + date(source.captured_at)));
-        card.append(details);
+        main.append(details);
       }
       const status = markerText(marker);
-      if (status) { const line = node('p', 'memory-state', status); line.dataset.memoryMarker = marker.state; card.append(line); }
-      const message = node('p', 'memory-notice', state.notices[item.id] || ''); message.dataset.memoryNotice = item.id; card.append(message);
-      const controls = node('div', 'memory-controls');
+      if (status) { const line = node('p', 'memory-state', status); line.dataset.memoryMarker = marker.state; main.append(line); }
+      const message = node('p', 'memory-notice', state.notices[item.id] || ''); main.append(message);
+      const controls = node('div', 'row-actions memory-controls');
       const writable = marker ? (['confirm', 'reject', 'delete'].includes(marker.op) ? caps.review : caps.assign) : false;
       if (marker && writable) {
-        const again = button('Reintentar ' + OP_LABEL[marker.op], item.id + ':retry', () => owner.retry(item.id));
+        const again = recordButton('Reintentar ' + OP_LABEL[marker.op], item.id + ':retry', () => owner.retry(item.id));
         again.disabled = marker.state === 'sending'; again.dataset.memoryWrite = 'retry'; controls.append(again);
       } else if (!marker) {
         if (caps.review && item.state === 'proposed') {
-          const keep = button('Conservar sin vencimiento', item.id + ':confirm', () => owner.confirm(item.id), 'identity-primary'); keep.dataset.memoryWrite = 'confirm';
-          const drop = button('Descartar propuesta', item.id + ':reject', () => owner.reject(item.id)); drop.dataset.memoryWrite = 'reject';
+          const keep = recordButton('Conservar sin vencimiento', item.id + ':confirm', () => {
+            lastConfirmed = item.id;
+            return owner.confirm(item.id);
+          }, 'btn primary'); keep.dataset.memoryWrite = 'confirm';
+          const drop = recordButton('Descartar propuesta', item.id + ':reject', () => owner.reject(item.id)); drop.dataset.memoryWrite = 'reject';
           controls.append(keep, drop);
         }
         if (owner.assignable(item.id)) {
-          const assign = button(item.owner || section === 'returned' ? 'Reasignar…' : 'Asignar a una persona…', item.id + ':assign', () => openAssign(item.id));
+          const assign = recordButton(item.owner || section === 'returned' ? 'Reasignar…' : 'Asignar a una persona…', item.id + ':assign', () => openAssign(item.id));
           assign.dataset.memoryWrite = 'assign'; assign.disabled = owner.deleteBlocked(item.id); controls.append(assign);
         }
         if (caps.assign && item.owner) {
-          const release = button('Quitar asignación…', item.id + ':unassign', () => openUnassign(item.id)); release.dataset.memoryWrite = 'unassign';
+          const release = recordButton('Quitar asignación…', item.id + ':unassign', () => openUnassign(item.id)); release.dataset.memoryWrite = 'unassign';
           controls.append(release);
         }
         if (caps.review && item.state !== 'proposed') {
-          const removal = button('Eliminar…', item.id + ':delete', () => confirmDelete(item.id), 'identity-danger'); removal.dataset.memoryWrite = 'delete';
+          const removal = recordButton('Eliminar…', item.id + ':delete', () => confirmDelete(item.id), 'btn danger'); removal.dataset.memoryWrite = 'delete';
           removal.setAttribute('aria-label', 'Eliminar este recuerdo');
           removal.disabled = owner.deleteBlocked(item.id);
           controls.append(removal);
@@ -191,7 +202,7 @@
       let previous = null, lostFocus = null;
       // Remove departed cards first so surviving controls stay attached and keep keyboard focus.
       [...grid.children].forEach((card, index) => {
-        const id = card.dataset.memoryId;
+        const id = cardIds.get(card);
         if (remaining.has(id)) return;
         if (card.contains(doc.activeElement)) lostFocus = { index, key };
         card.remove(); if (cards.get(id)?.grid === grid) cards.delete(id);
@@ -200,7 +211,7 @@
         let entry = cards.get(item.id);
         if (entry && entry.grid !== grid) { if (entry.card.contains(doc.activeElement)) lostFocus = lostFocus || { index: 0, key }; entry.card.remove(); cards.delete(item.id); entry = null; }
         if (!entry) {
-          const card = node('article', 'memory-card panel'); card.dataset.memoryId = item.id; card.tabIndex = -1;
+          const card = node('article', 'row memory-card'); cardIds.set(card, item.id); card.tabIndex = -1;
           entry = { card, signature: null, grid }; cards.set(item.id, entry);
         }
         const signature = cardSignature(state, item, section);
@@ -287,12 +298,12 @@
       });
     }
     function target(item) {
-      const box = node('div', 'memory-confirm-target');
+      const box = node('div', 'detail memory-confirm-target');
       box.append(content(item, true).text, node('p', 'memory-detail', stateLine(item, false)));
       return box;
     }
     function actions(cancelText, acceptText, acceptClass) {
-      const row = node('div', 'modal-actions memory-confirm-actions');
+      const row = node('div', 'row-actions memory-confirm-actions');
       const cancelButton = button(cancelText, 'confirm-cancel', () => {});
       const accept = button(acceptText, 'confirm-accept', () => {}, acceptClass);
       row.append(cancelButton, accept);
@@ -300,7 +311,7 @@
     }
     function ask(item, others, full, invoker, changed = false) {
       const titleNode = node('h2', '', 'Eliminar este recuerdo'); titleNode.id = 'memory-confirm-title';
-      const body = node('p', 'modal-description', 'Es definitivo: no se puede deshacer.' + (others.length ? ' También se eliminan los recuerdos derivados de este:' : ' No hay recuerdos derivados visibles.'));
+      const body = node('p', 'memory-detail', 'Es definitivo: no se puede deshacer.' + (others.length ? ' También se eliminan los recuerdos derivados de este:' : ' No hay recuerdos derivados visibles.'));
       const nodes = [titleNode, target(item), body];
       if (changed) { const note = node('p', 'memory-detail memory-changed', 'La lista de recuerdos derivados cambió mientras decidías. Revisala antes de confirmar.'); note.setAttribute('role', 'alert'); nodes.splice(1, 0, note); }
       if (others.length) {
@@ -316,7 +327,7 @@
       if (full) nodes.push(node('p', 'memory-detail', 'Puede haber otros que no se muestran.'));
       if (item.owner) nodes.push(node('p', 'memory-detail', 'Está asignado a una persona: deja de verlo en Mis recuerdos.'));
       nodes.push(node('p', 'memory-detail', 'Las copias en índices de búsqueda se limpian en segundo plano; si la limpieza queda pendiente se indica en esta vista. No borra la conversación de origen (vence sola en 48 horas como máximo) ni el texto que ya se haya enviado a la nube para deducirlo.'));
-      const { row, cancelButton, accept } = actions('Cancelar', 'Eliminar definitivamente', 'identity-danger');
+      const { row, cancelButton, accept } = actions('Cancelar', 'Eliminar definitivamente', 'btn danger');
       nodes.push(row);
       return dialog({ nodes, bind(finish) { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); }, focus: () => cancelButton.focus() },
         invoker, 'memory-confirm-title');
@@ -331,23 +342,24 @@
       const nodes = [titleNode, target(item)];
       let select = null;
       if (choices.length) {
-        const label = node('label', 'memory-person-field', 'Persona'); label.htmlFor = 'memory-assign-person';
+        const label = node('label', 'field');
+        label.append(node('span', '', 'Persona'));
         select = node('select'); select.id = 'memory-assign-person'; select.dataset.key = 'assign-person';
-        for (const entry of choices) { const option = node('option', '', entry.name); option.value = entry.id; option.dir = 'auto'; select.append(option); }
-        nodes.push(label, select);
-      } else nodes.push(node('p', 'modal-description', 'No hay otras personas activas en el catálogo para asignar este recuerdo.'));
-      const permanence = node('p', 'modal-description', ASSIGN_PERMANENCE); permanence.id = 'memory-assign-permanence';
+        choices.forEach((entry, index) => { const option = node('option', '', entry.name); option.value = String(index); option.dir = 'auto'; select.append(option); });
+        label.append(select); nodes.push(label);
+      } else nodes.push(node('p', 'memory-detail', 'No hay otras personas activas para asignar este recuerdo.'));
+      const permanence = node('p', 'memory-detail', ASSIGN_PERMANENCE); permanence.id = 'memory-assign-permanence';
       nodes.push(permanence, node('p', 'memory-detail', ASSIGN_OTHERS));
       if (state.assignNotice) { const a16 = node('p', 'memory-detail memory-assign-notice', state.assignNotice); nodes.push(a16); }
       if (item.owner) nodes.push(node('p', 'memory-detail', 'Quien lo tiene asignado ahora deja de verlo en Mis recuerdos.'));
-      const { row, cancelButton, accept } = actions('Cancelar', item.owner ? 'Reasignar' : 'Asignar', 'identity-primary');
+      const { row, cancelButton, accept } = actions('Cancelar', item.owner ? 'Reasignar' : 'Asignar', 'btn primary');
       if (!choices.length) accept.remove();
       nodes.push(row);
-      const chosen = await dialog({ nodes, bind(finish) { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(select ? select.value : false); },
+      const chosen = await dialog({ nodes, bind(finish) { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(select && choices[select.value]?.id); },
         focus: () => (select || cancelButton).focus() }, id + ':assign', 'memory-confirm-title');
       if (!chosen || !active) return;
       let result = await owner.assign(id, chosen, { confirmed: true });
-      // 409 has_dependents: nothing changed; show ids and states and ask before deleting them (C8).
+      // 409 has_dependents: nothing changed; show labels and states and ask before deleting them (C8).
       if (result?.dependents && active) {
         const accepted = await askDependents(id, result, chosen);
         if (!accepted || !active) return;
@@ -360,24 +372,39 @@
       if (!item) return Promise.resolve(false);
       const state = owner.getState();
       const titleNode = node('h2', '', 'Este recuerdo tiene recuerdos derivados'); titleNode.id = 'memory-confirm-title';
-      const nodes = [titleNode, target(item), node('p', 'modal-description', result.notice)];
+      const nodes = [titleNode, target(item), node('p', 'memory-detail', result.notice)];
       const list = node('ul', 'memory-confirm-items memory-dependents'); list.id = 'memory-assign-dependents';
       const labels = {};
-      for (const dependent of result.dependents) {
-        const line = node('li'); line.dataset.dependentId = dependent.id;
+      const dependentIds = new Map();
+      const entries = result.dependents.map(dependent => {
         const known = itemFor(dependent.id);
-        if (known) { const text = node('span', 'memory-content', dependentLabel(known.content)); labels[dependent.id] = dependentLabel(known.content); text.dir = 'auto'; line.append(text, node('span', 'memory-detail', ' · ')); }
-        else line.append(node('span', 'memory-detail', 'Recuerdo que no figura en esta vista · '));
-        line.append(node('span', 'memory-detail', STATE_LABEL[dependent.state] + ' · '), node('code', 'memory-id', dependent.id));
+        const label = known ? dependentLabel(known.content) : 'Recuerdo que no figura en esta vista';
+        if (known) labels[dependent.id] = label;
+        return { id: dependent.id, label, state: STATE_LABEL[dependent.state], known };
+      });
+      const totals = new Map();
+      for (const { label, state } of entries) {
+        const key = JSON.stringify([label, state]);
+        totals.set(key, (totals.get(key) || 0) + 1);
+      }
+      const seen = new Map();
+      for (const { id, label, state, known } of entries) {
+        const line = node('li'); dependentIds.set(line, id);
+        const text = node('span', known ? 'memory-content' : 'memory-detail', label); text.dir = 'auto';
+        const key = JSON.stringify([label, state]);
+        const total = totals.get(key);
+        const position = (seen.get(key) || 0) + 1;
+        seen.set(key, position);
+        line.append(text, node('span', 'memory-detail', ' · ' + state + (total > 1 ? ' · ' + position + ' de ' + total : '')));
         list.append(line);
       }
       const scope = node('p', 'memory-detail', DEPENDENTS_SCOPE); scope.id = 'memory-assign-dependents-scope';
       nodes.push(list, scope, node('p', 'memory-detail', 'Eliminarlos es definitivo. ' + ASSIGN_PERMANENCE));
       if (state.assignNotice) nodes.push(node('p', 'memory-detail memory-assign-notice', state.assignNotice));
       const name = personName(state, personId);
-      const { row, cancelButton, accept } = actions('Cancelar', 'Eliminar derivados y asignar' + (name ? ' a ' + name : ''), 'identity-danger');
+      const { row, cancelButton, accept } = actions('Cancelar', 'Eliminar derivados y asignar' + (name ? ' a ' + name : ''), 'btn danger');
       nodes.push(row);
-      return dialog({ nodes, bind(finish) { cancelButton.onclick = () => finish(false); accept.onclick = () => finish({ count: result.dependents.length, ids: result.dependents.map(dependent => dependent.id), labels }); },
+      return dialog({ nodes, bind(finish) { cancelButton.onclick = () => finish(false); accept.onclick = () => finish({ count: dependentIds.size, ids: [...dependentIds.values()], labels }); },
         focus: () => cancelButton.focus() }, id + ':assign', 'memory-confirm-title');
     }
     async function openUnassign(id) {
@@ -385,8 +412,8 @@
       if (!item?.owner || !state.capabilities.assign) return;
       const titleNode = node('h2', '', 'Quitar la asignación'); titleNode.id = 'memory-confirm-title';
       const name = personName(state, item.owner.person_id);
-      const nodes = [titleNode, target(item), node('p', 'modal-description', (name ? name : 'La persona') + ' deja de verlo en Mis recuerdos. El recuerdo sigue guardado, confirmado y sin vencimiento hasta que lo elimines o lo vuelvas a asignar.')];
-      const { row, cancelButton, accept } = actions('Cancelar', 'Quitar asignación', 'identity-primary');
+      const nodes = [titleNode, target(item), node('p', 'memory-detail', (name ? name : 'La persona') + ' deja de verlo en Mis recuerdos. El recuerdo sigue guardado, confirmado y sin vencimiento hasta que lo elimines o lo vuelvas a asignar.')];
+      const { row, cancelButton, accept } = actions('Cancelar', 'Quitar asignación', 'btn primary');
       nodes.push(row);
       const accepted = await dialog({ nodes, bind(finish) { cancelButton.onclick = () => finish(false); accept.onclick = () => finish(true); }, focus: () => cancelButton.focus() },
         id + ':unassign', 'memory-confirm-title');
@@ -417,24 +444,24 @@
       cleanup.textContent = state.pendingCleanup > 0 ? 'Hay copias en índices de búsqueda pendientes de limpieza.' : '';
       cleanup.hidden = !cleanup.textContent;
       indexing.textContent = state.pendingIndex > 0 ? 'Actualizando el índice de búsqueda.' : ''; indexing.hidden = !indexing.textContent;
-      quarantine.textContent = state.legacyPolicy === 'quarantined' ? 'Los registros anteriores a esta política están en cuarentena y no se muestran acá.' : '';
+      quarantine.textContent = state.legacyPolicy === 'quarantined' ? 'Los recuerdos guardados con las reglas anteriores están apartados y no se muestran acá.' : '';
       quarantine.hidden = !quarantine.textContent;
       // Pending operations whose fact is not listed (after a reload, beyond the walk or once gone).
       const listed = new Set([...state.facts, ...state.proposals, ...state.kept, ...state.returned].map(item => item.id));
       const orphan = Object.entries(state.markers).filter(([id]) => !listed.has(id));
-      const orphanKeys = new Set(orphan.map(([id]) => 'orphan:' + id));
-      for (const element of [...pendingList.children]) if (!orphanKeys.has(element.dataset.orphan)) element.remove();
+      const orphanKeys = new Set(orphan.map(([id]) => id));
+      for (const element of [...pendingList.children]) if (!orphanKeys.has(orphanIds.get(element))) element.remove();
       for (const [id, marker] of orphan) {
-        const keyName = 'orphan:' + id, writable = ['confirm', 'reject', 'delete'].includes(marker.op) ? caps.review : caps.assign;
+        const writable = ['confirm', 'reject', 'delete'].includes(marker.op) ? caps.review : caps.assign;
         const signature = JSON.stringify([marker, state.notices[id] || null, writable]);
-        let card = [...pendingList.children].find(element => element.dataset.orphan === keyName);
-        if (!card) { card = node('article', 'memory-card panel memory-orphan'); card.dataset.orphan = keyName; card.setAttribute('aria-label', 'Operación sin confirmar'); pendingList.append(card); }
-        if (card.dataset.signature !== signature) {
+        let card = [...pendingList.children].find(element => orphanIds.get(element) === id);
+        if (!card) { card = node('article', 'row memory-card memory-orphan'); orphanIds.set(card, id); card.setAttribute('aria-label', 'Operación sin confirmar'); pendingList.append(card); }
+        if (orphanSignatures.get(card) !== signature) {
           const hadFocus = card.contains(doc.activeElement);
           card.replaceChildren(node('p', 'memory-state', markerText(marker) + ' un recuerdo que no figura en la lista.'));
-          const message = node('p', 'memory-notice', state.notices[id] || ''); message.dataset.memoryNotice = id; card.append(message);
-          if (writable) { const again = button('Reintentar ' + OP_LABEL[marker.op], id + ':retry', () => owner.retry(id)); again.disabled = marker.state === 'sending'; card.append(again); }
-          card.dataset.signature = signature;
+          const message = node('p', 'memory-notice', state.notices[id] || ''); card.append(message);
+          if (writable) { const again = recordButton('Reintentar ' + OP_LABEL[marker.op], id + ':retry', () => owner.retry(id)); again.disabled = marker.state === 'sending'; card.append(again); }
+          orphanSignatures.set(card, signature);
           if (hadFocus) focusByKey(id + ':retry');
         }
       }
@@ -475,11 +502,6 @@
       proposalsEmpty.hidden = !show || proposals.length > 0; factsEmpty.hidden = !show || facts.length > 0;
       if (state.announcement && state.announcement.serial !== lastAnnouncement) { lastAnnouncement = state.announcement.serial; live.textContent = state.announcement.text; }
     }
-    let lastConfirmed = null;
-    container.addEventListener('click', event => {
-      const key = event.target.closest?.('[data-key]')?.dataset.key || '';
-      if (key.endsWith(':confirm')) lastConfirmed = key.slice(0, -':confirm'.length);
-    }, true);
     const stop = owner.subscribe(render);
     if (owner.getState().announcement) lastAnnouncement = owner.getState().announcement.serial;
     render();

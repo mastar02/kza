@@ -103,15 +103,19 @@ def server(route: APIRoute, method: str, path: str, monkeypatch) -> list[str]:
     return sorted(set(_route_permissions(Request(scope(method, path)))) | handler_permissions(route, monkeypatch))
 
 
-def client(routes: list[tuple[str, str]]) -> list:
+def client_json(script: str):
     node = shutil.which("node")
     assert node, "Node is required to verify the shipped NEXO permission map"
+    result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(result.stdout)
+
+
+def client(routes: list[tuple[str, str]]) -> list:
     script = ("const s=require('./src/dashboard/frontend/home/nexo/state.js');"
               "const routes=" + json.dumps(routes) + ";"
               "console.log(JSON.stringify(routes.map(([m,p])=>{const v=s.memoryPermission(p.split('?')[0],m);"
               "return v===null?null:(Array.isArray(v)?v:[v]).slice().sort();})));")
-    result = subprocess.run([node, "-e", script], cwd=ROOT, capture_output=True, text=True, timeout=30, check=True)
-    return json.loads(result.stdout)
+    return client_json(script)
 
 
 def test_handler_permissions_are_read_from_memory_api(monkeypatch):
@@ -144,3 +148,21 @@ def test_every_used_memory_route_requires_exactly_the_server_permissions(monkeyp
 
 def test_unused_memory_routes_stay_unmapped_in_the_client():
     assert client([[method, path] for method, path in UNUSED]) == [None] * len(UNUSED)
+
+
+def test_grouped_memory_keeps_the_read_permissions_for_each_subview(monkeypatch):
+    routes = registered_routes()
+    shared, own = "/api/memory", "/api/memory/mine"
+    sessions = [
+        ["operator", server(route_for(routes, "GET", shared), "GET", shared, monkeypatch)],
+        ["home", server(route_for(routes, "GET", own), "GET", own, monkeypatch)],
+        ["home", ["home:read"]],
+    ]
+    script = ("const {createSession}=require('./src/dashboard/frontend/home/nexo/state.js');"
+              "const grants=" + json.dumps(sessions) + ";"
+              "console.log(JSON.stringify(grants.map(([role,permissions])=>{"
+              "const session=createSession();"
+              "session.accept({ok:true,role,permissions,expires_at:Date.now()/1000+60});"
+              "return session.sections().find(section=>section.id==='memory')?.views.map(view=>view.id)??[];"
+              "})));")
+    assert client_json(script) == [["memory"], ["mymemory"], []]

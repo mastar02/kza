@@ -32,7 +32,7 @@ test('pending bootstrap and HOME cannot query private or diagnostic sources', as
   }
   assert.deepEqual(requests, ['/api/admin/auth/whoami', '/api/home/catalog']);
   // Rutinas is readable with home:read; writes stay gated by their own permissions.
-  assert.deepEqual(session.views(), ['home', 'actions', 'routines']);
+  assert.deepEqual(session.views(), ['home', 'actions', 'routines', 'activity']);
 });
 
 test('EVALUATOR and a read-only identity cannot submit household effects', async () => {
@@ -88,6 +88,20 @@ test('wall advance during suspension and monotonic advance during wall rollback 
     await assert.rejects(api('/api/home/catalog'), error => error.sent === false);
     assert.equal(sends, 0);
   }
+});
+
+test('expiresAt exposes the deadline only during an active session', () => {
+  let wall = 0;
+  const session = nexo.createSession({ wall: () => wall, monotonic: () => 0 });
+  assert.equal(session.expiresAt(), null, 'before login');
+  assert.equal(session.accept(identity(['home:read'], 'home', 17)), true);
+  assert.equal(session.expiresAt(), 17_000, 'active deadline in milliseconds');
+  wall = 17_000;
+  assert.equal(session.expiresAt(), null, 'expired before the session is cleared');
+  assert.equal(session.accept(identity(['home:read'], 'home', 23)), true);
+  assert.equal(session.expiresAt(), 23_000);
+  session.clear();
+  assert.equal(session.expiresAt(), null, 'after sign-out');
 });
 
 test('a frozen performance clock cannot extend a catalog or entity observation after suspension', () => {
@@ -266,7 +280,7 @@ test('U3b-3: Mis recuerdos is visible only to a household account bound to a per
   }
   // HOME bound to a person: the view and its own routes, never the operator routes.
   session.accept(identity(['home:read', 'home:control', 'tasks:personal', 'memory:own:read', 'memory:own:write']));
-  assert.deepEqual(session.views(), ['home', 'actions', 'routines', 'mymemory']);
+  assert.deepEqual(session.views(), ['home', 'actions', 'routines', 'activity', 'mymemory']);
   assert.deepEqual(await attempt(person), person.map(([method, path]) => method + ' ' + path));
   assert.deepEqual(await attempt([...operator, ['GET', '/api/memory']]), []);
   // Read-only person: reads only.

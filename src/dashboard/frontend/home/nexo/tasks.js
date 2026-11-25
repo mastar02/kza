@@ -1,10 +1,14 @@
 /* NEXO lists and reminders, rendered only from the current owner's snapshot. */
 (function (root) {
   'use strict';
-  const SCOPE_LABELS = { shared: 'Compartida del hogar', personal: 'Personal' };
+  const DEVICE_TYPES = {
+    light: 'Luz', switch: 'Interruptor', climate: 'Aire acondicionado', cover: 'Persiana', scene: 'Escena'
+  };
 
-  function mountTasks({ container, confirmDialog, owner }) {
+  function mountTasks({ container, confirmDialog, owner, deviceName = () => null }) {
     const doc = container.ownerDocument;
+    const controlKeys = new WeakMap();
+    const operationLabels = root.HomeUI.OPERATION_LABELS;
     let state = owner.getState(), shownData, confirmation = null;
 
     function node(tag, className, text) {
@@ -13,7 +17,7 @@
       if (text !== undefined) element.textContent = text;
       return element;
     }
-    function button(text, callback, className = 'identity-secondary') {
+    function button(text, callback, className = 'btn') {
       const control = node('button', className, text);
       control.type = 'button';
       control.addEventListener('click', () => {
@@ -22,22 +26,21 @@
       return control;
     }
     function labelledInput(label, type, maxLength) {
-      const field = node('label', '', label), input = node('input');
+      const field = node('label', 'field'), input = node('input');
       input.type = type;
       input.required = true;
       if (maxLength) input.maxLength = maxLength;
-      field.append(input);
+      field.append(node('span', '', label), input);
       return { field, input };
     }
-    function editor(label, fieldLabel, maxLength, save, { scope, reminder = false } = {}) {
-      const wrapper = node('details'), summary = node('summary', '', label), form = node('form', 'identity-form tasks-form');
+    function taskForm(fieldLabel, maxLength, save, { reminder = false, submitText = 'Guardar' } = {}) {
+      const form = node('form', 'addrow tasks-form');
       const { field, input } = labelledInput(fieldLabel, 'text', maxLength);
-      if (scope) form.append(node('p', 'tasks-detail', 'Ámbito · ' + SCOPE_LABELS[scope]));
       form.append(field);
       input.addEventListener('input', () => input.setCustomValidity(''));
       const time = reminder ? labelledInput('Fecha y hora', 'datetime-local') : null;
       if (time) form.append(time.field);
-      const submit = node('button', 'identity-primary', 'Guardar');
+      const submit = node('button', 'btn primary', submitText);
       submit.type = 'submit';
       form.append(submit);
       form.addEventListener('submit', event => {
@@ -51,17 +54,21 @@
         }
         void save(value, time ? new Date(time.input.value).getTime() / 1000 : undefined);
       });
-      wrapper.append(summary, form);
+      return form;
+    }
+    function editor(label, fieldLabel, maxLength, save, options) {
+      const wrapper = node('details', 'tasks-editor');
+      wrapper.append(node('summary', 'btn', label), taskForm(fieldLabel, maxLength, save, options));
       return wrapper;
     }
 
-    const heading = node('div', 'identity-heading');
-    const title = node('h2', '', 'Tareas'); title.id = 'tasks-title';
+    const heading = node('header', 'page-head');
+    const title = node('h1', '', 'Tareas'); title.id = 'tasks-title';
     const refresh = button('Actualizar tareas', () => owner.refresh()); refresh.id = 'tasks-refresh';
     heading.append(title, refresh);
     const status = node('p', 'tasks-status'); status.id = 'tasks-status'; status.setAttribute('role', 'status');
     const feedback = node('p', 'tasks-status'); feedback.id = 'tasks-feedback'; feedback.setAttribute('role', 'status');
-    const sections = node('div');
+    const sections = node('div', 'tasks-sections');
     container.replaceChildren(heading, status, feedback, sections);
 
     function closeConfirmation(restoreFocus = true) {
@@ -74,14 +81,14 @@
     function ask(opener, titleText, targetText, explanation, remove) {
       if (state.busy || !state.canWrite) return;
       const heading = node('h2', '', titleText); heading.id = 'tasks-confirm-title';
-      const target = node('p', 'memory-content', targetText); target.dir = 'auto'; target.id = 'tasks-confirm-target';
-      const description = node('p', 'modal-description', explanation); description.id = 'tasks-confirm-description';
+      const target = node('p', 'row-title', targetText); target.dir = 'auto'; target.id = 'tasks-confirm-target';
+      const description = node('p', '', explanation); description.id = 'tasks-confirm-description';
       const cancel = button('Cancelar', () => closeConfirmation()); cancel.id = 'tasks-confirm-cancel';
       const accept = button('Eliminar', () => {
         closeConfirmation();
         void remove();
-      }, 'identity-danger');
-      const actions = node('div', 'modal-actions'); actions.append(cancel, accept);
+      }, 'btn danger');
+      const actions = node('div', 'row-actions'); actions.append(cancel, accept);
       confirmDialog.setAttribute('aria-labelledby', heading.id);
       confirmDialog.setAttribute('aria-describedby', target.id + ' ' + description.id);
       confirmDialog.replaceChildren(heading, target, description, actions);
@@ -101,87 +108,113 @@
     confirmDialog.addEventListener('keydown', keepModalFocus);
 
     function listCard(scope, list) {
-      const card = node('article', 'tasks-card');
-      card.append(node('h5', 'memory-content', list.name));
-      if (!list.items.length) card.append(node('p', 'tasks-detail', 'Lista vacía.'));
+      const card = node('article', 'rows tasks-list');
+      const name = node('h4', 'row tasks-list-title', list.name); name.dir = 'auto';
+      card.append(name);
+      if (!list.items.length) card.append(node('p', 'empty', 'Lista vacía.'));
       else {
-        const items = node('ul');
+        const items = node('ul', 'tasks-items');
+        items.setAttribute('role', 'list');
         for (const item of list.items) {
-          const row = node('li');
-          row.append(node('p', 'memory-content', item.text));
-          if (item.completed) row.append(node('p', 'tasks-detail', 'Completado'));
+          const row = node('li', 'row');
+          const text = node('span', 'row-main row-title', item.text); text.dir = 'auto';
+          const actions = node('div', 'row-actions');
+          actions.append(node('span', 'tag', item.completed ? 'Hecha' : 'Pendiente'));
+          row.append(text, actions);
           if (state.canWrite) {
-            const remove = button('Eliminar elemento', opener => {
+            const remove = button('Eliminar', opener => {
               ask(opener, 'Eliminar elemento', item.text, 'Se quitará de la lista ' + list.name + '.',
                 () => owner.removeItem(scope, list.id, item.id));
-            }, 'identity-danger');
-            remove.dataset.taskKey = scope + ':item:' + list.id + ':' + item.id;
+            }, 'btn quiet');
+            remove.dataset.taskKey = 'item';
+            controlKeys.set(remove, JSON.stringify([scope, 'item', list.id, item.id]));
             remove.setAttribute('aria-label', 'Eliminar elemento ' + item.text);
-            row.append(remove);
+            actions.append(remove);
           }
           items.append(row);
         }
         card.append(items);
       }
-      if (state.canWrite) card.append(editor('Añadir elemento', 'Elemento', 500, text => owner.addItem(scope, list.id, text)));
+      if (state.canWrite) card.append(taskForm('Añadir elemento', 500, text => owner.addItem(scope, list.id, text),
+        { submitText: 'Añadir' }));
       return card;
     }
 
-    function reminderCard(scope, reminder) {
-      const card = node('article', 'tasks-card');
-      card.append(node('h5', 'memory-content', reminder.text));
+    function reminderRow(scope, reminder) {
+      const row = node('li', 'row');
+      const main = node('div', 'row-main');
+      const title = node('span', 'row-title', reminder.text); title.dir = 'auto';
+      main.append(title);
       const date = new Date(reminder.trigger_at * 1000);
-      const line = node('p', 'tasks-detail', 'Programado para ');
+      const line = node('p', 'row-meta', 'Programado para ');
       if (Number.isFinite(date.getTime())) {
-        const time = node('time', '', date.toLocaleString('es-UY', { dateStyle: 'medium', timeStyle: 'short' }));
+        const time = node('time', 'time', date.toLocaleString('es-UY', { dateStyle: 'medium', timeStyle: 'short' }));
         time.dateTime = date.toISOString(); line.append(time);
       } else line.textContent = 'Fecha y hora sin confirmar';
-      card.append(line);
+      main.append(line);
       if (Array.isArray(reminder.ha_actions) && reminder.ha_actions.length) {
-        const block = node('div', 'tasks-actions');
+        const block = node('div', 'tasks-actions row-meta');
         const actions = node('ul');
         for (const action of reminder.ha_actions) {
-          const row = node('li', 'tasks-detail');
-          row.append(
-            node('div', '', 'Acción · ' + ([action?.domain, action?.service].filter(Boolean).join('/') || 'Sin identificar')),
-            node('div', '', 'Dispositivo · ' + (action?.entity_id || 'Sin identificar')),
-            node('div', '', 'Habitación · ' + (action?.room || 'Sin identificar'))
-          );
-          actions.append(row);
+          const { domain, service, entity_id: id, room } = action ?? {};
+          const operation = domain === 'scene' && service === 'turn_on' ? 'Activar escena' :
+            Object.hasOwn(operationLabels, service) ? operationLabels[service] : 'Acción programada';
+          const device = (id && deviceName(id)) ||
+            (Object.hasOwn(DEVICE_TYPES, domain) ? DEVICE_TYPES[domain] : 'Dispositivo');
+          const place = ' · ' + (room || 'Ambiente no informado');
+          const target = device.endsWith(place) ? device : device + place;
+          actions.append(node('li', '', operation + ' · ' + target));
         }
-        block.append(node('p', 'tasks-detail', 'Acciones del hogar'), actions); card.append(block);
+        block.append(node('p', '', 'Acciones del hogar'), actions); main.append(block);
       }
+      row.append(main);
       if (state.canWrite) {
-        const remove = button('Eliminar recordatorio', opener => {
+        const remove = button('Eliminar', opener => {
           ask(opener, 'Eliminar recordatorio', reminder.text, 'Se cancelará el recordatorio y sus acciones programadas.',
             () => owner.removeReminder(scope, reminder.id));
-        }, 'identity-danger');
-        remove.dataset.taskKey = scope + ':reminder:' + reminder.id;
+        }, 'btn quiet');
+        remove.dataset.taskKey = 'reminder';
+        controlKeys.set(remove, JSON.stringify([scope, 'reminder', reminder.id]));
         remove.setAttribute('aria-label', 'Eliminar recordatorio ' + reminder.text);
-        card.append(remove);
+        const actions = node('div', 'row-actions'); actions.append(remove); row.append(actions);
       }
-      return card;
+      return row;
     }
 
     function scopePanel(scope, { lists, reminders }) {
-      const panel = node('section', 'panel tasks-scope'); panel.dataset.scope = scope;
-      const heading = node('h3', '', scope === 'shared' ? 'Tareas compartidas' : 'Mis tareas');
+      const shared = scope === 'shared';
+      const panel = node('section', 'tasks-scope'); panel.dataset.scope = scope;
+      const heading = node('h2', '', shared ? 'Tareas del hogar' : 'Mis tareas');
       heading.id = 'tasks-' + scope + '-title'; panel.setAttribute('aria-labelledby', heading.id);
-      const grid = node('div', 'tasks-grid'), listsPanel = node('div'), remindersPanel = node('div');
-      listsPanel.append(node('h4', '', 'Listas'));
-      remindersPanel.append(node('h4', '', 'Recordatorios'));
+      const header = node('header', 'tasks-scope-heading');
+      header.append(heading, node('span', 'tag', shared ? 'Compartidas' : 'Personal'));
+      const grid = node('div', 'tasks-grid');
+      const listsPanel = node('div', 'tasks-group'), remindersPanel = node('div', 'tasks-group');
+      listsPanel.append(node('h3', '', 'Listas'));
+      remindersPanel.append(node('h3', '', 'Recordatorios'));
       if (state.canWrite) {
-        const label = SCOPE_LABELS[scope].toLowerCase();
-        listsPanel.append(editor('Nueva lista · ' + label, 'Nombre de la lista', 200,
-          name => owner.createList(scope, name), { scope }));
-        remindersPanel.append(editor('Nuevo recordatorio · ' + label, 'Texto del recordatorio', 500,
-          (text, time) => owner.createReminder(scope, text, time), { scope, reminder: true }));
+        listsPanel.append(editor(shared ? 'Nueva lista compartida' : 'Nueva lista personal', 'Nombre de la lista', 200,
+          name => owner.createList(scope, name)));
+        remindersPanel.append(editor(shared ? 'Nuevo recordatorio compartido' : 'Nuevo recordatorio personal', 'Texto del recordatorio', 500,
+          (text, time) => owner.createReminder(scope, text, time), { reminder: true }));
       }
-      if (!lists.length) listsPanel.append(node('p', 'tasks-detail', 'No hay listas.'));
-      if (!reminders.length) remindersPanel.append(node('p', 'tasks-detail', 'No hay recordatorios activos.'));
+      if (!lists.length) {
+        const empty = node('div', 'rows');
+        empty.append(node('p', 'empty', 'No hay listas.'));
+        listsPanel.append(empty);
+      }
       listsPanel.append(...lists.map(list => listCard(scope, list)));
-      remindersPanel.append(...reminders.map(reminder => reminderCard(scope, reminder)));
-      grid.append(listsPanel, remindersPanel); panel.append(heading, grid);
+      if (reminders.length) {
+        const rows = node('ul', 'rows tasks-items');
+        rows.setAttribute('role', 'list');
+        rows.append(...reminders.map(reminder => reminderRow(scope, reminder)));
+        remindersPanel.append(rows);
+      } else {
+        const empty = node('div', 'rows');
+        empty.append(node('p', 'empty', 'No hay recordatorios activos.'));
+        remindersPanel.append(empty);
+      }
+      grid.append(listsPanel, remindersPanel); panel.append(header, grid);
       return panel;
     }
 
@@ -190,17 +223,18 @@
       const { visible, data, busy, writing, error, feedback: message } = state;
       heading.hidden = !visible;
       status.textContent = visible ? error || (writing ? 'Guardando cambio…' : busy ? 'Consultando tareas…' : '') : '';
+      status.dataset.kind = error ? 'error' : '';
       feedback.textContent = visible ? message : '';
       refresh.setAttribute('aria-disabled', String(Boolean(busy)));
       if (!visible || data !== shownData) {
         if (confirmation) closeConfirmation(Boolean(visible));
         const focused = doc.activeElement, restore = visible && sections.contains(focused);
-        const key = restore && focused.dataset.taskKey;
+        const key = restore && controlKeys.get(focused);
         shownData = data;
         sections.replaceChildren(...(data ? [scopePanel('shared', data.shared)] : []));
         if (data?.personal) sections.append(scopePanel('personal', data.personal));
         if (restore) {
-          const next = key && [...sections.querySelectorAll('[data-task-key]')].find(control => control.dataset.taskKey === key);
+          const next = key && [...sections.querySelectorAll('[data-task-key]')].find(control => controlKeys.get(control) === key);
           (next || refresh).focus({ preventScroll: Boolean(next) });
         }
       }

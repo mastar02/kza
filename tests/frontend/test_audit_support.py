@@ -16,6 +16,7 @@ from tests.frontend import browser_support
 from tests.frontend.browser_support import (
     Page,
     WCAG_SCRIPT,
+    audit_component_contrast,
     audit_modal_focus,
     audit_modal_return,
     audit_status,
@@ -66,6 +67,54 @@ async def page():
 
 async def load(page: Page, html: str) -> None:
     await page.evaluate(f'document.body.innerHTML = {json.dumps(html)}')
+
+
+@pytest.mark.parametrize(('replace_at', 'keep_button'), [
+    ('DOM.querySelector', True),
+    ('CSS.forcePseudoState', True),
+    ('CSS.forcePseudoState', False),
+])
+async def test_component_contrast_retries_one_detached_control(
+    page: Page, monkeypatch: pytest.MonkeyPatch, replace_at: str, keep_button: bool,
+):
+    decoy = '<button>Second</button>' if keep_button else '<button hidden>Second</button>'
+    await load(page, f'''
+        <style>
+          body {{color:#000; background:#fff}}
+          button {{color:#000; background:#fff; border:2px solid #000; min-width:44px; min-height:44px}}
+          button:disabled {{color:#555}}
+          button:focus-visible {{outline:3px solid #000; outline-offset:3px}}
+        </style>
+        <main><button>First</button>{decoy}</main>
+    ''')
+    command = page.command
+    injected = False
+
+    async def replace_control(method, params=None):
+        nonlocal injected
+        if method != replace_at or injected:
+            return await command(method, params)
+        injected = True
+        result = await command(method, params) if method == 'DOM.querySelector' else None
+        mutation = ('button.replaceWith(button.cloneNode(true))' if keep_button
+                    else 'button.nextElementSibling.hidden = false; button.remove()')
+        await page.evaluate(f'(() => {{const button = document.querySelector("button"); {mutation}}})()')
+        return result if result is not None else await command(method, params)
+
+    monkeypatch.setattr(page, 'command', replace_control)
+    report = await audit_component_contrast(page, 'main', 'claro')
+    assert report['controls'] == (2 if keep_button else 1)
+    if keep_button:
+        assert not report['findings']
+        assert [item['state'] for item in report['measurements']] == [
+            'normal', 'disabled', 'hover', 'focus-visible',
+            'normal', 'disabled', 'hover', 'focus-visible',
+        ]
+    else:
+        assert report['findings'] == [
+            'button (normal) control-replaced: missing or unmeasurable [body > main:nth-of-type(1) > button:nth-of-type(1)]',
+        ]
+    assert report['retries'] == 1
 
 
 async def test_browser_profile_cleanup_retries_enotempty(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -303,33 +352,44 @@ async def test_audit_view_keeps_new_findings_nonblocking(page: Page, tmp_path: P
         path.write_bytes(base64.b64decode(image['data']))
 
     await audit_view(page, tmp_path, 'synthetic', (), screenshot, widths=(768,),
-                     focus_dialog='#missing-dialog', status_messages=(('loading', '#missing-status'),))
+                     status_messages=(('loading', '#missing-status'),))
     evidence = tmp_path / 'a11y-synthetic.json'
     report = json.loads(evidence.read_text())
     assert report['passed'] is True
-    assert report['modal_focus']['findings'][0]['issue'] == 'dialog_missing'
+    missing = await audit_modal_focus(page, '#missing-dialog')
+    assert missing['found'] is False
+    assert missing['findings'] == ['dialog_missing']
     assert any(item['criterion'] == '1.4.3' and item['issue'] == 'low_contrast'
                for item in report['widths']['768']['wcag_findings'])
     assert any(item['issue'] == 'status_message_missing' for item in report['widths']['768']['wcag_findings'])
 
     await page.evaluate('document.documentElement.lang = "en"')
     with pytest.raises(AssertionError, match='html lang'):
-        await audit_view(page, tmp_path, 'synthetic-legacy', (), screenshot, widths=(768,))
-    assert json.loads((tmp_path / 'a11y-synthetic-legacy.json').read_text())['passed'] is False
+        await audit_view(page, tmp_path, 'synthetic-legacy', (), screenshot, widths=(768,), theme='claro')
+    assert json.loads((tmp_path / 'a11y-synthetic-legacy-claro.json').read_text())['passed'] is False
 
 
 async def test_modal_focus_detects_escapes_and_proves_wrap_and_return(page: Page, tmp_path: Path):
+    # An open, non-top-layer dialog lets the fixture control keyboard containment.
     await load(page, '''
+        <style>
+          dialog { position: static }
+          button:focus-visible { outline: 3px solid black; outline-offset: 2px }
+        </style>
         <button id="opener">Open</button>
-        <div role="dialog" aria-modal="true" id="modal">
+        <dialog open role="dialog" aria-modal="true" id="modal">
             <button id="first">First</button><button id="last">Last</button>
-        </div>
+        </dialog>
         <button id="outside">Outside</button>
     ''')
     await page.evaluate('document.querySelector("#opener").focus()')
     broken = await audit_modal_focus(page, '#modal', initial='#first')
-    assert [item['issue'] for item in broken['findings']] == [
-        'initial_focus_incorrect', 'focus_escaped', 'focus_escaped',
+    assert broken['findings'] == [
+        'initial_focus_incorrect',
+        'Tab expected button#first, reached button#outside; check tab order or keyboard trap',
+        'Shift+Tab expected button#last, reached button#opener; check tab order or keyboard trap',
+        'sequence visited 0 of 2 expected controls',
+        'reverse_sequence visited 0 of 2 expected controls',
     ]
     assert await page.evaluate('document.activeElement.id') == 'opener'
 
@@ -344,23 +404,33 @@ async def test_modal_focus_detects_escapes_and_proves_wrap_and_return(page: Page
     })()''')
     working = await audit_modal_focus(page, '#modal', initial='#first')
     assert working['findings'] == []
+    assert working['keyboard']['expected'] == 2
+    assert working['keyboard']['sequence'] == ['button#first', 'button#last']
+    assert working['keyboard']['reverse_sequence'] == ['button#last', 'button#first']
     assert await page.evaluate('document.activeElement.id') == 'first'
-    await page.evaluate('document.querySelector("#modal").hidden = true; document.querySelector("#opener").focus()')
+    await page.evaluate('document.querySelector("#modal").close(); document.querySelector("#opener").focus()')
     await audit_modal_return(page, tmp_path, 'modal', working, dialog='#modal', opener='#opener')
     evidence = tmp_path / 'a11y-modal.json'
     assert json.loads(evidence.read_text())['focus_return_ok'] is True
     failed_return = {'findings': []}
     await page.evaluate('document.querySelector("#outside").focus()')
-    await audit_modal_return(page, tmp_path, 'modal-broken', failed_return, dialog='#modal', opener='#opener')
-    assert failed_return['findings'][0]['issue'] == 'focus_not_returned'
+    with pytest.raises(AssertionError, match='focus_not_returned'):
+        await audit_modal_return(page, tmp_path, 'modal-broken', failed_return, dialog='#modal', opener='#opener')
+    broken_evidence = json.loads((tmp_path / 'a11y-modal-broken.json').read_text())
+    assert broken_evidence['focus_return_ok'] is False
+    assert broken_evidence['findings'] == ['#modal: focus_not_returned; expected focus at #opener']
 
 
 async def test_modal_focus_finds_intermediate_escape_and_skip_and_restores_body(page: Page):
     await load(page, '''
-        <div role="dialog" aria-modal="true" id="modal">
+        <style>
+          dialog { position: static }
+          button:focus-visible { outline: 3px solid black; outline-offset: 2px }
+        </style>
+        <dialog open role="dialog" aria-modal="true" id="modal">
           <button id="first">First</button><button id="second">Second</button>
           <button id="third">Third</button><button id="last">Last</button>
-        </div>
+        </dialog>
         <button id="outside">Outside</button>
     ''')
     await page.evaluate('''(() => {
@@ -376,9 +446,14 @@ async def test_modal_focus_finds_intermediate_escape_and_skip_and_restores_body(
     })()''')
     assert await page.evaluate('document.activeElement === document.body')
     report = await audit_modal_focus(page, '#modal')
-    assert report['tabbables'] == 4
-    assert report['findings'][0]['issue'] == 'initial_focus_incorrect'
-    assert [(item['direction'], item['step'], item['issue']) for item in report['findings'][1:]] == [
-        ('Tab', 2, 'focus_escaped'), ('Shift+Tab', 2, 'focus_out_of_order'),
+    assert report['keyboard']['expected'] == 4
+    assert report['keyboard']['sequence'] == ['button#first', 'button#second']
+    assert report['keyboard']['reverse_sequence'] == ['button#last', 'button#third']
+    assert report['findings'] == [
+        'initial_focus_incorrect',
+        'Tab expected button#third, reached button#outside; check tab order or keyboard trap',
+        'Shift+Tab expected button#second, reached button#first; check tab order or keyboard trap',
+        'sequence visited 2 of 4 expected controls',
+        'reverse_sequence visited 2 of 4 expected controls',
     ]
     assert await page.evaluate('document.activeElement === document.body')

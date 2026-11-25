@@ -40,8 +40,10 @@ from src.users.user_manager import PermissionLevel
 from src.users.voice_ledger import VoiceReviewer
 from src.users.voice_registry import build_voice_registry
 from tests.frontend.browser_nexo_home import login, screenshot
-from tests.frontend.browser_nexo_memory import INSTRUMENT, TEXT_ZOOM, TEXT_ZOOM_CHECK
-from tests.frontend.browser_support import Page, audit_view, browser_binary, browser_profile_root, evidence_directory
+from tests.frontend.browser_nexo_memory import INSTRUMENT, TEXT_ZOOM, TEXT_ZOOM_CHECK, capture_memory_state
+from tests.frontend.browser_support import (
+    FixtureRows, Page, audit_view, browser_binary, browser_profile_root, choose_option, evidence_directory, press_escape,
+)
 from tests.integration.test_typed_home_operations import typed_graph
 from tests.mocks.ambient_graph import Clock
 from tests.mocks.memory_graph import MemoryClient
@@ -151,8 +153,8 @@ async def main() -> None:
 
             allow = {'retired': authority.memory_owner_retired, 'active': authority.memory_owner_active}
 
-            async def proposal(text, top):
-                source = manager.source_for_capture(str(uuid4()), clock.now, 'living')
+            async def proposal(text, top, *, expires_at=None):
+                source = manager.source_for_capture(str(uuid4()), clock.now, 'living', expires_at=expires_at)
                 fact = await memory.acall(memory.propose, text, (source,))
                 decision = await memory.acall(ledger.attribute_voice_proposal, fact['id'], scores_for(top), CAP, **allow)
                 assert decision.owner, decision
@@ -174,8 +176,12 @@ async def main() -> None:
             dashboard = DashboardAPI(authority=authority, ha_client=ha, home_actions=actions, home_rooms=rooms, memory_manager=manager,
                                      user_manager=users, voice_registry=voices, event_bus=bus, microphone_snapshot_provider=mic_snapshot)
 
+            verification_rooms = []
+
             @dashboard.app.middleware('http')
             async def record_request(request, call_next):
+                if request.method == 'POST' and request.url.path == '/api/memory/mine/voice/verification':
+                    verification_rooms.append((await request.json())['room_id'])
                 fault = faults.get((request.method, request.url.path))
                 if fault == 'down':
                     response = JSONResponse({'detail': 'synthetic_unavailable'}, status_code=503)
@@ -233,8 +239,11 @@ async def main() -> None:
                             await page.evaluate(f'document.querySelector({json.dumps(selector)}).click()')
 
                         async def press(selector: str) -> None:
-                            await page.wait_for(f"(e=>e&&!e.disabled&&e.getAttribute('aria-disabled')!=='true')(document.querySelector({json.dumps(selector)}))")
-                            await click(selector)
+                            await press_control(f'document.querySelector({json.dumps(selector)})')
+
+                        async def press_control(control: str) -> None:
+                            await page.wait_for(f"(e=>e&&!e.disabled&&e.getAttribute('aria-disabled')!=='true')({control})")
+                            await page.evaluate(f"({control}).click()")
 
                         def text_of(selector: str) -> str:
                             return f"(document.querySelector({json.dumps(selector)})?.textContent||'')"
@@ -281,10 +290,20 @@ async def main() -> None:
 
                         # Operator: the G1 switch through Voces (settings flag on, switch row off).
                         await login(page, operator.token, 'Administración')
-                        await click('#app-nav [data-view=voices]')
+                        await click('#rail-nav [data-section=people]')
+                        await click('#section-views [data-view=voices]')
                         await page.wait_for("!document.querySelector('#voices-view').hidden && " + text_of('#voice-attribution-switch') + ".includes('Interruptor apagado')")
                         panel = await page.evaluate("document.querySelector('#voice-attribution').innerText")
                         assert memory_voice_api.VOICES_DISCLOSURE in panel and 'Todavía nadie pidió inscribirse.' in panel, panel
+                        await press('#voice-attribution [data-key=voice-switch]')
+                        await page.wait_for("document.querySelector('#voice-attribution-confirm-dialog').open")
+                        audits['voces-interruptor-confirmacion'] = await audit_view(
+                            page, evidence, 'voces-interruptor-confirmacion',
+                            (('#voice-attribution-confirm-dialog [data-key=voice-admin-accept]', None),),
+                            screenshot, widths=(1440, 390))
+                        await press_escape(page)
+                        await page.wait_for("!document.querySelector('#voice-attribution-confirm-dialog').open && "
+                                            "document.activeElement?.dataset.key === 'voice-switch'")
                         await press('#voice-attribution [data-key=voice-switch]')
                         await accept('#voice-attribution-confirm-dialog', 'voice-admin-accept')
                         await page.wait_for(text_of('#voice-attribution-live') + "==='Memoria por voz encendida.'")
@@ -295,30 +314,64 @@ async def main() -> None:
                         # Person A: opt-in, a refused room, a window without a phrase, then an injected pass.
                         await login(page, homes['a'].token, 'Acceso de hogar')
                         marker = len(requests)
-                        await open_my_memory()
+                        await page.evaluate("window.__qaRules.push({method:'GET', path:'/api/memory/mine/voice', mode:'hold-drop'})")
+                        await click('#app-nav [data-view=mymemory]')
+                        await page.wait_for("window.__qaHeld==='/api/memory/mine/voice' && document.querySelector('#my-voice-freshness').textContent.startsWith('Consultando')")
+                        await capture_memory_state(page, evidence, 'mi-voz-cargando', '#my-voice-title')
+                        await page.evaluate('window.__qaRelease()')
+                        await page.wait_for("document.querySelector('#my-voice-freshness').classList.contains('is-error')")
+                        await capture_memory_state(page, evidence, 'mi-voz-error', '#my-voice-title')
+                        await reopen_my_memory()
                         opened = [item['path'] for item in requests[marker:]]
                         assert opened.index('/api/admin/auth/whoami') < opened.index('/api/memory/mine/voice'), opened
                         await page.wait_for(text_of('#my-voice-status') + ".includes('No estás inscripto')")
+                        await capture_memory_state(page, evidence, 'mi-voz-sin-inscripcion', '#my-voice-title')
+                        await page.wait_for("document.querySelector('#my-memory-empty')?.hidden === false")
+                        await capture_memory_state(page, evidence, 'mis-recuerdos-vacio', '#my-memory-empty')
                         disclosure = await page.evaluate("document.querySelector('#my-voice-disclosure').textContent")
                         assert '48 horas en la transcripción ambiental' in disclosure and 'evaluador autorizado' in disclosure and 'Tu voz no te da permisos ni acceso' in disclosure
+                        audits['mi-voz'] = await audit_view(page, evidence, 'mi-voz', (
+                            ('#my-memory-view [data-key=voice-request]', None),), screenshot, widths=WIDTHS)
                         await press('#my-memory-view [data-key=voice-request]')
                         await page.wait_for("document.querySelector('#my-voice-confirm-dialog').open && document.activeElement?.dataset.key==='voice-confirm-cancel'")
                         assert memory_voice_api.OPT_IN_DISCLOSURE in await page.evaluate("document.querySelector('#my-voice-confirm-dialog').innerText")
+                        await capture_memory_state(page, evidence, 'mi-voz-confirmacion', '#my-voice-confirm-title')
                         audits['voz-inscripcion'] = await audit_view(page, evidence, 'voz-inscripcion', (
                             ('#my-voice-confirm-dialog [data-key=voice-confirm-cancel]', None), ('#my-voice-confirm-dialog [data-key=voice-confirm-accept]', None)), screenshot, widths=WIDTHS)
+                        await press_escape(page)
+                        await page.wait_for("!document.querySelector('#my-voice-confirm-dialog').open && "
+                                            "document.activeElement?.dataset.key === 'voice-request'")
+                        await press('#my-memory-view [data-key=voice-request]')
                         await accept('#my-voice-confirm-dialog', 'voice-confirm-accept')
                         await page.wait_for(text_of('#my-voice-status') + ".startsWith('Inscripción pedida') && document.querySelector('#my-voice-room')")
+                        await capture_memory_state(page, evidence, 'mi-voz-con-datos', '#my-voice-title',
+                                                   frame_view='.memory-voice-slot .memory-voice')
                         options = await page.evaluate("[...document.querySelectorAll('#my-voice-room option')].map(o=>[o.value,o.textContent])")
-                        assert options == [['living', 'Sala de estar'], ['kitchen', 'Cocina']], options
-                        await page.evaluate("(s=>{s.value='kitchen';s.dispatchEvent(new Event('change'))})(document.querySelector('#my-voice-room'))")
+                        assert options == [['0', 'Sala de estar'], ['1', 'Cocina']], options
+                        await choose_option(page, '#my-voice-room', 'Cocina')
                         await press('#my-memory-view [data-key=voice-window]')
                         await page.wait_for(text_of('#my-voice-notice') + '===' + json.dumps(ROOM_UNAVAILABLE))
                         assert len(await rows('SELECT 1 FROM voice_verification_attempts WHERE person_id=?', people['a'])) == 1, 'the room refusal counts'
-                        await page.evaluate("(s=>{s.value='living';s.dispatchEvent(new Event('change'))})(document.querySelector('#my-voice-room'))")
+                        await choose_option(page, '#my-voice-room', 'Sala de estar')
                         await press('#my-memory-view [data-key=voice-window]')
                         await page.wait_for(text_of('#my-voice-window') + ".includes('Ventana abierta en Sala de estar')")
+                        assert verification_rooms == ['kitchen', 'living']
                         phrase = ledger.voice_windows.current(people['a']).phrase  # U3b-4b-2: four words from the fixed list
                         await page.wait_for(text_of('#my-voice-window') + ".includes('Ventana abierta en Sala de estar') && " + text_of('#my-voice-window') + '.includes(' + json.dumps('«' + phrase + '»') + ')')
+                        assert await page.evaluate(r'''(phrase => {
+                            const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+                            const matches = [];
+                            for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+                                if (text.data.includes(phrase)) matches.push(text);
+                            }
+                            return matches.length === 1
+                                && matches[0].parentElement.matches('#my-voice-window .memory-voice-phrase')
+                                && matches[0].data === '«' + phrase + '»'
+                                && [...document.querySelectorAll('*')].every(node =>
+                                    [...node.attributes].every(attr => !attr.name.includes(phrase) && !attr.value.includes(phrase))
+                                    && !node.value?.includes?.(phrase) && !node.defaultValue?.includes?.(phrase));
+                        })(%s)''' % json.dumps(phrase)), 'The verification phrase belongs only in its text node'
+                        await capture_memory_state(page, evidence, 'mi-voz-ventana', '#my-voice-window')
                         assert NO_PHRASE not in await page.evaluate(text_of('#my-voice-window'))
                         stored = json.dumps(await page.evaluate('Object.fromEntries(Object.entries(sessionStorage))'))
                         assert 'living' not in stored and 'Sala' not in stored and phrase.split()[0] not in stored, 'no room or phrase in sessionStorage'
@@ -330,29 +383,40 @@ async def main() -> None:
 
                         # Pending voice proposals: content-free entries with exactly «Descartar» and «No es mío».
                         discard = await proposal('Recuerdo de voz sintético para descartar', profiles['a'])
-                        give_back = await proposal('Recuerdo de voz sintético que no es mío', profiles['a'])
+                        give_back = await proposal('Recuerdo de voz sintético que no es mío', profiles['a'],
+                                                   expires_at=clock.now + 3 * 3600)
+                        proposals = FixtureRows('#my-memory-facts .memory-card', '.row-meta')
+                        for identity in (discard, give_back):
+                            [(created, expires)] = await rows('SELECT extracted_at, expires_at FROM facts WHERE id=?', identity)
+                            label = await page.evaluate(r'''(([created, expires]) => {
+                              const format = time => new Date(time * 1000).toLocaleString('es-UY',
+                                {timeZone: 'America/Montevideo', dateStyle: 'medium', timeStyle: 'short'});
+                              const hour = time => Math.floor(time / 3600) * 3600;
+                              return 'Recibida: ' + format(hour(created)) + ' (hora aproximada) · Vence antes de: ' + format(hour(expires) + 3600);
+                            })(%s)''' % json.dumps([created, expires]))
+                            await proposals.bind(page, identity, label)
                         await reopen_my_memory()
-                        await page.wait_for(f"document.querySelector('[data-my-memory-id=\"{discard}\"]') && document.querySelector('[data-my-memory-id=\"{give_back}\"]')")
+                        await page.wait_for(f"document.querySelector({json.dumps(proposals.selector(discard))}) && document.querySelector({json.dumps(proposals.selector(give_back))})")
                         body = await page.evaluate('document.body.innerText + document.body.textContent')
                         assert 'Recuerdo de voz sintético' not in body, 'no content before confirmation (Q5)'
-                        labels = await page.evaluate(f"[...document.querySelectorAll('[data-my-memory-id=\"{discard}\"] button')].map(b=>b.textContent)")
+                        labels = await page.evaluate(f"[...document.querySelectorAll({json.dumps(proposals.selector(discard, 'button'))})].map(b=>b.textContent)")
                         assert labels == ['Descartar', 'No es mío'], labels
-                        card = await page.evaluate(f"document.querySelector('[data-my-memory-id=\"{discard}\"]').innerText")
+                        card = await page.evaluate(f"document.querySelector({json.dumps(proposals.selector(discard))}).innerText")
                         assert 'Propuesta de voz pendiente de revisión' in card and 'hora aproximada' in card and ':00' in card, card
                         audits['mis-recuerdos-voz'] = await audit_view(page, evidence, 'mis-recuerdos-voz', (
                             ('#app-nav [data-view=mymemory]', None), ('#my-memory-view [data-key=voice-revoke]', None),
-                            (f'#my-memory-view [data-key="{discard}:discard"]', None), (f'#my-memory-view [data-key="{discard}:return"]', None)), screenshot, widths=WIDTHS)
-                        zoom_findings += await text_zoom('mis-recuerdos-voz', ['#my-memory-view'], ['#my-memory-view [data-key=voice-revoke]', f'#my-memory-view [data-key="{discard}:discard"]'])
+                            (proposals.selector(discard, '[data-key="discard"]'), None), (proposals.selector(discard, '[data-key="return"]'), None)), screenshot, widths=WIDTHS, text_zoom=True)
+                        zoom_findings += await text_zoom('mis-recuerdos-voz', ['#my-memory-view'], ['#my-memory-view [data-key=voice-revoke]', proposals.selector(discard, '[data-key="discard"]')])
                         await reopen_my_memory()
-                        await page.wait_for(f"document.querySelector('[data-my-memory-id=\"{discard}\"]')")
-                        await press(f'#my-memory-view [data-key="{discard}:discard"]')
+                        await page.wait_for(f"document.querySelector({json.dumps(proposals.selector(discard))})")
+                        await press(proposals.selector(discard, '[data-key="discard"]'))
                         await page.wait_for("document.querySelector('#my-memory-confirm-dialog').open")
                         assert 'Se va a borrar esta propuesta. La administración no la va a ver.' in await page.evaluate("document.querySelector('#my-memory-confirm-dialog').innerText")
                         await accept('#my-memory-confirm-dialog', 'confirm-accept')
-                        await page.wait_for(f"!document.querySelector('[data-my-memory-id=\"{discard}\"]') && " + text_of('#my-memory-live') + "==='Propuesta descartada.'")
+                        await page.wait_for(f"!document.querySelector({json.dumps(proposals.selector(discard))}) && " + text_of('#my-memory-live') + "==='Propuesta descartada.'")
                         assert await rows('SELECT state, content FROM facts WHERE id=?', discard) == [('deleted', None)]
                         assert await rows('SELECT COUNT(*) FROM voice_attribution_events') == [(0,)], 'a discard counts nothing (Q6)'
-                        await press(f'#my-memory-view [data-key="{give_back}:return"]')
+                        await press(proposals.selector(give_back, '[data-key="return"]'))
                         await page.wait_for("document.querySelector('#my-memory-confirm-dialog').open")
                         dialog = await page.evaluate("document.querySelector('#my-memory-confirm-dialog').innerText")
                         assert memory_api.VOICE_RETURN_NOTICE in dialog and 'Si no fuiste vos' in dialog, dialog
@@ -427,25 +491,34 @@ async def main() -> None:
 
                         # Operator: consents with the verified profile, multi-profile notice, Voces notes, reopen and resume.
                         await login(page, operator.token, 'Administración')
-                        await click('#app-nav [data-view=voices]')
-                        await page.wait_for(f"document.querySelector('[data-voice-consent=\"{people['b']}\"]') && document.querySelector('[data-voice-suspended=\"{profiles['a']}\"]')")
+                        await click('#rail-nav [data-section=people]')
+                        await click('#section-views [data-view=voices]')
+                        consent_b = """[...document.querySelectorAll('[data-voice-consent]')]
+                            .find(row => row.querySelector('.row-title')?.textContent === 'Persona sintética B')"""
+                        suspended_a = """[...document.querySelectorAll('[data-voice-suspended]')]
+                            .find(row => row.querySelector('.row-title')?.textContent === 'Perfil «Voz sintética de A»')"""
+                        reopen_b = f"""({consent_b})?.querySelector('[data-key^="voice-reopen-"]')"""
+                        resume_a = f"""({suspended_a})?.querySelector('[data-key^="voice-resume-"]')"""
+                        await page.wait_for(f"!!({reopen_b}) && !!({resume_a})")
                         panel = await page.evaluate("document.querySelector('#voice-attribution').innerText")
                         assert 'Persona sintética A' in panel and 'Verificada con «Voz sintética de A»' in panel, panel
                         assert memory_voice_api.MULTI_PROFILE_NOTICE in panel and 'Persona sintética C' in panel, panel
-                        await page.wait_for(f"(document.querySelector('[data-voice-profile=\"{profiles['a']}\"]')?.textContent||'').includes('Verificada por Persona sintética A')")
-                        assert 'Propuestas por voz en pausa' in await page.evaluate(f"document.querySelector('[data-voice-profile=\"{profiles['a']}\"]').textContent")
+                        profile_a = """[...document.querySelectorAll('#voice-profile-list .pick')]
+                            .find(row => row.querySelector('.row-title')?.textContent === 'Voz sintética de A')"""
+                        await page.wait_for(f"(({profile_a})?.textContent||'').includes('Verificada por Persona sintética A')")
+                        assert 'Propuestas por voz en pausa' in await page.evaluate(f"({profile_a}).textContent")
                         assert not any(word in panel.lower() for word in ('puntaje', 'score', 'mesa verde'))
                         audits['voces-memoria-por-voz'] = await audit_view(page, evidence, 'voces-memoria-por-voz', (
-                            ('#voice-attribution [data-key=voice-switch]', None), (f'#voice-attribution [data-key="reopen:{people["b"]}"]', None),
-                            (f'#voice-attribution [data-key="resume:{profiles["a"]}"]', None)), screenshot, widths=WIDTHS)
-                        zoom_findings += await text_zoom('voces-memoria-por-voz', ['#voice-attribution'], ['#voice-attribution [data-key=voice-switch]', f'#voice-attribution [data-key="reopen:{people["b"]}"]'])
+                            ('#voice-attribution [data-key=voice-switch]', None), ('#voice-attribution [data-key^="voice-reopen-"]', None),
+                            ('#voice-attribution [data-key^="voice-resume-"]', None)), screenshot, widths=WIDTHS, text_zoom=True)
+                        zoom_findings += await text_zoom('voces-memoria-por-voz', ['#voice-attribution'], ['#voice-attribution [data-key=voice-switch]', '#voice-attribution [data-key^="voice-reopen-"]'])
                         await click('#app-nav [data-view=home]')
                         await page.wait_for("!document.querySelector('#home-view').hidden")
-                        await click('#app-nav [data-view=voices]')
-                        await page.wait_for(f"document.querySelector('#voice-attribution [data-key=\"reopen:{people['b']}\"]')")
+                        await click('#rail-nav [data-section=people][data-view=voices]')
+                        await page.wait_for(f"!!({reopen_b})")
                         reopen_path = f"/api/memory/voice/consents/{people['b']}/reopen"
                         faults.update({('POST', reopen_path): 'lose', ('GET', '/api/memory/voice/consents'): 'down'})
-                        await press(f'#voice-attribution [data-key="reopen:{people["b"]}"]')
+                        await press_control(reopen_b)
                         await page.wait_for("document.querySelector('#voice-attribution-confirm-dialog').open")
                         assert 'Persona sintética B va a poder volver a verificar su voz' in await page.evaluate("document.querySelector('#voice-attribution-confirm-dialog').innerText")
                         await accept('#voice-attribution-confirm-dialog', 'voice-admin-accept')
@@ -453,14 +526,14 @@ async def main() -> None:
                         await page.wait_for(f"sessionStorage.getItem({json.dumps(admin_key)}) && " + text_of('#voice-attribution-live') + ".startsWith('Sin confirmar.')")
                         faults.clear()
                         await page.command('Page.reload')
-                        await page.wait_for(f"(document.querySelector('[data-voice-admin-notice=\"reopen:{people['b']}\"]')?.textContent||'').length>0 && sessionStorage.getItem({json.dumps(admin_key)})===null")
-                        settled = await page.evaluate(f"document.querySelector('[data-voice-admin-notice=\"reopen:{people['b']}\"]').textContent")
+                        notice_b = f"({consent_b})?.querySelector('[data-voice-admin-notice]')"
+                        await page.wait_for(f"({notice_b}?.textContent||'').length>0 && sessionStorage.getItem({json.dumps(admin_key)})===null")
+                        settled = await page.evaluate(f"{notice_b}.textContent")
                         assert 'Comprobado' not in settled and 'Comprobado' not in await page.evaluate("document.querySelector('#voice-attribution').innerText"), settled
                         assert count('POST', reopen_path) == 1, 'never resent'
                         assert await rows('SELECT state FROM voice_attribution_consents WHERE person_id=?', people['b']) == [('pending_verification',)]
                         checks.append('S (administration): a reopen whose answer was lost survives a reload as a content-free marker; the next read settles it without «Comprobado» and without resending')
-                        await page.wait_for(f"document.querySelector('#voice-attribution [data-key=\"resume:{profiles['a']}\"]')")
-                        await press(f'#voice-attribution [data-key="resume:{profiles["a"]}"]')
+                        await press_control(resume_a)
                         await accept('#voice-attribution-confirm-dialog', 'voice-admin-accept')
                         await page.wait_for(text_of('#voice-attribution-live') + "==='Se reanudaron las propuestas por voz de ese perfil.'")
                         assert await rows('SELECT COUNT(*) FROM voice_attribution_suspensions') == [(0,)]
@@ -477,6 +550,16 @@ async def main() -> None:
                         labels = await page.evaluate("[...document.querySelectorAll('#my-memory-view .memory-voice button')].filter(b=>!b.closest('[hidden]')).map(b=>b.textContent)")
                         assert labels == ['Darme de baja…'], labels
                         assert await page.evaluate("!document.querySelector('#my-voice-room')")
+                        await press('#my-memory-view [data-key=voice-revoke]')
+                        await page.wait_for("document.querySelector('#my-voice-confirm-dialog').open")
+                        await capture_memory_state(page, evidence, 'mi-voz-baja', '#my-voice-confirm-title')
+                        audits['mi-voz-baja'] = await audit_view(page, evidence, 'mi-voz-baja', (
+                            ('#my-voice-confirm-dialog [data-key=voice-confirm-cancel]', None),
+                            ('#my-voice-confirm-dialog [data-key=voice-confirm-accept]', None)),
+                            screenshot, widths=(1440, 390))
+                        await press_escape(page)
+                        await page.wait_for("!document.querySelector('#my-voice-confirm-dialog').open && "
+                                            "document.activeElement?.dataset.key === 'voice-revoke'")
                         await press('#my-memory-view [data-key=voice-revoke]')
                         await accept('#my-voice-confirm-dialog', 'voice-confirm-accept')
                         await page.wait_for(text_of('#my-voice-status') + ".startsWith('Te diste de baja.')")

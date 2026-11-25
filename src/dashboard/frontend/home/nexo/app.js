@@ -1,5 +1,6 @@
 import '../request-id.js';
 import '../home.js';
+import './sections.js';
 import './state.js';
 import './people.js';
 import './person-voices.js';
@@ -20,6 +21,8 @@ import './routine-owner.js';
 import './routines.js';
 import './tasks-owner.js';
 import './tasks.js';
+import './activity-owner.js';
+import './activity.js';
 import './memory-owner.js';
 import './memory.js';
 import './my-memory-owner.js';
@@ -28,19 +31,21 @@ import './my-voice-owner.js';
 import './my-voice.js';
 import './voice-consents-owner.js';
 import './voice-consents.js';
-import { createHouse } from './house.js';
+import { createHouse, thermalReading } from './house.js';
 
-const core = window.HomeUI, state = window.NexoState;
+const core = window.HomeUI, state = window.NexoState, { sectionDestination } = window.NexoSections;
 const byId = id => document.getElementById(id);
 const session = state.createSession();
 const roleLabels = { operator: 'Administración', home: 'Acceso de hogar', evaluator: 'Evaluación temporal' };
 let epoch = 0, poller, sessionTimer, ticker, catalog = null, clock = null, lastError = null;
+let displayNames = new Map();
+const entityIds = new WeakMap(), roomIds = new WeakMap();
 let roomId, layer = 'lights', house, logoutPending = false, authBusy = false, activeView = null;
 let staleFocus = null;
 let navigationVersion = 0, desiredView = null, accessView = null, viewsReady = true, viewDrain = Promise.resolve(true), privateSuspended = false;
-const viewIds = { home: 'home-view', actions: 'actions-view', routines: 'routines-view', tasks: 'tasks-view', memory: 'memory-view', mymemory: 'my-memory-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
-const viewHashes = { home: '#hogar', actions: '#acciones', routines: '#rutinas', tasks: '#tareas', memory: '#memoria', mymemory: '#mis-recuerdos', people: '#personas', voices: '#voces', access: '#accesos', evaluation: '#evaluacion' };
-const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation', 'routines', 'tasks', 'memory', 'mymemory'].includes(view);
+const viewIds = { home: 'home-view', actions: 'actions-view', routines: 'routines-view', tasks: 'tasks-view', activity: 'activity-view', memory: 'memory-view', mymemory: 'my-memory-view', people: 'people-view', voices: 'voices-view', access: 'access-view', evaluation: 'evaluation-view' };
+const lastSectionViews = new Map();
+const auxiliaryView = view => ['people', 'voices', 'access', 'evaluation', 'routines', 'tasks', 'activity', 'memory', 'mymemory'].includes(view);
 try { logoutPending = sessionStorage.getItem('kza.logoutPending') === 'true'; } catch (_) { /* Storage is optional. */ }
 
 function node(tag, className, text) {
@@ -60,14 +65,19 @@ function button(text, callback, className = 'text-button') {
 }
 const transport = core.createApi({ onDemo() { byId('demo-banner').hidden = false; } });
 const api = state.createScopedApi({ session, transport, onRetired() { retire('Iniciá sesión para consultar tu hogar.'); } });
-const actions = core.createActionController({ api, onChange: updateReceipts });
-const notices = window.NexoNoticesOwner.createNoticesOwner({ api, session,
-  onAccountChanged(generation) {
-    setTimeout(() => {
-      if (generation !== session.generation()) return;
-      retire('La cuenta cambió en otra pestaña.'); void bootstrap();
-    }, 0);
-  } });
+const actions = core.createActionController({ api, onChange(_key, record) {
+  activity.recordAction(record);
+  updateReceipts();
+} });
+function activityAccountChanged(generation) {
+  if (generation !== session.generation()) return;
+  activity.clear();
+  setTimeout(() => {
+    if (generation !== session.generation()) return;
+    retire('La cuenta cambió en otra pestaña.'); void bootstrap();
+  }, 0);
+}
+const notices = window.NexoNoticesOwner.createNoticesOwner({ api, session, onAccountChanged: activityAccountChanged });
 let noticesPanel = null;
 function closeNotices({ endSession = false } = {}) {
   if (noticesPanel) { noticesPanel.dispose(); noticesPanel.element.remove(); noticesPanel = null; }
@@ -82,15 +92,18 @@ function openNotices() {
   notices.open();
 }
 let voiceDetailSerial=0;
-const people = window.NexoPeople.createPeople({ container: byId('people-view'), dialog: byId('person-dialog'), api, session, icon,
+const people = window.NexoPeople.createPeople({ container: byId('people-view'), dialog: byId('person-dialog'), api, session,
+  accessDetails({ personId, personName, ambiguous, container, current }) {
+    const dispose = window.NexoAccess.mountAccess({ container, dialog: byId('access-dialog'),
+      secretDialog: byId('access-secret-dialog'), controller: access, personId, personName, ambiguous, current,
+      onManage: () => activate('access'), icon });
+    if (current()) void access.open();
+    return dispose;
+  },
   voiceDetails({personId,container,current}) {
     let active=true;
     const valid=()=>active&&current()===true;
-    if(!['voices:read','voices:review'].every(permission=>session.can(permission))) {
-      container.replaceChildren(node('p','person-voice-status','Tu acceso permite gestionar la cuenta. La revisión de voces requiere permisos adicionales.'));
-      return ()=>{active=false;container.replaceChildren();};
-    }
-    const connection=node('p','person-voice-status','Preparando consulta privada…');connection.dataset.voiceConnection='';container.replaceChildren(connection);
+    const connection=node('p','person-voice-status','Consultando perfiles de voz…');connection.dataset.voiceConnection='';container.replaceChildren(connection);
     const config=Object.freeze({scopeKey:'person-detail:'+ ++voiceDetailSerial,personId,profilesOnly:true,current:valid,
       mount:controller=>window.NexoPersonVoices.mountPersonVoices({container,controller,personId,current:valid,icon,onManage:()=>activate('voices')}),
       onStatus:message=>{if(valid()){const label=container.querySelector('[data-voice-connection]');if(label)label.textContent=message;}}
@@ -103,6 +116,7 @@ const voices = window.NexoVoiceOwner.createVoiceOwner({ session,
   fetch: window.fetch.bind(window), connect: url => new WebSocket(url),
   socketUrl: () => `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/voices`,
   mount: controller => window.NexoVoices.mountVoices({ container: byId('voices-content'), dialog: byId('voice-dialog'), linkDialog: byId('voice-link-dialog'), controller, icon,
+    roomName: id => session.can('home:read') ? catalog?.rooms.find(room => room.room_id === id)?.name : null,
     onEvaluate: session.role() === 'operator' && session.can('auth:manage') ? prepareEvaluation : undefined,
     // U3b-4a-3: 'Verificada por …' and the pause next to each profile, from the voice administration owner.
     profileNote: id => voiceAdmin.profileNote(id), onProfileNotes: listener => voiceAdmin.subscribe(listener) }),
@@ -129,7 +143,8 @@ const access = window.NexoAccessOwner.createAccessOwner({ session, fetch: window
 const evaluator = window.NexoEvaluationOwner.createEvaluationOwner({ session,
   fetch: window.fetch.bind(window), connect: url => new WebSocket(url),
   socketUrl: () => `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/evaluation`,
-  mount: controller => window.NexoEvaluation.mountEvaluation({ container: byId('evaluation-content'), controller }),
+  mount: controller => window.NexoEvaluation.mountEvaluation({ container: byId('evaluation-content'), controller,
+    getSession: () => session.active() ? { role: session.role(), expiresAt: session.expiresAt() } : null }),
   onStatus: message => { byId('evaluation-connection').textContent = message; },
   verifyIdentity: options => verifyIdentity(['evaluation:read'], 'evaluator', options),
   onUnauthorized: () => retire('Tu acceso de evaluación dejó de estar vigente.') });
@@ -183,6 +198,21 @@ function closeVoiceAdmin() {
   const dispose = voiceAdminView; voiceAdminView = null; dispose?.();
   return voiceAdmin.leave();
 }
+const activity = window.NexoActivityOwner.createActivityOwner({ api, session, actions, notices,
+  onAccountChanged: activityAccountChanged,
+  deviceLabel(id) {
+    const name = displayNames.get(id);
+    const entityRoom = entityById(id)?.room_id;
+    const room = catalog?.rooms.find(item => item.room_id === entityRoom)?.name;
+    return name ? [name, room].filter(Boolean).join(' · ') : null;
+  }
+});
+let activityView = null;
+function closeActivity({ endSession = false } = {}) {
+  const dispose = activityView; activityView = null; dispose?.();
+  if (endSession) activity.clear();
+  else activity.leave();
+}
 function closeAccess() {
   const dispose = accessView; accessView = null; dispose?.();
   return access.leave();
@@ -205,6 +235,7 @@ function trackViewDrain(promises) {
 }
 function drainViews() {
   people.leave();
+  closeActivity();
   return trackViewDrain([voices.leave(), evaluator.leave(), closeAccess(), closeRoutines(), closeTasks(), closeMemory(), closeMyMemory(), closeVoiceAdmin()]);
 }
 
@@ -234,10 +265,14 @@ function retire(message = '', { endSession = true } = {}) {
   trackViewDrain([voices.clear(), evaluator.clear(), access.clear(), accessClosing, routinesClosing, routines.clear({ wipe: endSession }),
     closeTasks(), tasks.clear({ wipe: endSession }), memoryClosing, memory.clear({ wipe: endSession }),
     myMemoryClosing, myMemory.clear({ wipe: endSession }), myVoice.clear({ wipe: endSession }), voiceAdminClosing, voiceAdmin.clear({ wipe: endSession })]);
+  closeActivity({ endSession: true });
   actions.clear(); destroyHouse(); catalog = clock = lastError = staleFocus = null; roomId = undefined; activeView = null;
+  displayNames.clear();
   byId('voice-connection').textContent = ''; byId('evaluation-connection').textContent = '';
   byId('view-transition-status').hidden = true;
-  for (const id of ['room-list', 'room-controls', 'global-scenes', 'action-list', 'app-nav', 'rail-nav']) byId(id).replaceChildren();
+  for (const id of ['room-list', 'room-controls', 'global-scenes', 'action-list']) byId(id).replaceChildren();
+  byId('room-controls').hidden = true;
+  lastSectionViews.clear(); renderNavigation();
   byId('global-scenes').hidden = true;
   for (const id of ['lights-total', 'entities-total', 'rooms-total', 'room-count']) byId(id).textContent = '—';
   byId('nexo-workspace').hidden = true; byId('login-panel').hidden = false;
@@ -254,9 +289,10 @@ function freshness() {
   return { ...(clock?.read() || { stale: true, ageMs: null }), stale: !!lastError || !session.can('home:read') || !clock || clock.read().stale };
 }
 function entityById(id) { return catalog?.entities?.find(entity => entity.entity_id === id) || catalog?.unassigned_entities?.find(entity => entity.entity_id === id); }
+const entityName = entity => displayNames.get(entity.entity_id);
 function observedValue(entity) {
   if (entity.domain === 'climate') return Number.isFinite(entity.temperature) ? `${entity.temperature} °C · objetivo` : entity.state === 'off' ? 'Apagado' : 'Temperatura objetivo desconocida';
-  if (entity.domain === 'light') return Number.isFinite(entity.brightness_pct) ? `${entity.brightness_pct} % · brillo observado` : ({ off: 'Apagada', on: 'Brillo desconocido' })[entity.state] || 'Estado desconocido';
+  if (entity.domain === 'light') return Number.isFinite(entity.brightness_pct) ? `${entity.brightness_pct} % · brillo` : ({ off: 'Apagada', on: 'Brillo desconocido' })[entity.state] || 'Estado desconocido';
   if (entity.domain === 'cover') return Number.isFinite(entity.position) ? `${entity.position} % · abierto` : 'Posición desconocida';
   return null;
 }
@@ -272,17 +308,18 @@ function renderCurrentTemperature(output, entity) {
   output.textContent = output.hidden ? '' : `${temperature} °C · actual`;
 }
 function updateObservedCards() {
-  for (const card of document.querySelectorAll('.device-card[data-entity-id]')) {
-    const entity = entityById(card.dataset.entityId);
-    card.querySelector('.device-state').textContent = entity ? state.entityState(entity) : 'Ya no figura en el catálogo.';
-    if (entity) card.querySelector('h3').textContent = entity.name;
+  for (const card of document.querySelectorAll('.device-card')) {
+    const entity = entityById(entityIds.get(card));
+    card.querySelector('.device-state').textContent = entity ? state.entityState(entity) : 'Ya no está disponible.';
+    if (entity) card.querySelector('.device-name').textContent = entityName(entity);
     const value = card.querySelector('.device-value');
     if (value) { if (entity) renderObservedValue(value, entity); else value.textContent = 'Estado desconocido'; }
     const current = card.querySelector('.device-current');
     if (current) renderCurrentTemperature(current, entity);
+    const power = card.querySelector('.device-power');
+    if (power && entity) updateDevicePower(power, entity);
   }
-  const heading = byId('room-controls').querySelector('.selected-room-heading');
-  if (heading) heading.textContent = catalog.rooms.find(room => room.room_id === roomId)?.name || 'Sin ambiente asignado';
+  updateRoomHeading();
 }
 function canExecute(entity, operation) {
   return session.can('home:control') && !!entity && core.entityCanControl(entity, operation, freshness().stale, clock?.now());
@@ -290,17 +327,22 @@ function canExecute(entity, operation) {
 function updateTemporal() {
   if (!session.active()) { retire('Tu sesión venció. Iniciá sesión nuevamente.'); return; }
   const observed = freshness();
-  byId('connection-status').textContent = lastError ? `No se pudo actualizar. ${lastError.message}` : !catalog ? 'Consultando el catálogo…' : observed.stale ? 'El estado está vencido o no está disponible. Actualizá antes de operar.' : `Estado observado · ${Math.max(0, Math.floor(observed.ageMs / 1000))} s`;
+  byId('connection-status').textContent = lastError ? 'No se pudo actualizar el estado de la casa.' : !catalog ? 'Consultando los dispositivos…' : observed.stale ? 'Datos desactualizados. Actualizá para usar los controles.' : `Actualizado hace ${Math.max(0, Math.floor(observed.ageMs / 1000))} s`;
   byId('connection-status').classList.toggle('is-stale', observed.stale);
+  const live = byId('live-badge');
+  live.hidden = observed.stale || live.dataset.linked !== 'true';
   const now = clock?.now();
-  for (const card of document.querySelectorAll('.device-card[data-entity-id]')) {
-    const entity = entityById(card.dataset.entityId);
+  for (const card of document.querySelectorAll('.device-card')) {
+    const entity = entityById(entityIds.get(card));
     card.dataset.observation = !observed.stale && entity && core.entityObservationCurrent(entity, now) ? 'current' : 'stale';
   }
   for (const control of document.querySelectorAll('[data-control]')) {
-    const entity = entityById(control.dataset.entityId);
-    const record = actions.get(control.dataset.entityId, control.dataset.operation);
-    const disabled = !canExecute(entity, control.dataset.operation) || record?.pending === true;
+    const id = entityIds.get(control);
+    const entity = entityById(id);
+    const record = actions.get(id, control.dataset.operation);
+    const otherPower = control.matches('.device-power') && actions.get(id,
+      control.dataset.operation === 'turn_on' ? 'turn_off' : 'turn_on')?.pending;
+    const disabled = !canExecute(entity, control.dataset.operation) || record?.pending === true || otherPower === true;
     // Disabling (stale data or a pending action) drops focus; remember it so re-enabling returns it.
     if (disabled && !control.disabled && control === document.activeElement) staleFocus = control;
     control.disabled = disabled;
@@ -318,7 +360,7 @@ function restoreStaleFocus() {
 function updateReceipts() {
   if (!session.active()) return;
   for (const output of document.querySelectorAll('[data-receipt]')) {
-    const record = actions.get(output.dataset.entityId, output.dataset.operation);
+    const record = actions.get(entityIds.get(output), output.dataset.operation);
     output.textContent = record ? [core.actionLabel(record.status), core.effectSummary(record.effects)].filter(Boolean).join(' · ') : '';
     output.dataset.status = record?.status || '';
   }
@@ -336,7 +378,7 @@ async function execute(id, operation, values, errorNode) {
   if (session.can('home:read')) poller?.refresh();
 }
 function bindControl(control, entity, operation) {
-  control.dataset.control = ''; control.dataset.entityId = entity.entity_id; control.dataset.operation = operation;
+  control.dataset.control = ''; entityIds.set(control, entity.entity_id); control.dataset.operation = operation;
 }
 function actionFeedback(target, entity, operation) {
   const error = node('p', 'control-error'); error.setAttribute('role', 'alert');
@@ -346,7 +388,7 @@ function actionFeedback(target, entity, operation) {
 }
 function appendReceipt(target, entity, operation) {
   const receipt = node('p', 'action-receipt'); receipt.dataset.receipt = '';
-  receipt.dataset.entityId = entity.entity_id; receipt.dataset.operation = operation; receipt.setAttribute('role', 'status');
+  entityIds.set(receipt, entity.entity_id); receipt.dataset.operation = operation; receipt.setAttribute('role', 'status');
   target.append(receipt);
 }
 function submitAction(entity, operation, values, error) {
@@ -354,7 +396,7 @@ function submitAction(entity, operation, values, error) {
     if (session.active()) error.textContent = 'No se pudo consultar el resultado. Actualizá para verificarlo.';
   });
 }
-function touchChoices(entity, operation, fields, inputs, error) {
+function touchChoices(entity, operation, fields, inputs, error, inRoom) {
   const choices = node('div', 'touch-choices');
   const field = fields[0];
   if (operation === 'set_temperature') {
@@ -368,8 +410,8 @@ function touchChoices(entity, operation, fields, inputs, error) {
         const index = Math.max(0, Math.min(top, Math.round((target - min) / step) + direction));
         const temperature = Number((min + index * step).toFixed(8));
         if (temperature !== current.temperature) submitAction(entity, operation, { temperature }, error);
-      }, 'thermostat-step');
-      step.setAttribute('aria-label', `${label} temperatura objetivo de ${entity.name}`);
+      }, inRoom ? 'btn thermostat-step' : 'thermostat-step');
+      step.setAttribute('aria-label', `${label} temperatura objetivo de ${entityName(entity)}`);
       bindControl(step, entity, operation); choices.append(step);
     }
   } else {
@@ -380,29 +422,50 @@ function touchChoices(entity, operation, fields, inputs, error) {
       const preset = button(label, () => {
         inputs.get(field.name).value = value;
         submitAction(entity, operation, { [field.name]: value }, error);
-      }, 'touch-preset');
+      }, inRoom ? 'btn touch-preset' : 'touch-preset');
       bindControl(preset, entity, operation); choices.append(preset);
     }
   }
   return choices;
 }
-function deviceCard(entity, expanded = new Set()) {
-  const card = node('article', 'device-card panel'); card.dataset.entityId = entity.entity_id; card.dataset.domain = entity.domain;
-  const heading = node('div', 'device-heading'); heading.append(icon(entity.domain === 'climate' ? 'climate' : entity.domain === 'cover' ? 'blind' : 'bulb'));
-  const title = node('div'); title.append(node('h3', '', entity.name), node('p', 'device-state', state.entityState(entity))); heading.append(title); card.append(heading);
+function updateDevicePower(control, entity) {
+  const on = entity.state === 'on';
+  bindControl(control, entity, on ? 'turn_off' : 'turn_on');
+  control.setAttribute('aria-checked', String(on));
+  control.setAttribute('aria-label', entityName(entity));
+}
+function deviceCard(entity, expanded, inRoom = false) {
+  const card = node('article', `device-card ${inRoom ? 'row' : 'panel'}`); entityIds.set(card, entity.entity_id); card.dataset.domain = entity.domain;
+  const heading = node('div', 'device-heading');
+  if (!inRoom) heading.append(icon(entity.domain === 'climate' ? 'climate' : entity.domain === 'cover' ? 'blind' : 'bulb'));
+  const title = node('div'); title.append(node(inRoom ? 'h4' : 'h3', 'device-name', entityName(entity)), node('p', 'device-state', state.entityState(entity)));
+  heading.append(title); card.append(heading);
+  let operations = (entity.capabilities || []).filter(operation => Object.hasOwn(core.OPERATION_LABELS, operation));
+  if (inRoom && operations.includes('turn_on') && operations.includes('turn_off')) {
+    const power = node('form', 'operation-form device-switch-form'); entityIds.set(power, entity.entity_id);
+    const control = button('', () => submitAction(entity, control.dataset.operation, {}, error), 'sw device-power');
+    control.setAttribute('role', 'switch');
+    updateDevicePower(control, entity);
+    power.append(control);
+    const error = actionFeedback(power, entity, 'turn_on');
+    appendReceipt(power, entity, 'turn_off');
+    card.append(power);
+    operations = operations.filter(operation => operation !== 'turn_on' && operation !== 'turn_off');
+  }
   if (observedValue(entity) !== null) { const value = node('p', 'device-value'); renderObservedValue(value, entity); card.append(value); }
   if (entity.domain === 'climate') {
     const current = node('p', 'device-current'); renderCurrentTemperature(current, entity); card.append(current);
   }
-  const operations = (entity.capabilities || []).filter(operation => Object.hasOwn(core.OPERATION_LABELS, operation));
-  if (!operations.length) card.append(node('p', 'fine-print', 'No hay controles autorizados para este dispositivo.'));
+  if (!entity.capabilities?.some(operation => Object.hasOwn(core.OPERATION_LABELS, operation))) {
+    card.append(node('p', 'device-permissions', 'Sin controles disponibles.'));
+  }
   const binary = node('div', 'power-actions'); card.append(binary);
   for (const operation of operations) {
-    const form = node('form', 'operation-form'); form.dataset.entityId = entity.entity_id;
+    const form = node('form', 'operation-form'); entityIds.set(form, entity.entity_id);
     const fields = core.controlFields(entity, operation), inputs = new Map();
     for (const field of fields) {
       const label = node('label', 'control-field', field.label), input = node(field.options ? 'select' : 'input');
-      input.name = field.name; input.setAttribute('aria-label', `${entity.name} · ${field.label}`);
+      input.name = field.name; input.setAttribute('aria-label', `${entityName(entity)} · ${field.label}`);
       if (field.options) {
         for (const [value, text] of field.options) { const option = node('option', '', text); option.value = value; input.append(option); }
         input.value = field.name === 'hvac_mode' ? entity.state : '';
@@ -426,11 +489,11 @@ function deviceCard(entity, expanded = new Set()) {
       bindControl(input, entity, operation);
       label.append(input); form.append(label); inputs.set(field.name, input);
     }
-    const submit = node('button', fields.length ? 'apply-button' : 'operation-button', core.OPERATION_LABELS[operation]); submit.type = 'submit';
+    const submit = node('button', inRoom ? 'btn' : fields.length ? 'apply-button' : 'operation-button', core.OPERATION_LABELS[operation]); submit.type = 'submit';
     bindControl(submit, entity, operation); form.append(submit);
     const error = actionFeedback(form, entity, operation);
     if (['set_temperature', 'set_hvac_mode', 'color_temp_kelvin'].includes(operation)) {
-      form.insertBefore(touchChoices(entity, operation, fields, inputs, error), submit);
+      form.insertBefore(touchChoices(entity, operation, fields, inputs, error, inRoom), submit);
     }
     form.addEventListener('submit', event => {
       event.preventDefault();
@@ -439,7 +502,7 @@ function deviceCard(entity, expanded = new Set()) {
     });
     if (!fields.length) { form.classList.add('binary-operation'); binary.append(form); }
     else if (operation === 'color_temp_kelvin') {
-      const detail = node('details', 'advanced-control'); detail.dataset.entityId = entity.entity_id; detail.open = expanded.has(entity.entity_id);
+      const detail = node('details', 'advanced-control'); entityIds.set(detail, entity.entity_id); detail.open = expanded.has(entity.entity_id);
       detail.append(node('summary', '', 'Temperatura de luz'), form); card.append(detail);
     } else card.append(form);
   }
@@ -447,11 +510,7 @@ function deviceCard(entity, expanded = new Set()) {
 }
 function selectedEntities() {
   const values = roomId === null ? catalog?.unassigned_entities || [] : state.roomEntities(catalog, roomId, 'all');
-  const authorized = values.filter(entity => entity.capabilities?.length);
-  const entities = authorized.length ? authorized : values;
-  const domains = layer === 'climate' ? ['climate'] : ['light', 'switch', 'scene'];
-  const visible = entities.filter(entity => layer === 'all' || domains.includes(entity.domain));
-  return visible.length || authorized.length ? visible : values;
+  return values.filter(entity => entity.domain !== 'scene');
 }
 function quickToggle(room) {
   const climate = layer === 'climate', domain = climate ? 'climate' : 'light';
@@ -475,43 +534,78 @@ function quickToggle(room) {
 }
 function renderGlobalScenes() {
   const section = byId('global-scenes');
-  const scenes = session.can('home:control') ? catalog.unassigned_entities.filter(entity =>
-    entity.room_id === null && entity.domain === 'scene' && entity.capabilities?.includes('activate_scene')) : [];
-  const focused = document.activeElement.closest('#global-scenes [data-control]')?.dataset.entityId;
+  const scenes = session.can('home:control') ? core.catalogScenes(catalog) : [];
+  const focused = entityIds.get(document.activeElement.closest('#global-scenes [data-control]'));
   section.hidden = !scenes.length; section.replaceChildren();
   if (!scenes.length) return;
+  const names = core.catalogSceneNames(scenes, catalog.rooms, displayNames);
   section.append(node('h2', '', 'Escenas del hogar'));
   const strip = node('div', 'scene-strip'); section.append(strip);
   for (const entity of scenes) {
     const item = node('div', 'scene-tile'), operation = 'activate_scene';
-    const control = button(entity.name, () => submitAction(entity, operation, {}, error), 'operation-button');
+    const control = button(names.get(entity.entity_id), () => submitAction(entity, operation, {}, error), 'btn');
     bindControl(control, entity, operation); item.append(control);
     const error = actionFeedback(item, entity, operation);
     strip.append(item);
   }
-  return [...strip.querySelectorAll('button')].find(control => control.dataset.entityId === focused);
+  return [...strip.querySelectorAll('button')].find(control => entityIds.get(control) === focused);
+}
+const deviceGroups = { light: 'Luces', climate: 'Clima', cover: 'Persianas', switch: 'Interruptores' };
+function updateRoomHeading() {
+  const heading = byId('room-controls').querySelector('.selected-room-heading');
+  if (!heading) return;
+  const selected = catalog.rooms.find(room => room.room_id === roomId);
+  heading.textContent = selected?.name || (catalog.unassigned_entities.some(entity => entity.domain !== 'scene') ? 'Sin ambiente' : 'Ambientes');
+  const temperature = heading.nextElementSibling;
+  const thermal = selected && layer === 'climate' ? thermalReading(selected, selectedEntities()) : null;
+  const reading = thermal?.actual ?? (Number.isFinite(selected?.current_temperature) ? `${selected.current_temperature} °C` : null);
+  temperature.textContent = [reading && `Temperatura actual · ${reading}`, thermal?.status].filter(Boolean).join(' · ');
+  temperature.hidden = !temperature.textContent;
 }
 function renderControls() {
   if (!catalog || !session.can('home:read')) return;
-  const expanded = new Set([...document.querySelectorAll('.advanced-control[open]')].map(detail => detail.dataset.entityId));
-  const controls = byId('room-controls'); controls.replaceChildren();
-  const selected = catalog.rooms.find(room => room.room_id === roomId);
-  controls.append(node('h2', 'selected-room-heading', selected?.name || 'Sin ambiente asignado'));
+  const expanded = new Set([...document.querySelectorAll('.advanced-control[open]')].map(detail => entityIds.get(detail)));
+  const controls = byId('room-controls');
+  const headingFocused = document.activeElement?.id === 'selected-room-heading';
+  controls.replaceChildren();
+  controls.hidden = false;
+  const heading = node('h2', 'selected-room-heading'); heading.id = 'selected-room-heading'; heading.tabIndex = -1;
+  const header = node('header', 'room-heading'); header.append(heading, node('p', 'room-temperature')); controls.append(header);
+  updateRoomHeading();
   const entities = selectedEntities();
-  for (const entity of entities) controls.append(deviceCard(entity, expanded));
-  if (!entities.length) controls.append(node('p', 'panel empty-panel', 'Este ambiente no tiene dispositivos de esta capa en el catálogo.'));
+  const groups = new Map([...Object.keys(deviceGroups), 'other'].map(domain => [domain, []]));
+  for (const entity of entities) (groups.get(entity.domain) ?? groups.get('other')).push(entity);
+  for (const [domain, devices] of groups) {
+    if (!devices.length) continue;
+    const group = node('section', 'device-group');
+    const rows = node('div', 'rows'); rows.append(...devices.map(entity => deviceCard(entity, expanded, true)));
+    group.append(node('h3', '', deviceGroups[domain] ?? 'Otros dispositivos'), rows);
+    controls.append(group);
+  }
+  if (!entities.length) controls.append(node('p', 'room-empty', 'No hay dispositivos para mostrar.'));
   const all = byId('action-list'); all.replaceChildren();
   for (const entity of catalog.entities) all.append(deviceCard(entity, expanded));
-  if (!catalog.entities.length) all.append(node('p', 'panel empty-panel', 'No hay dispositivos en el catálogo actual.'));
+  if (!catalog.entities.length) all.append(node('p', 'panel empty-panel', 'Todavía no hay dispositivos para mostrar.'));
   updateReceipts();
+  if (headingFocused) heading.focus({ preventScroll: true });
 }
-function selectRoom(id) {
-  if (roomId === id || (id !== null && !catalog?.rooms.some(room => room.room_id === id))) return;
-  roomId = id; renderCatalog(true);
+function selectRoom(id, { fromMap = false } = {}) {
+  if (id !== null && !catalog?.rooms.some(room => room.room_id === id)) return;
+  if (roomId !== id) { roomId = id; renderCatalog(true); }
+  if (fromMap) return;
+  if (document.body.classList.contains('map-expanded')) byId('expand-map').click();
+  const heading = byId('selected-room-heading');
+  const rect = heading?.getBoundingClientRect();
+  if (rect && (rect.top < 0 || rect.bottom + 120 > innerHeight)) {
+    heading.scrollIntoView({ block: 'start' });
+    heading.focus({ preventScroll: true });
+  }
 }
 function updateHouse() {
   const linked = house?.update({ catalog, layer, selected: roomId });
-  document.querySelector('.live-badge').textContent = linked ? 'EN VIVO' : 'ILUSTRACIÓN';
+  const live = byId('live-badge');
+  live.dataset.linked = String(!!linked);
+  live.hidden = !linked || freshness().stale;
 }
 function renderCatalog(forceControls = false) {
   if (!catalog || !session.can('home:read')) return;
@@ -519,7 +613,7 @@ function renderCatalog(forceControls = false) {
   const previousRoom = roomId;
   if (roomId === undefined || roomId !== null && !rooms.some(room => room.room_id === roomId)) roomId = rooms[0]?.room_id ?? null;
   byId('rooms-total').textContent = String(rooms.length); byId('room-count').textContent = String(rooms.length);
-  byId('entities-total').textContent = String(catalog.entities.length);
+  byId('entities-total').textContent = String(catalog.entities.filter(entity => entity.domain !== 'scene').length);
   byId('lights-total').textContent = String(catalog.entities.filter(entity => entity.domain === 'light' && entity.available && entity.state === 'on').length);
   const list = byId('room-list');
   const focus = document.activeElement.closest('#room-list button');
@@ -527,31 +621,36 @@ function renderCatalog(forceControls = false) {
   list.replaceChildren();
   function addRoom(id, name, count, quick) {
     const row = node('div', 'room-row');
-    const control = button('', () => selectRoom(id), 'room-choice'); control.classList.toggle('active', id === roomId); control.setAttribute('aria-pressed', String(id === roomId));
-    if (id !== null) control.dataset.roomId = id;
+    const control = button('', () => selectRoom(id), 'btn room-choice'); control.classList.toggle('active', id === roomId); control.setAttribute('aria-pressed', String(id === roomId));
+    control.setAttribute('aria-controls', 'room-controls');
+    roomIds.set(control, id);
     control.append(icon('house')); const title = node('span'); title.append(node('strong', '', name), node('small', '', `${count} dispositivo${count === 1 ? '' : 's'}`)); control.append(title); row.append(control);
-    if (focus?.classList.contains('room-choice') && focus.dataset.roomId === control.dataset.roomId) replacement = control;
+    if (focus?.classList.contains('room-choice') && roomIds.get(focus) === id) replacement = control;
     if (quick) {
       const { entity, operation, on, values } = quick;
-      const power = button('', () => submitAction(entity, operation, values, error), 'room-power');
+      const power = button('', () => submitAction(entity, operation, values, error), 'sw room-power');
       bindControl(power, entity, operation);
       power.setAttribute('role', 'switch'); power.setAttribute('aria-checked', String(on));
-      power.setAttribute('aria-label', `${layer === 'climate' ? 'Clima' : 'Luz'} de ${name} · ${entity.name}`);
-      power.append(icon(layer === 'climate' ? 'climate' : 'bulb')); row.append(power);
+      power.setAttribute('aria-label', `${name} · ${entityName(entity)}`);
+      row.append(power);
       const error = actionFeedback(row, entity, operation);
       if (entity.domain === 'light') appendReceipt(row, entity, on ? 'turn_on' : 'turn_off');
-      if (focus?.classList.contains('room-power') && focus.dataset.entityId === entity.entity_id) replacement = power;
+      if (focus?.classList.contains('room-power') && entityIds.get(focus) === entity.entity_id) replacement = power;
     }
     list.append(row);
   }
-  for (const room of rooms) addRoom(room.room_id, room.name, room.entity_ids.length, session.can('home:control') && quickToggle(room));
-  if (catalog.unassigned_entities.length) addRoom(null, 'Sin ambiente', catalog.unassigned_entities.length);
-  if (!rooms.length && !catalog.unassigned_entities.length) list.append(node('p', 'empty-panel', 'No hay ambientes en el catálogo.'));
+  const deviceIds = new Set(catalog.entities.filter(entity => entity.domain !== 'scene').map(entity => entity.entity_id));
+  for (const room of rooms) addRoom(room.room_id, room.name,
+    room.entity_ids.filter(id => deviceIds.has(id)).length, session.can('home:control') && quickToggle(room));
+  const unassigned = catalog.unassigned_entities.filter(entity => entity.domain !== 'scene').length;
+  if (unassigned) addRoom(null, 'Sin ambiente', unassigned);
+  if (!rooms.length && !unassigned) list.append(node('p', 'room-empty', 'No hay ambientes para mostrar.'));
   // Refreshing an observation must not discard a keyboard user's draft or focus.
   // A control disabled by stale data keeps its draft until fresh data re-enables it.
   const focused = document.activeElement?.closest('.operation-form') || (staleFocus?.isConnected ? staleFocus.closest('.operation-form') : null);
-  const stillSelected = !focused?.closest('#room-controls') || selectedEntities().some(entity => entity.entity_id === focused.dataset.entityId);
-  if (forceControls || !focused || previousRoom !== roomId || !entityById(focused.dataset.entityId) || !stillSelected) renderControls();
+  const focusedEntity = entityIds.get(focused);
+  const stillSelected = !focused?.closest('#room-controls') || selectedEntities().some(entity => entity.entity_id === focusedEntity);
+  if (forceControls || !focused || previousRoom !== roomId || !entityById(focusedEntity) || !stillSelected) renderControls();
   else updateObservedCards();
   const sceneFocus = renderGlobalScenes();
   updateHouse();
@@ -559,35 +658,55 @@ function renderCatalog(forceControls = false) {
   (replacement ?? sceneFocus)?.focus({ preventScroll: true });
 }
 function renderNavigation() {
-  const navigation = [
-    { id: 'home', label: 'Hogar 3D', icon: 'house' },
-    { id: 'voices', label: 'Voces', icon: 'mic' },
-    { id: 'people', label: 'Personas', icon: 'user' },
-    { id: 'actions', label: 'Acciones', icon: 'list' },
-    { id: 'routines', label: 'Rutinas', icon: 'clock' },
-    { id: 'tasks', label: 'Tareas', icon: 'list' },
-    { id: 'memory', label: 'Memoria', icon: 'layers' },
-    { id: 'mymemory', label: 'Mis recuerdos', icon: 'user' },
-    { id: 'access', label: 'Accesos', icon: 'shield' },
-    { id: 'evaluation', label: 'Evaluación', icon: 'mic' }
-  ].filter(view => session.views().includes(view.id));
-  for (const target of ['app-nav', 'rail-nav']) {
-    const container = byId(target); container.replaceChildren();
-    for (const view of navigation) {
-      const control = view.href ? node('a', target === 'rail-nav' ? 'rail-button' : '', '') : button('', () => activate(view.id), target === 'rail-nav' ? 'rail-button' : '');
-      if (view.href) control.href = view.href;
-      control.dataset.view = view.id; control.setAttribute('aria-label', view.label); control.append(icon(view.icon));
-      control.append(node('span', target === 'rail-nav' ? 'rail-tooltip' : '', view.label)); container.append(control);
-    }
+  const primary = byId('rail-nav'), secondary = byId('section-views');
+  const sections = session.sections();
+  const selection = sections.find(section => section.views.some(view => view.id === desiredView));
+  if (selection) lastSectionViews.set(selection.id, desiredView);
+
+  // Keep the primary buttons in place so moving between sections preserves keyboard focus.
+  const sectionIds = sections.map(section => section.id).join(' ');
+  if (primary.dataset.sections !== sectionIds) {
+    primary.replaceChildren(...sections.map(section => {
+      const control = button(section.label, () => activate(control.dataset.view), 'section-link');
+      control.dataset.section = section.id;
+      return control;
+    }));
+    primary.dataset.sections = sectionIds;
   }
-  railOverflow();
+  sections.forEach((section, index) => {
+    const control = primary.children[index];
+    control.dataset.view = sectionDestination(section, lastSectionViews.get(section.id));
+    if (section === selection) control.setAttribute('aria-current', 'true');
+    else control.removeAttribute('aria-current');
+  });
+
+  const views = selection?.views.length > 1 ? selection.views : [];
+  const secondaryViewIds = views.map(view => view.id).join(' ');
+  if (secondary.dataset.views !== secondaryViewIds) {
+    const hadFocus = secondary.contains(document.activeElement);
+    secondary.replaceChildren(...views.map(view => {
+      const control = button(view.label, () => activate(view.id), 'section-link');
+      control.dataset.view = view.id;
+      return control;
+    }));
+    secondary.dataset.views = secondaryViewIds;
+    if (hadFocus) primary.querySelector('[aria-current]')?.focus({ preventScroll: true });
+  }
+  secondary.hidden = !views.length;
+  if (views.length) secondary.setAttribute('aria-label', `Vistas de ${selection.label}`);
+  else secondary.removeAttribute('aria-label');
+  for (const control of secondary.children) {
+    if (control.dataset.view === desiredView) control.setAttribute('aria-current', 'page');
+    else control.removeAttribute('aria-current');
+  }
 }
 async function activate(view, push = true, force = false) {
   if (!session.views().includes(view) || !Object.hasOwn(viewIds, view)) return false;
   if (!force && activeView === view && desiredView === view) return true;
   const version = ++navigationVersion, generation = session.generation();
   desiredView = view;
-  if (push && activeView !== view) history.pushState({ view }, '', viewHashes[view]);
+  if (push && activeView !== view) history.pushState({ view }, '', state.VIEW_HASHES[view]);
+  renderNavigation();
   activeView = null;
   for (const id of Object.values(viewIds)) byId(id).hidden = true;
   byId('workspace-toolbar').hidden = true;
@@ -617,7 +736,8 @@ async function activate(view, push = true, force = false) {
     }
     if (view === 'access') {
       accessView = window.NexoAccess.mountAccess({ container: byId('access-view'), dialog: byId('access-dialog'),
-        secretDialog: byId('access-secret-dialog'), controller: access, icon });
+        secretDialog: byId('access-secret-dialog'), controller: access,
+        getSession: () => session.active() ? { role: session.role(), expiresAt: session.expiresAt() } : null });
       opened = await access.open();
     }
     if (view === 'evaluation') opened = await evaluator.open();
@@ -627,8 +747,12 @@ async function activate(view, push = true, force = false) {
       opened = await routines.open();
     }
     if (view === 'tasks') {
-      tasksView = window.NexoTasks.mountTasks({ container: byId('tasks-view'), confirmDialog: byId('tasks-confirm-dialog'), owner: tasks });
+      tasksView = window.NexoTasks.mountTasks({ container: byId('tasks-view'), confirmDialog: byId('tasks-confirm-dialog'), owner: tasks, deviceName: id => catalog && session.can('home:read') ? displayNames.get(id) ?? null : null });
       opened = await tasks.open();
+    }
+    if (view === 'activity' && activity.permissions().visible) {
+      activityView = window.NexoActivity.mountActivity({ container: byId('activity-view'), owner: activity });
+      opened = await activity.open();
     }
     if (view === 'memory') {
       memoryView = window.NexoMemory.mountMemory({ container: byId('memory-view'), confirmDialog: byId('memory-confirm-dialog'), owner: memory, icon });
@@ -648,17 +772,14 @@ async function activate(view, push = true, force = false) {
     privateSuspended = false;
     poller?.setHidden(document.hidden || auxiliaryView(view));
     if (document.hidden || auxiliaryView(view)) ticker?.stop(); else ticker?.start();
-    for (const control of document.querySelectorAll('[data-view]')) {
-      const selected = control.dataset.view === view; control.classList.toggle('active', selected);
-      if (selected) control.setAttribute('aria-current', 'page'); else control.removeAttribute('aria-current');
-    }
-    revealActiveRail();
     if (view === 'home') openNotices();
     if (view === 'home' && !house) {
       byId('map-loading').hidden = false;
-      house = createHouse({ container: byId('house-canvas'), pins: byId('room-pins'), onSelect: selectRoom, onReady(ready) {
+      house = createHouse({ container: byId('house-canvas'), pins: byId('room-pins'), onSelect: id => selectRoom(id, { fromMap: true }), onReady(ready) {
         byId('map-loading').hidden = true;
         for (const id of ['view-3d', 'view-top', 'zoom-in', 'zoom-out', 'rotate-left', 'rotate-right', 'reset-view']) byId(id).disabled = !ready;
+        // The model loads asynchronously: show the observed state as soon as it is on screen.
+        updateHouse();
       } });
       cameraView('3d', false);
       updateHouse();
@@ -671,9 +792,8 @@ async function activate(view, push = true, force = false) {
   }
 }
 function requestedView() {
-  const requested = Object.keys(viewHashes).find(view => viewHashes[view] === location.hash) || 'home';
   const available = session.views().filter(view => Object.hasOwn(viewIds, view));
-  return available.includes(requested) ? requested : available[0];
+  return state.resolveViewHash(location.hash, available);
 }
 function cameraView(view, apply = true) {
   if (apply) house?.setView(view);
@@ -690,11 +810,12 @@ async function bootstrap() {
     if (!session.accept(identity)) { retire('El servicio no devolvió una sesión vigente.'); return; }
     byId('login-panel').hidden = true; byId('nexo-workspace').hidden = false; byId('logout').hidden = false;
     byId('session-label').textContent = roleLabels[session.role()]; byId('login-error').textContent = '';
-    renderNavigation(); armSessionTimer();
-    const home = session.can('home:read'); byId('restricted-view').hidden = Boolean(requestedView());
+    armSessionTimer();
+    const view = requestedView(), home = session.can('home:read'); byId('restricted-view').hidden = Boolean(view);
     for (const id of Object.values(viewIds)) byId(id).hidden = true;
     byId('refresh').hidden = !home;
-    if (requestedView()) await activate(requestedView(), false, true);
+    if (view) await activate(view, false, true);
+    else renderNavigation();
     if (started !== epoch || !session.active()) return;
     if (!home) { byId('connection-status').textContent = 'Sesión vigente.'; return; }
     const generation = session.generation();
@@ -704,8 +825,8 @@ async function bootstrap() {
       deadline: () => clock?.read().remainingMs ?? Infinity,
       onData(data) {
         if (session.generation() !== generation || !session.can('home:read')) return;
-        if (![data?.rooms, data?.entities, data?.unassigned_entities].every(Array.isArray)) { lastError = new Error('El catálogo no está disponible.'); updateTemporal(); return; }
-        catalog = data; clock = core.createSnapshotClock(data); lastError = null; renderCatalog();
+        if (![data?.rooms, data?.entities, data?.unassigned_entities].every(Array.isArray)) { lastError = new Error('La lista de dispositivos no está disponible.'); updateTemporal(); return; }
+        catalog = data; displayNames = core.catalogNames(data); clock = core.createSnapshotClock(data); lastError = null; renderCatalog();
       },
       onError(error) { if (session.generation() === generation && session.active()) { lastError = error; updateTemporal(); } }
     });
@@ -764,7 +885,7 @@ byId('refresh').addEventListener('click', () => {
 for (const control of byId('layer-tabs').querySelectorAll('[data-layer]')) control.addEventListener('click', () => {
   layer = control.dataset.layer;
   for (const item of byId('layer-tabs').querySelectorAll('[data-layer]')) { const active = item === control; item.classList.toggle('active', active); item.setAttribute('aria-pressed', String(active)); }
-  renderCatalog(true);
+  renderCatalog();
 });
 for (const [id, callback] of [
   ['view-3d', () => cameraView('3d')], ['view-top', () => cameraView('top')],
@@ -772,32 +893,16 @@ for (const [id, callback] of [
   ['rotate-left', () => house?.rotate(-1)], ['rotate-right', () => house?.rotate(1)], ['reset-view', () => { house?.reset(); cameraView('3d', false); }]
 ]) byId(id).addEventListener('click', callback);
 byId('expand-map').addEventListener('click', () => { const expanded = document.body.classList.toggle('map-expanded'); byId('expand-map').setAttribute('aria-expanded', String(expanded)); });
-// On phones the view group scrolls inside the bottom rail: edge fades show there is more, the
-// focused or active item is kept fully visible, and every target stays 44 px.
-const RAIL_ITEM = 44, RAIL_PEEK = 22;
-function railOverflow() {
-  const rail = byId('rail-nav'), items = rail.querySelectorAll('[data-view]').length;
-  // When the views do not fit, space them so the item at the edge is cut in half: the fade then lies over
-  // a visibly partial item instead of a whole one.
-  const width = rail.clientWidth - parseFloat(getComputedStyle(rail).paddingLeft) - parseFloat(getComputedStyle(rail).paddingRight);
-  const whole = Math.floor((width - RAIL_PEEK) / (RAIL_ITEM + 4));
-  const gap = window.matchMedia('(max-width:620px)').matches && items * RAIL_ITEM > width && whole > 0 ? (width - RAIL_PEEK) / whole - RAIL_ITEM : 0;
-  const value = gap.toFixed(2) + 'px';
-  if (rail.style.getPropertyValue('--rail-gap') !== value) rail.style.setProperty('--rail-gap', value);
-  const max = rail.scrollWidth - rail.clientWidth;
-  rail.classList.toggle('more-start', max > 1 && rail.scrollLeft > 1);
-  rail.classList.toggle('more-end', max > 1 && rail.scrollLeft < max - 1);
-}
-function revealActiveRail() { railOverflow(); byId('rail-nav').querySelector('.active')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); railOverflow(); }
-byId('rail-nav').addEventListener('focusin', event => event.target.closest?.('[data-view]')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }));
-byId('rail-nav').addEventListener('scroll', railOverflow, { passive: true });
-// A layout change (rotation, phone width) keeps the active view inside the rail.
-window.addEventListener('resize', revealActiveRail);
 byId('help-button').addEventListener('click', () => byId('info-dialog').showModal());
 for (const id of ['dialog-close', 'dialog-done']) byId(id).addEventListener('click', () => byId('info-dialog').close());
 // Any focus or pointer choice by the user supersedes a focus held across stale data.
 document.addEventListener('pointerdown', () => { staleFocus = null; }, true);
 document.addEventListener('focusin', event => { if (event.target !== staleFocus) staleFocus = null; });
+document.addEventListener('focusin', ({target}) => {
+  if (target.matches(':is(#people-grid, #voice-profile-list) > .pick:focus-visible')) {
+    target.scrollIntoView({block: 'nearest', inline: 'nearest'});
+  }
+});
 // APG modal dialog: Tab and Shift+Tab wrap inside the topmost open modal instead of reaching the page behind or the browser chrome.
 document.addEventListener('keydown', event => {
   if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;

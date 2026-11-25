@@ -4,6 +4,73 @@
   const OPERATION_LABELS = { activate_scene: 'Activar escena', turn_on: 'Encender', turn_off: 'Apagar', brightness: 'Brillo', color_temp_kelvin: 'Temperatura de color', set_temperature: 'Temperatura objetivo', set_hvac_mode: 'Modo del aire', open_cover: 'Abrir', close_cover: 'Cerrar', stop_cover: 'Detener', set_cover_position: 'Posición' };
   const OPERATION_PARAMETERS = { brightness: ['brightness_pct', 'brightness'], color_temp_kelvin: ['color_temp_kelvin', 'brightness_pct', 'brightness'], set_temperature: ['temperature'], set_hvac_mode: ['hvac_mode'], set_cover_position: ['position'] };
   const MODE_LABELS = { off: 'Apagado', cool: 'Frío', heat: 'Calor', dry: 'Deshumidificar', fan_only: 'Ventilación', auto: 'Automático', heat_cool: 'Frío y calor' };
+  const DEVICE_NAMES = { light: 'Luz', climate: 'Aire acondicionado', cover: 'Persiana', switch: 'Interruptor', scene: 'Escena' };
+  function catalogNames(catalog) {
+    const rooms = new Map(catalog.rooms.map(room => [room.room_id, room.name]));
+    const names = new Map(), usedByRoom = new Map(), pending = [];
+    for (const entity of [...catalog.entities, ...catalog.unassigned_entities]) {
+      const { entity_id: id, domain, room_id: room } = entity;
+      if (names.has(id)) continue;
+      const name = typeof entity.name === 'string' ? entity.name.trim() : '';
+      const readable = /\p{L}/u.test(name) && !name.includes(id)
+        && !/\b[a-z][a-z0-9_]*\.[a-z0-9_]+\b|^[\w.-]+_[\w.-]+$|\b(?:backend|entidades?|cat[aá]logo|estado observado)\b/iu.test(name);
+      const used = usedByRoom.get(room) ?? new Set();
+      usedByRoom.set(room, used);
+      if (readable && !used.has(name)) {
+        used.add(name);
+        names.set(id, name);
+      } else {
+        names.set(id, null);
+        pending.push({ id, domain, room, readableName: readable ? name : null });
+      }
+    }
+    for (const { id, domain, room, readableName } of pending) {
+      const used = usedByRoom.get(room);
+      const type = Object.hasOwn(DEVICE_NAMES, domain) ? DEVICE_NAMES[domain] : 'Dispositivo';
+      const place = rooms.get(room);
+      const base = readableName ?? type;
+      const location = !readableName && place ? ` · ${place}` : '';
+      let number = readableName ? 2 : 1;
+      let name;
+      do {
+        name = `${base}${number > 1 ? ` ${number}` : ''}${location}`;
+        number++;
+      } while (used.has(name));
+      used.add(name);
+      names.set(id, name);
+    }
+    return names;
+  }
+  function catalogScenes(catalog) {
+    const entities = [...(catalog?.entities ?? []), ...(catalog?.unassigned_entities ?? [])];
+    return [...new Map(entities.filter(entity => entity.domain === 'scene' && entity.entity_id.startsWith('scene.')
+      && entity.capabilities?.includes('activate_scene')).map(entity => [entity.entity_id, entity])).values()];
+  }
+  function catalogSceneNames(scenes, rooms, displayNames) {
+    const roomNames = new Map(rooms.map(room => [room.room_id, room.name]));
+    const normalize = name => name.replace(/\s+/g, ' ').trim();
+    const baseNames = scenes.map(entity => normalize(displayNames.get(entity.entity_id)));
+    const counts = new Map();
+    for (const name of baseNames) counts.set(name, (counts.get(name) ?? 0) + 1);
+
+    const labels = scenes.map((entity, index) => {
+      const name = baseNames[index];
+      const room = roomNames.get(entity.room_id);
+      return room && counts.get(name) > 1 ? normalize(`${name} · ${room}`) : name;
+    });
+    // Keep numbered alternatives from taking another scene's original label.
+    const reserved = new Set(labels), used = new Set();
+    return new Map(scenes.map((entity, index) => {
+      const base = labels[index];
+      let name = base;
+      if (used.has(name)) {
+        let number = 2;
+        do { name = `${base} ${number++}`; } while (reserved.has(name) || used.has(name));
+      }
+      used.add(name);
+      return [entity.entity_id, name];
+    }));
+  }
   function controlFields(entity, operation, parameters = {}) {
     const limits = entity?.control_limits || {};
     const number = (name, label, min, max, step = 1, optional = false) => ({ name, label, min, max, step, optional });
@@ -26,7 +93,7 @@
   }
   function selectFreshResponse(currentSeq, incomingSeq) { return incomingSeq >= currentSeq; }
   function actionLabel(status) {
-    return ({ confirmed: 'Confirmado por HA', failed: 'Falló', uncertain: 'Sin confirmar', missing: 'Resultado desconocido', in_progress: 'En curso' })[status] || 'Resultado desconocido';
+    return ({ confirmed: 'Confirmado por Home Assistant', failed: 'Falló', uncertain: 'Sin confirmar', missing: 'Resultado desconocido', in_progress: 'En curso' })[status] || 'Resultado desconocido';
   }
   function effectSummary(effects) {
     if (!Array.isArray(effects) || !effects.length) return '';
@@ -287,7 +354,7 @@
       clear() { generation++; records.clear(); }
     };
   }
-  const exported = { OPERATION_LABELS, OPERATION_PARAMETERS, controlFields, validControlValue, selectFreshResponse, actionLabel, effectSummary, entityCanControl, entityObservationCurrent, createApi, createPoller, nextPollDelay, createActionController, observationMillis, createSnapshotClock, createFreshnessTicker };
+  const exported = { OPERATION_LABELS, OPERATION_PARAMETERS, catalogNames, catalogScenes, catalogSceneNames, controlFields, validControlValue, selectFreshResponse, actionLabel, effectSummary, entityCanControl, entityObservationCurrent, createApi, createPoller, nextPollDelay, createActionController, observationMillis, createSnapshotClock, createFreshnessTicker };
   if (typeof module !== 'undefined' && module.exports) module.exports = exported;
   root.HomeUI = exported;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

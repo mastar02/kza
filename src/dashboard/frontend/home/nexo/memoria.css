@@ -1,0 +1,177 @@
+:is(#memory-view, #my-memory-view, #memory-confirm-dialog, #my-memory-confirm-dialog, #my-voice-confirm-dialog) {
+  min-inline-size: 0;
+  color: var(--nexo-ink);
+  color-scheme: var(--nexo-scheme);
+  font-family: var(--nexo-font-body);
+  font-size: var(--nexo-text-body);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+:is(#memory-view, #my-memory-view) {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nexo-space-3);
+  padding-block-end: var(--nexo-space-6);
+}
+
+:is(#memory-view, #my-memory-view) .page-head {
+  align-items: start;
+  padding-block-end: var(--nexo-space-3);
+}
+
+:is(#memory-view, #my-memory-view) .page-head p + p {
+  margin-block-start: var(--nexo-space-2);
+}
+
+:is(#memory-view, #my-memory-view) .memory-section-title {
+  margin: var(--nexo-space-6) 0 var(--nexo-space-2);
+  font: 600 var(--nexo-text-heading)/1.2 var(--nexo-font-heading);
+}
+
+:is(#memory-view, #my-memory-view) :is(.memory-note, .memory-detail, .memory-state, .memory-notice, .row-meta, .memory-pending-title),
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog, #my-voice-confirm-dialog) .memory-detail {
+  margin: 0;
+}
+
+:is(#memory-view, #my-memory-view) :is(.memory-note, .memory-detail),
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog, #my-voice-confirm-dialog) .memory-detail {
+  color: var(--nexo-muted);
+  font-size: var(--nexo-text-body);
+  line-height: 1.5;
+}
+
+:is(#memory-view, #my-memory-view) .memory-note:empty,
+:is(#memory-view, #my-memory-view) .memory-notice:empty,
+:is(#memory-view, #my-memory-view) .memory-grid:empty,
+:is(#memory-view, #my-memory-view) .memory-voice-slot:not(:has(.memory-voice:not([hidden]))) {
+  display: none;
+}
+
+:is(#memory-view, #my-memory-view) .memory-card {
+  align-items: start;
+}
+
+:is(#memory-view, #my-memory-view) .memory-card-main {
+  gap: var(--nexo-space-1);
+}
+
+:is(#memory-view, #my-memory-view) .btn:disabled {
+  opacity: 1;
+}
+
+:is(#memory-view, #my-memory-view) .memory-card-main > .btn {
+  align-self: start;
+}
+
+:is(#memory-view, #my-memory-view) .memory-more:not(:empty) {
+  margin-block-start: var(--nexo-space-2);
+}
+
+:is(#memory-view, #my-memory-view) .memory-voice .memory-controls {
+  margin-inline-start: 0;
+}
+
+:is(#memory-view, #my-memory-view) .memory-empty {
+  margin: 0;
+  border: var(--nexo-line-width) solid var(--nexo-line);
+  border-radius: var(--nexo-radius);
+  background: var(--nexo-card);
+}
+
+:is(#memory-view, #my-memory-view) .memory-sources summary {
+  align-content: center;
+  min-block-size: var(--nexo-touch-target);
+  min-inline-size: var(--nexo-touch-target);
+  inline-size: fit-content;
+  color: var(--nexo-ink);
+  cursor: pointer;
+}
+
+:is(#memory-view, #my-memory-view) :is(summary, [tabindex="-1"]):focus-visible {
+  outline: var(--nexo-focus-width) solid var(--nexo-focus);
+  outline-offset: var(--nexo-line-width-wide);
+}
+
+:is(#memory-view, #my-memory-view) .memory-note.is-error {
+  color: var(--nexo-danger);
+}
+
+:is(#memory-view, #my-memory-view) :is(.memory-live, .memory-state, .memory-notice, .memory-return-notice) {
+  color: var(--nexo-ink);
+}
+
+:is(#memory-view, #my-memory-view, #memory-confirm-dialog, #my-memory-confirm-dialog) .memory-content,
+#my-memory-view .memory-voice-phrase {
+  margin: 0;
+  color: var(--nexo-ink);
+  font-size: var(--nexo-text-body);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  unicode-bidi: isolate;
+}
+
+#my-memory-view .memory-voice-phrase {
+  font-weight: 600;
+}
+
+#my-memory-view .memory-voice-window {
+  padding: var(--nexo-space-3);
+  border: var(--nexo-line-width) solid var(--nexo-line);
+  border-radius: var(--nexo-radius);
+}
+
+#my-memory-view .memory-voice-verify > p {
+  flex-basis: 100%;
+}
+
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog, #my-voice-confirm-dialog) {
+  max-inline-size: calc(100% - var(--nexo-space-6));
+  max-block-size: calc(100dvh - var(--nexo-space-6));
+  inline-size: calc(var(--nexo-touch-target) * 14);
+  overflow: auto;
+  padding: var(--nexo-space-5);
+  border: var(--nexo-line-width) solid var(--nexo-line);
+  border-radius: var(--nexo-radius);
+  background: var(--nexo-card);
+  box-shadow: none;
+}
+
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog, #my-voice-confirm-dialog)::backdrop {
+  background: color-mix(in srgb, var(--nexo-ground) 68%, transparent);
+}
+
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog, #my-voice-confirm-dialog)[open] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--nexo-space-3);
+}
+
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog, #my-voice-confirm-dialog) h2 {
+  margin: 0;
+  font: 600 var(--nexo-text-heading)/1.2 var(--nexo-font-heading);
+  letter-spacing: normal;
+}
+
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog) .memory-confirm-target {
+  gap: var(--nexo-space-1);
+  padding: var(--nexo-space-3);
+  background: var(--nexo-segment);
+}
+
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog) .memory-confirm-items {
+  margin: 0;
+  padding-inline-start: var(--nexo-space-5);
+}
+
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog) .memory-confirm-items > li + li {
+  margin-block-start: var(--nexo-space-1);
+}
+
+#memory-confirm-dialog .field select {
+  border-color: var(--nexo-muted);
+}
+
+:is(#memory-confirm-dialog, #my-memory-confirm-dialog, #my-voice-confirm-dialog) .memory-confirm-actions {
+  margin-inline-start: 0;
+}
