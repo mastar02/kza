@@ -5,7 +5,7 @@ PartOf=nexa.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/nexa/secrets/llm-fast.env
-Environment=CUDA_VISIBLE_DEVICES=1
+Environment=CUDA_VISIBLE_DEVICES=1 LD_LIBRARY_PATH=/opt/nexa/lib
 RuntimeDirectory=nexa-llm-fast
 RuntimeDirectoryMode=0700
 ExecStart=/opt/nexa/bin/llama-server \

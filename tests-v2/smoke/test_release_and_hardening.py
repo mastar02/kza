@@ -72,7 +72,8 @@ def test_service_units():
             assert s["ReadWritePaths"] == "/var/lib/nexa/proxy"
         if path.stem == "nexa-llm-fast":
             assert s["RuntimeDirectory"] == "nexa-llm-fast"
-            assert s["Environment"] == "CUDA_VISIBLE_DEVICES=1"
+            assert "CUDA_VISIBLE_DEVICES=1" in s["Environment"].split()
+            assert "LD_LIBRARY_PATH=/opt/nexa/lib" in s["Environment"].split()
             ml = tomllib.loads((ROOT / "config/nexa/nexa.toml").read_text())["ml"]
             assert ml["command_stt_device"] == ml["tts_device"] == "cuda:1"
             assert ml["ambient_stt_device"] == ml["speaker_encoder_device"] == "cuda:0"
@@ -82,6 +83,7 @@ def test_service_units():
             assert s["IPAddressDeny"] == "any" and "IPAddressAllow" not in s
         if path.stem == "nexa-ml":
             assert "PYTHONDONTWRITEBYTECODE=1" in s["Environment"].split()
+            assert "PYTHONPATH=/opt/nexa/current/ml/src" in s["Environment"].split()
             assert s["WorkingDirectory"] == "/opt/nexa/current/ml"
             assert "%t/nexa/ml.sock" in s["ExecStart"]
 
