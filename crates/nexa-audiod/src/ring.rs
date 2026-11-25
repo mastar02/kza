@@ -15,6 +15,8 @@ use crate::dsp::FRAME_SAMPLES;
 #[derive(Debug, Default)]
 struct Signal {
     readable: AtomicWaker,
+    writable: AtomicWaker,
+    consumer_closed: AtomicBool,
     producer_closed: AtomicBool,
 }
 
@@ -56,6 +58,29 @@ pub fn capture_ring() -> (CaptureProducer, CaptureConsumer) {
 }
 
 impl CaptureProducer {
+    /// Wait for room for the complete frame. Dropping the wait leaves the ring intact.
+    pub async fn push(&mut self, samples: &[f32]) -> Result<(), PushError> {
+        if samples.len() > FRAME_SAMPLES {
+            return Err(PushError::Full);
+        }
+        poll_fn(|cx| {
+            self.signal.writable.register(cx.waker());
+            let closed = self.signal.consumer_closed.load(Ordering::Acquire);
+            let result = if closed {
+                Err(PushError::Closed)
+            } else {
+                self.try_push(samples)
+            };
+            if result == Err(PushError::Full) {
+                Poll::Pending
+            } else {
+                self.signal.writable.take();
+                Poll::Ready(result)
+            }
+        })
+        .await
+    }
+
     /// Enqueue the entire block, or return immediately without writing if it does not fit.
     pub fn try_push(&mut self, samples: &[f32]) -> Result<(), PushError> {
         if self.ring.is_abandoned() {
@@ -81,7 +106,11 @@ impl Drop for CaptureProducer {
 impl CaptureConsumer {
     /// Drain whatever is immediately available into the supplied buffer.
     pub fn try_read(&mut self, samples: &mut [f32]) -> usize {
-        self.ring.pop_partial_slice(samples).0.len()
+        let count = self.ring.pop_partial_slice(samples).0.len();
+        if count != 0 {
+            self.signal.writable.wake();
+        }
+        count
     }
 
     /// Wait for data, returning zero on a drained, disconnected queue or an empty output slice.
@@ -103,5 +132,12 @@ impl CaptureConsumer {
             }
         })
         .await
+    }
+}
+
+impl Drop for CaptureConsumer {
+    fn drop(&mut self) {
+        self.signal.consumer_closed.store(true, Ordering::Release);
+        self.signal.writable.wake();
     }
 }
