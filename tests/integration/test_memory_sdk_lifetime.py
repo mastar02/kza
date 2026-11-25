@@ -15,7 +15,7 @@ from chromadb.config import Settings
 import pytest
 
 from src.core.logging import LogContext, get_context
-from src.core.owned_work import WorkCloseTimeout
+from src.core.owned_work import ClosePhase, WorkCloseTimeout
 from src.memory.long_term import MemoryCloseTimeout
 from src.memory.privacy_services import PrivacyServices
 from src.memory.services import build_memory_services
@@ -49,7 +49,8 @@ class Client:
         self.close_contexts.append(get_context())
         self.close_threads.append(threading.get_ident())
         self.entered.set()
-        assert self.release.wait(4)
+        assert threading.current_thread() is not threading.main_thread()
+        self.release.wait()
         self.sdk.close()
 
 
@@ -129,7 +130,9 @@ async def test_closing_owned_reference_preserves_another_real_shared_sdk_client(
 
 async def test_owned_sdk_closes_only_after_actual_memory_work_and_retains_shared_authority(tmp_path, monkeypatch):
     factory = Factory(monkeypatch)
-    entered, release = threading.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered, release = asyncio.Event(), threading.Event()
     privacy = PrivacyServices(str(tmp_path/'privacy.db'), close_timeout_s=.03)
     await privacy.acall(privacy.initialize)
     stack = AsyncExitStack()
@@ -138,12 +141,15 @@ async def test_owned_sdk_closes_only_after_actual_memory_work_and_retains_shared
         services = await build_memory_services(configuration(tmp_path), shutdown=stack, privacy=privacy)
         client = factory.clients[0]
         client.release.clear()
+
         def native_read():
-            entered.set()
-            assert release.wait(4)
+            assert threading.get_ident() != loop_thread
+            loop.call_soon_threadsafe(entered.set)
+            release.wait()
             return services.manager.long_term._collection.count()
+
         reading = asyncio.create_task(services.manager.long_term.acall(native_read))
-        await until(entered.is_set)
+        await asyncio.wait_for(entered.wait(), 3)
         reading.cancel()
         await asyncio.gather(reading, return_exceptions=True)
         with pytest.raises(MemoryCloseTimeout):
@@ -151,8 +157,9 @@ async def test_owned_sdk_closes_only_after_actual_memory_work_and_retains_shared
         assert not client.entered.is_set() and privacy.resource_status()['writer_lease']
         release.set()
         await until(client.entered.is_set)
-        with pytest.raises(WorkCloseTimeout):
+        with pytest.raises(WorkCloseTimeout) as caught:
             await privacy.aclose()
+        assert caught.value.phase is ClosePhase.DRAIN
         assert privacy.resource_status()['writer_lease'] and not services.resource_status()['client_closed']
     finally:
         release.set()

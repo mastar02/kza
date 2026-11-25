@@ -13,7 +13,7 @@ import pytest
 from src.analytics.asr_quality import alog_asr_outcome
 from src.analytics.event_logger import EventLogger
 from src.analytics.services import build_event_logger
-from src.core.owned_work import WorkCloseTimeout
+from src.core.owned_work import ClosePhase, WorkCloseTimeout
 from src.dashboard.api import DashboardAPI
 from src.dashboard.live_event_bus import LiveEventBus
 from src.dashboard.live_receipts import LiveReceiptStore
@@ -223,25 +223,31 @@ async def test_timed_out_native_metric_cannot_commit_expired_or_revoked_text(tmp
 
 
 async def test_slow_metric_does_not_block_loop_and_native_scope_remains_bounded(tmp_path):
-    entered, release = [], threading.Event()
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered, release = asyncio.Queue(), threading.Event()
 
     def context():
-        entered.append(True)
-        assert release.wait(3)
+        assert threading.get_ident() != loop_thread
+        loop.call_soon_threadsafe(entered.put_nowait, None)
+        release.wait()
         return {}
 
     async with graph(tmp_path, context_provider=context, observation_timeout_s=.02) as (events, _, clock):
         source = memory_source(now=clock.now)
         calls = [asyncio.create_task(events.alog('light.synthetic', 'turn_on', sources=(source,))) for _ in range(8)]
         try:
-            await until(lambda: len(entered) == 2)
+            async with asyncio.timeout(3):
+                await entered.get()
+                await entered.get()
             results = await asyncio.gather(*calls, return_exceptions=True)
             assert all(isinstance(result, TimeoutError) for result in results)
             assert events.resource_status()['operations'] == 8
             with pytest.raises(RuntimeError, match='capacity'):
                 await events.alog('light.other', 'turn_on', sources=(source,))
-            with pytest.raises(WorkCloseTimeout):
+            with pytest.raises(WorkCloseTimeout) as caught:
                 await events.aclose()
+            assert caught.value.phase is ClosePhase.DRAIN
             assert events.resource_status()['operations'] == 8
         finally:
             release.set()

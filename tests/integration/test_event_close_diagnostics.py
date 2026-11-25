@@ -58,18 +58,25 @@ async def test_completed_event_cleanup_task_cannot_keep_arbitrary_caller_context
 async def test_event_close_timeout_reports_real_native_write_and_retains_private_pool(tmp_path):
     events = EventLogger(str(tmp_path/'events.db'))
     await events.acall(events.initialize)
-    entered,release = threading.Event(),threading.Event()
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    entered, release = asyncio.Event(), threading.Event()
+
     def held():
-        entered.set()
-        assert release.wait(3)
+        assert threading.get_ident() != loop_thread
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
+
     writing = asyncio.create_task(events.acall(held))
     try:
-        await until(entered.is_set)
+        await asyncio.wait_for(entered.wait(), 3)
         with pytest.raises(WorkCloseTimeout) as caught:
             await events.aclose()
         assert caught.value.phase is ClosePhase.DRAIN
         assert caught.value.diagnostics['operations']==1
         assert caught.value.diagnostics['io']['active'][0]['phase']=='native'
+        assert not writing.done()
+        assert not events._executor._shutdown
         assert any(thread.is_alive() for thread in events._executor._threads)
     finally:
         release.set()
