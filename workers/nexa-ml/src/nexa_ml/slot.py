@@ -129,6 +129,7 @@ class ModelSlot:
         self._failures = 0
         self._inflight = 0
         self._idle: asyncio.Event | None = None
+        self._lifecycle_task: asyncio.Future[None] | None = None
         self.on_change = on_change
 
     # ------------------------------------------------------------------ state
@@ -282,7 +283,10 @@ class ModelSlot:
     async def reload(self) -> None:
         """Drain in-flight work, unload, ``del``+``gc`` and recreate on the slot lane.
 
-        New requests are rejected with ``UNAVAILABLE`` while reloading.
+        New requests are rejected with ``UNAVAILABLE`` while reloading. The drain and
+        swap run in a slot-owned task, so a cancelled caller (deadline/disconnect)
+        never strands the slot in ``RELOADING``: it always ends ``READY`` or
+        ``UNAVAILABLE``.
 
         Raises:
             ResourceExhaustedError: A load/reload is already in progress.
@@ -292,12 +296,20 @@ class ModelSlot:
             raise ResourceExhaustedError(f"slot {self.slot_id} is already {self._state.value}")
         self._state = SlotState.RELOADING
         self._changed()
+        task = asyncio.ensure_future(self._drain_and_swap())
+        self._lifecycle_task = task
+        task.add_done_callback(_consume)
+        await asyncio.shield(task)
+
+    async def _drain_and_swap(self) -> None:
         await self._idle_event().wait()
         await self._run_lifecycle("reload")
 
     def close(self) -> None:
         """Stop accepting work and release the model (best effort, non-blocking)."""
         self._state = SlotState.UNAVAILABLE
+        if self._lifecycle_task is not None and not self._lifecycle_task.done():
+            self._lifecycle_task.cancel()
         if self._executor is not None:
             model, self._model = self._model, None
 

@@ -111,6 +111,17 @@ class KokoroEngine:
             self._pipelines[lang_code] = pipe
         return pipe
 
+    def check_voice(self, pipe: Any, voice: str) -> None:
+        """Load (and cache) a voice pack; a missing pack is a client error, not INTERNAL.
+
+        Raises:
+            InvalidInputError: The voice pack is not available locally.
+        """
+        try:
+            pipe.load_voice(voice)
+        except (OSError, ValueError, KeyError) as exc:  # HF offline miss / unknown voice
+            raise InvalidInputError("voice is not available") from exc
+
     def close(self) -> None:
         """Drop pipelines and the model so ``gc`` can release VRAM."""
         self._pipelines.clear()
@@ -176,6 +187,9 @@ class TtsSlot:
                 if stop.is_set():
                     return produced
                 pipe = engine.pipeline(opts.lang_code)
+                check_voice = getattr(engine, "check_voice", None)
+                if callable(check_voice):
+                    check_voice(pipe, opts.voice)
                 source = iter(pipe(opts.text, voice=opts.voice, speed=opts.speed))
                 while not stop.is_set():
                     try:

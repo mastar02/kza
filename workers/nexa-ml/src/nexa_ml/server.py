@@ -19,7 +19,7 @@ from typing import Any, NoReturn
 
 import grpc
 
-from nexa_ml.audio import decode_pcm_f32le
+from nexa_ml.audio import WHISPER_SAMPLE_RATE, decode_pcm_f32le
 from nexa_ml.notify import SdNotifier
 from nexa_ml.pb import common_pb2, ml_pb2, ml_pb2_grpc
 from nexa_ml.runtime import HealthLevel, MlRuntime
@@ -35,7 +35,8 @@ from nexa_ml.speaker_slot import MIN_SPEAKER_SECONDS
 logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "nexa-ml"
-MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+MIN_MESSAGE_BYTES = 16 * 1024 * 1024
+MESSAGE_OVERHEAD_BYTES = 1024 * 1024
 STOP_GRACE_S = 5.0
 # sockaddr_un.sun_path: 104 bytes on Darwin/BSD, 108 on Linux (incl. NUL).
 MAX_SOCKET_PATH = 103 if sys.platform == "darwin" else 107
@@ -261,10 +262,13 @@ async def start_server(runtime: MlRuntime, socket_path: pathlib.Path) -> grpc.ai
         RuntimeError: Bind failed.
     """
     prepare_socket_path(socket_path)
+    # Largest accepted PCM (max_audio_seconds of 16 kHz float32) plus protobuf overhead.
+    pcm_bytes = int(runtime.config.max_audio_seconds * WHISPER_SAMPLE_RATE * 4)
+    max_bytes = max(MIN_MESSAGE_BYTES, pcm_bytes + MESSAGE_OVERHEAD_BYTES)
     server = grpc.aio.server(
         options=[
-            ("grpc.max_receive_message_length", MAX_MESSAGE_BYTES),
-            ("grpc.max_send_message_length", MAX_MESSAGE_BYTES),
+            ("grpc.max_receive_message_length", max_bytes),
+            ("grpc.max_send_message_length", max_bytes),
         ]
     )
     ml_pb2_grpc.add_MlServiceServicer_to_server(MlServicer(runtime), server)

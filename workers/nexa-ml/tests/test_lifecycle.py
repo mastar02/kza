@@ -12,9 +12,9 @@ from conftest import Fakes
 from nexa_ml.audio import decode_pcm_f32le, parse_device
 from nexa_ml.config import MlConfig
 from nexa_ml.notify import SdNotifier
-from nexa_ml.pb import common_pb2, ml_pb2_grpc
+from nexa_ml.pb import common_pb2, ml_pb2, ml_pb2_grpc
 from nexa_ml.runtime import MlRuntime
-from nexa_ml.server import prepare_socket_path, serve
+from nexa_ml.server import prepare_socket_path, serve, start_server
 from nexa_ml.slot import InvalidInputError, is_out_of_memory
 from nexa_ml.whisper_slot import resolve_model_source
 
@@ -102,3 +102,26 @@ def test_oom_detection() -> None:
     assert is_out_of_memory(OutOfMemoryError("x"))
     assert is_out_of_memory(RuntimeError("CUDA failed with error out of memory"))
     assert not is_out_of_memory(RuntimeError("decoder failed"))
+
+
+async def test_message_limit_covers_max_audio(short_dir: pathlib.Path) -> None:
+    """A 300 s PCM payload (19.2 MB) must reach validation, not die at the transport."""
+    cfg = MlConfig(max_audio_seconds=300.0)
+    fakes = Fakes()
+    runtime = MlRuntime(cfg, fakes.loaders(cfg.ambient_stt_workers))
+    await runtime.load_all()
+    sock = short_dir / "big.sock"
+    server = await start_server(runtime, sock)
+    options = [("grpc.max_send_message_length", 64 * 1024 * 1024)]
+    try:
+        async with grpc.aio.insecure_channel(f"unix:{sock}", options=options) as channel:
+            stub = ml_pb2_grpc.MlServiceStub(channel)
+            payload = np.zeros(16_000 * 300, dtype="<f4").tobytes()
+            req = ml_pb2.TranscribeRequest(
+                pcm_f32le=payload, sample_rate=16_000, mode=ml_pb2.STT_MODE_AMBIENT
+            )
+            resp = await stub.Transcribe(req, timeout=30)
+            assert resp.model_id == "whisper-large-v3"
+    finally:
+        await server.stop(0)
+        runtime.close()

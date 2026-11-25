@@ -401,3 +401,39 @@ async def test_reload_unknown_slot_is_invalid_argument(harness: Harness) -> None
     with pytest.raises(grpc.aio.AioRpcError) as err:
         await harness.stub.ReloadModel(_reload("gpu-everything"), timeout=120)
     assert err.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+
+
+async def test_cancelled_reload_still_completes_and_slot_recovers(harness: Harness) -> None:
+    """A ReloadModel cancelled mid-drain must not strand the slot in RELOADING."""
+    release = threading.Event()
+    harness.fakes.command.hook = lambda: release.wait(GATE_TIMEOUT_S)
+    slot = harness.runtime.command.slot
+    inflight = asyncio.ensure_future(harness.stub.Transcribe(_tx(ml_pb2.STT_MODE_COMMAND), timeout=10))
+    await _wait_until(lambda: slot.inflight == 1)
+    reload_call = harness.stub.ReloadModel(_reload("stt-command"), timeout=120)
+    reload_future = asyncio.ensure_future(reload_call)
+    await _wait_until(lambda: slot.state is SlotState.RELOADING)
+    reload_call.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await reload_future
+    await asyncio.sleep(0.05)
+    harness.fakes.command.hook = None
+    release.set()
+    await inflight
+    await _wait_until(lambda: slot.state is SlotState.READY)
+    assert harness.fakes.command.loads == 2
+    assert (await harness.stub.ReloadModel(_reload("stt-command"), timeout=120)).state == (
+        common_pb2.HEALTH_STATE_OK
+    )
+    assert harness.fakes.command.loads == 3
+
+
+async def test_tts_unknown_voice_is_invalid_argument_not_failure(harness: Harness) -> None:
+    call = harness.stub.SynthesizeStream(ml_pb2.SynthesizeRequest(text="hola", voice="zz_nadie"), timeout=10)
+    with pytest.raises(grpc.aio.AioRpcError) as err:
+        async for _ in call:
+            pass
+    assert err.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    health = await harness.stub.GetHealth(common_pb2.Empty(), timeout=2)
+    tts = next(m for m in health.models if m.slot_id == "tts")
+    assert tts.state == common_pb2.HEALTH_STATE_OK and tts.consecutive_failures == 0

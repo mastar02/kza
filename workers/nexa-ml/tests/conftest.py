@@ -22,6 +22,7 @@ from nexa_ml.config import MlConfig
 from nexa_ml.pb import ml_pb2_grpc
 from nexa_ml.runtime import MlRuntime, ModelLoaders
 from nexa_ml.server import start_server
+from nexa_ml.slot import InvalidInputError
 
 GATE_TIMEOUT_S = 5.0
 
@@ -100,6 +101,12 @@ class FakeKokoroEngine:
         self.closed = threading.Event()
         self.langs: list[str] = []
         self.requests: list[tuple[str, float]] = []
+
+    known_voices = frozenset({"ef_dora", "em_alex"})
+
+    def check_voice(self, pipe: Any, voice: str) -> None:
+        if voice not in self.known_voices:
+            raise InvalidInputError("voice is not available")
 
     def pipeline(self, lang_code: str) -> Callable[..., Any]:
         self.langs.append(lang_code)
