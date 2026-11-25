@@ -217,14 +217,14 @@ impl Brain {
             utterance.kind(),
             UtteranceKind::Command | UtteranceKind::FollowUp
         ) {
+            if jobs.len() >= self.config.rooms.rooms.len().saturating_mul(4) {
+                return;
+            }
             let Some((turn, previous)) =
                 self.active.start(&utterance.room_id, &self.shutdown, true)
             else {
                 return;
             };
-            if jobs.len() >= self.config.rooms.rooms.len().saturating_mul(4) {
-                return;
-            }
             jobs.spawn(async move {
                 brain.command(utterance, turn, previous).await;
                 None
@@ -783,5 +783,75 @@ impl Brain {
                 Playback::Uncertain
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        BrainError, Dependencies,
+        clients::{UdsAudio, UdsMl, channel},
+    };
+    use nexa_config::{LoadedBundle, NexaConfig, RoomsConfig};
+    use nexa_household::SystemClock;
+    use nexa_proto::v1::{
+        audio_service_client::AudioServiceClient, ml_service_client::MlServiceClient,
+    };
+
+    #[tokio::test]
+    async fn saturated_command_queue_keeps_the_active_turn() -> Result<(), BrainError> {
+        let dir = tempfile::tempdir_in("/tmp")?;
+        let mut core = NexaConfig::from_toml_str(include_str!("../../../config/nexa/nexa.toml"))?;
+        core.paths.data_dir = dir.path().join("data");
+        let utterance = AudioUtterance {
+            room_id: "living".into(),
+            utterance_id: "incoming".into(),
+            sample_rate: core.audio.capture_sample_rate,
+            pcm_f32le: vec![0; 4],
+            kind: UtteranceKind::Command.into(),
+            ..Default::default()
+        };
+        let config = LoadedBundle {
+            core,
+            rooms: RoomsConfig::load_file(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../config/nexa/rooms.example.toml"
+            ))?,
+            ha_controls: Default::default(),
+        };
+        let channel = channel(&dir.path().join("unused.sock"));
+        let brain = Brain::open(
+            config,
+            Dependencies {
+                audio: Arc::new(UdsAudio(AudioServiceClient::new(channel.clone()))),
+                ml: Arc::new(UdsMl(MlServiceClient::new(channel))),
+                memory: None,
+                home: None,
+                clock: Arc::new(SystemClock::default()),
+            },
+        )
+        .await?;
+        let (active, _) = brain
+            .active
+            .start(&utterance.room_id, &brain.shutdown, false)
+            .ok_or("could not start active turn")?;
+        let mut ambient_jobs = HashSet::new();
+        let mut jobs = JoinSet::new();
+        let capacity = brain.config.rooms.rooms.len() * 4;
+        for _ in 0..capacity {
+            jobs.spawn(std::future::pending());
+        }
+        brain.accept(utterance.clone(), &mut jobs, &mut ambient_jobs);
+        assert_eq!(jobs.len(), capacity);
+        assert!(!active.lease.cancel.is_cancelled());
+        assert!(brain.active.busy(&utterance.room_id));
+
+        jobs.shutdown().await;
+        brain.accept(utterance, &mut jobs, &mut ambient_jobs);
+        assert_eq!(jobs.len(), 1);
+        assert!(active.lease.cancel.is_cancelled());
+        jobs.shutdown().await;
+        Ok(())
     }
 }

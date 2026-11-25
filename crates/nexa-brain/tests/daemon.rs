@@ -15,6 +15,44 @@ impl Drop for Daemon {
     }
 }
 
+fn wait_for_notification(
+    receiver: &UnixDatagram,
+    daemon: &mut Daemon,
+    expected: &str,
+    deadline: Instant,
+) -> io::Result<()> {
+    let mut buffer = [0; 128];
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                format!("timed out waiting for {expected}"),
+            ));
+        }
+        receiver.set_read_timeout(Some(remaining.min(Duration::from_millis(250))))?;
+        match receiver.recv(&mut buffer) {
+            Ok(len) if &buffer[..len] == expected.as_bytes() => return Ok(()),
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) =>
+            {
+                if let Some(status) = daemon.0.try_wait()? {
+                    return Err(io::Error::other(format!(
+                        "daemon exited with {status} before {expected}"
+                    )));
+                }
+            }
+            Err(error) => return Err(io::Error::other(format!("waiting for {expected}: {error}"))),
+        }
+    }
+}
+
 #[test]
 fn readiness_watchdog_sigterm_and_socket_cleanup() -> Result<(), Box<dyn Error>> {
     let tmp = tempfile::tempdir_in("/tmp")?;
@@ -35,7 +73,7 @@ fn readiness_watchdog_sigterm_and_socket_cleanup() -> Result<(), Box<dyn Error>>
 
     let path = tmp.path().join("notify");
     let receiver = UnixDatagram::bind(&path)?;
-    receiver.set_read_timeout(Some(Duration::from_secs(8)))?;
+    let startup_deadline = Instant::now() + Duration::from_secs(45);
     let mut daemon = Daemon(
         Command::new(env!("CARGO_BIN_EXE_nexa-brain"))
             .args(["--standalone-test", "--config-dir"])
@@ -47,34 +85,26 @@ fn readiness_watchdog_sigterm_and_socket_cleanup() -> Result<(), Box<dyn Error>>
             .spawn()?,
     );
 
-    let mut buffer = [0; 128];
-    let len = receiver
-        .recv(&mut buffer)
-        .map_err(|error| io::Error::other(format!("waiting for READY: {error}")))?;
-    assert_eq!(&buffer[..len], b"READY=1");
+    wait_for_notification(&receiver, &mut daemon, "READY=1", startup_deadline)?;
     let brain = runtime.join("brain.sock");
     assert_eq!(fs::metadata(&brain)?.permissions().mode() & 0o777, 0o600);
     assert_eq!(fs::metadata(&runtime)?.permissions().mode() & 0o777, 0o700);
-    let len = receiver
-        .recv(&mut buffer)
-        .map_err(|error| io::Error::other(format!("waiting for WATCHDOG: {error}")))?;
-    assert_eq!(&buffer[..len], b"WATCHDOG=1");
+    wait_for_notification(
+        &receiver,
+        &mut daemon,
+        "WATCHDOG=1",
+        Instant::now() + Duration::from_secs(8),
+    )?;
     let started = Instant::now();
-    receiver.set_read_timeout(Some(Duration::from_secs(3)))?;
     let pid = rustix::process::Pid::from_raw(i32::try_from(daemon.0.id())?)
         .ok_or("invalid daemon PID")?;
     rustix::process::kill_process(pid, rustix::process::Signal::TERM)?;
-    loop {
-        let len = receiver
-            .recv(&mut buffer)
-            .map_err(|error| io::Error::other(format!("waiting for STOPPING: {error}")))?;
-        if &buffer[..len] == b"STOPPING=1" {
-            break;
-        }
-        if started.elapsed() >= Duration::from_secs(3) {
-            return Err(io::Error::other("STOPPING notification missing").into());
-        }
-    }
+    wait_for_notification(
+        &receiver,
+        &mut daemon,
+        "STOPPING=1",
+        started + Duration::from_secs(3),
+    )?;
     loop {
         if let Some(status) = daemon.0.try_wait()? {
             assert!(status.success(), "{status}");

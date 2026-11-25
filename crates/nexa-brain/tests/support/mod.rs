@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     error::Error,
     path::Path,
     sync::{
@@ -61,6 +62,7 @@ impl Clock for TestClock {
 
 #[derive(Debug)]
 pub struct Audio {
+    zones: HashSet<String>,
     capture: Mutex<Option<mpsc::Receiver<std::result::Result<AudioUtterance, Status>>>>,
     played: mpsc::UnboundedSender<PlayAudioChunk>,
     cancelled: mpsc::UnboundedSender<CancelPlaybackRequest>,
@@ -91,7 +93,7 @@ impl AudioService for Audio {
         let mut id = None;
         let mut sent = false;
         while let Some(chunk) = stream.message().await? {
-            if chunk.zone_id != "zone_living"
+            if !self.zones.contains(&chunk.zone_id)
                 || chunk.sample_rate != 24000
                 || chunk.barge_in_token != chunk.playback_id
             {
@@ -233,6 +235,7 @@ impl MlService for Ml {
 pub struct Memory {
     queries: mpsc::UnboundedSender<QueryMemoryRequest>,
     observations: mpsc::UnboundedSender<RecordVoiceObservationRequest>,
+    hits: Vec<MemorySearchHit>,
 }
 
 #[tonic::async_trait]
@@ -244,7 +247,9 @@ impl MemoryService for Memory {
         self.queries
             .send(request.into_inner())
             .map_err(|_| Status::cancelled("test done"))?;
-        Ok(Response::new(QueryMemoryResponse::default()))
+        Ok(Response::new(QueryMemoryResponse {
+            hits: self.hits.clone(),
+        }))
     }
 
     async fn record_voice_observation(
@@ -318,45 +323,77 @@ impl MemoryService for Memory {
     }
     async fn list_memory_overview(
         &self,
-        _: Request<MemoryOverviewRequest>,
+        request: Request<MemoryOverviewRequest>,
     ) -> Reply<MemoryOverviewResponse> {
-        Err(Status::unimplemented("list_memory_overview"))
+        let request = request.into_inner();
+        Ok(Response::new(MemoryOverviewResponse {
+            payload_json: serde_json::json!({"view": request.view, "limit": request.limit})
+                .to_string(),
+        }))
     }
     async fn mutate_memory_item(
         &self,
-        _: Request<MemoryMutationRequest>,
+        request: Request<MemoryMutationRequest>,
     ) -> Reply<MemoryMutationResponse> {
-        Err(Status::unimplemented("mutate_memory_item"))
+        let request = request.into_inner();
+        Ok(Response::new(MemoryMutationResponse {
+            payload_json: serde_json::json!({
+                "operation": request.operation,
+                "target_id": request.target_id,
+                "user_id": request.actor.map(|actor| actor.user_id),
+            })
+            .to_string(),
+        }))
     }
     async fn get_voice_global_switch(
         &self,
         _: Request<ActorRequest>,
     ) -> Reply<VoiceGlobalSwitchStatus> {
-        Err(Status::unimplemented("get_voice_global_switch"))
+        Ok(Response::new(VoiceGlobalSwitchStatus {
+            enabled: false,
+            revision: 10,
+            updated_at_unix_ms: 111,
+        }))
     }
     async fn set_voice_global_switch(
         &self,
-        _: Request<SetVoiceGlobalSwitchRequest>,
+        request: Request<SetVoiceGlobalSwitchRequest>,
     ) -> Reply<VoiceGlobalSwitchStatus> {
-        Err(Status::unimplemented("set_voice_global_switch"))
+        let request = request.into_inner();
+        Ok(Response::new(VoiceGlobalSwitchStatus {
+            enabled: request.enabled,
+            revision: request.expected_revision + 1,
+            updated_at_unix_ms: 222,
+        }))
     }
     async fn get_voice_capture_review(
         &self,
-        _: Request<VoiceCaptureReviewRequest>,
+        request: Request<VoiceCaptureReviewRequest>,
     ) -> Reply<VoiceCaptureReviewResponse> {
-        Err(Status::unimplemented("get_voice_capture_review"))
+        let request = request.into_inner();
+        Ok(Response::new(VoiceCaptureReviewResponse {
+            payload_json: serde_json::json!({
+                "review": request.fingerprint_id, "include_transcript": request.include_transcript,
+            })
+            .to_string(),
+        }))
     }
     async fn query_voice_captures(
         &self,
-        _: Request<VoiceCaptureQueryRequest>,
+        request: Request<VoiceCaptureQueryRequest>,
     ) -> Reply<VoiceCaptureQueryResponse> {
-        Err(Status::unimplemented("query_voice_captures"))
+        Ok(Response::new(VoiceCaptureQueryResponse {
+            payload_json: request.into_inner().query_json,
+        }))
     }
     async fn get_evaluation_sample(
         &self,
-        _: Request<EvaluationSampleRequest>,
+        request: Request<EvaluationSampleRequest>,
     ) -> Reply<EvaluationSampleResponse> {
-        Err(Status::unimplemented("get_evaluation_sample"))
+        Ok(Response::new(EvaluationSampleResponse {
+            payload_json: serde_json::json!({"sample": request.into_inner().fingerprint_id})
+                .to_string(),
+        }))
     }
 }
 
@@ -400,6 +437,14 @@ pub struct Harness {
 
 impl Harness {
     pub async fn start(configure: impl FnOnce(&mut LoadedBundle), ha: bool) -> Result<Self> {
+        Self::start_with_hits(configure, ha, Vec::new()).await
+    }
+
+    pub async fn start_with_hits(
+        configure: impl FnOnce(&mut LoadedBundle),
+        ha: bool,
+        hits: Vec<MemorySearchHit>,
+    ) -> Result<Self> {
         // The short base keeps UDS paths within sun_path on both macOS and Linux.
         let dir = tempfile::tempdir_in("/tmp")?;
         let mut config = bundle(dir.path())?;
@@ -414,6 +459,12 @@ impl Harness {
         let (query, queries) = mpsc::unbounded_channel();
         let (observe, observations) = mpsc::unbounded_channel();
         let audio = Audio {
+            zones: config
+                .rooms
+                .rooms
+                .iter()
+                .map(|room| format!("zone_{}", room.room_id))
+                .collect(),
             capture: Mutex::new(Some(from_capture)),
             played: play,
             cancelled: cancel,
@@ -425,6 +476,7 @@ impl Harness {
         let memory = Memory {
             queries: query,
             observations: observe,
+            hits,
         };
         let shutdown = CancellationToken::new();
         let mut jobs = JoinSet::new();
