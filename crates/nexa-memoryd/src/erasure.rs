@@ -30,37 +30,38 @@ impl Store {
         allowed_owner: Option<&str>,
     ) -> Result<ErasureReceipt> {
         id(fact_id)?;
-        let tx = self.write()?;
-        if let Some(receipt) = previous_receipt(&tx, Kind::Fact, fact_id)? {
-            // The ledger retains no owner identifier. A personal caller cannot
-            // inspect a receipt whose ownership can no longer be verified.
-            if allowed_owner.is_some() {
+        // Flush previous WAL frames and commit the secure deletion before acknowledging.
+        self.write_both(|tx| {
+            if let Some(receipt) = previous_receipt(tx, Kind::Fact, fact_id)? {
+                // The ledger retains no owner identifier. A personal caller cannot
+                // inspect a receipt whose ownership can no longer be verified.
+                if allowed_owner.is_some() {
+                    return Err(Error::NotFound("fact unavailable"));
+                }
+                return Ok(receipt);
+            }
+            let owner: Option<String> = tx
+                .query_row(
+                    "SELECT owner_user_id FROM facts WHERE fact_id=?1",
+                    [fact_id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let owner = owner.ok_or(Error::NotFound("fact unavailable"))?;
+            if allowed_owner.is_some_and(|allowed| allowed != owner) {
                 return Err(Error::NotFound("fact unavailable"));
             }
-            return Ok(receipt);
-        }
-        let owner: Option<String> = tx
-            .query_row(
-                "SELECT owner_user_id FROM facts WHERE fact_id=?1",
-                [fact_id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let owner = owner.ok_or(Error::NotFound("fact unavailable"))?;
-        if allowed_owner.is_some_and(|allowed| allowed != owner) {
-            return Err(Error::NotFound("fact unavailable"));
-        }
 
-        let now = now_ms()?;
-        create_selection(&tx)?;
-        tx.execute("INSERT INTO erase_facts VALUES (?1)", [fact_id])?;
-        expand_fact_dependencies(&tx)?;
-        let (facts, vectors) = delete_facts(&tx, now)?;
-        let seq = append(&tx, Kind::Fact, fact_id, now)?;
-        let receipt = record_receipt(&tx, seq, (facts, vectors, 0))?;
-        drop_selection(&tx)?;
-        tx.commit()?;
-        Ok(receipt)
+            let now = now_ms()?;
+            create_selection(tx)?;
+            tx.execute("INSERT INTO erase_facts VALUES (?1)", [fact_id])?;
+            expand_fact_dependencies(tx)?;
+            let (facts, vectors) = delete_facts(tx, now)?;
+            let seq = append(tx, Kind::Fact, fact_id, now)?;
+            let receipt = record_receipt(tx, seq, (facts, vectors, 0))?;
+            drop_selection(tx)?;
+            Ok(receipt)
+        })
     }
 
     pub(crate) fn erase_conversation(&mut self, conversation: &str) -> Result<ErasureReceipt> {

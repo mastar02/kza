@@ -5,6 +5,7 @@ mod support;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use std::{fs, io};
 
 use hyper_util::rt::TokioIo;
 use nexa_memoryd::db::Store;
@@ -83,6 +84,75 @@ impl EndpointFixture {
             .expect("serve result");
         assert!(!self.socket_path.exists());
     }
+}
+
+#[tokio::test]
+async fn delete_fact_scrubs_plaintext_from_database_and_wal_before_ack() {
+    const MARKER: &str = "synthetic-delete-fact-plaintext-marker";
+    let dir = tempdir();
+    let mut endpoint = EndpointFixture::start(dir.path(), false).await;
+    let mut request = fact("source", "alice", 0);
+    request.content = MARKER.into();
+    let stored = endpoint
+        .client
+        .store_fact(request)
+        .await
+        .expect("store fact")
+        .into_inner();
+    let database = dir.path().join("data/memory.db");
+    let wal = dir.path().join("data/memory.db-wal");
+    {
+        // Materialize the fact in the database while retaining its WAL frames.
+        let reader = rusqlite::Connection::open(&database).expect("open database for checkpoint");
+        let busy: i64 = reader
+            .query_row("PRAGMA wal_checkpoint(FULL)", [], |row| row.get(0))
+            .expect("checkpoint fact");
+        assert_eq!(busy, 0, "checkpoint completed");
+    }
+    // Put the fact page back in the WAL and keep the same vec0 chunk live.
+    // Dropping an empty chunk could cross SQLite's auto-checkpoint threshold.
+    endpoint
+        .client
+        .store_fact(fact("keep", "alice", 1))
+        .await
+        .expect("store unrelated fact in the same owner partition");
+    let contains_marker = |bytes: &[u8]| {
+        bytes
+            .windows(MARKER.len())
+            .any(|window| window == MARKER.as_bytes())
+    };
+    for path in [&database, &wal] {
+        let bytes = fs::read(path).expect("read seeded database file");
+        assert!(
+            contains_marker(&bytes),
+            "missing test marker in {}",
+            path.display()
+        );
+    }
+
+    let receipt = endpoint
+        .client
+        .delete_fact(DeleteFactRequest {
+            fact_id: stored.fact_id,
+            actor: Some(home("alice", &[Permission::MemoryOwnWrite])),
+        })
+        .await
+        .expect("owner deletes fact")
+        .into_inner();
+    let database_bytes = fs::read(&database).expect("read database immediately after DeleteFact");
+    let wal_bytes = match fs::read(&wal) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("read WAL immediately after DeleteFact: {error}"),
+    };
+    assert_eq!((receipt.facts_deleted, receipt.vectors_deleted), (1, 1));
+    assert!(
+        !contains_marker(&database_bytes) && !contains_marker(&wal_bytes),
+        "plaintext after ACK (database: {}, WAL: {})",
+        contains_marker(&database_bytes),
+        contains_marker(&wal_bytes),
+    );
+    endpoint.stop().await;
 }
 
 #[tokio::test]
@@ -296,7 +366,6 @@ proptest! {
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn binary_notifies_systemd_after_schema_and_private_socket_ready() {
-    use std::fs;
     use std::os::unix::net::UnixDatagram;
     use std::process::Command;
 
