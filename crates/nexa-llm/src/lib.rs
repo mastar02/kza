@@ -1,38 +1,62 @@
 //! Multi-endpoint LLM failover, `<think>` stream stripping & one-way CloudConsentGate (Phase 4D).
 
-use std::sync::atomic::{AtomicBool, Ordering};
+mod cli;
+mod client;
+mod health;
+mod router;
+mod stripper;
+
+pub use cli::run_cli;
+pub use client::{Endpoint, LlmError, OpenAiClient};
+pub use health::Metrics;
+pub use router::FailoverRouter;
+pub use stripper::ThinkTagStripper;
+pub use tokio_util::sync::CancellationToken;
 
 /// One-way latch enforcing cloud egress consent (OQ-8).
 /// Once withdrawn, cloud calls remain blocked for the lifetime of the process.
 #[derive(Debug)]
 pub struct CloudConsentGate {
-    allowed: AtomicBool,
-    withdrawn: AtomicBool,
+    initial_consent: bool,
+    admission: std::sync::RwLock<()>,
+    withdrawn: CancellationToken,
 }
 
 impl CloudConsentGate {
     #[must_use]
     pub fn new(initial_consent: bool) -> Self {
         Self {
-            allowed: AtomicBool::new(initial_consent),
-            withdrawn: AtomicBool::new(false),
+            initial_consent,
+            admission: Default::default(),
+            withdrawn: CancellationToken::new(),
         }
     }
 
     #[must_use]
     pub fn is_allowed(&self) -> bool {
-        self.allowed.load(Ordering::Acquire) && !self.withdrawn.load(Ordering::Acquire)
+        self.initial_consent && !self.is_withdrawn()
     }
 
     #[must_use]
     pub fn is_withdrawn(&self) -> bool {
-        self.withdrawn.load(Ordering::Acquire)
+        self.withdrawn.is_cancelled()
+    }
+
+    // Serialize withdrawal with each synchronous launch/poll at the egress
+    // boundary. No guard is held across an await or a caller callback.
+    fn admit(&self) -> Result<std::sync::RwLockReadGuard<'_, ()>, LlmError> {
+        let guard = self.admission.read().unwrap_or_else(|e| e.into_inner());
+        if self.is_allowed() {
+            Ok(guard)
+        } else {
+            Err(LlmError::Consent)
+        }
     }
 
     /// Permanently latch consent closed for this runtime instance.
     pub fn withdraw(&self) {
-        self.withdrawn.store(true, Ordering::Release);
-        self.allowed.store(false, Ordering::Release);
+        let _exclusive = self.admission.write().unwrap_or_else(|e| e.into_inner());
+        self.withdrawn.cancel();
     }
 }
 
