@@ -10,7 +10,9 @@ on:
       - "crates/**"
       - "config/nexa/**"
       - "deploy/nexa/**"
+      - "frontend/**"
       - "workers/nexa-ml/**"
+      - "tools/nexa-migrate/**"
       - "tests-v2/**"
       - ".github/workflows/v2-ci.yml"
   pull_request:
@@ -21,7 +23,9 @@ on:
       - "crates/**"
       - "config/nexa/**"
       - "deploy/nexa/**"
+      - "frontend/**"
       - "workers/nexa-ml/**"
+      - "tools/nexa-migrate/**"
       - "tests-v2/**"
       - ".github/workflows/v2-ci.yml"
 
@@ -141,6 +145,23 @@ jobs:
           uv pip compile pyproject.toml --extra gpu --python-version 3.13 \
             --python-platform x86_64-unknown-linux-gnu -o /dev/null
 
+  frontend-unit:
+    name: Frontend Vite + TypeScript + Svelte 5 (L1/Vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install dependencies
+        run: npm --prefix frontend ci --no-fund --no-audit
+      - name: Typecheck (svelte-check + tsc)
+        run: npm --prefix frontend run check
+      - name: Unit tests (Vitest)
+        run: npm --prefix frontend run test
+      - name: Production bundle build
+        run: npm --prefix frontend run build
+
   e2e-playwright:
     name: Chromium contra nexa-web real (L4)
     runs-on: ubuntu-latest
@@ -162,5 +183,29 @@ jobs:
         run: |
           npm ci
           npx playwright install --with-deps chromium
+      - name: Typecheck E2E specs
+        run: npm --prefix tests-v2/e2e run check
       - name: Run browser suite
         run: NEXA_WEB_BIN="$PWD/target/debug/nexa-web" npm --prefix tests-v2/e2e test
+
+  l5-smoke-and-migrate:
+    name: Release Packager, L5 Smoke & Offline Migrator (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc & pytest
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+          python -m pip install --upgrade pip pytest
+      - name: Build nexa-memoryd
+        run: cargo build --locked -p nexa-memoryd
+      - name: Run L5 release/hardening smoke & offline migrator tests
+        env:
+          NEXA_MEMORYD_BIN: ${{ github.workspace }}/target/debug/nexa-memoryd
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: python -m pytest tests-v2/smoke tools/nexa-migrate/tests -q
