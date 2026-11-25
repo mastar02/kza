@@ -22,6 +22,36 @@ service BrainControlService {
 
   // Bounded push stream feeding nexa-web WebSocket fan-out (/ws/live, /ws/voices, /ws/evaluation)
   rpc SubscribeLiveEvents(SubscribeLiveEventsRequest) returns (stream LiveRuntimeEvent);
+
+  // Household routines, lists, reminders & alerts (owned by nexa-brain / household.db)
+  rpc ListRoutines(ListRoutinesRequest) returns (RoutinesSnapshot);
+  rpc GetRoutine(GetRoutineRequest) returns (RoutineRecord);
+  rpc PreviewRoutine(PreviewRoutineRequest) returns (RoutinePreviewResponse);
+  rpc UpsertRoutine(UpsertRoutineRequest) returns (RoutineRecord);
+  rpc DeleteRoutine(DeleteRoutineRequest) returns (Empty);
+  rpc ExecuteRoutine(ExecuteRoutineRequest) returns (RoutineExecutionReceipt);
+
+  rpc ListHouseholdLists(ActorRequest) returns (HouseholdListsSnapshot);
+  rpc MutateHouseholdList(HouseholdListMutationRequest) returns (HouseholdListRecord);
+  rpc ListReminders(ListRemindersRequest) returns (RemindersSnapshot);
+  rpc MutateReminder(ReminderMutationRequest) returns (ReminderRecord);
+
+  rpc ListAlerts(ActorRequest) returns (AlertsSnapshot);
+  rpc AckAlert(AlertMutationRequest) returns (AlertRecord);
+  rpc DeleteAlert(AlertMutationRequest) returns (Empty);
+  rpc GetAlertZones(ActorRequest) returns (AlertZonesConfig);
+  rpc SetAlertZones(SetAlertZonesRequest) returns (AlertZonesConfig);
+
+  // Observability projections & control-plane proxies (conversations, HA history, memory/voice admin, evaluation)
+  rpc ListConversations(ListConversationsRequest) returns (ConversationsSnapshot);
+  rpc ListHaActions(ListHaActionsRequest) returns (HaActionsSnapshot);
+  rpc ListMemoryOverview(MemoryOverviewRequest) returns (MemoryOverviewResponse);
+  rpc MutateMemoryItem(MemoryMutationRequest) returns (MemoryMutationResponse);
+  rpc GetVoiceGlobalSwitch(ActorRequest) returns (VoiceGlobalSwitchStatus);
+  rpc SetVoiceGlobalSwitch(SetVoiceGlobalSwitchRequest) returns (VoiceGlobalSwitchStatus);
+  rpc GetVoiceCaptureReview(VoiceCaptureReviewRequest) returns (VoiceCaptureReviewResponse);
+  rpc QueryVoiceCaptures(VoiceCaptureQueryRequest) returns (VoiceCaptureQueryResponse);
+  rpc GetEvaluationSample(EvaluationSampleRequest) returns (EvaluationSampleResponse);
 }
 
 message GetHomeCatalogRequest {
@@ -126,4 +156,226 @@ message LiveRuntimeEvent {
   string conversation_id = 4;
   string payload_json = 5;
   uint64 emitted_at_unix_ms = 6;
+}
+
+message ActorRequest {
+  ActorContext actor = 1;
+}
+
+message ListRoutinesRequest {
+  optional bool enabled_only = 1;
+  ActorContext actor = 2;
+}
+
+message RoutineRecord {
+  string routine_id = 1;
+  string name = 2;
+  bool enabled = 3;
+  uint64 revision = 4;
+  string spec_json = 5;
+  uint64 updated_at_unix_ms = 6;
+}
+
+message RoutinesSnapshot {
+  repeated RoutineRecord routines = 1;
+}
+
+message GetRoutineRequest {
+  string routine_id = 1;
+  ActorContext actor = 2;
+}
+
+message PreviewRoutineRequest {
+  string spec_json = 1;
+  ActorContext actor = 2;
+}
+
+message RoutinePreviewResponse {
+  bool valid = 1;
+  string preview_json = 2;
+  repeated string errors = 3;
+}
+
+message UpsertRoutineRequest {
+  string routine_id = 1; // empty on create
+  uint64 expected_revision = 2;
+  string spec_json = 3;
+  ActorContext actor = 4;
+}
+
+message DeleteRoutineRequest {
+  string routine_id = 1;
+  uint64 expected_revision = 2;
+  ActorContext actor = 3;
+}
+
+message ExecuteRoutineRequest {
+  string routine_id = 1;
+  string request_id = 2;
+  ActorContext actor = 3;
+}
+
+message RoutineExecutionReceipt {
+  string run_id = 1;
+  string routine_id = 2;
+  string status = 3;
+  uint64 accepted_at_unix_ms = 4;
+}
+
+message HouseholdListRecord {
+  string list_id = 1;
+  string name = 2;
+  string owner_user_id = 3; // empty for shared household list
+  uint64 revision = 4;
+  string items_json = 5;
+}
+
+message HouseholdListsSnapshot {
+  repeated HouseholdListRecord lists = 1;
+}
+
+message HouseholdListMutationRequest {
+  string operation = 1; // create_list, rename_list, delete_list, add_item, toggle_item, delete_item
+  string list_id = 2;
+  uint64 expected_revision = 3;
+  string payload_json = 4;
+  ActorContext actor = 5;
+}
+
+message ListRemindersRequest {
+  bool include_personal = 1;
+  bool include_completed = 2;
+  ActorContext actor = 3;
+}
+
+message ReminderRecord {
+  string reminder_id = 1;
+  string owner_user_id = 2; // empty for shared household reminder
+  string title = 3;
+  string status = 4;
+  uint64 due_at_unix_ms = 5;
+  uint64 revision = 6;
+  string payload_json = 7;
+}
+
+message RemindersSnapshot {
+  repeated ReminderRecord reminders = 1;
+}
+
+message ReminderMutationRequest {
+  string operation = 1; // create, update, cancel, dismiss_notice
+  string reminder_id = 2;
+  uint64 expected_revision = 3;
+  string payload_json = 4;
+  ActorContext actor = 5;
+}
+
+message AlertRecord {
+  string alert_id = 1;
+  string kind = 2;
+  string severity = 3;
+  string status = 4;
+  string message = 5;
+  uint64 revision = 6;
+  bool acknowledged = 7;
+  uint64 created_at_unix_ms = 8;
+}
+
+message AlertsSnapshot {
+  repeated AlertRecord alerts = 1;
+}
+
+message AlertMutationRequest {
+  string alert_id = 1;
+  uint64 expected_revision = 2;
+  ActorContext actor = 3;
+}
+
+message AlertZonesConfig {
+  uint64 revision = 1;
+  repeated string zone_ids = 2;
+}
+
+message SetAlertZonesRequest {
+  uint64 expected_revision = 1;
+  repeated string zone_ids = 2;
+  ActorContext actor = 3;
+}
+
+message ListConversationsRequest {
+  uint32 limit = 1;
+  string room_id = 2;
+  ActorContext actor = 3;
+}
+
+message ConversationsSnapshot {
+  string payload_json = 1;
+}
+
+message ListHaActionsRequest {
+  uint32 limit = 1;
+  ActorContext actor = 2;
+}
+
+message HaActionsSnapshot {
+  repeated HomeActionReceipt receipts = 1;
+}
+
+message MemoryOverviewRequest {
+  string view = 1; // summary, facts, proposals, returned, owners_counts, mine
+  uint32 limit = 2;
+  ActorContext actor = 3;
+}
+
+message MemoryOverviewResponse {
+  string payload_json = 1;
+}
+
+message MemoryMutationRequest {
+  string operation = 1; // assign_owner, confirm_proposal, reject_proposal, return_fact, reopen_voice_consent, resume_attribution
+  string target_id = 2;
+  string payload_json = 3;
+  ActorContext actor = 4;
+}
+
+message MemoryMutationResponse {
+  string payload_json = 1;
+}
+
+message VoiceGlobalSwitchStatus {
+  bool enabled = 1;
+  uint64 updated_at_unix_ms = 2;
+}
+
+message SetVoiceGlobalSwitchRequest {
+  bool enabled = 1;
+  ActorContext actor = 2;
+}
+
+message VoiceCaptureReviewRequest {
+  string fingerprint_id = 1;
+  bool include_transcript = 2;
+  ActorContext actor = 3;
+}
+
+message VoiceCaptureReviewResponse {
+  string payload_json = 1;
+}
+
+message VoiceCaptureQueryRequest {
+  string query_json = 1;
+  ActorContext actor = 2;
+}
+
+message VoiceCaptureQueryResponse {
+  string payload_json = 1;
+}
+
+message EvaluationSampleRequest {
+  string fingerprint_id = 1;
+  ActorContext actor = 2;
+}
+
+message EvaluationSampleResponse {
+  string payload_json = 1;
 }
