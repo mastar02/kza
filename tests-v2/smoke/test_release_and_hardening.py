@@ -1,0 +1,245 @@
+"""L5 release checks. Linux additionally verifies the real systemd datagrams."""
+import configparser
+from concurrent.futures import ThreadPoolExecutor
+import json
+import os
+from pathlib import Path
+import re
+import select
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+from threading import Event
+import time
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[2]
+DEPLOY = ROOT / "deploy/nexa"
+BINARIES = ("nexa-audiod", "nexa-brain", "nexa-memoryd", "nexa-web")
+SERVICES = {*BINARIES, "nexa-ml", "nexa-dashboard-proxy", "nexa-llm-fast"}
+
+
+def run(*args, ok=True, **kwargs):
+    result = subprocess.run(args, text=True, capture_output=True, **kwargs)
+    assert (result.returncode == 0) == ok, (result.args, result.stdout, result.stderr)
+    return result
+
+
+def test_service_units():
+    paths = list((DEPLOY / "systemd").iterdir())
+    assert {p.name for p in paths} == {s + ".service" for s in SERVICES} | {"nexa.target"}
+    for path in paths:
+        text = path.read_text()
+        assert "/home/kza" not in text
+        unit = configparser.ConfigParser(interpolation=None)
+        unit.read_string(text)
+        if path.suffix == ".target":
+            assert set(unit["Unit"]["Wants"].split()) == {s + ".service" for s in SERVICES}
+            continue
+        s = unit["Service"]
+        assert unit["Unit"]["PartOf"] == "nexa.target"
+        assert s["NoNewPrivileges"] == s["PrivateTmp"] == "yes"
+        assert s["ProtectSystem"] == "strict"
+        assert s["TimeoutStopSec"] == "10s"
+        if path.stem in (*BINARIES, "nexa-ml"):
+            assert s["Type"] == "notify"
+            assert s["RuntimeDirectory"] == "nexa" and s["RuntimeDirectoryMode"] == "0700"
+            assert "/etc/nexa" in s["ExecStart"]
+        if path.stem in BINARIES:
+            assert s["ExecStart"].split()[0] == "/opt/nexa/current/bin/" + path.stem
+        if path.stem in {"nexa-llm-fast", "nexa-dashboard-proxy"}:
+            assert s["Type"] == "simple"
+        if path.stem in {"nexa-memoryd", "nexa-ml"}:
+            assert s["IPAddressDeny"] == "any" and "IPAddressAllow" not in s
+        if path.stem == "nexa-ml":
+            assert s["WorkingDirectory"] == "/opt/nexa/current/ml"
+            assert "%t/nexa/ml.sock" in s["ExecStart"]
+
+
+def test_provisioning_and_udev():
+    provision = (DEPLOY / "provision-nexa-user.sh").read_text()
+    rules = (DEPLOY / "udev/99-xvf3800-nexa.rules").read_text()
+    assert "/home/kza" not in provision + rules
+    assert 'for forbidden in sudo adm wheel docker; do' in provision
+    assert 'grep -qx "${forbidden}"' in provision
+    assert re.search(r'grep -qx "\$\{forbidden\}".*?exit 1\s+fi', provision, re.S)
+    assert 'for grp in audio dialout video render; do' in provision
+    assert re.findall(r"^\s*usermod .*", provision, re.M) == ['    usermod -aG "${grp}" "${NEXA_USER}"']
+    assert "99-xvf3800-nexa.rules" in provision
+    active = [line for line in rules.splitlines() if line and not line.startswith("#")]
+    assert len(active) == 1
+    assert all(field in active[0] for field in ('GROUP="nexa"', 'MODE="0660"', 'idVendor}=="2886"', 'idProduct}=="001a"'))
+    assert "0666" not in rules
+
+
+@pytest.fixture
+def inputs(tmp_path):
+    for folder in ("bin", "ml", "dist"):
+        (tmp_path / folder).mkdir()
+    for name in BINARIES:
+        shutil.copy("/usr/bin/true", tmp_path / "bin" / name)
+    (tmp_path / "ml/worker.py").write_text("pass\n")
+    (tmp_path / "dist/index.html").touch()
+    for folder in (".venv", "__pycache__", ".pytest_cache", "tests"):
+        (tmp_path / "ml" / folder).mkdir()
+        (tmp_path / "ml" / folder / "ignored").touch()
+    (tmp_path / "ml/cache.pyc").touch()
+    return tmp_path
+
+
+def package(inputs, version="v1", *extra, ok=True):
+    out = inputs / version
+    run(sys.executable, DEPLOY / "package-release.py", version, out,
+        "--target-dir", inputs / "bin", "--ml-src", inputs / "ml",
+        "--frontend-dist", inputs / "dist", *extra, ok=ok)
+    assert out.exists() == ok
+    return out
+
+
+def test_package_and_switch(inputs):
+    v1 = package(inputs)
+    files = sorted(p.relative_to(v1).as_posix() for p in v1.rglob("*") if p.is_file())
+    sums = (v1 / "SHA256SUMS").read_text().splitlines()
+    assert [line[66:] for line in sums] == sorted(set(files) - {"SHA256SUMS"})
+    manifest = json.loads((v1 / "release-manifest.json").read_text())
+    assert manifest["version"] == "v1"
+    assert manifest["git_sha"] == run("git", "rev-parse", "HEAD", cwd=ROOT).stdout.strip()
+    assert manifest["files"] == sorted(set(files) - {"SHA256SUMS", "release-manifest.json"})
+    assert [p.name for p in (v1 / "ml").iterdir()] == ["worker.py"]
+    for cmd in (["sha256sum"], ["shasum", "-a", "256"]):
+        if shutil.which(cmd[0]):
+            run(*cmd, "-c", "SHA256SUMS", cwd=v1)
+    root = inputs / "sandbox"
+    root.mkdir()
+    env = dict(os.environ, NEXA_INSTALL_TEST_ROOT=str(root), NEXA_SKIP_SYSTEMCTL="1", NEXA_SKIP_CHOWN="1")
+
+    def install(*args, ok=True):
+        return run("bash", DEPLOY / "install-release.sh", *args, env=env, ok=ok)
+
+    current = root / "opt/nexa/current"
+    install("install", v1, "v1")
+    install("install", v1, "v1", ok=False)
+    install("install", v1, "wrong-version", ok=False)
+    assert not (root / "opt/nexa/releases/wrong-version").exists()
+    (inputs / "ml/worker.py").write_text("# second version\n")
+    units = inputs / "units"
+    shutil.copytree(DEPLOY / "systemd", units)
+    with (units / "nexa.target").open("a") as target:
+        target.write("# second version\n")
+    v2 = package(inputs, "v2", "--systemd-dir", units)
+    for version in ("../evil", "a..b", ".", "/absolute"):
+        install("install", v2, version, ok=False)
+        install("rollback", version, ok=False)
+    content = (v2 / "ml/worker.py").read_bytes()
+    (v2 / "ml/worker.py").write_bytes(content + b"!")
+    install("install", v2, "v2", ok=False)
+    (v2 / "ml/worker.py").write_bytes(content)
+    (v2 / "ml/extra").touch()
+    install("install", v2, "v2", ok=False)
+    (v2 / "ml/extra").unlink()
+    assert os.readlink(current) == "releases/v1"
+    ready, done = Event(), Event()
+
+    def observe_current():
+        assert os.readlink(current) == "releases/v1"
+        ready.set()
+        while not done.is_set():
+            assert os.readlink(current) in {"releases/v1", "releases/v2"}
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        observer = pool.submit(observe_current)
+        try:
+            assert ready.wait(timeout=3)
+            install("install", v2, "v2")
+        finally:
+            done.set()
+        observer.result()
+    assert os.readlink(current) == "releases/v2"
+    target = root / "home/nexa/.config/systemd/user/nexa.target"
+    assert target.read_bytes() == (units / "nexa.target").read_bytes()
+    assert stat.S_IMODE((current / "bin/nexa-web").stat().st_mode) == 0o750
+    assert (current / "ml/worker.py").read_bytes() == content
+    assert stat.S_IMODE((current / "ml/worker.py").stat().st_mode) == 0o440
+    install("rollback", "v1")
+    assert os.readlink(current) == "releases/v1"
+    assert target.read_bytes() == (v1 / "systemd/nexa.target").read_bytes()
+    assert (current / "ml/worker.py").read_text() == "pass\n"
+
+
+def test_partial_harness_environment(tmp_path):
+    env = dict(os.environ, NEXA_INSTALL_TEST_ROOT=str(tmp_path), NEXA_SKIP_CHOWN="1", NEXA_SKIP_SYSTEMCTL="")
+    rejected = run("bash", DEPLOY / "install-release.sh", "rollback", "v1", env=env, ok=False)
+    assert "test mode requires" in rejected.stderr
+    assert not (tmp_path / "opt").exists()
+
+
+@pytest.mark.parametrize("name", [".env", "casa.glb", "memory.db", "x.sqlite-wal"])
+def test_forbidden_files(inputs, name):
+    (inputs / "dist" / name).touch()
+    package(inputs, ok=False)
+
+
+def test_private_config_and_units(inputs):
+    path = inputs / "ml/settings.toml"
+    path.write_text('dir = "/home/kza"')
+    package(inputs, ok=False)
+    path.unlink()
+    units = inputs / "units"
+    shutil.copytree(DEPLOY / "systemd", units)
+    (units / "bad.service").write_text("WorkingDirectory=/home/kza")
+    package(inputs, "v1", "--systemd-dir", units, ok=False)
+
+
+def test_missing_frontend_and_invalid_binary(inputs):
+    shutil.rmtree(inputs / "dist")
+    package(inputs, ok=False)
+    package(inputs, "partial", "--allow-missing-frontend")
+    path = inputs / "bin/nexa-web"
+    path.chmod(0o644)
+    package(inputs, "bad", "--allow-missing-frontend", ok=False)
+    path.write_text("placeholder")
+    path.chmod(0o755)
+    package(inputs, "bad", "--allow-missing-frontend", ok=False)
+
+
+def test_memoryd_shutdown():
+    binary = os.environ.get("NEXA_MEMORYD_BIN")
+    if not binary:
+        build = run("cargo", "build", "--locked", "-p", "nexa-memoryd", "--message-format=json", cwd=ROOT)
+        artifacts = (json.loads(line) for line in build.stdout.splitlines())
+        binary = next(a["executable"] for a in artifacts if a.get("executable")
+                      and a["target"]["name"] == "nexa-memoryd")
+    # Short paths keep sockaddr_un within its macOS and Linux length limits.
+    with tempfile.TemporaryDirectory(dir="/tmp") as temp, socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as notify:
+        directory = Path(temp)
+        config = (ROOT / "config/nexa/nexa.toml").read_text().replace("/var/lib/nexa", temp + "/data")
+        (directory / "nexa.toml").write_text(config)
+        notify.bind(temp + "/notify")
+        notify.settimeout(3)
+        runtime = directory / "run"
+        endpoint = runtime / "memory.sock"
+        env = dict(os.environ, RUNTIME_DIRECTORY=str(runtime), NOTIFY_SOCKET=temp + "/notify")
+        with subprocess.Popen([binary, "--config", temp], env=env, stdout=subprocess.PIPE) as daemon:
+            try:
+                if sys.platform.startswith("linux"):
+                    assert b"READY=1" in notify.recv(4096).splitlines()
+                else:
+                    # sd_notify is compiled only on Linux. Wait for the real readiness log.
+                    assert select.select([daemon.stdout], [], [], 5)[0]
+                    assert b"private memory socket ready" in daemon.stdout.readline()
+                mode = endpoint.stat().st_mode
+                assert stat.S_ISSOCK(mode) and stat.S_IMODE(mode) == 0o600
+                start = time.monotonic()
+                daemon.terminate()
+                assert daemon.wait(timeout=3) == 0
+                assert time.monotonic() - start < 3
+                assert not endpoint.exists()
+                if sys.platform.startswith("linux"):
+                    assert b"STOPPING=1" in notify.recv(4096).splitlines()
+            finally:
+                if daemon.poll() is None:
+                    daemon.kill()

@@ -4,6 +4,7 @@ PartOf=nexa.target
 
 [Service]
 Type=notify
+WorkingDirectory=/opt/nexa/current/ml
 ExecStart=/opt/nexa/ml-venv/bin/python -m nexa_ml --socket %t/nexa/ml.sock --config /etc/nexa/nexa.toml
 Environment=PYTHONUNBUFFERED=1
 RuntimeDirectory=nexa
@@ -11,6 +12,7 @@ RuntimeDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
+ProtectSystem=strict
 LockPersonality=yes
 RestrictSUIDSGID=yes
 IPAddressDeny=any
@@ -21,7 +23,7 @@ RestartSec=5s
 StartLimitBurst=5
 StartLimitIntervalSec=180s
 TimeoutStartSec=120s
-TimeoutStopSec=15s
+TimeoutStopSec=10s
 WatchdogSec=30s
 
 [Install]
