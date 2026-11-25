@@ -326,7 +326,9 @@ async def test_text_embeddings_validation(harness: Harness) -> None:
 
 # ---------------------------------------------------------------- ReloadModel
 def _reload(slot_id: str) -> ml_pb2.ReloadModelRequest:
-    actor = common_pb2.ActorContext(subject="op", role=common_pb2.ROLE_OPERATOR)
+    actor = common_pb2.ActorContext(
+        subject="op", role=common_pb2.ROLE_OPERATOR, permissions=[common_pb2.PERMISSION_ADMIN_MANAGE]
+    )
     return ml_pb2.ReloadModelRequest(slot_id=slot_id, actor=actor)
 
 
@@ -437,3 +439,89 @@ async def test_tts_unknown_voice_is_invalid_argument_not_failure(harness: Harnes
     health = await harness.stub.GetHealth(common_pb2.Empty(), timeout=2)
     tts = next(m for m in health.models if m.slot_id == "tts")
     assert tts.state == common_pb2.HEALTH_STATE_OK and tts.consecutive_failures == 0
+
+
+# ---------------------------------------------------------------- ReloadModel authz
+@pytest.mark.parametrize(
+    ("actor", "code"),
+    [
+        (None, grpc.StatusCode.UNAUTHENTICATED),
+        (
+            common_pb2.ActorContext(
+                role=common_pb2.ROLE_OPERATOR, permissions=[common_pb2.PERMISSION_ADMIN_MANAGE]
+            ),
+            grpc.StatusCode.UNAUTHENTICATED,
+        ),
+        (
+            common_pb2.ActorContext(
+                subject="casa", role=common_pb2.ROLE_HOME, permissions=[common_pb2.PERMISSION_ADMIN_MANAGE]
+            ),
+            grpc.StatusCode.PERMISSION_DENIED,
+        ),
+        (
+            common_pb2.ActorContext(
+                subject="op",
+                role=common_pb2.ROLE_OPERATOR,
+                permissions=[common_pb2.PERMISSION_DIAGNOSTICS_READ],
+            ),
+            grpc.StatusCode.PERMISSION_DENIED,
+        ),
+    ],
+    ids=["actor-absent", "no-subject", "role-home", "operator-without-admin-manage"],
+)
+async def test_reload_requires_authorized_operator(
+    harness: Harness,
+    caplog: pytest.LogCaptureFixture,
+    actor: common_pb2.ActorContext | None,
+    code: grpc.StatusCode,
+) -> None:
+    caplog.set_level(logging.INFO, logger="nexa_ml.server")
+    request = ml_pb2.ReloadModelRequest(slot_id="stt-command")
+    if actor is not None:
+        request.actor.CopyFrom(actor)
+    with pytest.raises(grpc.aio.AioRpcError) as err:
+        await harness.stub.ReloadModel(request, timeout=10)
+    assert err.value.code() == code
+    assert harness.fakes.command.loads == 1  # slot never touched
+    assert harness.runtime.command.slot.state is SlotState.READY
+    assert "stt-command" not in caplog.text
+
+
+async def test_reload_authz_runs_before_slot_resolution(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="nexa_ml.server")
+    with pytest.raises(grpc.aio.AioRpcError) as err:
+        await harness.stub.ReloadModel(ml_pb2.ReloadModelRequest(slot_id="evil\nslot"), timeout=10)
+    assert err.value.code() == grpc.StatusCode.UNAUTHENTICATED
+    with pytest.raises(grpc.aio.AioRpcError) as err:
+        await harness.stub.ReloadModel(_reload("evil\nslot"), timeout=10)
+    assert err.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    assert "evil" not in caplog.text  # unvalidated ids never reach the audit log
+
+
+async def test_reload_authorized_operator_logs_canonical_id_only(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="nexa_ml.server")
+    resp = await harness.stub.ReloadModel(_reload("tts"), timeout=120)
+    assert resp.state == common_pb2.HEALTH_STATE_OK
+    assert "ReloadModel tts authorized (role=ROLE_OPERATOR)" in caplog.text
+    assert all("op" not in str(r.args) for r in caplog.records)  # subject never logged
+
+
+# ---------------------------------------------------------------- TTS producer end guarantee
+async def test_tts_close_failure_still_ends_the_rpc(harness: Harness) -> None:
+    engine = harness.fakes.tts_engines[0]
+    engine.close_raises = True
+    call = harness.stub.SynthesizeStream(ml_pb2.SynthesizeRequest(text="hola"), timeout=5)
+    with pytest.raises(grpc.aio.AioRpcError) as err:
+        async for _ in call:
+            pass
+    assert err.value.code() == grpc.StatusCode.INTERNAL  # not DEADLINE_EXCEEDED (hang)
+    await _wait_until(lambda: harness.runtime.tts.slot.inflight == 0)
+    engine.close_raises = False
+    chunks = [
+        c async for c in harness.stub.SynthesizeStream(ml_pb2.SynthesizeRequest(text="otra"), timeout=5)
+    ]
+    assert chunks[-1].is_final

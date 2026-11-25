@@ -103,16 +103,23 @@ class FakeKokoroEngine:
         self.requests: list[tuple[str, float]] = []
 
     known_voices = frozenset({"ef_dora", "em_alex"})
+    close_raises = False
 
-    def check_voice(self, pipe: Any, voice: str) -> None:
+    def prepare_voice(self, pipe: Any, voice: str) -> str:
         if voice not in self.known_voices:
             raise InvalidInputError("voice is not available")
+        return voice
 
     def pipeline(self, lang_code: str) -> Callable[..., Any]:
         self.langs.append(lang_code)
 
         def run(text: str, *, voice: str, speed: float) -> Any:
             self.requests.append((voice, speed))
+            if self.close_raises:
+                return _ExplodingCloseIterator(self.results)
+            return gen(voice)
+
+        def gen(voice: str) -> Any:
             try:
                 for i in range(self.results):
                     if i > 0 and i - 1 < len(self.gates):
@@ -124,6 +131,25 @@ class FakeKokoroEngine:
                 self.closed.set()
 
         return run
+
+
+class _ExplodingCloseIterator:
+    """Iterator whose ``close()`` raises (exercises the producer's ``_END`` guarantee)."""
+
+    def __init__(self, results: int) -> None:
+        self._left = results
+
+    def __iter__(self) -> "_ExplodingCloseIterator":
+        return self
+
+    def __next__(self) -> FakeResult:
+        if self._left == 0:
+            raise StopIteration
+        self._left -= 1
+        return FakeResult(audio=np.ones(240, dtype=np.float32))
+
+    def close(self) -> None:
+        raise RuntimeError("close exploded")
 
 
 class FakeEcapa:

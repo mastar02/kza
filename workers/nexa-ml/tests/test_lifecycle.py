@@ -14,7 +14,7 @@ from nexa_ml.config import MlConfig
 from nexa_ml.notify import SdNotifier
 from nexa_ml.pb import common_pb2, ml_pb2, ml_pb2_grpc
 from nexa_ml.runtime import MlRuntime
-from nexa_ml.server import prepare_socket_path, serve, start_server
+from nexa_ml.server import prepare_socket_path, remove_owned_socket, serve, socket_identity, start_server
 from nexa_ml.slot import InvalidInputError, is_out_of_memory
 from nexa_ml.whisper_slot import resolve_model_source
 
@@ -125,3 +125,39 @@ async def test_message_limit_covers_max_audio(short_dir: pathlib.Path) -> None:
     finally:
         await server.stop(0)
         runtime.close()
+
+
+def test_remove_owned_socket_checks_identity(short_dir: pathlib.Path) -> None:
+    path = short_dir / "own.sock"
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s1:
+        s1.bind(str(path))
+        identity = socket_identity(path)
+    path.unlink()
+    path.write_text("not ours")  # replaced while running
+    assert remove_owned_socket(path, identity) is False
+    assert path.read_text() == "not ours"
+    path.unlink()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s2:
+        s2.bind(str(path))  # another instance's socket at the same path
+        assert remove_owned_socket(path, identity) is False
+        assert path.exists()
+        assert remove_owned_socket(path, socket_identity(path)) is True
+    assert not path.exists()
+    assert remove_owned_socket(path, identity) is False  # already gone
+
+
+async def test_serve_does_not_delete_a_replaced_socket_path(short_dir: pathlib.Path) -> None:
+    sock_path = short_dir / "r" / "ml.sock"
+    cfg = MlConfig()
+    runtime = MlRuntime(cfg, Fakes().loaders(cfg.ambient_stt_workers))
+    stop = asyncio.Event()
+    task = asyncio.create_task(serve(runtime, sock_path, SdNotifier(env={}), stop))
+    for _ in range(200):
+        if sock_path.exists() and runtime.aggregate()[0] == "ok":
+            break
+        await asyncio.sleep(0.01)
+    sock_path.unlink()
+    sock_path.write_text("replacement")
+    stop.set()
+    await asyncio.wait_for(task, timeout=10)
+    assert sock_path.read_text() == "replacement"
