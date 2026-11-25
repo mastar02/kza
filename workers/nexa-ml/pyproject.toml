@@ -1,30 +1,57 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "nexa-ml"
 version = "0.1.0"
 description = "Stateless GPU ML inference worker for Nexa v2 (Whisper, Kokoro streaming TTS, single ECAPA, BGE-M3)"
 requires-python = ">=3.13,<3.14"
+# Floors match the committed stubs (grpcio-tools 1.81.0 -> protobuf gencode 6.33.5).
 dependencies = [
-    "grpcio>=1.68.0",
-    "protobuf>=5.29.0",
+    "grpcio>=1.81.0",
+    "protobuf>=6.33.5,<7",
     "numpy>=2.0.0",
 ]
 
 [project.optional-dependencies]
+# Kokoro: no published wheel declares Python 3.13 support. 0.7.x pins numpy==1.26.4
+# (no cp313 wheels; conflicts with numpy>=2) and lacks repo_id; 0.8.1-0.9.4 declare
+# Requires-Python "<3.13,>=3.10". The only workable target is kokoro==0.9.4 installed with
+# uv, which ignores Requires-Python upper bounds (pip refuses it). CI proves the extra
+# resolves on 3.13 with uv; real 3.13 runtime behaviour is verified only by `-m gpu` on the
+# server. tts_slot.KokoroEngine adapts to both 0.7.x and 0.9.x constructor signatures.
 gpu = [
     "faster-whisper>=1.1.0",
-    "kokoro>=0.7.0",
+    "kokoro==0.9.4",
+    "misaki[en]==0.9.4",
     "speechbrain>=1.0.0",
     "sentence-transformers>=3.0.0",
 ]
 dev = [
+    "grpcio-tools==1.81.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
-    "ruff>=0.8.0",
+    "ruff==0.8.6",
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["gpu: needs real models/CUDA (server only, never in PR CI)"]
 
 [tool.ruff]
 target-version = "py313"
 line-length = 110
+extend-exclude = ["src/nexa_ml/pb"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nexa_ml"]
