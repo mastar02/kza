@@ -5,6 +5,7 @@ pub mod clients;
 pub mod sys;
 
 mod routes;
+#[cfg(feature = "test-mode")]
 mod test_mode;
 mod ws;
 
@@ -15,6 +16,7 @@ use axum::Router;
 use clients::Clients;
 use sys::SystemMonitor;
 
+#[cfg(feature = "test-mode")]
 pub use test_mode::{
     EVALUATOR_TOKEN, HOME_ID, HOME_TOKEN, OPERATOR_TOKEN, TestMode, TestModeError,
 };

@@ -1,6 +1,9 @@
 //! Browser JSON and request validation at the HTTP/protobuf boundary.
 
-use std::{collections::HashMap, fmt};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 use chrono::{DateTime, Utc};
 use nexa_proto::v1::*;
@@ -124,6 +127,47 @@ pub(super) fn optional_bool(values: &HashMap<String, String>, name: &str) -> Res
         .get(name)
         .map(|value| value.parse::<bool>().map_err(|_| INVALID))
         .transpose()
+}
+
+pub(super) fn memory_id(value: &str) -> Result<&str> {
+    if value.is_empty()
+        || value.len() > 256
+        || value.trim() != value
+        || value.chars().any(char::is_control)
+    {
+        return Err(INVALID);
+    }
+    Ok(value)
+}
+
+pub(super) fn page_cursor<'a>(
+    query: &'a HashMap<String, String>,
+    keys: &[&str],
+) -> Result<&'a str> {
+    let mut values = keys.iter().filter_map(|key| query.get(*key));
+    let value = values.next().map(String::as_str).unwrap_or_default();
+    if values.next().is_some() {
+        return Err(INVALID);
+    }
+    if value.is_empty() {
+        Ok(value)
+    } else {
+        memory_id(value)
+    }
+}
+
+pub(super) fn voice_ids(body: &Value, field: &str) -> Result<()> {
+    let ids = body[field]
+        .as_array()
+        .filter(|items| (1..=32).contains(&items.len()))
+        .ok_or(INVALID)?;
+    let mut unique = HashSet::new();
+    for value in ids {
+        if !unique.insert(memory_id(value.as_str().ok_or(INVALID)?)?) {
+            return Err(INVALID);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn allowed_fields(body: &Value, fields: &[&str]) -> Result<()> {
@@ -307,12 +351,19 @@ pub(super) fn routine(row: RoutineRecord) -> Result<Value> {
     let mut spec = projection(row.spec_json)?;
     let fields = spec.as_object_mut().ok_or(BAD_UPSTREAM)?;
     fields.extend([
-        ("id".into(), json!(row.routine_id)),
+        ("id".into(), json!(&row.routine_id)),
+        ("routine_id".into(), json!(row.routine_id)),
         ("name".into(), json!(row.name)),
         ("enabled".into(), json!(row.enabled)),
         ("revision".into(), json!(row.revision)),
         ("updated_at".into(), json!(datetime(row.updated_at_unix_ms))),
     ]);
+    if row.updated_at_unix_ms != 0 {
+        fields.insert("updated_at_unix_ms".into(), json!(row.updated_at_unix_ms));
+    }
+    if !row.schedule_json.is_empty() {
+        fields.insert("schedule".into(), projection(row.schedule_json)?);
+    }
     Ok(spec)
 }
 
@@ -375,7 +426,8 @@ pub(super) fn reminder(row: ReminderRecord) -> Result<Value> {
     Ok(
         json!({"id":row.reminder_id,"text":row.title,"trigger_at":seconds(row.due_at_unix_ms),
         "recurrence":fields["recurrence"],"state":row.status,"scope":if row.owner_user_id.is_empty() { "shared" } else { "private" },
-        "ha_actions":action,"delivery_room":fields["delivery_room"]}),
+        "ha_actions":action,"delivery_room":fields.get("delivery_room").unwrap_or(&fields["room_id"]),
+        "revision":row.revision}),
     )
 }
 
@@ -385,11 +437,12 @@ pub(super) fn committed() -> Value {
 }
 
 pub(super) fn voice_switch(row: VoiceGlobalSwitchStatus) -> Value {
-    json!({"configured":true,"enabled":row.enabled,"effective":row.enabled,"updated_at":seconds(row.updated_at_unix_ms)})
+    json!({"configured":true,"enabled":row.enabled,"effective":row.enabled,
+        "updated_at":seconds(row.updated_at_unix_ms),"revision":row.revision})
 }
 
 pub(super) fn voice_profile(row: VoiceProfile, person: bool) -> Value {
-    let mut profile = json!({"id":row.profile_id,"revision":row.profile_revision,"sample_count":row.sample_count,
+    let mut profile = json!({"id":row.profile_id,"name":row.profile_id,"revision":row.profile_revision,"sample_count":row.sample_count,
         "attribution_suspended":row.attribution_suspended});
     if person {
         profile["person_link"] =

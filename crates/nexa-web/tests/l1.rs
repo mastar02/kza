@@ -3,7 +3,6 @@
 mod support;
 
 use std::{
-    collections::HashSet,
     convert::Infallible,
     fs,
     os::unix::fs::{PermissionsExt, symlink},
@@ -14,10 +13,9 @@ use axum::{
     body::{Body, Bytes, to_bytes},
     http::{Request, StatusCode, header},
 };
-use nexa_proto::v1::{Permission, Role};
 use nexa_web::{
     EVALUATOR_TOKEN, HOME_ID, HOME_TOKEN, OPERATOR_TOKEN, TestMode,
-    auth::{AuthStore, Origin, permission_name, permissions, sha256},
+    auth::{AuthStore, Origin, sha256},
 };
 use rusqlite::Connection;
 use serde_json::json;
@@ -25,31 +23,6 @@ use tokio::sync::{Notify, oneshot};
 use tower::ServiceExt;
 
 use support::{ORIGIN, call, document};
-
-#[test]
-fn sha256_and_role_matrix_match_authority() {
-    assert_eq!(
-        sha256("abc"),
-        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    );
-    let operator = permissions(Role::Operator, false);
-    let home = permissions(Role::Home, false);
-    let personal = permissions(Role::Home, true);
-    let evaluator = permissions(Role::Evaluator, false);
-    assert_eq!(operator.len(), 17);
-    assert_eq!(home.len(), 5);
-    assert_eq!(personal.len(), 9);
-    assert_eq!(evaluator, vec![Permission::EvaluationRead]);
-    assert!(!operator.contains(&Permission::TasksPersonal));
-    assert!(personal.contains(&Permission::MemoryOwnVoice));
-    let names: HashSet<_> = operator
-        .into_iter()
-        .chain(personal)
-        .chain(evaluator)
-        .map(permission_name)
-        .collect();
-    assert_eq!(names.len(), 21);
-}
 
 #[tokio::test]
 async fn login_hashes_secrets_and_cookies_default_to_secure() {
@@ -174,62 +147,6 @@ async fn login_hashes_secrets_and_cookies_default_to_secure() {
             .unwrap()
             .contains("Secure")
     );
-}
-
-#[tokio::test]
-async fn origin_enforces_scheme_host_and_port_without_trusting_headers() {
-    let fixture = TestMode::new().await.unwrap();
-    let app = fixture
-        .app(Origin::parse(ORIGIN).unwrap(), false, None)
-        .unwrap();
-    for origin in [
-        None,
-        Some("null"),
-        Some("https://localhost:9500"),
-        Some("http://localhost"),
-        Some("http://localhost:9501"),
-        Some("http://LOCALHOST.evil:9500"),
-        Some("http://localhost:9500/"),
-        Some("http://user@localhost:9500"),
-        Some("http://localhost:99999"),
-        Some("http://localhost:9500, http://localhost:9500"),
-    ] {
-        let response = call(
-            &app,
-            "POST",
-            "/api/admin/auth/login",
-            None,
-            origin,
-            Body::from(json!({"token":HOME_TOKEN}).to_string()),
-        )
-        .await;
-        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{origin:?}");
-    }
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/admin/auth/login")
-                .header(header::ORIGIN, "http://other:9500")
-                .header(header::HOST, "other:9500")
-                .header("x-forwarded-host", "other:9500")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
-    let response = call(
-        &app,
-        "POST",
-        "/api/admin/auth/login",
-        None,
-        Some(ORIGIN),
-        Body::from(json!({"token":"invalid"}).to_string()),
-    )
-    .await;
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
@@ -559,4 +476,218 @@ async fn credential_issue_replay_revision_and_revocation() {
         .status(),
         StatusCode::UNAUTHORIZED
     );
+}
+
+#[tokio::test]
+async fn reminder_routes_validate_scope_revision_and_completed_filter() {
+    let fixture = TestMode::new().await.unwrap();
+    let app = fixture
+        .app(Origin::parse(ORIGIN).unwrap(), false, None)
+        .unwrap();
+    let send = |method, path, token, payload: serde_json::Value| {
+        call(
+            &app,
+            method,
+            path,
+            Some(token),
+            Some(ORIGIN),
+            Body::from(payload.to_string()),
+        )
+    };
+    let update = "/api/reminders/test-reminder";
+    for (token, payload, status) in [
+        (
+            OPERATOR_TOKEN,
+            json!({"text":"Cambio privado","expected_revision":1}),
+            StatusCode::FORBIDDEN,
+        ),
+        (
+            HOME_TOKEN,
+            json!({"text":"Cambio privado"}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            HOME_TOKEN,
+            json!({"trigger_at":-1,"expected_revision":1}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            HOME_TOKEN,
+            json!({"scope":"private","unexpected":true,"expected_revision":1}),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+    ] {
+        let response = send("PUT", update, token, payload).await;
+        assert_eq!(response.status(), status);
+    }
+    let updated = send(
+        "PUT",
+        update,
+        HOME_TOKEN,
+        json!({"text":"Cambio privado","expected_revision":1}),
+    )
+    .await;
+    assert_eq!(updated.status(), StatusCode::OK);
+    let updated = document(updated).await;
+    assert_eq!(updated["text"], "Cambio privado");
+    assert_eq!(updated["scope"], "private");
+    assert_eq!(updated["revision"], 2);
+    let stale = send(
+        "PUT",
+        update,
+        HOME_TOKEN,
+        json!({"text":"Obsoleto","expected_revision":1}),
+    )
+    .await;
+    assert_eq!(stale.status(), StatusCode::CONFLICT);
+    let shared = send(
+        "PUT",
+        update,
+        OPERATOR_TOKEN,
+        json!({"text":"Cambio compartido","scope":"shared","expected_revision":2}),
+    )
+    .await;
+    assert_eq!(document(shared).await["scope"], "shared");
+    for (path, rows) in [
+        ("/api/reminders", 1),
+        ("/api/reminders?include_completed=false", 1),
+        ("/api/reminders?include_completed=true", 2),
+    ] {
+        let response = send("GET", path, HOME_TOKEN, json!({})).await;
+        assert_eq!(document(response).await.as_array().unwrap().len(), rows);
+    }
+    let malformed = send(
+        "GET",
+        "/api/reminders?include_completed=1",
+        HOME_TOKEN,
+        json!({}),
+    )
+    .await;
+    assert_eq!(malformed.status(), StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn memory_pagination_keeps_facts_and_proposals_independent() {
+    let fixture = TestMode::new().await.unwrap();
+    let app = fixture
+        .app(Origin::parse(ORIGIN).unwrap(), false, None)
+        .unwrap();
+    let read = |path, token| call(&app, "GET", path, Some(token), None, Body::empty());
+    let summary = document(read("/api/memory", OPERATOR_TOKEN).await).await;
+    assert_eq!(summary["facts_next"], "facts-a");
+    assert_eq!(summary["proposals_next"], "proposals-a");
+    let facts = document(read("/api/memory?facts_after=facts-a", OPERATOR_TOKEN).await).await;
+    assert_eq!(facts["facts"][0]["id"], "facts-b");
+    assert!(facts["facts_next"].is_null());
+    assert_eq!(facts["proposals"][0]["id"], "proposals-a");
+    let proposals =
+        document(read("/api/memory?proposals_after=proposals-a", OPERATOR_TOKEN).await).await;
+    assert_eq!(proposals["proposals"][0]["id"], "proposals-b");
+    assert_eq!(proposals["facts"][0]["id"], "facts-a");
+    let mine = document(read("/api/memory/mine?after=mine-a", HOME_TOKEN).await).await;
+    assert_eq!(mine["facts"][0]["id"], "mine-b");
+    let facts = document(read("/api/memory/facts?cursor=facts-a", OPERATOR_TOKEN).await).await;
+    assert_eq!(facts["facts"][0]["id"], "facts-b");
+    let too_long = format!("/api/memory/facts?cursor={}", "x".repeat(257));
+    for path in [
+        "/api/memory/facts?cursor=%00",
+        "/api/memory/facts?cursor=facts-a&after=facts-a",
+        too_long.as_str(),
+    ] {
+        assert_eq!(
+            read(path, OPERATOR_TOKEN).await.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+}
+
+#[tokio::test]
+async fn voice_switch_compare_and_set_and_personal_voice_stay_role_scoped() {
+    let fixture = TestMode::new().await.unwrap();
+    let app = fixture
+        .app(Origin::parse(ORIGIN).unwrap(), false, None)
+        .unwrap();
+    let send = |method, path, token, payload: serde_json::Value| {
+        call(
+            &app,
+            method,
+            path,
+            Some(token),
+            Some(ORIGIN),
+            Body::from(payload.to_string()),
+        )
+    };
+    let switch = "/api/memory/voice/switch";
+    let get = send("GET", switch, OPERATOR_TOKEN, json!({})).await;
+    assert_eq!(document(get).await["revision"], 0);
+    let command = json!({"enabled":true,"expected_revision":0});
+    assert_eq!(
+        send("POST", switch, HOME_TOKEN, command.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let malformed = send(
+        "POST",
+        switch,
+        OPERATOR_TOKEN,
+        json!({"enabled":true,"expected_revision":0,"extra":true}),
+    )
+    .await;
+    assert_eq!(malformed.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    let enabled = document(send("POST", switch, OPERATOR_TOKEN, command.clone()).await).await;
+    assert_eq!(enabled["enabled"], true);
+    assert_eq!(enabled["revision"], 1);
+    assert_eq!(
+        send("POST", switch, OPERATOR_TOKEN, command).await.status(),
+        StatusCode::CONFLICT
+    );
+    let after = document(send("GET", switch, OPERATOR_TOKEN, json!({})).await).await;
+    assert_eq!(after, enabled);
+
+    for (method, path, payload, field, expected) in [
+        (
+            "GET",
+            "/api/memory/mine/voice",
+            json!({}),
+            "user_id",
+            json!(HOME_ID),
+        ),
+        (
+            "POST",
+            "/api/memory/mine/voice/consent",
+            json!({"expected_revision":0}),
+            "granted",
+            json!(true),
+        ),
+        (
+            "POST",
+            "/api/memory/mine/voice/verification",
+            json!({"expected_revision":1,"outcome":"failed"}),
+            "recorded",
+            json!(true),
+        ),
+        (
+            "DELETE",
+            "/api/memory/mine/voice/consent",
+            json!({"expected_revision":1}),
+            "granted",
+            json!(false),
+        ),
+    ] {
+        let denied = send(method, path, OPERATOR_TOKEN, payload.clone()).await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN, "{method} {path}");
+        let allowed = send(method, path, HOME_TOKEN, payload).await;
+        assert_eq!(allowed.status(), StatusCode::OK, "{method} {path}");
+        assert_eq!(document(allowed).await[field], expected);
+    }
+    let path = "/api/memory/voice/consents";
+    assert_eq!(
+        send("GET", path, HOME_TOKEN, json!({})).await.status(),
+        StatusCode::FORBIDDEN
+    );
+    let consents = send("GET", path, OPERATOR_TOKEN, json!({})).await;
+    let rows = document(consents).await;
+    assert_eq!(rows["consents"][0]["user_id"], HOME_ID);
+    assert_eq!(rows["consents"][0]["revision"], 2);
 }

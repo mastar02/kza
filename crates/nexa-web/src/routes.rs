@@ -140,9 +140,12 @@ enum Op {
     RoutineExecute,
     RoutineEnabled(bool),
     Lists,
+    ListSync,
     ListItems,
     ListMutation(&'static str),
     Reminders,
+    ReminderNotices,
+    ReminderStatus,
     ReminderMutation(&'static str),
     Memory(&'static str),
     MemoryMutation(&'static str),
@@ -153,7 +156,6 @@ enum Op {
     VoiceLink,
     VoiceReview(bool),
     VoiceCaptures,
-    VoiceOperation(&'static str),
     Capture,
     CaptureWrite,
     ForgetCarried,
@@ -232,17 +234,18 @@ pub(crate) fn router(state: AppState) -> Router {
 
         GET "/api/lists" => Lists, &[TasksRead];
         POST "/api/lists" => ListMutation("create_list"), &[TasksWrite];
-        POST "/api/lists/sync" => Unavailable("list_sync_unavailable"), &[TasksWrite];
+        POST "/api/lists/sync" => ListSync, &[TasksWrite];
         GET "/api/lists/{id}/items" => ListItems, &[TasksRead];
         POST "/api/lists/{id}/items" => ListMutation("add_item"), &[TasksWrite];
         DELETE "/api/lists/{id}/items/{item_id}" => ListMutation("delete_item"), &[TasksWrite];
 
         GET "/api/reminders" => Reminders, &[TasksRead];
         POST "/api/reminders" => ReminderMutation("create"), &[TasksWrite];
+        PUT "/api/reminders/{id}" => ReminderMutation("update"), &[TasksWrite];
         DELETE "/api/reminders/{id}" => ReminderMutation("cancel"), &[TasksWrite];
-        GET "/api/reminders/notices" => Unavailable("reminder_notices_unavailable"), &[TasksRead];
+        GET "/api/reminders/notices" => ReminderNotices, &[TasksRead];
         POST "/api/reminders/notices/dismiss" => ReminderMutation("dismiss_notice"), &[TasksWrite];
-        GET "/api/reminders/status" => Unavailable("reminder_status_unavailable"), &[DiagnosticsRead];
+        GET "/api/reminders/status" => ReminderStatus, &[DiagnosticsRead];
 
         GET "/api/memory" => Memory("summary"), &[MemoryRead];
         GET "/api/memory/facts" => Memory("facts"), &[MemoryRead];
@@ -256,22 +259,22 @@ pub(crate) fn router(state: AppState) -> Router {
         GET "/api/memory/mine" => Memory("mine"), &[MemoryOwnRead];
         DELETE "/api/memory/mine/facts/{id}" => DeleteFact, &[MemoryOwnWrite];
         POST "/api/memory/mine/facts/{id}/return" => MemoryMutation("return_fact"), &[MemoryOwnWrite];
-        GET "/api/memory/mine/voice" => Unavailable("memory_voice_status_unavailable"), &[MemoryOwnVoice];
-        POST "/api/memory/mine/voice/consent" => Unavailable("voice_verification_unavailable"), &[MemoryOwnVoice];
-        DELETE "/api/memory/mine/voice/consent" => Unavailable("voice_consent_revision_unavailable"), &[MemoryOwnVoice];
-        POST "/api/memory/mine/voice/verification" => Unavailable("voice_verification_unavailable"), &[MemoryOwnVoice];
-        GET "/api/memory/voice/consents" => Unavailable("voice_consents_unavailable"), &[MemoryRead, MemoryAssign];
+        GET "/api/memory/mine/voice" => Memory("voice_mine"), &[MemoryOwnVoice];
+        POST "/api/memory/mine/voice/consent" => MemoryMutation("voice_consent_grant"), &[MemoryOwnVoice];
+        DELETE "/api/memory/mine/voice/consent" => MemoryMutation("voice_consent_revoke"), &[MemoryOwnVoice];
+        POST "/api/memory/mine/voice/verification" => MemoryMutation("voice_verification"), &[MemoryOwnVoice];
+        GET "/api/memory/voice/consents" => Memory("voice_consents"), &[MemoryRead, MemoryAssign];
         POST "/api/memory/voice/consents/{id}/reopen" => MemoryMutation("reopen_voice_consent"), &[MemoryAssign];
         GET "/api/memory/voice/switch" => VoiceSwitch, &[MemoryRead, MemoryAssign];
         POST "/api/memory/voice/switch" => VoiceSwitchWrite, &[MemoryAssign, AdminManage];
 
         GET "/api/voices" => VoiceCaptures, &[VoicesRead, VoicesReview];
         GET "/api/voices/profiles" => VoiceProfiles, &[VoicesRead, VoicesReview];
-        POST "/api/voices/profiles" => VoiceOperation("voice_profile_confirm_unavailable"), &[VoicesReview];
-        DELETE "/api/voices/profiles/{id}" => VoiceOperation("voice_profile_delete_unavailable"), &[VoicesReview];
+        POST "/api/voices/profiles" => MemoryMutation("confirm_voice_profile"), &[VoicesReview];
+        DELETE "/api/voices/profiles/{id}" => MemoryMutation("delete_voice_profile"), &[VoicesReview];
         PUT "/api/voices/profiles/{id}/person" => VoiceLink, &[VoicesReview, AdminManage];
         POST "/api/voices/profiles/{id}/attribution/resume" => MemoryMutation("resume_attribution"), &[VoicesReview, AdminManage, MemoryAssign];
-        POST "/api/voices/groups/corrections" => VoiceOperation("voice_group_correction_unavailable"), &[VoicesReview];
+        POST "/api/voices/groups/corrections" => MemoryMutation("correct_voice_group"), &[VoicesReview];
         GET "/api/voices/captures/{id}/review" => VoiceReview(false), &[VoicesRead, VoicesReview];
         GET "/api/voices/captures/{id}/transcript" => VoiceReview(true), &[VoicesRead, VoicesReview];
         POST "/api/voices/captures/query" => VoiceCaptures, &[VoicesRead, VoicesReview];
@@ -500,6 +503,175 @@ impl Fields {
     }
 }
 
+async fn memory_overview(
+    state: &AppState,
+    fields: &Fields,
+    view: &str,
+    actor: ActorContext,
+) -> Result<Value> {
+    let limit = fields.limit(50, 100)?;
+    let request = |view: &str, cursor: &str| MemoryOverviewRequest {
+        view: view.into(),
+        limit,
+        actor: Some(actor.clone()),
+        cursor: cursor.into(),
+    };
+    let brain = &state.clients.brain;
+    let query = &fields.query;
+    let cursor = page_cursor(query, &["cursor", "after"])?;
+    if view == "summary" {
+        // MemoryService returns a next cursor per page only on the individual views.
+        let cursor_for = |key| {
+            if (query.contains_key("cursor") || query.contains_key("after"))
+                && query.contains_key(key)
+            {
+                return Err(INVALID);
+            }
+            if query.contains_key(key) {
+                page_cursor(query, &[key])
+            } else {
+                Ok(cursor)
+            }
+        };
+        let (facts, proposals) = tokio::try_join!(
+            brain.list_memory_overview(request("facts", cursor_for("facts_after")?)),
+            brain.list_memory_overview(request("proposals", cursor_for("proposals_after")?)),
+        )?;
+        let mut facts = projection(facts.payload_json)?;
+        let mut proposals = projection(proposals.payload_json)?;
+        if !facts["facts"].is_array() || !proposals["proposals"].is_array() {
+            return Err(BAD_UPSTREAM);
+        }
+        return Ok(json!({
+            "facts": facts["facts"].take(),
+            "facts_next": facts["next"].take(),
+            "proposals": proposals["proposals"].take(),
+            "proposals_next": proposals["next"].take(),
+        }));
+    }
+    let alias = format!("{view}_after");
+    let req = request(view, page_cursor(query, &["cursor", "after", &alias])?);
+    let page = match view {
+        "voice_mine" | "voice_consents" => state.clients.memory.list_memory_overview(req).await?,
+        _ => brain.list_memory_overview(req).await?,
+    };
+    projection(page.payload_json)
+}
+
+fn memory_mutation<'a>(fields: &'a Fields, operation: &str) -> Result<(&'a str, Value)> {
+    let body = &fields.body;
+    let mut target = fields.id();
+    let mut payload = body.clone();
+    match operation {
+        "voice_consent_grant" | "voice_consent_revoke" => {
+            allowed_fields(
+                body,
+                &[
+                    "expected_revision",
+                    "expected_profile_revision",
+                    "expected_link_revision",
+                ],
+            )?;
+            for key in [
+                "expected_revision",
+                "expected_profile_revision",
+                "expected_link_revision",
+            ] {
+                if body.get(key).is_some() {
+                    unsigned(body, key)?;
+                }
+            }
+        }
+        "voice_verification" => {
+            allowed_fields(body, &["expected_revision", "outcome", "room_id"])?;
+            if body.get("room_id").is_some() {
+                memory_id(string(body, "room_id")?)?;
+                if body.get("outcome").is_some() {
+                    return Err(INVALID);
+                }
+            } else if !matches!(string(body, "outcome")?, "passed" | "failed") {
+                return Err(INVALID);
+            }
+            if body.get("expected_revision").is_some() {
+                unsigned(body, "expected_revision")?;
+            }
+        }
+        "confirm_voice_profile" => {
+            allowed_fields(
+                body,
+                &[
+                    "profile_id",
+                    "fingerprint_ids",
+                    "expected_revision",
+                    "name",
+                    "request_id",
+                ],
+            )?;
+            if let Some(profile) = optional_string(body, "profile_id")?.filter(|id| !id.is_empty())
+            {
+                target = memory_id(profile)?;
+            }
+            voice_ids(body, "fingerprint_ids")?;
+            if body.get("expected_revision").is_some() {
+                unsigned(body, "expected_revision")?;
+            }
+            if body.get("name").is_some() {
+                bounded_text(body, "name", 64)?;
+            }
+            if body.get("request_id").is_some() {
+                request_id(string(body, "request_id")?)?;
+            }
+        }
+        "delete_voice_profile" => {
+            memory_id(target)?;
+            allowed_fields(body, &["expected_revision"])?;
+            if body.get("expected_revision").is_some()
+                || fields.query.contains_key("expected_revision")
+            {
+                payload["expected_revision"] = json!(fields.revision()?);
+            }
+        }
+        "correct_voice_group" => {
+            allowed_fields(
+                body,
+                &[
+                    "group_id",
+                    "action",
+                    "profile_ids",
+                    "fingerprint_ids",
+                    "expected_revision",
+                    "expected_revisions",
+                ],
+            )?;
+            if let Some(group) = optional_string(body, "group_id")?.filter(|id| !id.is_empty()) {
+                target = memory_id(group)?;
+            }
+            let action = optional_string(body, "action")?.unwrap_or_default();
+            if !matches!(action, "" | "merge" | "split" | "unknown")
+                || (!target.is_empty() && matches!(action, "split" | "unknown"))
+            {
+                return Err(INVALID);
+            }
+            match (body.get("profile_ids"), body.get("fingerprint_ids")) {
+                (Some(_), None) => voice_ids(body, "profile_ids")?,
+                (None, Some(_)) => voice_ids(body, "fingerprint_ids")?,
+                _ => return Err(INVALID),
+            }
+            if body.get("expected_revision").is_some() {
+                unsigned(body, "expected_revision")?;
+            }
+            if let Some(revisions) = body.get("expected_revisions") {
+                for (id, value) in revisions.as_object().ok_or(INVALID)? {
+                    memory_id(id)?;
+                    value.as_u64().ok_or(INVALID)?;
+                }
+            }
+        }
+        _ => {}
+    }
+    Ok((target, payload))
+}
+
 async fn execute(
     state: &AppState,
     policy: Policy,
@@ -516,8 +688,9 @@ async fn execute(
     let actor = || Some(lease.actor());
     let actor_request = || ActorRequest { actor: actor() };
     let task_query = match policy.op {
-        Lists | Reminders => Some(&["scope"][..]),
-        ListItems => Some(&[][..]),
+        Lists => Some(&["scope"][..]),
+        Reminders => Some(&["scope", "include_completed"][..]),
+        ListItems | ListSync | ReminderNotices | ReminderStatus => Some(&[][..]),
         ListMutation(_) | ReminderMutation(_) => Some(&["expected_revision"][..]),
         _ => None,
     };
@@ -747,13 +920,35 @@ async fn execute(
                 }
             }
         }
+        ListSync => {
+            exact_fields(body, &[])?;
+            projection(
+                brain
+                    .sync_household_lists(actor_request())
+                    .await?
+                    .payload_json,
+            )?
+        }
+        ReminderNotices => projection(
+            brain
+                .list_reminder_notices(actor_request())
+                .await?
+                .payload_json,
+        )?,
+        ReminderStatus => projection(
+            brain
+                .get_reminder_status(actor_request())
+                .await?
+                .payload_json,
+        )?,
         Reminders => {
             let scope = task_scope(fields.query.get("scope").map(String::as_str), lease)?;
             let user = lease.actor().user_id;
             let rows = brain
                 .list_reminders(ListRemindersRequest {
                     include_personal: !user.is_empty() && scope != Some(false),
-                    include_completed: false,
+                    include_completed: optional_bool(&fields.query, "include_completed")?
+                        .unwrap_or(false),
                     actor: actor(),
                 })
                 .await?
@@ -776,19 +971,42 @@ async fn execute(
                     "delivery_room",
                     "expected_revision",
                 ][..],
+                "update" => &[
+                    "text",
+                    "trigger_at",
+                    "scope",
+                    "ha_actions",
+                    "delivery_room",
+                    "expected_revision",
+                ],
                 "dismiss_notice" => &["reminder_id", "trigger_at", "expected_revision"],
                 _ => &["expected_revision"],
             };
             allowed_fields(body, fields_allowed)?;
-            if operation == "create" {
-                bounded_text(body, "text", 500)?;
-                match optional_string(body, "scope")?.unwrap_or("private") {
+            let mut payload = body.clone();
+            if matches!(operation, "create" | "update") {
+                if operation == "create" || body.get("text").is_some() {
+                    bounded_text(body, "text", 500)?;
+                }
+                let scope = optional_string(body, "scope")?.unwrap_or("private");
+                match scope {
                     "private" => lease.require(&[TasksPersonal])?,
                     "shared" => {}
                     _ => return Err(INVALID),
                 }
+                if operation == "update" {
+                    payload["scope"] = json!(scope);
+                    optional_string(body, "delivery_room")?;
+                    if body
+                        .get("ha_actions")
+                        .is_some_and(|value| !value.is_array() && !value.is_null())
+                    {
+                        return Err(INVALID);
+                    }
+                }
             }
-            if matches!(operation, "create" | "dismiss_notice")
+            if (matches!(operation, "create" | "dismiss_notice")
+                || (operation == "update" && body.get("trigger_at").is_some()))
                 && !body
                     .get("trigger_at")
                     .and_then(Value::as_f64)
@@ -800,12 +1018,16 @@ async fn execute(
                 .mutate_reminder(ReminderMutationRequest {
                     operation: operation.into(),
                     reminder_id: id.into(),
-                    expected_revision: fields.optional_revision()?,
-                    payload_json: body.to_string(),
+                    expected_revision: if operation == "update" {
+                        fields.revision()?
+                    } else {
+                        fields.optional_revision()?
+                    },
+                    payload_json: payload.to_string(),
                     actor: actor(),
                 })
                 .await?;
-            if operation == "create" {
+            if matches!(operation, "create" | "update") {
                 let mut row = reminder(record)?;
                 row["outcome"] = committed();
                 row
@@ -818,36 +1040,42 @@ async fn execute(
                 json!({"status":result,"outcome":committed()})
             }
         }
-        Memory(view) => {
-            if fields.query.keys().any(|key| key.ends_with("after")) {
-                return Err(ApiError(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "memory_cursor_unavailable",
-                ));
-            }
-            projection(
-                brain
-                    .list_memory_overview(MemoryOverviewRequest {
-                        view: view.into(),
-                        limit: fields.limit(50, 100)?,
-                        actor: actor(),
-                        cursor: String::new(),
+        Memory(view) => memory_overview(state, fields, view, lease.actor()).await?,
+        MemoryMutation(operation) => {
+            let (target, payload) = memory_mutation(fields, operation)?;
+            let request = MemoryMutationRequest {
+                operation: operation.into(),
+                target_id: target.into(),
+                payload_json: payload.to_string(),
+                actor: actor(),
+            };
+            match operation {
+                "delete_voice_profile" => {
+                    let memory = memory.clone();
+                    let live = state.live.clone();
+                    // Complete the erasure fence even if the request is disconnected.
+                    tokio::spawn(async move {
+                        let doc =
+                            projection(memory.mutate_memory_item(request).await?.payload_json)?;
+                        if doc["deleted"] != true {
+                            return Err(BAD_UPSTREAM);
+                        }
+                        live.fence();
+                        Ok(doc)
                     })
-                    .await?
-                    .payload_json,
-            )?
+                    .await
+                    .map_err(|_| BAD_UPSTREAM)??
+                }
+                "voice_consent_grant"
+                | "voice_consent_revoke"
+                | "voice_verification"
+                | "confirm_voice_profile"
+                | "correct_voice_group" => {
+                    projection(memory.mutate_memory_item(request).await?.payload_json)?
+                }
+                _ => projection(brain.mutate_memory_item(request).await?.payload_json)?,
+            }
         }
-        MemoryMutation(operation) => projection(
-            brain
-                .mutate_memory_item(MemoryMutationRequest {
-                    operation: operation.into(),
-                    target_id: id.into(),
-                    payload_json: body.to_string(),
-                    actor: actor(),
-                })
-                .await?
-                .payload_json,
-        )?,
         DeleteFact => {
             let receipt = memory
                 .delete_fact(DeleteFactRequest {
@@ -863,12 +1091,16 @@ async fn execute(
         }
         VoiceSwitch => voice_switch(brain.get_voice_global_switch(actor_request()).await?),
         VoiceSwitchWrite => {
-            let _ = fields.revision()?;
-            // The current RPC cannot carry the required compare-and-set revision.
-            return Err(ApiError(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "voice_switch_revision_unavailable",
-            ));
+            exact_fields(body, &["enabled", "expected_revision"])?;
+            voice_switch(
+                brain
+                    .set_voice_global_switch(SetVoiceGlobalSwitchRequest {
+                        enabled: boolean(body, "enabled")?,
+                        expected_revision: fields.revision()?,
+                        actor: actor(),
+                    })
+                    .await?,
+            )
         }
         VoiceProfiles => {
             let include_person = optional_bool(&fields.query, "include_person")?.unwrap_or(false);
@@ -877,23 +1109,19 @@ async fn execute(
             } else if fields.query.contains_key("person_id") {
                 return Err(INVALID);
             }
-            if fields.query.contains_key("cursor") {
-                return Err(ApiError(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "voice_profile_cursor_unavailable",
-                ));
-            }
+            let cursor = page_cursor(&fields.query, &["cursor"])?;
             let connection =
                 state
                     .live
                     .authorize(&fields.headers, lease, ws::Channel::VoiceProfiles)?;
-            let rows = memory
+            let page = memory
                 .list_voice_profiles(ListVoiceProfilesRequest {
                     include_person,
                     actor: actor(),
-                    cursor: String::new(),
+                    cursor: cursor.into(),
                 })
-                .await?
+                .await?;
+            let rows = page
                 .profiles
                 .into_iter()
                 .filter(|row| {
@@ -905,9 +1133,14 @@ async fn execute(
                 })
                 .map(|row| voice_profile(row, include_person))
                 .collect::<Vec<_>>();
-            state
-                .live
-                .projection(connection, ws::Channel::VoiceProfiles, json!(rows))?
+            state.live.projection(
+                connection,
+                ws::Channel::VoiceProfiles,
+                json!({
+                    "rows": rows,
+                    "next_cursor": (!page.next_cursor.is_empty()).then_some(page.next_cursor),
+                }),
+            )?
         }
         VoiceLink => {
             let row = memory
@@ -1281,7 +1514,7 @@ async fn execute(
                 .credential_attempt(proof.clone(), id.into())
                 .await?
         }
-        VoiceOperation(reason) | Unavailable(reason) => {
+        Unavailable(reason) => {
             return Err(ApiError(StatusCode::SERVICE_UNAVAILABLE, reason));
         }
     };
