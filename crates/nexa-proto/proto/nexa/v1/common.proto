@@ -1,0 +1,84 @@
+syntax = "proto3";
+
+package nexa.v1;
+
+// Server-assigned authorization role. Never inferred from acoustic voice identity.
+enum Role {
+  ROLE_UNSPECIFIED = 0;
+  ROLE_OPERATOR = 1;
+  ROLE_HOME = 2;
+  ROLE_EVALUATOR = 3;
+}
+
+// Fine-grained server permissions preserved from KZA's authority model.
+enum Permission {
+  PERMISSION_UNSPECIFIED = 0;
+  PERMISSION_HOME_READ = 1;
+  PERMISSION_HOME_CONTROL = 2;
+  PERMISSION_TASKS_READ = 3;
+  PERMISSION_TASKS_WRITE = 4;
+  PERMISSION_TASKS_PERSONAL = 5;
+  PERMISSION_ROUTINES_EXECUTE = 6;
+  PERMISSION_ROUTINES_MANAGE = 7;
+  PERMISSION_DIAGNOSTICS_READ = 8;
+  PERMISSION_CONVERSATIONS_READ = 9;
+  PERMISSION_MEMORY_READ = 10;
+  PERMISSION_MEMORY_REVIEW = 11;
+  PERMISSION_MEMORY_ASSIGN = 12;
+  PERMISSION_MEMORY_OWN_READ = 13;
+  PERMISSION_MEMORY_OWN_WRITE = 14;
+  PERMISSION_MEMORY_OWN_VOICE = 15;
+  PERMISSION_VOICES_READ = 16;
+  PERMISSION_VOICES_REVIEW = 17;
+  PERMISSION_EVALUATION_READ = 18;
+  PERMISSION_AMBIENT_CONTROL = 19;
+  PERMISSION_ADMIN_MANAGE = 20;
+  PERMISSION_AUTH_MANAGE = 21;
+}
+
+enum PathType {
+  PATH_TYPE_UNSPECIFIED = 0;
+  PATH_TYPE_FAST_DOMOTICS = 1;
+  PATH_TYPE_FAST_HOUSEHOLD = 2;
+  PATH_TYPE_FAST_WEATHER = 3;
+  PATH_TYPE_FAST_TIME = 4;
+  PATH_TYPE_COMPOUND = 5;
+  PATH_TYPE_SLOW_LLM = 6;
+  PATH_TYPE_REJECTED = 7;
+}
+
+enum CapturePhase {
+  CAPTURE_PHASE_UNSPECIFIED = 0;
+  CAPTURE_PHASE_RUNNING = 1;
+  CAPTURE_PHASE_MUTING = 2;
+  CAPTURE_PHASE_MUTED = 3;
+  CAPTURE_PHASE_RESUMING = 4;
+}
+
+enum HealthState {
+  HEALTH_STATE_UNSPECIFIED = 0;
+  HEALTH_STATE_OK = 1;
+  HEALTH_STATE_DEGRADED = 2;
+  HEALTH_STATE_UNAVAILABLE = 3;
+}
+
+// Control-plane verified caller context passed over local mode-0600 UDS.
+// Acoustic speaker identity MUST NEVER populate role or permissions here.
+message ActorContext {
+  string subject = 1;
+  Role role = 2;
+  repeated Permission permissions = 3;
+  string user_id = 4;       // Populated only for personal HOME credentials
+  string lease_id = 5;
+  uint64 lease_epoch = 6;
+}
+
+message Empty {}
+
+message HealthResponse {
+  string service = 1;
+  string version = 2;
+  HealthState state = 3;
+  uint64 uptime_ms = 4;
+  string detail = 5;
+}

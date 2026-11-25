@@ -1,0 +1,30 @@
+[Unit]
+Description=Nexa Independent Web Control Plane (Axum, Auth/RBAC, WS Fan-out, Vite SPA)
+PartOf=nexa.target
+After=network-online.target nexa-brain.service nexa-memoryd.service nexa-audiod.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/opt/nexa/current/bin/nexa-web --config /etc/nexa --static-dir /opt/nexa/current/frontend
+EnvironmentFile=/etc/nexa/secrets/web.env
+RuntimeDirectory=nexa
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+MemoryMax=512M
+CPUQuota=200%
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+TimeoutStopSec=10s
+WatchdogSec=30s
+
+[Install]
+WantedBy=nexa.target

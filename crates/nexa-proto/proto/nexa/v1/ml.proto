@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package nexa.v1;
+
+import "nexa/v1/common.proto";
+
+// Stateless GPU inference worker (`nexa-ml`), listening on $XDG_RUNTIME_DIR/nexa/ml.sock.
+// Zero network access, zero SQLite, zero audio hardware, zero business logic.
+service MlService {
+  rpc GetHealth(Empty) returns (MlHealthResponse);
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+  rpc SynthesizeStream(SynthesizeRequest) returns (stream TtsAudioChunk);
+  rpc EmbedSpeaker(EmbedSpeakerRequest) returns (SpeakerEmbeddingResponse);
+  rpc EmbedText(EmbedTextRequest) returns (BatchEmbeddingResponse);
+  rpc ReloadModel(ReloadModelRequest) returns (HealthResponse);
+}
+
+enum SttMode {
+  STT_MODE_UNSPECIFIED = 0;
+  STT_MODE_COMMAND = 1;
+  STT_MODE_AMBIENT = 2;
+}
+
+message ModelSlotHealth {
+  string slot_id = 1;
+  string model_name = 2;
+  string device = 3;
+  HealthState state = 4;
+  uint32 vram_mib = 5;
+  uint32 consecutive_failures = 6;
+}
+
+message MlHealthResponse {
+  HealthResponse base = 1;
+  repeated ModelSlotHealth models = 2;
+}
+
+message TranscribeRequest {
+  bytes pcm_f32le = 1;
+  uint32 sample_rate = 2;
+  string language = 3;
+  SttMode mode = 4;
+  string initial_prompt = 5;
+  string hotwords = 6;
+  uint32 beam_size = 7;
+}
+
+message TranscribeResponse {
+  string text = 1;
+  float compression_ratio = 2;
+  float avg_logprob = 3;
+  float no_speech_prob = 4;
+  uint32 latency_ms = 5;
+  string model_id = 6;
+}
+
+message SynthesizeRequest {
+  string text = 1;
+  string voice = 2;
+  string lang_code = 3;
+  float speed = 4;
+}
+
+message TtsAudioChunk {
+  uint32 sequence = 1;
+  uint32 sample_rate = 2;
+  bytes pcm_f32le = 3;
+  bool is_final = 4;
+}
+
+message EmbedSpeakerRequest {
+  bytes pcm_f32le = 1;
+  uint32 sample_rate = 2;
+}
+
+message SpeakerEmbeddingResponse {
+  repeated float vector = 1;
+  string encoder_model_key = 2;
+  uint32 latency_ms = 3;
+}
+
+message EmbedTextRequest {
+  repeated string texts = 1;
+}
+
+message EmbeddingVector {
+  repeated float values = 1;
+}
+
+message BatchEmbeddingResponse {
+  repeated EmbeddingVector vectors = 1;
+  string model_id = 2;
+  uint32 latency_ms = 3;
+}
+
+message ReloadModelRequest {
+  string slot_id = 1;
+  ActorContext actor = 2;
+}

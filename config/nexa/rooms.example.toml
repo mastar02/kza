@@ -1,0 +1,56 @@
+# Nexa v2 — Per-Room Hardware Inventory Template (copy to `/etc/nexa/rooms.toml`)
+# Replace USB ports / serials with the real host inventory; do not commit private serials.
+
+[[rooms]]
+room_id = "living"
+name = "Living"
+mic_usb_port = "1-2.3"
+mic_channel = 1
+ma1260_zone = 1
+default_light = "light.grupo_living"
+
+[rooms.xvf_tuning]
+pp_agc_max_gain = 16.0
+pp_attns_mode = 1
+pp_attns_slope = 1.0
+pp_min_nn = 0.4
+
+[[rooms]]
+room_id = "hall"
+name = "Hall"
+mic_usb_port = "7-7.1"
+mic_channel = 1
+ma1260_zone = 2
+
+[rooms.xvf_tuning]
+pp_agc_max_gain = 16.0
+pp_attns_mode = 1
+pp_attns_slope = 1.0
+pp_min_nn = 0.4
+
+[[rooms]]
+room_id = "cocina"
+name = "Cocina"
+mic_usb_port = "7-5.3"
+mic_channel = 1
+ma1260_zone = 3
+
+[rooms.xvf_tuning]
+pp_agc_max_gain = 16.0
+pp_attns_mode = 1
+pp_attns_slope = 1.0
+pp_min_nn = 0.4
+
+[[rooms]]
+room_id = "escritorio"
+name = "Escritorio"
+mic_usb_port = "3-1.4"
+mic_channel = 0
+ma1260_zone = 4
+default_light = "light.escritorio"
+
+[rooms.xvf_tuning]
+pp_agc_max_gain = 16.0
+pp_attns_mode = 1
+pp_attns_slope = 1.0
+pp_min_nn = 0.4

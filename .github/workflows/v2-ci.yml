@@ -1,0 +1,96 @@
+name: Nexa v2 CI (Rust + Hygiene)
+
+on:
+  push:
+    branches: ["feat/v2-*", "v2/**", "main"]
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "config/nexa/**"
+      - "deploy/nexa/**"
+      - "workers/nexa-ml/**"
+      - "tests-v2/**"
+      - ".github/workflows/v2-ci.yml"
+  pull_request:
+    paths:
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/**"
+      - "config/nexa/**"
+      - "deploy/nexa/**"
+      - "workers/nexa-ml/**"
+      - "tests-v2/**"
+      - ".github/workflows/v2-ci.yml"
+
+concurrency:
+  group: nexa-v2-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust-workspace:
+    name: Rust fmt, clippy & nextest (L1/L2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy strict check
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Run workspace tests
+        run: cargo nextest run --workspace
+
+  config-and-deploy-hygiene:
+    name: Config TOML, Deploy Scripts & Audio Fixtures Hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify zero hardcoded /home/kza paths in Nexa v2 config & deploy
+        run: |
+          if grep -rn "/home/kza" config/nexa/ deploy/nexa/systemd/ deploy/nexa/*.sh; then
+            echo "ERROR: Found forbidden legacy /home/kza path in Nexa v2 config or deploy files!"
+            exit 1
+          fi
+
+      - name: Verify zero sudo/world-writable udev rules in deploy/nexa
+        run: |
+          bash -n deploy/nexa/provision-nexa-user.sh
+          bash -n deploy/nexa/install-release.sh
+          if grep -n 'MODE="0666"' deploy/nexa/udev/*.rules; then
+            echo "ERROR: World-writable 0666 udev rule is forbidden!"
+            exit 1
+          fi
+
+      - name: Verify synthetic L3 audio fixtures exist and stay compact (<5 MB)
+        run: |
+          python3 -c "
+          import pathlib, wave
+          root = pathlib.Path('tests-v2/fixtures/audio')
+          wavs = sorted(root.glob('*.wav'))
+          assert len(wavs) >= 6, f'Expected >= 6 audio fixtures, found {len(wavs)}'
+          total_bytes = sum(p.stat().st_size for p in wavs)
+          assert total_bytes < 5 * 1024 * 1024, f'Audio fixtures exceed 5 MB: {total_bytes}'
+          for p in wavs:
+              with wave.open(str(p), 'rb') as wf:
+                  assert wf.getnchannels() == 1 and wf.getframerate() == 16000 and wf.getsampwidth() == 2
+          print(f'Verified {len(wavs)} WAV fixtures ({total_bytes / 1024:.1f} KiB total)')
+          "

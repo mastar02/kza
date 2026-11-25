@@ -1,0 +1,28 @@
+[Unit]
+Description=Nexa Fast Local LLM Router (Qwen2.5-7B-Instruct Q4_K_M on cuda:1, :8101)
+PartOf=nexa.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/nexa/secrets/llm-fast.env
+Environment=CUDA_VISIBLE_DEVICES=1
+ExecStart=/opt/nexa/bin/llama-server \
+  --model /opt/nexa/models/Qwen2.5-7B-Instruct-Q4_K_M/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
+  --host 127.0.0.1 --port 8101 -ngl 99 -c 4096 --parallel 2
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+MemoryMax=12G
+CPUQuota=800%
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=180s
+TimeoutStopSec=15s
+
+[Install]
+WantedBy=nexa.target

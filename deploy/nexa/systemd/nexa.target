@@ -1,0 +1,6 @@
+[Unit]
+Description=Nexa v2 Voice Assistant Umbrella Target (non-sudo native stack)
+Wants=nexa-audiod.service nexa-ml.service nexa-memoryd.service nexa-brain.service nexa-web.service nexa-llm-fast.service nexa-dashboard-proxy.service
+
+[Install]
+WantedBy=default.target

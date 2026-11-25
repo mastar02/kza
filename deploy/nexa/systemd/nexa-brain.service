@@ -1,0 +1,32 @@
+[Unit]
+Description=Nexa Voice Brain (NLU, Orchestrator, HA WS Cache, Household Core, LLM Failover)
+PartOf=nexa.target
+After=network-online.target nexa-audiod.service nexa-ml.service nexa-memoryd.service nexa-llm-fast.service
+Wants=network-online.target nexa-audiod.service nexa-ml.service nexa-memoryd.service nexa-llm-fast.service
+
+[Service]
+Type=notify
+ExecStart=/opt/nexa/current/bin/nexa-brain --config /etc/nexa
+EnvironmentFile=/etc/nexa/secrets/brain.env
+RuntimeDirectory=nexa
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+# Loopback only by default (HA :8123, llama-server :8101, LiteLLM :8200).
+# Add a drop-in IPAddressAllow=<HA_LAN_IP>/32 if Home Assistant lives on a separate LAN IP.
+IPAddressDeny=any
+IPAddressAllow=127.0.0.1/32
+MemoryMax=2G
+CPUQuota=400%
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+TimeoutStopSec=10s
+WatchdogSec=30s
+
+[Install]
+WantedBy=nexa.target

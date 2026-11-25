@@ -1,0 +1,156 @@
+syntax = "proto3";
+
+package nexa.v1;
+
+import "nexa/v1/common.proto";
+
+// Privacy, semantic memory, voice biometric registry & durable erasure daemon (`nexa-memoryd`).
+// Exclusive SQLite WAL + sqlite-vec writer, zero network access, listening on memory.sock.
+service MemoryService {
+  rpc GetHealth(Empty) returns (HealthResponse);
+
+  // Semantic memory & fact lifecycle
+  rpc StoreFact(StoreFactRequest) returns (MemoryFact);
+  rpc QueryMemory(QueryMemoryRequest) returns (QueryMemoryResponse);
+  rpc DeleteFact(DeleteFactRequest) returns (ErasureReceipt);
+
+  // Voice biometric registry (strictly separated from authorization roles)
+  rpc RecordVoiceObservation(RecordVoiceObservationRequest) returns (VoiceObservationReceipt);
+  rpc ListVoiceProfiles(ListVoiceProfilesRequest) returns (ListVoiceProfilesResponse);
+  rpc LinkVoiceProfileToPerson(LinkVoiceProfileRequest) returns (VoiceProfile);
+  rpc SetVoiceConsent(SetVoiceConsentRequest) returns (VoiceConsentStatus);
+
+  // Atomic durable erasure & account retirement cascade
+  rpc EraseConversation(EraseConversationRequest) returns (ErasureReceipt);
+  rpc PurgeRetiredUser(PurgeRetiredUserRequest) returns (ErasureReceipt);
+
+  // Ambient capture persistence control
+  rpc GetAmbientControl(Empty) returns (AmbientControlStatus);
+  rpc SetAmbientPause(SetAmbientPauseRequest) returns (AmbientControlStatus);
+}
+
+message MemoryFact {
+  string fact_id = 1;
+  string conversation_id = 2;
+  string owner_user_id = 3;
+  string content = 4;
+  string category = 5;
+  uint64 created_at_unix_ms = 6;
+  bool confirmed = 7;
+}
+
+message StoreFactRequest {
+  string conversation_id = 1;
+  string owner_user_id = 2;
+  string content = 3;
+  string category = 4;
+  repeated float embedding = 5;
+  ActorContext actor = 6;
+}
+
+message QueryMemoryRequest {
+  repeated float query_embedding = 1;
+  uint32 top_k = 2;
+  string owner_user_id = 3;
+  bool include_shared = 4;
+  ActorContext actor = 5;
+}
+
+message MemorySearchHit {
+  MemoryFact fact = 1;
+  float score = 2;
+}
+
+message QueryMemoryResponse {
+  repeated MemorySearchHit hits = 1;
+}
+
+message DeleteFactRequest {
+  string fact_id = 1;
+  ActorContext actor = 2;
+}
+
+message RecordVoiceObservationRequest {
+  string utterance_id = 1;
+  string room_id = 2;
+  repeated float embedding = 3;
+  string encoder_model_key = 4;
+  string transcript_preview = 5;
+  uint64 captured_at_unix_ms = 6;
+}
+
+message VoiceObservationReceipt {
+  string capture_id = 1;
+  string matched_profile_id = 2;
+  float similarity_score = 3;
+}
+
+message VoiceProfile {
+  string profile_id = 1;
+  uint64 profile_revision = 2;
+  string linked_person_id = 3;
+  uint64 link_revision = 4;
+  uint32 sample_count = 5;
+  bool attribution_suspended = 6;
+}
+
+message ListVoiceProfilesRequest {
+  bool include_person = 1;
+  ActorContext actor = 2;
+}
+
+message ListVoiceProfilesResponse {
+  repeated VoiceProfile profiles = 1;
+}
+
+message LinkVoiceProfileRequest {
+  string profile_id = 1;
+  string person_id = 2; // Empty string unlinks and immediately invalidates voice consent
+  uint64 expected_profile_revision = 3;
+  uint64 expected_link_revision = 4;
+  ActorContext actor = 5;
+}
+
+message SetVoiceConsentRequest {
+  string user_id = 1;
+  bool granted = 2;
+  ActorContext actor = 3;
+}
+
+message VoiceConsentStatus {
+  string user_id = 1;
+  bool granted = 2;
+  bool global_switch_enabled = 3;
+  uint64 updated_at_unix_ms = 4;
+}
+
+message EraseConversationRequest {
+  string conversation_id = 1;
+  ActorContext actor = 2;
+}
+
+message PurgeRetiredUserRequest {
+  string user_id = 1;
+  ActorContext actor = 2;
+}
+
+message ErasureReceipt {
+  string erasure_id = 1;
+  bool tombstone_recorded = 2;
+  uint32 facts_deleted = 3;
+  uint32 vectors_deleted = 4;
+  uint32 captures_deleted = 5;
+  uint64 completed_at_unix_ms = 6;
+}
+
+message AmbientControlStatus {
+  bool paused = 1;
+  uint64 revision = 2;
+  uint64 updated_at_unix_ms = 3;
+}
+
+message SetAmbientPauseRequest {
+  bool paused = 1;
+  uint64 expected_revision = 2;
+  ActorContext actor = 3;
+}

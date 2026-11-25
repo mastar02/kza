@@ -1,0 +1,24 @@
+[Unit]
+Description=Nexa Local TLS Reverse Proxy (NGINX :9540 -> 127.0.0.1:9500)
+PartOf=nexa.target
+After=network-online.target nexa-web.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/nginx -c /etc/nexa/nginx-proxy.conf -g "daemon off;"
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+MemoryMax=256M
+CPUQuota=100%
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+TimeoutStopSec=10s
+
+[Install]
+WantedBy=nexa.target

@@ -68,3 +68,11 @@ sriov-migration-prompt.md
 /src/dashboard/frontend/home/nexo/private/
 /kza-nexo-rediseno/
 *.glb
+
+# Rust v2 build artifacts
+/target/
+crates/**/target/
+
+# Frontend v2 build & deps
+/frontend/node_modules/
+/frontend/dist/

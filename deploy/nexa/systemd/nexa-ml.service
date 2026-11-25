@@ -1,0 +1,28 @@
+[Unit]
+Description=Nexa Stateless GPU ML Worker (Whisper, Kokoro streaming TTS, ECAPA, BGE-M3)
+PartOf=nexa.target
+
+[Service]
+Type=notify
+ExecStart=/opt/nexa/ml-venv/bin/python -m nexa_ml --socket %t/nexa/ml.sock --config /etc/nexa/nexa.toml
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=nexa
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+IPAddressDeny=any
+MemoryMax=16G
+CPUQuota=800%
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=180s
+TimeoutStartSec=120s
+TimeoutStopSec=15s
+WatchdogSec=30s
+
+[Install]
+WantedBy=nexa.target

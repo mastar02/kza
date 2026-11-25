@@ -1,0 +1,9 @@
+# Nexa v2 — Fail-Closed Home Assistant Control Policy Template
+# Copy to `/etc/nexa/ha-controls.toml` and list ONLY explicitly approved entities.
+# Empty `[entities]` denies every Home Assistant control mutation by default.
+# Security invariant: `lock.*` and `alarm_control_panel.*` are rejected at boot.
+
+[entities]
+# "light.escritorio" = ["turn_on", "turn_off", "brightness", "color_temp_kelvin"]
+# "light.grupo_living" = ["turn_on", "turn_off", "brightness"]
+# "climate.living" = ["set_temperature", "set_hvac_mode"]

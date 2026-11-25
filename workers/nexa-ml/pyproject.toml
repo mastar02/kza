@@ -1,0 +1,30 @@
+[project]
+name = "nexa-ml"
+version = "0.1.0"
+description = "Stateless GPU ML inference worker for Nexa v2 (Whisper, Kokoro streaming TTS, single ECAPA, BGE-M3)"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "grpcio>=1.68.0",
+    "protobuf>=5.29.0",
+    "numpy>=2.0.0",
+]
+
+[project.optional-dependencies]
+gpu = [
+    "faster-whisper>=1.1.0",
+    "kokoro>=0.7.0",
+    "speechbrain>=1.0.0",
+    "sentence-transformers>=3.0.0",
+]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 110
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

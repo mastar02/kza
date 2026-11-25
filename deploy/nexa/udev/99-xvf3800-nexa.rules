@@ -1,0 +1,7 @@
+# XVF3800 ReSpeaker 4-Mic Array — restricted USB vendor control access for `nexa` only.
+# Replaces the legacy world-writable 0666 rule with strict 0660 ownership for group `nexa`.
+#
+# Install once on server:
+#   sudo install -m 0644 deploy/nexa/udev/99-xvf3800-nexa.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules && sudo udevadm trigger --subsystem-match=usb
+SUBSYSTEM=="usb", ATTRS{idVendor}=="2886", ATTRS{idProduct}=="001a", GROUP="nexa", MODE="0660"

@@ -1,0 +1,129 @@
+syntax = "proto3";
+
+package nexa.v1;
+
+import "nexa/v1/common.proto";
+
+// Control-plane RPCs exposed by `nexa-brain` over $XDG_RUNTIME_DIR/nexa/brain.sock.
+// Consumed by `nexa-web` (Rust Axum) so the web layer never shares an event loop or GIL with voice.
+service BrainControlService {
+  rpc GetHealth(Empty) returns (HealthResponse);
+
+  // Home Assistant catalog & fail-closed typed actions
+  rpc GetHomeCatalog(GetHomeCatalogRequest) returns (HomeCatalogSnapshot);
+  rpc ExecuteHomeAction(HomeActionRequest) returns (HomeActionReceipt);
+  rpc GetHomeActionReceipt(GetHomeActionReceiptRequest) returns (HomeActionReceipt);
+
+  // LLM endpoints & one-way cloud consent withdrawal
+  rpc GetLlmEndpoints(Empty) returns (LlmEndpointsSnapshot);
+  rpc ClearLlmCooldown(ClearLlmCooldownRequest) returns (Empty);
+  rpc GetCloudConsent(Empty) returns (CloudConsentStatus);
+  rpc WithdrawCloudConsent(WithdrawCloudConsentRequest) returns (CloudConsentStatus);
+
+  // Bounded push stream feeding nexa-web WebSocket fan-out (/ws/live, /ws/voices, /ws/evaluation)
+  rpc SubscribeLiveEvents(SubscribeLiveEventsRequest) returns (stream LiveRuntimeEvent);
+}
+
+message GetHomeCatalogRequest {
+  ActorContext actor = 1;
+}
+
+message HomeEntity {
+  string entity_id = 1;
+  string domain = 2;
+  string room_id = 3;
+  string friendly_name = 4;
+  string state = 5;
+  bool available = 6;
+  repeated string capabilities = 7;
+  uint64 observed_at_unix_ms = 8;
+}
+
+message HomeRoom {
+  string room_id = 1;
+  string name = 2;
+  repeated string entity_ids = 3;
+  string default_light = 4;
+  string default_climate = 5;
+}
+
+message HomeCatalogSnapshot {
+  uint64 observed_at_unix_ms = 1;
+  bool stale = 2;
+  repeated HomeRoom rooms = 3;
+  repeated HomeEntity entities = 4;
+}
+
+message HomeActionRequest {
+  string request_id = 1;
+  string entity_id = 2;
+  string operation = 3;
+  map<string, string> params = 4;
+  ActorContext actor = 5;
+}
+
+message HomeActionReceipt {
+  string request_id = 1;
+  string entity_id = 2;
+  string operation = 3;
+  string status = 4;
+  string detail = 5;
+  uint64 completed_at_unix_ms = 6;
+}
+
+message GetHomeActionReceiptRequest {
+  string request_id = 1;
+  ActorContext actor = 2;
+}
+
+message LlmEndpointStatus {
+  string endpoint_id = 1;
+  string kind = 2;
+  uint32 priority = 3;
+  bool in_cooldown = 4;
+  uint64 cooldown_until_unix_ms = 5;
+  uint32 consecutive_errors = 6;
+}
+
+message LlmEndpointsSnapshot {
+  repeated LlmEndpointStatus endpoints = 1;
+}
+
+message ClearLlmCooldownRequest {
+  string endpoint_id = 1;
+  ActorContext actor = 2;
+}
+
+message CloudConsentStatus {
+  bool consent_granted = 1;
+  bool withdrawn_latched = 2;
+  uint64 updated_at_unix_ms = 3;
+}
+
+message WithdrawCloudConsentRequest {
+  ActorContext actor = 1;
+}
+
+message SubscribeLiveEventsRequest {
+  ActorContext actor = 1;
+}
+
+enum LiveEventKind {
+  LIVE_EVENT_KIND_UNSPECIFIED = 0;
+  LIVE_EVENT_KIND_TURN = 1;
+  LIVE_EVENT_KIND_WAKE = 2;
+  LIVE_EVENT_KIND_ALERT = 3;
+  LIVE_EVENT_KIND_TTS = 4;
+  LIVE_EVENT_KIND_COOLDOWN = 5;
+  LIVE_EVENT_KIND_HA_STATE = 6;
+  LIVE_EVENT_KIND_ERASURE_FENCE = 7;
+}
+
+message LiveRuntimeEvent {
+  string event_id = 1;
+  LiveEventKind kind = 2;
+  string room_id = 3;
+  string conversation_id = 4;
+  string payload_json = 5;
+  uint64 emitted_at_unix_ms = 6;
+}

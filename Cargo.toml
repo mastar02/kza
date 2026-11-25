@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nexa-proto",
+    "crates/nexa-config",
+    "crates/nexa-nlu",
+    "crates/nexa-ha",
+    "crates/nexa-household",
+    "crates/nexa-llm",
+    "crates/nexa-audiod",
+    "crates/nexa-brain",
+    "crates/nexa-memoryd",
+    "crates/nexa-web",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+todo = "warn"
+
+[workspace.dependencies]
+nexa-proto = { path = "crates/nexa-proto" }
+nexa-config = { path = "crates/nexa-config" }
+nexa-nlu = { path = "crates/nexa-nlu" }
+nexa-ha = { path = "crates/nexa-ha" }
+nexa-household = { path = "crates/nexa-household" }
+nexa-llm = { path = "crates/nexa-llm" }
+
+prost = "0.13"
+proptest = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time", "net", "io-util"] }
+toml = "0.8"
+tonic = "0.12"
+tonic-build = "0.12"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }

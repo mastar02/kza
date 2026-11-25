@@ -1,0 +1,85 @@
+# Nexa v2 — Core Runtime Configuration (typed, validated at boot by `nexa-config`)
+# Zero legacy hardcoded home paths. Secrets stay outside Git in `/etc/nexa/secrets/`.
+
+[paths]
+data_dir = "/var/lib/nexa"
+models_dir = "/opt/nexa/models"
+runtime_dir = "/run/user/nexa/nexa"
+secrets_dir = "/etc/nexa/secrets"
+
+[audio]
+capture_sample_rate = 16000
+playback_sample_rate = 24000
+frame_ms = 80
+wake_model = "wakeword/nexa.onnx"
+wake_threshold = 0.40
+silero_vad_model = "vad/silero_vad.onnx"
+parakeet_model = "stt/nemo-parakeet-tdt-0.6b-v3"
+barge_in_enabled = true
+
+[audio.ma1260_connection]
+kind = "simulation"
+
+[ml]
+command_stt_model = "whisper-v3-turbo"
+command_stt_device = "cuda:1"
+command_stt_compute_type = "int8_float16"
+ambient_stt_model = "whisper-large-v3"
+ambient_stt_device = "cuda:0"
+ambient_stt_workers = 2
+tts_voice = "ef_dora"
+tts_lang_code = "e"
+tts_device = "cuda:1"
+speaker_encoder_device = "cuda:0"
+embeddings_model = "BAAI/bge-m3"
+embeddings_device = "cpu"
+
+[nlu]
+language = "es"
+max_compression_ratio = 2.2
+enforce_compression_ratio = true
+unvetoed_max_words = 6
+compound_max_parts = 3
+compound_execute = true
+min_llm_command_confidence = 0.6
+
+[home_assistant]
+url = "http://127.0.0.1:8123"
+timeout_ms = 2000
+state_confirmation_timeout_ms = 2000
+cache_max_staleness_s = 120
+full_refresh_interval_s = 300
+unavailable_precheck_enabled = true
+weather_entity = "weather.forecast_home"
+
+[llm]
+fast_router_url = "http://127.0.0.1:8101/v1"
+fast_router_model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+fast_router_timeout_ms = 3500
+cloud_gateway_url = "http://127.0.0.1:8200/v1"
+cloud_model = "grok-4.20-non-reasoning"
+cloud_timeout_ms = 60000
+cloud_consent = false
+
+[memory]
+enabled = true
+automatic_retention_days = 30
+short_term_turns = 10
+voice_proposals_enabled = false
+ambient_enabled = true
+ambient_keep_audio = false
+
+[household]
+timezone = "America/Montevideo"
+default_output_zone = "zone_living"
+late_action_grace_s = 120
+voice_choice_window_s = 30
+default_list_name = "compras"
+
+[web]
+bind_host = "127.0.0.1"
+port = 9500
+proxy_tls_port = 9540
+trusted_proxy_ip = "127.0.0.1"
+home_enabled = true
+private_assets_dir = "/var/lib/nexa/private_home"

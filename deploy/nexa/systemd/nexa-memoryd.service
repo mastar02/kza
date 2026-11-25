@@ -1,0 +1,26 @@
+[Unit]
+Description=Nexa Privacy, Semantic Memory, Voice Registry & Atomic Erasure Daemon
+PartOf=nexa.target
+
+[Service]
+Type=notify
+ExecStart=/opt/nexa/current/bin/nexa-memoryd --config /etc/nexa
+RuntimeDirectory=nexa
+RuntimeDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+LockPersonality=yes
+RestrictSUIDSGID=yes
+IPAddressDeny=any
+MemoryMax=2G
+CPUQuota=200%
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=120s
+TimeoutStopSec=10s
+WatchdogSec=30s
+
+[Install]
+WantedBy=nexa.target

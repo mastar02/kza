@@ -1,0 +1,149 @@
+syntax = "proto3";
+
+package nexa.v1;
+
+import "nexa/v1/common.proto";
+
+// Real-time audio edge daemon (`nexa-audiod`), listening on $XDG_RUNTIME_DIR/nexa/audio.sock.
+// Owns ALSA room streams, ReSpeaker XVF3800 USB control, Dayton MA1260 amp control,
+// CPU ONNX models (Silero VAD, OpenWakeWord, shared Parakeet), and hardware capture mute seal.
+service AudioService {
+  rpc GetHealth(Empty) returns (HealthResponse);
+  rpc GetMicrophones(Empty) returns (MicrophonesSnapshot);
+  rpc GetZones(Empty) returns (ZonesSnapshot);
+  rpc SetZoneVolume(SetZoneVolumeRequest) returns (ZoneState);
+
+  // Global capture mute semantics: silence never counts as ACK.
+  rpc GetCaptureControl(Empty) returns (CaptureControlStatus);
+  rpc SetCaptureMute(SetCaptureMuteRequest) returns (CaptureControlStatus);
+  rpc ForgetCarriedOwners(ForgetCarriedOwnersRequest) returns (ForgetCarriedOwnersResponse);
+
+  // Real-time utterance stream from nexa-audiod -> nexa-brain.
+  rpc SubscribeUtterances(SubscribeUtterancesRequest) returns (stream AudioUtterance);
+
+  // Streaming PCM playback from nexa-brain -> nexa-audiod (24kHz mono f32le).
+  rpc PlayAudioStream(stream PlayAudioChunk) returns (PlayAudioReceipt);
+  rpc CancelPlayback(CancelPlaybackRequest) returns (Empty);
+}
+
+enum MicCaptureState {
+  MIC_CAPTURE_STATE_UNSPECIFIED = 0;
+  MIC_CAPTURE_STATE_WAITING = 1;
+  MIC_CAPTURE_STATE_RECEIVING = 2;
+  MIC_CAPTURE_STATE_RECOVERING = 3;
+  MIC_CAPTURE_STATE_MUTED = 4;
+  MIC_CAPTURE_STATE_OFFLINE = 5;
+}
+
+message MicrophoneRoomStatus {
+  string room_id = 1;
+  string room_name = 2;
+  string usb_port = 3;
+  MicCaptureState state = 4;
+  float last_rms = 5;
+  uint64 frames_captured = 6;
+  uint64 recoveries = 7;
+  uint64 last_frame_unix_ms = 8;
+}
+
+message MicrophonesSnapshot {
+  uint64 observed_at_unix_ms = 1;
+  bool stale = 2;
+  repeated MicrophoneRoomStatus microphones = 3;
+}
+
+message ZoneState {
+  string zone_id = 1;
+  string room_id = 2;
+  uint32 ma1260_zone = 3;
+  uint32 volume_pct = 4;
+  bool muted = 5;
+  bool speaking = 6;
+}
+
+message ZonesSnapshot {
+  repeated ZoneState zones = 1;
+}
+
+message SetZoneVolumeRequest {
+  string zone_id = 1;
+  uint32 volume_pct = 2;
+  ActorContext actor = 3;
+}
+
+message CaptureControlStatus {
+  CapturePhase phase = 1;
+  uint64 revision = 2;
+  bool persisted_muted = 3;
+  bool ingress_sealed = 4;
+  bool supported = 5;
+  uint32 pending_operations = 6;
+  uint32 live_capture_owners = 7;
+  uint32 carried_capture_owners = 8;
+  bool total_mute_confirmed = 9;
+}
+
+message SetCaptureMuteRequest {
+  bool muted = 1;
+  uint64 expected_revision = 2;
+  ActorContext actor = 3;
+}
+
+message ForgetCarriedOwnersRequest {
+  uint32 expected_carried = 1;
+  bool no_capture_running = 2;
+  ActorContext actor = 3;
+}
+
+message ForgetCarriedOwnersResponse {
+  CaptureControlStatus status = 1;
+  uint32 forgotten_capture_owners = 2;
+}
+
+message SubscribeUtterancesRequest {
+  bool include_ambient = 1;
+}
+
+enum UtteranceKind {
+  UTTERANCE_KIND_UNSPECIFIED = 0;
+  UTTERANCE_KIND_COMMAND = 1;
+  UTTERANCE_KIND_AMBIENT = 2;
+  UTTERANCE_KIND_FOLLOW_UP = 3;
+}
+
+message AudioUtterance {
+  string utterance_id = 1;
+  string room_id = 2;
+  UtteranceKind kind = 3;
+  uint32 sample_rate = 4;
+  bytes pcm_f32le = 5;
+  float wake_score = 6;
+  float rms = 7;
+  string parakeet_shadow_text = 8;
+  uint32 parakeet_latency_ms = 9;
+  uint64 captured_at_unix_ms = 10;
+  uint64 capture_epoch = 11;
+}
+
+message PlayAudioChunk {
+  string playback_id = 1;
+  string zone_id = 2;
+  uint32 sample_rate = 3;
+  bytes pcm_f32le = 4;
+  uint32 priority = 5;
+  string barge_in_token = 6;
+  bool is_final = 7;
+}
+
+message PlayAudioReceipt {
+  string playback_id = 1;
+  bool completed = 2;
+  bool interrupted_by_barge_in = 3;
+  uint32 ttfa_ms = 4;
+  uint32 total_ms = 5;
+}
+
+message CancelPlaybackRequest {
+  string zone_id = 1;
+  string barge_in_token = 2;
+}
