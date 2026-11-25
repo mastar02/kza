@@ -1,6 +1,5 @@
 """End-to-end synthetic KZA migration fixtures, including the real daemon."""
 
-import ast
 import hashlib
 import hmac
 import json
@@ -39,11 +38,11 @@ VERSIONS = {"memory/memory.db": 1, "memory/ambient.db": 1,
 
 
 def ddl(file: str, marker: str) -> str:
-    """Select the literal DDL used by the legacy writer, without importing it."""
-    tree = ast.parse((ROOT / file).read_text())
-    return next(node.value for node in ast.walk(tree)
-                if isinstance(node, ast.Constant) and type(node.value) is str
-                and marker in node.value)
+    """Read the legacy writer's verbatim SQL captured at the pre-purge tag."""
+    relative = Path(file).relative_to("src").with_suffix(".sql")
+    fixture = Path(__file__).parent / "fixtures" / "legacy_ddl" / relative
+    blocks = fixture.read_text().removesuffix("\n").split("\n-- DDL block\n")[1:]
+    return next(block for block in blocks if marker in block)
 
 
 def add_ledger(db: sqlite3.Connection, entries: list[tuple]) -> list[tuple]:
