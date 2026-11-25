@@ -582,3 +582,65 @@ async fn retirement_preserves_other_owners_in_a_mixed_conversation() {
         Code::FailedPrecondition
     );
 }
+
+#[tokio::test]
+async fn malformed_rpc_inputs_fail_before_reading_private_state() {
+    use Permission::*;
+
+    let rpc = service(false);
+    let review = operator(&[VoicesRead, VoicesReview]);
+    for query_json in [
+        "[]",
+        r#"{"review_status":"mystery"}"#,
+        r#"{"limit":-1}"#,
+        r#"{"text":"private"}"#,
+    ] {
+        let failure = rpc
+            .query_voice_captures(Request::new(VoiceCaptureQueryRequest {
+                query_json: query_json.into(),
+                actor: Some(review.clone()),
+            }))
+            .await
+            .expect_err("unsupported filter");
+        assert_eq!(failure.code(), Code::InvalidArgument);
+    }
+    let failure = rpc
+        .get_voice_capture_review(Request::new(VoiceCaptureReviewRequest {
+            fingerprint_id: "invalid\n".into(),
+            actor: None,
+            include_transcript: true,
+        }))
+        .await
+        .expect_err("actor required before ID parsing");
+    assert_eq!(failure.code(), Code::Unauthenticated);
+
+    let response = rpc
+        .mutate_memory_item(Request::new(MemoryMutationRequest {
+            operation: "voice_consent_revoke".into(),
+            payload_json: r#"{"expected_revision":0}"#.into(),
+            actor: Some(home("alice", &[MemoryOwnVoice])),
+            ..Default::default()
+        }))
+        .await
+        .expect("a person may revoke even with the global switch off")
+        .into_inner();
+    let payload: serde_json::Value = serde_json::from_str(&response.payload_json).expect("JSON");
+    assert_eq!(payload["granted"], false);
+    assert_eq!(payload["global_switch_enabled"], false);
+    assert!(
+        payload["revision"]
+            .as_u64()
+            .is_some_and(|revision| revision > 0)
+    );
+
+    let failure = rpc
+        .mutate_memory_item(Request::new(MemoryMutationRequest {
+            operation: "voice_consent_revoke".into(),
+            payload_json: r#"{"expected_revision":"0"}"#.into(),
+            actor: Some(home("alice", &[MemoryOwnVoice])),
+            ..Default::default()
+        }))
+        .await
+        .expect_err("no consent revision coercion");
+    assert_eq!(failure.code(), Code::InvalidArgument);
+}

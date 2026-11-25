@@ -29,6 +29,19 @@ impl Store {
         fact_id: &str,
         allowed_owner: Option<&str>,
     ) -> Result<ErasureReceipt> {
+        self.erase_fact(fact_id, allowed_owner, false)
+    }
+
+    pub(crate) fn reject_proposal(&mut self, fact_id: &str) -> Result<ErasureReceipt> {
+        self.erase_fact(fact_id, None, true)
+    }
+
+    fn erase_fact(
+        &mut self,
+        fact_id: &str,
+        allowed_owner: Option<&str>,
+        proposal_only: bool,
+    ) -> Result<ErasureReceipt> {
         id(fact_id)?;
         // Flush previous WAL frames and commit the secure deletion before acknowledging.
         self.write_both(|tx| {
@@ -40,14 +53,17 @@ impl Store {
                 }
                 return Ok(receipt);
             }
-            let owner: Option<String> = tx
+            let fact: Option<(String, bool)> = tx
                 .query_row(
-                    "SELECT owner_user_id FROM facts WHERE fact_id=?1",
+                    "SELECT owner_user_id, confirmed FROM facts WHERE fact_id=?1",
                     [fact_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            let owner = owner.ok_or(Error::NotFound("fact unavailable"))?;
+            let (owner, confirmed) = fact.ok_or(Error::NotFound("fact unavailable"))?;
+            if proposal_only && confirmed {
+                return Err(Error::Precondition("fact is already confirmed"));
+            }
             if allowed_owner.is_some_and(|allowed| allowed != owner) {
                 return Err(Error::NotFound("fact unavailable"));
             }
@@ -61,6 +77,55 @@ impl Store {
             let receipt = record_receipt(tx, seq, (facts, vectors, 0))?;
             drop_selection(tx)?;
             Ok(receipt)
+        })
+    }
+
+    pub(crate) fn delete_voice_profile(
+        &mut self,
+        profile_id: &str,
+        expected: Option<u64>,
+    ) -> Result<u32> {
+        id(profile_id)?;
+        self.write_both(|tx| {
+            let revision = tx
+                .query_row(
+                    "SELECT revision FROM voice_profiles WHERE profile_id=?1",
+                    [profile_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .ok_or(Error::NotFound("voice profile unavailable"))?;
+            crate::db::check_revision(expected, revision)?;
+
+            let now = now_ms()?;
+            create_selection(tx)?;
+            // Scrub the original fingerprints as well as the vector, which can
+            // hold an exact copy of a fingerprint. Remove other derivatives of
+            // those sources so their vectors cannot retain the deleted sample.
+            tx.execute(
+                "INSERT INTO erase_captures
+                 SELECT capture_id FROM voice_profile_sources WHERE profile_id=?1
+                 UNION SELECT capture_id FROM voice_fingerprints WHERE profile_id=?1",
+                [profile_id],
+            )?;
+            tx.execute(
+                "INSERT INTO erase_profiles
+                 SELECT ?1 UNION
+                 SELECT profile_id FROM voice_profile_sources WHERE capture_id IN erase_captures",
+                [profile_id],
+            )?;
+            tx.execute(
+                "INSERT INTO erase_utterances
+                 SELECT utterance_id FROM voice_fingerprints WHERE capture_id IN erase_captures",
+                [],
+            )?;
+            for utterance in selection(tx, "SELECT utterance_id FROM erase_utterances")? {
+                append(tx, Kind::Utterance, &utterance, now)?;
+            }
+            delete_vectors(tx, "voice_vec", "profile_id", "erase_profiles")?;
+            let captures = delete_captures(tx, now)?;
+            drop_selection(tx)?;
+            Ok(captures)
         })
     }
 
@@ -254,9 +319,17 @@ fn delete_captures(tx: &Transaction<'_>, now: u64) -> Result<u32> {
     )?;
     tx.execute(
         "UPDATE voice_attribution_consents SET granted=0, profile_id=NULL,
-         profile_revision=NULL, link_revision=NULL, updated_at_unix_ms=?1
-         WHERE profile_id IN erase_profiles",
+         profile_revision=NULL, link_revision=NULL, updated_at_unix_ms=max(updated_at_unix_ms+1, ?1)
+         WHERE profile_id IN erase_profiles OR person_id IN (
+             SELECT person_id FROM voice_profile_people WHERE profile_id IN erase_profiles
+         )",
         [now],
+    )?;
+    tx.execute(
+        "UPDATE voice_groups SET revision=revision+1 WHERE group_id IN (
+            SELECT group_id FROM voice_group_members WHERE profile_id IN erase_profiles
+         )",
+        [],
     )?;
     let captures = tx.query_row(
         "SELECT count(*) FROM (
@@ -352,10 +425,14 @@ pub(crate) fn verify_chain(conn: &Connection) -> Result<()> {
 }
 
 pub(crate) fn ensure_not_erased(conn: &Connection, kind: Kind, subject: &str) -> Result<()> {
-    if entry(conn, kind, &subject_digest(conn, kind, subject)?)?.is_some() {
+    if is_erased(conn, kind, subject)? {
         return Err(Error::Precondition("subject erased"));
     }
     Ok(())
+}
+
+pub(crate) fn is_erased(conn: &Connection, kind: Kind, subject: &str) -> Result<bool> {
+    Ok(entry(conn, kind, &subject_digest(conn, kind, subject)?)?.is_some())
 }
 
 fn entry(conn: &Connection, kind: Kind, subject: &[u8; 32]) -> Result<Option<u64>> {

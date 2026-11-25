@@ -10,13 +10,17 @@ use nexa_proto::sockets;
 use nexa_proto::v1::memory_service_server::{MemoryService, MemoryServiceServer};
 use nexa_proto::v1::*;
 use prost::Message;
+use serde_json::{Map, Value, json};
 use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status, transport::Server};
 
-use crate::db::{Error, Result, Store, ensure_private_dir, id, lock_file};
-use crate::voice::Observation;
+use crate::db::{
+    Error, FactView, Result, Store, ensure_private_dir, id, json_object, json_revision, lock_file,
+    page_limit,
+};
+use crate::voice::{Observation, voice_ids};
 
 /// Protobuf-encoded ActorContext for RPCs whose request has no actor field.
 /// The private socket is restricted to the local UID of trusted Nexa processes.
@@ -289,13 +293,8 @@ impl MemoryService for MemoryRpc {
         if req.include_person {
             actor.require(Permission::AdminManage).map_err(status)?;
         }
-        self.run(move |store| {
-            Ok(ListVoiceProfilesResponse {
-                profiles: store.list_voice_profiles(req.include_person)?,
-                next_cursor: String::new(),
-            })
-        })
-        .await
+        self.run(move |store| store.list_voice_profiles(req.include_person, &req.cursor))
+            .await
     }
 
     async fn link_voice_profile_to_person(
@@ -378,52 +377,236 @@ impl MemoryService for MemoryRpc {
 
     async fn list_memory_overview(
         &self,
-        _: Request<MemoryOverviewRequest>,
+        req: Request<MemoryOverviewRequest>,
     ) -> std::result::Result<Response<MemoryOverviewResponse>, Status> {
-        Err(Status::unimplemented("list_memory_overview pending"))
+        use Permission::*;
+
+        let req = req.into_inner();
+        let actor = Actor::validate(req.actor.as_ref()).map_err(status)?;
+        let user = actor.context.user_id.clone();
+        match req.view.as_str() {
+            "summary" | "facts" | "proposals" => actor.operator(MemoryRead),
+            "returned" | "owners_counts" | "voice_consents" => actor
+                .operator(MemoryRead)
+                .and_then(|()| actor.require(MemoryAssign)),
+            "mine" => actor.own(MemoryOwnRead, &user),
+            "voice_mine" => actor.own(MemoryOwnVoice, &user),
+            _ => Err(Error::Invalid("unknown memory view")),
+        }
+        .map_err(status)?;
+
+        self.run(move |store| {
+            let limit = page_limit(req.limit);
+            let cursor = &req.cursor;
+            let payload = match req.view.as_str() {
+                "summary" => {
+                    let mut facts = store.fact_page(FactView::Facts, cursor, limit)?;
+                    let mut proposals = store.fact_page(FactView::Proposals, cursor, limit)?;
+                    json!({"facts": facts["facts"].take(), "proposals": proposals["proposals"].take()})
+                }
+                "facts" => store.fact_page(FactView::Facts, cursor, limit)?,
+                "proposals" => store.fact_page(FactView::Proposals, cursor, limit)?,
+                "returned" => store.fact_page(FactView::Returned, cursor, limit)?,
+                "owners_counts" => store.owner_counts()?,
+                "mine" => store.fact_page(FactView::Mine(&user), cursor, limit)?,
+                "voice_mine" => store.voice_mine(&user)?,
+                "voice_consents" => store.voice_consents(cursor, limit)?,
+                _ => return Err(Error::Invalid("unknown memory view")),
+            };
+            Ok(MemoryOverviewResponse { payload_json: payload.to_string() })
+        }).await
     }
 
     async fn mutate_memory_item(
         &self,
-        _: Request<MemoryMutationRequest>,
+        req: Request<MemoryMutationRequest>,
     ) -> std::result::Result<Response<MemoryMutationResponse>, Status> {
-        Err(Status::unimplemented("mutate_memory_item pending"))
+        use Permission::*;
+
+        let req = req.into_inner();
+        let actor = Actor::validate(req.actor.as_ref()).map_err(status)?;
+        let user = actor.context.user_id.clone();
+        let target = if req.target_id.is_empty() {
+            &user
+        } else {
+            &req.target_id
+        };
+        match req.operation.as_str() {
+            "assign_owner" | "reopen_voice_consent" => actor.operator(MemoryAssign),
+            "confirm_proposal" | "reject_proposal" => actor.operator(MemoryReview),
+            "return_fact" => actor.own(MemoryOwnWrite, &user),
+            "resume_attribution" => actor
+                .operator(VoicesReview)
+                .and_then(|()| actor.require(AdminManage))
+                .and_then(|()| actor.require(MemoryAssign)),
+            "voice_consent_grant" | "voice_consent_revoke" | "voice_verification" => {
+                actor.own(MemoryOwnVoice, target)
+            }
+            "confirm_voice_profile" | "delete_voice_profile" | "correct_voice_group" => {
+                actor.operator(VoicesReview)
+            }
+            _ => Err(Error::Invalid("unknown memory operation")),
+        }
+        .map_err(status)?;
+
+        let body = json_object(&req.payload_json).map_err(status)?;
+        self.run(move |store| {
+            let target = &req.target_id;
+            let expected = json_revision(&body, "expected_revision")?;
+            let payload = match req.operation.as_str() {
+                "assign_owner" => {
+                    let owner = mutation_owner(&body)?;
+                    let expected = json_revision(&body, "expected_owner_revision")?.or(expected);
+                    store.assign_owner(target, owner, expected)?
+                }
+                "confirm_proposal" => store.confirm_proposal(target)?,
+                "reject_proposal" => {
+                    let receipt = store.reject_proposal(target)?;
+                    json!({"deleted": true, "facts_deleted": receipt.facts_deleted})
+                }
+                "return_fact" => store.return_fact(target, &user)?,
+                "reopen_voice_consent" => store.reopen_voice_consent(target, expected)?,
+                "resume_attribution" => store.resume_attribution(target, expected)?,
+                "voice_consent_grant" | "voice_consent_revoke" => {
+                    personal_voice_payload(&body, &user)?;
+                    store.change_voice_consent(
+                        &user,
+                        req.operation == "voice_consent_grant",
+                        &body,
+                    )?
+                }
+                "voice_verification" => {
+                    personal_voice_payload(&body, &user)?;
+                    let outcome = body
+                        .get("outcome")
+                        .and_then(Value::as_str)
+                        .ok_or(Error::Invalid("verification outcome required"))?;
+                    store.record_voice_verification(&user, outcome, expected)?
+                }
+                "confirm_voice_profile" => {
+                    let ids = body
+                        .get("fingerprint_ids")
+                        .ok_or(Error::Invalid("missing voice capture selection"))?;
+                    store.confirm_voice_profile(target, &voice_ids(ids)?, expected)?
+                }
+                "delete_voice_profile" => {
+                    let deleted = store.delete_voice_profile(target, expected)?;
+                    json!({"deleted": true, "captures_deleted": deleted})
+                }
+                "correct_voice_group" => store.correct_voice_group(target, &body)?,
+                _ => return Err(Error::Invalid("unknown memory operation")),
+            };
+            Ok(MemoryMutationResponse {
+                payload_json: payload.to_string(),
+            })
+        })
+        .await
     }
 
     async fn get_voice_global_switch(
         &self,
-        _: Request<ActorRequest>,
+        req: Request<ActorRequest>,
     ) -> std::result::Result<Response<VoiceGlobalSwitchStatus>, Status> {
-        Err(Status::unimplemented("get_voice_global_switch pending"))
+        let req = req.into_inner();
+        let actor = Actor::validate(req.actor.as_ref()).map_err(status)?;
+        actor.operator(Permission::MemoryRead).map_err(status)?;
+        actor.require(Permission::MemoryAssign).map_err(status)?;
+        self.run(|store| store.voice_global_switch()).await
     }
 
     async fn set_voice_global_switch(
         &self,
-        _: Request<SetVoiceGlobalSwitchRequest>,
+        req: Request<SetVoiceGlobalSwitchRequest>,
     ) -> std::result::Result<Response<VoiceGlobalSwitchStatus>, Status> {
-        Err(Status::unimplemented("set_voice_global_switch pending"))
+        let req = req.into_inner();
+        let actor = Actor::validate(req.actor.as_ref()).map_err(status)?;
+        actor.operator(Permission::MemoryAssign).map_err(status)?;
+        actor.require(Permission::AdminManage).map_err(status)?;
+        self.run(move |store| store.set_voice_global_switch(req.enabled, req.expected_revision))
+            .await
     }
 
     async fn get_voice_capture_review(
         &self,
-        _: Request<VoiceCaptureReviewRequest>,
+        req: Request<VoiceCaptureReviewRequest>,
     ) -> std::result::Result<Response<VoiceCaptureReviewResponse>, Status> {
-        Err(Status::unimplemented("get_voice_capture_review pending"))
+        let req = req.into_inner();
+        review_actor(req.actor.as_ref()).map_err(status)?;
+        self.run(move |store| {
+            let review = store.voice_capture_review(&req.fingerprint_id, req.include_transcript)?;
+            Ok(VoiceCaptureReviewResponse {
+                payload_json: review.to_string(),
+            })
+        })
+        .await
     }
 
     async fn query_voice_captures(
         &self,
-        _: Request<VoiceCaptureQueryRequest>,
+        req: Request<VoiceCaptureQueryRequest>,
     ) -> std::result::Result<Response<VoiceCaptureQueryResponse>, Status> {
-        Err(Status::unimplemented("query_voice_captures pending"))
+        let req = req.into_inner();
+        review_actor(req.actor.as_ref()).map_err(status)?;
+        let query = json_object(&req.query_json).map_err(status)?;
+        self.run(move |store| {
+            let page = store.query_voice_captures(&query)?;
+            Ok(VoiceCaptureQueryResponse {
+                payload_json: page.to_string(),
+            })
+        })
+        .await
     }
 
     async fn get_evaluation_sample(
         &self,
-        _: Request<EvaluationSampleRequest>,
+        req: Request<EvaluationSampleRequest>,
     ) -> std::result::Result<Response<EvaluationSampleResponse>, Status> {
-        Err(Status::unimplemented("get_evaluation_sample pending"))
+        let req = req.into_inner();
+        let actor = Actor::validate(req.actor.as_ref()).map_err(status)?;
+        if actor.role != Role::Evaluator {
+            return Err(Status::permission_denied("evaluator actor required"));
+        }
+        actor.require(Permission::EvaluationRead).map_err(status)?;
+        self.run(move |store| {
+            let sample = store.evaluation_sample(&req.fingerprint_id)?;
+            Ok(EvaluationSampleResponse {
+                payload_json: sample.to_string(),
+            })
+        })
+        .await
     }
+}
+
+fn review_actor(context: Option<&ActorContext>) -> Result<()> {
+    let actor = Actor::validate(context)?;
+    actor.operator(Permission::VoicesRead)?;
+    actor.require(Permission::VoicesReview)
+}
+
+fn mutation_owner(payload: &Map<String, Value>) -> Result<&str> {
+    let mut owners = ["owner_user_id", "person_id"]
+        .into_iter()
+        .filter_map(|key| payload.get(key));
+    let owner = owners
+        .next()
+        .and_then(Value::as_str)
+        .ok_or(Error::Invalid("new owner required"))?;
+    if owners.next().is_some() {
+        return Err(Error::Invalid("ambiguous new owner"));
+    }
+    Ok(owner)
+}
+
+fn personal_voice_payload(payload: &Map<String, Value>, user: &str) -> Result<()> {
+    for field in ["user_id", "person_id"] {
+        if payload
+            .get(field)
+            .is_some_and(|value| value.as_str() != Some(user))
+        {
+            return Err(Error::Denied("personal actor scope mismatch"));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]
