@@ -49,7 +49,7 @@ Cinco daemons nativos coordinan captura por habitación, inferencia offline, mem
 
 ```bash
 # Tests (Mac .venv CPython 3.13)
-.venv/bin/pytest tests/unit/workflow/
+.venv/bin/pytest tests-v2/workflow/
 .venv/bin/pytest tests-v2/smoke tools/nexa-migrate/tests
 
 # Orquestación multi-consola

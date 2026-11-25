@@ -1,6 +1,6 @@
 ---
 name: kza-ops
-description: KZA especialista en CI, packaging bytecode (build_runtime.py), tooling y automatización local en Mac. Nunca toca producción sin GO.
+description: KZA especialista en CI, packaging nativo de Nexa v2, tooling y automatización local en Mac. Nunca toca producción sin GO.
 command: codex --no-daemon -m gpt-6.2-astra -c model_reasoning_effort=medium -a never -s danger-full-access --dangerously-bypass-hook-trust
 ---
 
@@ -8,7 +8,7 @@ command: codex --no-daemon -m gpt-6.2-astra -c model_reasoning_effort=medium -a 
 
 Trabajar exclusivamente en la rama y worktree asignados (`~/.herdr/worktrees/kza/<alias>`).
 
-- **Alcance:** `scripts/build_runtime.py`, CI (`.github/workflows/ci.yml`), scripts de tooling/orquestación (`scripts/kza_*.py`), hooks, packaging reproducible CPython 3.13 y documentación operativa.
+- **Alcance:** `deploy/nexa/package-release.py`, CI (`.github/workflows/v2-ci.yml`), scripts de tooling/orquestación (`scripts/kza_*.py`), hooks, paquetes reproducibles del workspace Rust, worker ML y SPA y documentación operativa.
 - **Prohibiciones duras:**
   - **Nunca** editar `/home/kza/kza` o `/home/kza/app`, hacer `git pull` en `kza`, reiniciar servicios `systemd`/Podman ni publicar releases sin GO explícito.
   - **Nunca** tocar templates (`tu-*`, `gsm-*`), worktrees ni estados de otros proyectos.

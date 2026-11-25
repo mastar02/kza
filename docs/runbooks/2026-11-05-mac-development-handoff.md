@@ -8,7 +8,7 @@ para retomar el mismo goal con su roadmap y evidencias.
 
 **Sesión cerrada y goal pausado por pedido del usuario.** Producto `c0e82df` publicado; 91 pruebas dirigidas y 2 nativas aceptadas dentro de su alcance. La full de 9382 casos quedó incompleta: 5620 PASS + 6 FAIL, corte por deadline de 1500 s, terminal `19778/77d9b6` exit 1. Exportación `81344/a50ea3` consumida; no quedan ejecuciones pendientes. La última full aceptada sigue siendo el hito histórico V1 de `66951c5`.
 
-Leer [2026-11-07-session-handoff.md](2026-11-07-session-handoff.md) para evidencia, seis fallas, límites y prompt de goal nuevo. Primero reparar la liberación de referencias privadas y revisar el presupuesto de la suite; cuentas/V3 sigue sólo en diseño. Siete familias instrumentadas, dos registros primarios cerrados, cinco parciales y 30/32 obligaciones pendientes; sin ACK, release ni cambios de producción.
+Leer [2026-11-07-session-handoff.md](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/runbooks/2026-11-07-session-handoff.md) para evidencia, seis fallas, límites y prompt de goal nuevo. Primero reparar la liberación de referencias privadas y revisar el presupuesto de la suite; cuentas/V3 sigue sólo en diseño. Siete familias instrumentadas, dos registros primarios cerrados, cinco parciales y 30/32 obligaciones pendientes; sin ACK, release ni cambios de producción.
 
 ## Referencia histórica del cierre Linux F
 
@@ -24,7 +24,7 @@ mismo goal desde una sesión nueva en Mac. El objetivo sigue en
 | Última entrega verificada antes de F | `be32294`, T023-E: 8294 PASS y una xfail conocida; 1010 archivos, incluidos 37 scripts, sin cambios durante esa full |
 | Unidad entregada | T023-F: autoridad y retiro de captura/inferencia/reporte de `diagnose_wakeword` |
 | Commit de código F | `38f3912d5272be408f9d27afb74a298a54d2b5ac`; comprobar su publicación con el historial de la rama y el registro de cierre |
-| Full F y evidencia pública | 8341 PASS y una xfail conocida; 1013 archivos, incluidos 37 scripts, sin cambios; XML 851.448 s. Evidencia: [captura de diagnóstico](../research/2026-11-05-wakeword-diagnostics-capture-authority.json) |
+| Full F y evidencia pública | 8341 PASS y una xfail conocida; 1013 archivos, incluidos 37 scripts, sin cambios; XML 851.448 s. Evidencia: [captura de diagnóstico](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-05-wakeword-diagnostics-capture-authority.json) |
 | Commit de tracking y handoff Linux | `06cd9162e8516ff906ab092246e02edc499823ad`, histórico; no usar el último cambio Mac de este archivo como SHA del cierre Linux |
 | Estado del goal al salir | Pausa solicitada por el usuario después de esta entrega, con el objetivo incompleto. Confirmar el estado del mismo goal al retomar; no crear otro objetivo ni marcarlo completo. |
 | Procesos de desarrollo pendientes Linux | F terminó; sus handles son históricos y no se reutilizan en Mac |
@@ -90,7 +90,7 @@ secretos.
 
 ## Comprobación y próxima unidad
 
-Leer el [informe I](../research/2026-11-05-legacy-wakeword-capture-authority.json) y la [auditoría y propuesta J](../plans/2026-11-05-global-capture-followup.json). La fábrica real inicializa el control antes de los dos loops de producción, pero su OwnedInputStream compartido omite comprobación estricta de errores PortAudio y reintenta sobre un wrapper cuyo puntero puede haberse descartado. Es un hallazgo estático pendiente de reproducción aislada, sin ejecutar dispositivos o servicios reales. StreamingSTT permanece condicional sin llamador acreditado. La propuesta original I es histórica; no repetir su baseline ni sus pruebas por cambio de sesión.
+Leer el [informe I](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-05-legacy-wakeword-capture-authority.json) y la [auditoría y propuesta J](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/plans/2026-11-05-global-capture-followup.json). La fábrica real inicializa el control antes de los dos loops de producción, pero su OwnedInputStream compartido omite comprobación estricta de errores PortAudio y reintenta sobre un wrapper cuyo puntero puede haberse descartado. Es un hallazgo estático pendiente de reproducción aislada, sin ejecutar dispositivos o servicios reales. StreamingSTT permanece condicional sin llamador acreditado. La propuesta original I es histórica; no repetir su baseline ni sus pruebas por cambio de sesión.
 
 ## Verificación inicial en Mac — 2026-11-05
 
@@ -114,7 +114,7 @@ y del servidor. Los oráculos y cierres del fixture siguen iguales; Linux
 conserva su binario `chromium` y su directorio snap. La UI usa assets locales
 vendorizados: no hizo falta instalar paquetes npm.
 
-La [evidencia de esta verificación](../research/2026-11-05-mac-development-environment.json)
+La [evidencia de esta verificación](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-05-mac-development-environment.json)
 distingue estos resultados del histórico Linux. Esta primera tanda no acredita
 la suite completa Mac, hardware, interacción móvil, modelos ni producción. El
 desarrollo de G y su baseline tienen evidencia separada; los 21 criterios
@@ -184,7 +184,7 @@ barrera. Reanudar o recuperar permiso no arranca audio: hace falta un `start()`
 nuevo. Los arrays ya cedidos a callback/cola no se borran como propios; las
 lecturas históricas, copias, TTL y borrado/restauración conservan su alcance.
 
-El [informe G](../research/2026-11-05-zone-setup-capture-authority.json)
+El [informe G](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-05-zone-setup-capture-authority.json)
 registra el proof real de full, commits, publicación e historia de cada intento.
 No hay aceptación de hardware, SDK privado, borrado físico, C04 ni de todos los
 productores. T022/T023 siguen `in_progress`, T024 `planned` y los 21 criterios
@@ -194,7 +194,7 @@ El usuario pidió cerrar G y continuar en otra sesión del mismo goal. La pausa
 se solicita al finalizar la publicación. Confirmar su resultado real por API al retomar, junto al checkpoint Mac y Git. No crear otro objetivo ni marcar éste como completo.
 
 
-La propuesta H queda en [continuación del diagnóstico de comandos](../plans/2026-11-05-manual-voice-command-continuation.json): sólo lectura y baseline sintético futuro, sin importar `.env` privada ni ejecutar HA.
+La propuesta H queda en [continuación del diagnóstico de comandos](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/plans/2026-11-05-manual-voice-command-continuation.json): sólo lectura y baseline sintético futuro, sin importar `.env` privada ni ejecutar HA.
 
 ## Diagnóstico manual bajo autoridades separadas — H
 
@@ -270,7 +270,7 @@ El commit `80b47f55716e980b93a7312b6732de0611e3e2e0` agrega head monotónico, bi
 
 La dirigida terminó con **112 PASS**, XML79.374 s, wait real del PID50473 y fuentes1054/scripts37/protegidos29 intactos. AST/Ruff pasan. El intento previo se conserva: 105 PASS/5 FAIL por exigir Chroma abierto antes del warmup; se corrigió observando su constructor real. Los casos distinguen owner nunca abierto de cliente adquirido y cerrado mediante el SDK público. Al registrar ese prerrequisito, los tres archivos del original263e seguían idénticos.
 
-Ese reporte verifica prerrequisitos en fuente. Sus checks compilados legacy usaron HEAD9d76555, anterior a estos módulos; todavía no incluían el recorrido gestionado NEW/OLD, el cierre explícito de HA/Auth/capture auxiliares, el consentimiento siguiente ni R/F material. Si AudioLoop pierde una identidad lazy antes del stop-seam, se rechaza el cierre. El helper de reconciliación era parcial en esa publicación; el hito posterior se describe a continuación. Ver [alcance y evidencia](../research/2026-11-06-runtime-admission-foundation.json).
+Ese reporte verifica prerrequisitos en fuente. Sus checks compilados legacy usaron HEAD9d76555, anterior a estos módulos; todavía no incluían el recorrido gestionado NEW/OLD, el cierre explícito de HA/Auth/capture auxiliares, el consentimiento siguiente ni R/F material. Si AudioLoop pierde una identidad lazy antes del stop-seam, se rechaza el cierre. El helper de reconciliación era parcial en esa publicación; el hito posterior se describe a continuación. Ver [alcance y evidencia](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-06-runtime-admission-foundation.json).
 
 ## Derivación y recorrido material — T024-F1, hito local
 
@@ -280,7 +280,7 @@ Los commits `4f88ac9`, `36cc99c`, `c30b12c`, `8a05398`, `3c45902` y `d574075` im
 
 La suite de componentes terminó con **90 PASS**, XML1.910 s, wait real 32760/722db9. El recorrido compilado **O/N/R/F pasó**, XML43.690 s, wait real 37103/04e71d: cuatro estados físicos, código 9b en O/R y d574 en N/F, bridge80b para OLD, cuatro hijos con wait0 y 277/279/277/279 orígenes bytecode. R conserva decisiones latest y F conserva una revocación adicional hecha en R; ambos consumen el consentimiento `False` de la generación siguiente. Fuentes1064/scripts37/protegidos30 intactos. Se conservan los fallos previos: retención numérica, captura repetida del fixture y export manual omitido; sus correcciones no rebajaron los controles.
 
-**F1 sigue abierto.** La proyección de admisión V1 y el clasificador histórico de cutproof todavía no abarcan por sí solos el cierre export/padres manuales. No cambiar V1 silenciosamente: el bridge80b recaptura el binding. Faltan cobertura negativa y checks generales/guardias; última fullF0 permanece8584PASS+xfail conocida, anterior aF1. `native_gates_returned=null` en O/R/F no cuenta como ACK universal. T021–T024 y los 21 criterios no cambian. Ver [reporte con alcance y evidencia](../research/2026-11-06-state-derivation-progress.json).
+**F1 sigue abierto.** La proyección de admisión V1 y el clasificador histórico de cutproof todavía no abarcan por sí solos el cierre export/padres manuales. No cambiar V1 silenciosamente: el bridge80b recaptura el binding. Faltan cobertura negativa y checks generales/guardias; última fullF0 permanece8584PASS+xfail conocida, anterior aF1. `native_gates_returned=null` en O/R/F no cuenta como ACK universal. T021–T024 y los 21 criterios no cambian. Ver [reporte con alcance y evidencia](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-06-state-derivation-progress.json).
 
 ## Autoridad manual y construcción — T024-F1, avance local
 
@@ -290,7 +290,7 @@ Los commits posteriores a `d574075` agregan el clasificador histórico de export
 
 La barrera de construcción en `3fc5ac6` mantiene excluido el mantenimiento histórico de diagnósticos hasta el retorno real de la validación nativa. La cancelación espera ese retorno y los escritores ajenos siguen rechazados. Pasaron 21 pruebas de construcción y dos regresiones compiladas con la aplicación anterior y el puente actualizado. O/N/R/F registra cuatro cierres y wait0 reales; esto acredita el escenario declarado.
 
-Las full de f550 y df88 fallaron y se conservan como tales. La colección nueva retiene sus 8823 IDs y agrega diez, sin quitar casos. La full nueva terminó con8832 PASS y la misma xfail conocida,8833 IDs exactos; las15 firmas de warnings se mantienen. También falta un catálogo durable antes del primer byte para todas las copias y sus obligaciones de limpieza/recuperación. El case físico temporal de un ensayo d853 anterior fue retirado por pytest; sólo se conservan sus recibos y logs. Los cases nuevos de3fc se exportan con su procedencia, sin reconstruir testigos anteriores. Ver el [reporte actual](../research/2026-11-06-manual-authority-progress.json).
+Las full de f550 y df88 fallaron y se conservan como tales. La colección nueva retiene sus 8823 IDs y agrega diez, sin quitar casos. La full nueva terminó con8832 PASS y la misma xfail conocida,8833 IDs exactos; las15 firmas de warnings se mantienen. También falta un catálogo durable antes del primer byte para todas las copias y sus obligaciones de limpieza/recuperación. El case físico temporal de un ensayo d853 anterior fue retirado por pytest; sólo se conservan sus recibos y logs. Los cases nuevos de3fc se exportan con su procedencia, sin reconstruir testigos anteriores. Ver el [reporte actual](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-06-manual-authority-progress.json).
 
 ## Catálogo durable de copias — T024-F1, base local
 
@@ -300,7 +300,7 @@ Este apartado conserva el hito histórico `2cdbe51`; el avance posterior se regi
 
 El corte local pasó343 componentes, dos regresiones compiladas y8890 casos generales con la única xfail conocida. Un proceso nuevo cargó `copy_catalog.pyc`, leyó seis copias finalizadas y comprobó seis retornos SDK. Otro probe dentro de ese lector rechazó una factory que devolvía un cliente Chroma real prestado, sin invocarla ni confirmar limpieza. Casos físicos, metadatos, warnings y testigos se conservan con hashes; los archivos temporales antiguos ausentes no se reconstruyen.
 
-F1 sigue abierto. El catálogo mantiene `cleanup=blocked, owner=None`; faltan owner y recibos de limpieza efectiva, más evidencia de fallos reales SDK bajo la capacidad nueva e inventario de copias retrospectivas/forenses. La retirada de S debe preservar exactamente U/manual y tratar la invalidez de snapshots históricos sin reescribir IDs ni pins. Ver el [reporte y requisitos pendientes](../research/2026-11-06-copy-lifecycle-progress.json).
+F1 sigue abierto. El catálogo mantiene `cleanup=blocked, owner=None`; faltan owner y recibos de limpieza efectiva, más evidencia de fallos reales SDK bajo la capacidad nueva e inventario de copias retrospectivas/forenses. La retirada de S debe preservar exactamente U/manual y tratar la invalidez de snapshots históricos sin reescribir IDs ni pins. Ver el [reporte y requisitos pendientes](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-06-copy-lifecycle-progress.json).
 
 ## Limpieza selectiva de copias — T024-F1, avance local
 
@@ -374,7 +374,7 @@ Los dos intentos full anteriores en `ef8bc6d` permanecen rechazados y conservado
 
 Las bases N/F ya existían como estado copiado: el registro ocurrió antes de abrirlas este owner, no antes del primer byte histórico. El journal no concede autoridad, adopción retroactiva ni cleanup ACK; los owners originales conservan apertura, trabajo y cierre reales. La matriz tiene 32 categorías u obligaciones: dos familias instrumentadas y 30 categorías sin cubrir, además de huecos anidados/lazy/offline/externos/desconocidos. No prueba un total de 32 writers individuales.
 
-Evidencia: [reporte de registro](../research/2026-11-06-output-registration-progress.json) y `data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json`, SHA `5a36a61f00e01ffb9472c78a745f08fb40e1e0631d390fefdaae14cd1f831e87`. La auditoría full tiene 49 comprobaciones. Su exportación conserva 37831 archivos, 2533 enlaces y 1 FIFO inerte, con originales/copias exactos según el verificador consumido. El retiro S-only previo conserva su propia evidencia histórica: owner en el padre bajo autoridad del F compilado; hijo nuevo con parser `.pyc` fijado al release. No se atribuye ejecución del owner al hijo ni un ACK agregado.
+Evidencia: [reporte de registro](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/research/2026-11-06-output-registration-progress.json) y `data/autonomous-roadmap-20261102/t024/f1/output-registration/context-capacity-fix/acceptance-proof.json`, SHA `5a36a61f00e01ffb9472c78a745f08fb40e1e0631d390fefdaae14cd1f831e87`. La auditoría full tiene 49 comprobaciones. Su exportación conserva 37831 archivos, 2533 enlaces y 1 FIFO inerte, con originales/copias exactos según el verificador consumido. El retiro S-only previo conserva su propia evidencia histórica: owner en el padre bajo autoridad del F compilado; hijo nuevo con parser `.pyc` fijado al release. No se atribuye ejecución del owner al hijo ni un ACK agregado.
 
 Siguiente bloque: continuar el censo global. El segundo parche privado v2 para privacidad, sesiones/dashboard, rutinas, eventos y sugerencias tiene revisión estática independiente sin bloqueos de código abiertos en su alcance, pero sigue sin aplicar ni ejecutar y sin aceptación runtime. Sus pins de parche, intención y revisión figuran en el reporte. Revalidar los originales antes de aplicarlo, recopilar IDs exactos y ejecutar las validaciones dirigidas, compiladas y full pendientes, conservando los huecos explícitos de cobertura. T024-F1 y T024 siguen incompletos; T024-F0 es la última unidad completa. T021–T024 siguen in_progress y los 21 criterios not_evaluated. Cierre SDK genuino, migración legacy, guards diagnostics1/streams2/voices2 y aceptación física pendientes. Voz/persona separado de permisos; sin release ni cambios de producción.
 
@@ -809,7 +809,7 @@ El runner exporta `KZA_REQUIRE_REAL_SYSTEMD=1` (RSG, 2026-11-19): si el systemd 
 - Revisión independiente: aceptada con arreglos (F1–F7, F11 corregidos).
 - Suite completa en `440617e`, en la Mac y en el server: verde sin fallas (`u3b/full-0e4/RESULT.md`). En el server, la parte de integración ahora va en tres tandas.
 
-`U3b-0c` (integrada en `a0209f2`, sobre `b3cbcd0` + `a526538`): compactación de estados dueños, la última unidad antes de R1. Runbook: [2026-11-14-owner-compaction](2026-11-14-owner-compaction.md); sección nueva en DEPLOYMENT.
+`U3b-0c` (integrada en `a0209f2`, sobre `b3cbcd0` + `a526538`): compactación de estados dueños, la última unidad antes de R1. Runbook: [2026-11-14-owner-compaction](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/runbooks/2026-11-14-owner-compaction.md); sección nueva en DEPLOYMENT.
 - `stage_runtime compact plan|start|verify|retire|resume|abort|allow-run|status`. El estado nuevo K es una copia idéntica del head con las rutas reubicadas; tras una corrida gestionada limpia de K se destruyen con `unlink` sólo las copias con prueba positiva. Lo demás queda intacto y se reconoce por digest.
 - Época del controlador 3; compuerta en la entrada del controlador y en `prepare`; serve deja pasar sólo la corrida armada o un `allow-run`; R-b automático apagado mientras haya compactación pendiente; head manual nuevo `compaction_return`.
 - La fase de datos corre en un proceso aparte con su capacidad G1 (`KZA_COMPACTION_WORKER=1`).
@@ -1914,7 +1914,7 @@ Respuesta del 2026-11-17 (`t040-t041/user-decisions-20261110.json`, clave
 Rama `sc5b` desde `1541909a` (batch-e). Diseño `sc-release-design-v4`,
 unidad SC-5b. Evidencia: `t040-t041/sc5b-evidence.json` (local).
 
-- Runbook nuevo [2026-11-17-release-mode.md](2026-11-17-release-mode.md):
+- Runbook nuevo [2026-11-17-release-mode.md](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/runbooks/2026-11-17-release-mode.md):
   compuerta (SC-R, SC-6b, SC4B-Q1 dentro de los 14 días de L4, SC4B-Q2 con
   el paso 0), construcción de NUEVO (toda release que cambia `src` lleva T0
   y revisión subida; `RELEASED_CONTROLLERS`; arreglo sobre la línea
@@ -2102,7 +2102,7 @@ Decisiones del usuario `r1e_questions_20261118` (R1E-Q1 a R1E-Q5):
 
 ## Prompt para la sesión nueva
 
-Usar el prompt completo de [cierre2026-11-07](2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
+Usar el prompt completo de [cierre2026-11-07](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/runbooks/2026-11-07-session-handoff.md#prompt-para-sesión-fresca-y-goal-nuevo). El goal anterior está pausado; crear uno nuevo en el hilo fresco para el roadmap completo. No repetir el hito S-only ni iniciar cuentas antes de reparar la full actual.
 
 ## Lista de cierre y reanudación
 

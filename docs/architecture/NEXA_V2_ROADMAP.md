@@ -1,6 +1,6 @@
 # Roadmap ejecutable de Nexa v2
 
-Estado al 2026-11-25. Base de integración: `v2/main@dab0b945`. Esta es la referencia del repositorio para las olas de Nexa. Los planes P6/P7 del monolito corresponden a otra línea de desarrollo.
+Estado al 2026-11-25. Base de la purga: `v2/main@18a9e8e4`. Esta es la referencia del repositorio para las olas de Nexa. Los planes P6/P7 del monolito corresponden a otra línea de desarrollo.
 
 ## Olas y evidencia de cierre
 
@@ -11,7 +11,7 @@ Estado al 2026-11-25. Base de integración: `v2/main@dab0b945`. Esta es la refer
 | 2 · Integración | Completada | Adaptadores de hardware T2.2, pipeline de voz T4.6, plano de control Axum T5.1 y SPA T5.2 integrados. Evidencia en `2d47215b`, `e99446b0`, `1d004471` y `390d798c`. |
 | 3 · Entrega y paridad | Completada | L4 Playwright, migración offline T6.1 y paquete/rollback T6.2 con smoke L5. La CI enlaza las suites en `f9f4e3e5`. |
 | 4 · Validación y cutover | En curso | Validar el candidato Linux en hardware, ensayar migración y rollback, reconciliar perfil y units, obtener GO y documentar estabilidad en campo. |
-| 5 · Retiro y opcionales | Pendiente | Revisar T7.0a, ejecutar T7.0b en asiento separado tras aprobación y retirar el runtime antiguo únicamente bajo el gate de Fase B. Priorizar los opcionales por separado. |
+| 5 · Retiro y opcionales | Fase A hecha en la rama de trabajo | T7.0b completada en Git. La integración requiere QA independiente. El retiro del runtime antiguo sigue sujeto al gate de Fase B. Priorizar los opcionales por separado. |
 
 Los bloques A y B de paridad y los fixes Linux se reportan completados en la línea de trabajo. En esta base se pueden inspeccionar el protocolo (`046c69c0`), el endurecimiento de NLU/LLM/ops (`732f2551`, `50d4b334`, `8a97c0b7`), memoria y hogar (`98dc3693`, `cf33fb38`), web, migrador y brain (`0355975a`, `5ede0220`, `dab0b945`). Antes de usar un paquete, verificar que incluya los fixes Linux del perfil operativo; hay diferencias concretas en las units de esta base. [Contrato y diferencias de despliegue](DEPLOYMENT.md).
 
@@ -22,23 +22,13 @@ Los bloques A y B de paridad y los fixes Linux se reportan completados en la lí
 3. **Ops** ensaya migración offline en copia consistente y rollback cronometrado (objetivo < 60 s). Entrega hashes, conteos y resultado sin datos privados. Si falla una condición, conservar el candidato anterior y corregir en la rama de trabajo.
 4. **Coordinación** presenta evidencia y solicita GO de cutover. Tras la promoción autorizada, registrar observación estable, incidencias y disponibilidad de rollback. La retirada del host requiere una decisión posterior.
 
-## T7.0a · Manifiesto de purga propuesto
+## T7.0b · Purga Fase A · HECHO en la rama de trabajo
 
-T7.0a documenta el alcance. La aprobación del manifiesto habilita preparar T7.0b en su propio asiento. El tag base inmutable `archive/legacy-monolith-2026-11` apunta a `d0defada018b90a45bb95714dde6dbd02b48eca9`, el mismo commit que `recovery/production-2026-10-25` al levantar el inventario. No mover ni reemplazar el tag.
+El árbol de Nexa v2 conserva el workspace Rust, el worker ML, la SPA, el despliegue nativo, la configuración TOML y el migrador offline. Las pruebas del orquestador viven en `tests-v2/workflow/`. La CI las ejecuta junto a los gates de v2. Los cinco scripts de orquestación y hooks, sus skills y los templates de asientos siguen en el checkout.
 
-### Fase A · Solo Git, destino de integración v2/main
+Se retiraron del árbol de desarrollo el runtime Python del monolito, sus pruebas, herramientas, infraestructura y documentación histórica. Para consultar el árbol inmediatamente anterior, usar el tag [archive/pre-purge-v2-2026-11](https://github.com/mastar02/kza/tree/archive/pre-purge-v2-2026-11) en `18a9e8e49f719e37c76f1e7f1c2013768e8d5c42`. El tag `archive/legacy-monolith-2026-11` y la rama `recovery/production-2026-10-25` identifican el rescate en `d0defada`. Se conserva el [manifiesto de rescate](../research/2026-10-25-production-recovery.json).
 
-| Lote | Candidatos del monolito | Qué preservar o comprobar |
-| --- | --- | --- |
-| Código y tests | `src/` y `tests/` | Primero trasladar `tests/unit/workflow/` a `tests-v2/workflow/`, ajustar sus referencias relativas, fixtures, CI y documentación y ejecutar la suite en su nueva ruta. Preservar pruebas v2 existentes. |
-| Scripts | Inventario orientativo de ~47 scripts antiguos en `scripts/`: bytecode, adopción/compactación, launcher, sync Chroma, entrenamiento, setup y operación del runtime anterior | Conservar `kza_quota.py`, `kza_router.py`, `kza_seat.py`, `kza_safety_guard.py`, `kza_precompact.py` y sus consumidores. Excluir dependencias de servicios vigentes, incluidos instalador de hook y unit del índice de código. |
-| Tools | Inventario orientativo de ~42 herramientas legacy en `tools/`: diagnóstico/bench del monolito, P6–P8, SC0/SC4, fixtures web y entrenamiento | Conservar `tools/nexa-migrate/` completo y herramientas con consumidores activos como `tools/code_search.py`. Resolver dependencias por ruta antes de aprobar el diff. |
-| Infraestructura histórica | `docker/`, `containers/`, `systemd/`, `okf/`, `config/settings.yaml`, `.github/workflows/ci.yml` | Conservar `deploy/nexa/` con sus units y udev, `config/nexa/` y `.github/workflows/v2-ci.yml`. Comprobar dependientes de ficheros auxiliares de raíz antes de incluirlos. |
-| Documentación | Resúmenes de Emotion, alertas y tests y plan de mejoras de raíz; material obsoleto en `docs/plans/`, `docs/research/`, `docs/superpowers/` y arquitectura histórica | Conservar los nueve documentos de T7.0a, los runbooks vigentes del [índice](../INDEX.md), decisiones e inventarios aún citados (incluido el manifiesto de rescate). Revisar los enlaces desde documentación viva y hooks. |
-
-**Preparación del asiento T7.0b.** Fijar el SHA de partida, enumerar rutas con `git ls-files` y comparar el contenido de cada candidato contra el tag con `git diff --name-status archive/legacy-monolith-2026-11 HEAD -- RUTA`. Las cantidades anteriores orientan la revisión. El tag conserva el monolito de rescate, pero hay diferencias posteriores en dashboard, privacidad y pruebas de workflow. Registrar el SHA recuperable de cada delta antes de retirarlo. Conservar toda ruta dudosa hasta identificar su consumidor y dueño.
-
-**Cierre de Fase A.** Revisar el listado de bajas explícitas y de movimientos con el padre. Tras aprobación, ejecutar la suite workflow reubicada y la CI v2, validar enlaces, imports, hooks, skills y construcción del paquete desde checkout limpio. Entregar diff, SHA y evidencia a QA independiente antes de integrar en `v2/main`. Esta fase solo cambia archivos versionados.
+El código del índice (`src/code_index/`), su unit, el instalador del hook y `tools/code_search.py` quedan en el archivo previo a la purga. El contenedor del servidor `kza-code-index-ctr` sigue fuera del alcance de ambas fases. La integración en `v2/main` requiere revisión independiente por familia.
 
 ### Fase B · Servidor 192.168.1.2
 

@@ -5,7 +5,7 @@
 | Consulta | Fuente |
 | --- | --- |
 | Qué corre y cómo se organiza el repositorio | [Introducción](../README.md) y [guía operativa](referencia/guia-operativa.md) |
-| Qué está integrado, cómo cerrar la Ola 4 y qué se puede retirar después | [Roadmap y manifiesto T7.0a](architecture/NEXA_V2_ROADMAP.md) |
+| Qué está integrado, cómo cerrar la Ola 4 y qué se puede retirar después | [Roadmap y cierre de T7.0b](architecture/NEXA_V2_ROADMAP.md) |
 | Cuenta, configuración, migración, empaquetado y rollback | [Despliegue](architecture/DEPLOYMENT.md) y [contrato de migración](../tools/nexa-migrate/README.md) |
 | Presupuesto de VRAM y puertos físicos de los micrófonos | [Hardware](architecture/HARDWARE.md) |
 | Convivencia con otros servicios | [Nota operativa y espejo histórico de Notion](SERVER_CONVENTIONS.md) |
@@ -14,10 +14,8 @@
 ## Runbooks de hardware y entorno
 
 - [Firmware XVF3800 de seis canales](runbooks/2026-06-06-xvf3800-flasheo-6ch.md) y [diagnóstico de micrófono mudo](runbooks/2026-07-25-diagnostico-mic-mudo-isocronos.md). Aplicar al dispositivo identificado por puerto físico.
-- [Diagnóstico del flood USB en journald](runbooks/2026-10-28-journald-usb-flood.md). Conservar el aislamiento de los demás servicios del host.
 - [Entorno de desarrollo en Mac](runbooks/2026-11-05-mac-development-handoff.md). Sus resultados de pruebas corresponden al checkout y a la fecha registrados.
-- [Índice de código](runbooks/CODE_INDEX.md). Servicio compartido con ciclo de vida independiente.
 
-## Material histórico previsto para T7.0b
+## Archivo del monolito
 
-Los planes, investigaciones, documentos del monolito y procedimientos de despliegue Python describen versiones anteriores. El archivo base es el tag `archive/legacy-monolith-2026-11` en `d0defada`. Consultar las exclusiones, diferencias posteriores y condiciones de aprobación en el [manifiesto](architecture/NEXA_V2_ROADMAP.md) antes de retirar archivos.
+**T7.0b · HECHO en la rama de trabajo.** El [roadmap](architecture/NEXA_V2_ROADMAP.md) identifica los dos tags de archivo y el gate de retiro en el servidor. Las pruebas del orquestador se mantienen en [tests-v2/workflow](../tests-v2/workflow/). El [manifiesto de rescate](research/2026-10-25-production-recovery.json) conserva la trazabilidad de producción.

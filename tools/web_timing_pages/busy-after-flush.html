@@ -1,7 +1,0 @@
-<!doctype html>
-<html lang="es"><head><meta charset="utf-8"><title>T046 harness: busy loop after the final flush</title></head>
-<body><main id="harness"><h1>Bloqueo después del cierre de la ventana</h1><p>Página de prueba.</p></main>
-<script>
-// Fixture page (smoke_gate.cdp_timeout, R4-2): the harness-only flush event starts a loop after the final flush.
-window.addEventListener('kzaprobeflush', () => { for (;;) { /* never yields */ } });
-</script></body></html>

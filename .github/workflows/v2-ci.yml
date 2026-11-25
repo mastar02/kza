@@ -14,6 +14,7 @@ on:
       - "workers/nexa-ml/**"
       - "tools/nexa-migrate/**"
       - "tests-v2/**"
+      - "scripts/kza_*.py"
       - ".github/workflows/v2-ci.yml"
   pull_request:
     paths:
@@ -27,6 +28,7 @@ on:
       - "workers/nexa-ml/**"
       - "tools/nexa-migrate/**"
       - "tests-v2/**"
+      - "scripts/kza_*.py"
       - ".github/workflows/v2-ci.yml"
 
 concurrency:
@@ -208,6 +210,8 @@ jobs:
         run: |
           sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
           python -m pip install --upgrade pip pytest
+      - name: Test workflow orchestrator
+        run: python -m pytest tests-v2/workflow -q
       - name: Build nexa-memoryd
         run: cargo build --locked -p nexa-memoryd
       - name: Run L5 release/hardening smoke & offline migrator tests
