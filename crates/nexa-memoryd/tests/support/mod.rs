@@ -89,6 +89,7 @@ pub fn list_profiles() -> ListVoiceProfilesRequest {
             Permission::VoicesReview,
             Permission::AdminManage,
         ])),
+        cursor: String::new(),
     }
 }
 

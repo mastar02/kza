@@ -292,6 +292,7 @@ impl MemoryService for MemoryRpc {
         self.run(move |store| {
             Ok(ListVoiceProfilesResponse {
                 profiles: store.list_voice_profiles(req.include_person)?,
+                next_cursor: String::new(),
             })
         })
         .await
@@ -373,6 +374,55 @@ impl MemoryService for MemoryRpc {
             .map_err(status)?;
         self.run(move |store| store.set_ambient_pause(req.paused, req.expected_revision))
             .await
+    }
+
+    async fn list_memory_overview(
+        &self,
+        _: Request<MemoryOverviewRequest>,
+    ) -> std::result::Result<Response<MemoryOverviewResponse>, Status> {
+        Err(Status::unimplemented("list_memory_overview pending"))
+    }
+
+    async fn mutate_memory_item(
+        &self,
+        _: Request<MemoryMutationRequest>,
+    ) -> std::result::Result<Response<MemoryMutationResponse>, Status> {
+        Err(Status::unimplemented("mutate_memory_item pending"))
+    }
+
+    async fn get_voice_global_switch(
+        &self,
+        _: Request<ActorRequest>,
+    ) -> std::result::Result<Response<VoiceGlobalSwitchStatus>, Status> {
+        Err(Status::unimplemented("get_voice_global_switch pending"))
+    }
+
+    async fn set_voice_global_switch(
+        &self,
+        _: Request<SetVoiceGlobalSwitchRequest>,
+    ) -> std::result::Result<Response<VoiceGlobalSwitchStatus>, Status> {
+        Err(Status::unimplemented("set_voice_global_switch pending"))
+    }
+
+    async fn get_voice_capture_review(
+        &self,
+        _: Request<VoiceCaptureReviewRequest>,
+    ) -> std::result::Result<Response<VoiceCaptureReviewResponse>, Status> {
+        Err(Status::unimplemented("get_voice_capture_review pending"))
+    }
+
+    async fn query_voice_captures(
+        &self,
+        _: Request<VoiceCaptureQueryRequest>,
+    ) -> std::result::Result<Response<VoiceCaptureQueryResponse>, Status> {
+        Err(Status::unimplemented("query_voice_captures pending"))
+    }
+
+    async fn get_evaluation_sample(
+        &self,
+        _: Request<EvaluationSampleRequest>,
+    ) -> std::result::Result<Response<EvaluationSampleResponse>, Status> {
+        Err(Status::unimplemented("get_evaluation_sample pending"))
     }
 }
 

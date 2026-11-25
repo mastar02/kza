@@ -831,6 +831,7 @@ async fn execute(
                         view: view.into(),
                         limit: fields.limit(50, 100)?,
                         actor: actor(),
+                        cursor: String::new(),
                     })
                     .await?
                     .payload_json,
@@ -890,6 +891,7 @@ async fn execute(
                 .list_voice_profiles(ListVoiceProfilesRequest {
                     include_person,
                     actor: actor(),
+                    cursor: String::new(),
                 })
                 .await?
                 .profiles

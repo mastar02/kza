@@ -3,6 +3,7 @@ syntax = "proto3";
 package nexa.v1;
 
 import "nexa/v1/common.proto";
+import "nexa/v1/memory.proto";
 
 // Control-plane RPCs exposed by `nexa-brain` over $XDG_RUNTIME_DIR/nexa/brain.sock.
 // Consumed by `nexa-web` (Rust Axum) so the web layer never shares an event loop or GIL with voice.
@@ -33,8 +34,11 @@ service BrainControlService {
 
   rpc ListHouseholdLists(ActorRequest) returns (HouseholdListsSnapshot);
   rpc MutateHouseholdList(HouseholdListMutationRequest) returns (HouseholdListRecord);
+  rpc SyncHouseholdLists(ActorRequest) returns (ListSyncResponse);
   rpc ListReminders(ListRemindersRequest) returns (RemindersSnapshot);
   rpc MutateReminder(ReminderMutationRequest) returns (ReminderRecord);
+  rpc ListReminderNotices(ActorRequest) returns (ReminderNoticesResponse);
+  rpc GetReminderStatus(ActorRequest) returns (ReminderStatusResponse);
 
   rpc ListAlerts(ActorRequest) returns (AlertsSnapshot);
   rpc AckAlert(AlertMutationRequest) returns (AlertRecord);
@@ -158,10 +162,6 @@ message LiveRuntimeEvent {
   uint64 emitted_at_unix_ms = 6;
 }
 
-message ActorRequest {
-  ActorContext actor = 1;
-}
-
 message ListRoutinesRequest {
   optional bool enabled_only = 1;
   ActorContext actor = 2;
@@ -174,6 +174,7 @@ message RoutineRecord {
   uint64 revision = 4;
   string spec_json = 5;
   uint64 updated_at_unix_ms = 6;
+  string schedule_json = 7;
 }
 
 message RoutinesSnapshot {
@@ -321,61 +322,14 @@ message HaActionsSnapshot {
   repeated HomeActionReceipt receipts = 1;
 }
 
-message MemoryOverviewRequest {
-  string view = 1; // summary, facts, proposals, returned, owners_counts, mine
-  uint32 limit = 2;
-  ActorContext actor = 3;
-}
-
-message MemoryOverviewResponse {
+message ListSyncResponse {
   string payload_json = 1;
 }
 
-message MemoryMutationRequest {
-  string operation = 1; // assign_owner, confirm_proposal, reject_proposal, return_fact, reopen_voice_consent, resume_attribution
-  string target_id = 2;
-  string payload_json = 3;
-  ActorContext actor = 4;
-}
-
-message MemoryMutationResponse {
+message ReminderNoticesResponse {
   string payload_json = 1;
 }
 
-message VoiceGlobalSwitchStatus {
-  bool enabled = 1;
-  uint64 updated_at_unix_ms = 2;
-}
-
-message SetVoiceGlobalSwitchRequest {
-  bool enabled = 1;
-  ActorContext actor = 2;
-}
-
-message VoiceCaptureReviewRequest {
-  string fingerprint_id = 1;
-  bool include_transcript = 2;
-  ActorContext actor = 3;
-}
-
-message VoiceCaptureReviewResponse {
-  string payload_json = 1;
-}
-
-message VoiceCaptureQueryRequest {
-  string query_json = 1;
-  ActorContext actor = 2;
-}
-
-message VoiceCaptureQueryResponse {
-  string payload_json = 1;
-}
-
-message EvaluationSampleRequest {
-  string fingerprint_id = 1;
-  ActorContext actor = 2;
-}
-
-message EvaluationSampleResponse {
+message ReminderStatusResponse {
   string payload_json = 1;
 }

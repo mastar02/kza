@@ -27,6 +27,15 @@ service MemoryService {
   // Ambient capture persistence control
   rpc GetAmbientControl(Empty) returns (AmbientControlStatus);
   rpc SetAmbientPause(SetAmbientPauseRequest) returns (AmbientControlStatus);
+
+  // Control-plane overview, review, voice switch & evaluation parity RPCs
+  rpc ListMemoryOverview(MemoryOverviewRequest) returns (MemoryOverviewResponse);
+  rpc MutateMemoryItem(MemoryMutationRequest) returns (MemoryMutationResponse);
+  rpc GetVoiceGlobalSwitch(ActorRequest) returns (VoiceGlobalSwitchStatus);
+  rpc SetVoiceGlobalSwitch(SetVoiceGlobalSwitchRequest) returns (VoiceGlobalSwitchStatus);
+  rpc GetVoiceCaptureReview(VoiceCaptureReviewRequest) returns (VoiceCaptureReviewResponse);
+  rpc QueryVoiceCaptures(VoiceCaptureQueryRequest) returns (VoiceCaptureQueryResponse);
+  rpc GetEvaluationSample(EvaluationSampleRequest) returns (EvaluationSampleResponse);
 }
 
 message MemoryFact {
@@ -97,10 +106,12 @@ message VoiceProfile {
 message ListVoiceProfilesRequest {
   bool include_person = 1;
   ActorContext actor = 2;
+  string cursor = 3;
 }
 
 message ListVoiceProfilesResponse {
   repeated VoiceProfile profiles = 1;
+  string next_cursor = 2;
 }
 
 message LinkVoiceProfileRequest {
@@ -153,4 +164,70 @@ message SetAmbientPauseRequest {
   bool paused = 1;
   uint64 expected_revision = 2;
   ActorContext actor = 3;
+}
+
+message ActorRequest {
+  ActorContext actor = 1;
+}
+
+message MemoryOverviewRequest {
+  string view = 1; // summary, facts, proposals, returned, owners_counts, mine, voice_mine, voice_consents
+  uint32 limit = 2;
+  ActorContext actor = 3;
+  string cursor = 4;
+}
+
+message MemoryOverviewResponse {
+  string payload_json = 1;
+}
+
+message MemoryMutationRequest {
+  string operation = 1; // assign_owner, confirm_proposal, reject_proposal, return_fact, reopen_voice_consent, resume_attribution, voice_consent_grant, voice_consent_revoke, voice_verification, confirm_voice_profile, delete_voice_profile, correct_voice_group, erase_conversation
+  string target_id = 2;
+  string payload_json = 3;
+  ActorContext actor = 4;
+}
+
+message MemoryMutationResponse {
+  string payload_json = 1;
+}
+
+message VoiceGlobalSwitchStatus {
+  bool enabled = 1;
+  uint64 updated_at_unix_ms = 2;
+  uint64 revision = 3;
+}
+
+message SetVoiceGlobalSwitchRequest {
+  bool enabled = 1;
+  ActorContext actor = 2;
+  uint64 expected_revision = 3;
+}
+
+message VoiceCaptureReviewRequest {
+  string fingerprint_id = 1;
+  bool include_transcript = 2;
+  ActorContext actor = 3;
+}
+
+message VoiceCaptureReviewResponse {
+  string payload_json = 1;
+}
+
+message VoiceCaptureQueryRequest {
+  string query_json = 1;
+  ActorContext actor = 2;
+}
+
+message VoiceCaptureQueryResponse {
+  string payload_json = 1;
+}
+
+message EvaluationSampleRequest {
+  string fingerprint_id = 1;
+  ActorContext actor = 2;
+}
+
+message EvaluationSampleResponse {
+  string payload_json = 1;
 }

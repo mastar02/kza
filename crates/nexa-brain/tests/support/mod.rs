@@ -316,6 +316,48 @@ impl MemoryService for Memory {
     ) -> Reply<AmbientControlStatus> {
         Err(Status::unimplemented("set_ambient_pause"))
     }
+    async fn list_memory_overview(
+        &self,
+        _: Request<MemoryOverviewRequest>,
+    ) -> Reply<MemoryOverviewResponse> {
+        Err(Status::unimplemented("list_memory_overview"))
+    }
+    async fn mutate_memory_item(
+        &self,
+        _: Request<MemoryMutationRequest>,
+    ) -> Reply<MemoryMutationResponse> {
+        Err(Status::unimplemented("mutate_memory_item"))
+    }
+    async fn get_voice_global_switch(
+        &self,
+        _: Request<ActorRequest>,
+    ) -> Reply<VoiceGlobalSwitchStatus> {
+        Err(Status::unimplemented("get_voice_global_switch"))
+    }
+    async fn set_voice_global_switch(
+        &self,
+        _: Request<SetVoiceGlobalSwitchRequest>,
+    ) -> Reply<VoiceGlobalSwitchStatus> {
+        Err(Status::unimplemented("set_voice_global_switch"))
+    }
+    async fn get_voice_capture_review(
+        &self,
+        _: Request<VoiceCaptureReviewRequest>,
+    ) -> Reply<VoiceCaptureReviewResponse> {
+        Err(Status::unimplemented("get_voice_capture_review"))
+    }
+    async fn query_voice_captures(
+        &self,
+        _: Request<VoiceCaptureQueryRequest>,
+    ) -> Reply<VoiceCaptureQueryResponse> {
+        Err(Status::unimplemented("query_voice_captures"))
+    }
+    async fn get_evaluation_sample(
+        &self,
+        _: Request<EvaluationSampleRequest>,
+    ) -> Reply<EvaluationSampleResponse> {
+        Err(Status::unimplemented("get_evaluation_sample"))
+    }
 }
 
 pub fn bundle(dir: &Path) -> Result<LoadedBundle> {

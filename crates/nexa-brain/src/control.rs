@@ -1026,6 +1026,30 @@ impl BrainControlService for Control {
         authorize(request.actor.as_ref(), &[P::EvaluationRead])?;
         ok(self.memory()?.evaluation_sample(request).await?)
     }
+
+    async fn sync_household_lists(
+        &self,
+        request: Request<v1::ActorRequest>,
+    ) -> Reply<v1::ListSyncResponse> {
+        authorize(request.into_inner().actor.as_ref(), &[P::TasksWrite])?;
+        Err(Status::unimplemented("sync_household_lists pending"))
+    }
+
+    async fn list_reminder_notices(
+        &self,
+        request: Request<v1::ActorRequest>,
+    ) -> Reply<v1::ReminderNoticesResponse> {
+        authorize(request.into_inner().actor.as_ref(), &[P::TasksRead])?;
+        Err(Status::unimplemented("list_reminder_notices pending"))
+    }
+
+    async fn get_reminder_status(
+        &self,
+        request: Request<v1::ActorRequest>,
+    ) -> Reply<v1::ReminderStatusResponse> {
+        authorize(request.into_inner().actor.as_ref(), &[P::DiagnosticsRead])?;
+        Err(Status::unimplemented("get_reminder_status pending"))
+    }
 }
 
 #[derive(Deserialize)]
@@ -1048,6 +1072,7 @@ fn routine_record(routine: Routine) -> Result<v1::RoutineRecord, Status> {
         revision: unsigned(routine.revision),
         spec_json: routine_json(&routine.spec),
         updated_at_unix_ms: 0,
+        schedule_json: String::new(),
     })
 }
 

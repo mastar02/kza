@@ -137,8 +137,11 @@ service! {
           execute_routine(ExecuteRoutineRequest) -> RoutineExecutionReceipt,
           list_household_lists(ActorRequest) -> HouseholdListsSnapshot,
           mutate_household_list(HouseholdListMutationRequest) -> HouseholdListRecord,
+          sync_household_lists(ActorRequest) -> ListSyncResponse,
           list_reminders(ListRemindersRequest) -> RemindersSnapshot,
           mutate_reminder(ReminderMutationRequest) -> ReminderRecord,
+          list_reminder_notices(ActorRequest) -> ReminderNoticesResponse,
+          get_reminder_status(ActorRequest) -> ReminderStatusResponse,
           list_alerts(ActorRequest) -> AlertsSnapshot,
           ack_alert(AlertMutationRequest) -> AlertRecord,
           delete_alert(AlertMutationRequest) -> Empty,
@@ -183,6 +186,13 @@ service! {
           set_voice_consent(SetVoiceConsentRequest) -> VoiceConsentStatus,
           erase_conversation(EraseConversationRequest) -> ErasureReceipt,
           set_ambient_pause(SetAmbientPauseRequest) -> AmbientControlStatus,
+          list_memory_overview(MemoryOverviewRequest) -> MemoryOverviewResponse,
+          mutate_memory_item(MemoryMutationRequest) -> MemoryMutationResponse,
+          get_voice_global_switch(ActorRequest) -> VoiceGlobalSwitchStatus,
+          set_voice_global_switch(SetVoiceGlobalSwitchRequest) -> VoiceGlobalSwitchStatus,
+          get_voice_capture_review(VoiceCaptureReviewRequest) -> VoiceCaptureReviewResponse,
+          query_voice_captures(VoiceCaptureQueryRequest) -> VoiceCaptureQueryResponse,
+          get_evaluation_sample(EvaluationSampleRequest) -> EvaluationSampleResponse,
     }
 }
 
