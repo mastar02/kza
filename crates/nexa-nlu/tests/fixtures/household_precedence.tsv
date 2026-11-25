@@ -1,0 +1,280 @@
+# Python household precedence corpus at ee934479. Columns: family, operation, rule, transcript (<empty> encodes an empty transcript).
+reminder	create	R3	recordame apagar la luz
+reminder	create	R3	recordáme apagar la luz
+reminder	create	R3	recuérdame tomar agua
+reminder	create	R3	recuerdame poner música
+reminder	create	R3	recordame agregar leche a la lista de compras
+reminder	create	R3	recordame abrir la persiana mañana
+reminder	create	R3	recordame actualizar la lista
+reminder	create	R3	recordame registrar el gasto del super
+reminder	create	R3	recordame cancelar el turno del médico
+reminder	create	R3	recordame que mañana viene el plomero
+reminder	create	R3	recordanos sacar la basura
+reminder	create	R3	acordame de cerrar la persiana
+reminder	create	R3	acuérdame de llamar a mamá
+reminder	create	R3	haceme acordar de apagar la luz
+reminder	create	R3	hacenos acordar de regar
+reminder	create	R3	avisame cuando termine el lavarropas
+reminder	create	R3	avísame en diez minutos
+reminder	create	R3	no me dejes olvidar sacar la basura
+reminder	create	R3	me podés recordar apagar la luz
+reminder	create	R3	podés recordarme apagar la luz
+reminder	create	R3	Nexa, recordame prender la luz del living
+reminder	create	R3	che por favor recordame cerrar la puerta
+reminder	create	R3	recordale a Ana apagar la luz
+reminder	create	R3	avisales a los chicos que la cena está lista
+reminder	create	R3	recordame apagar la luz y cerrar la puerta
+reminder	clarify	R3	recordame tomar la pastilla a las 8 y apagá la luz
+reminder	clarify	R3	recordame apagar la luz y prendé la tele
+-	-	-	acordate que mañana a las 8 viene el plomero
+reminder	create	R3	acordate de sacar la basura a las 8 de la noche
+reminder	create	R3	acuérdate de llamar a mamá
+-	-	-	acordate de que mañana viene el plomero
+reminder	create	R3	avisame cuando sean las 9 de la noche
+reminder	create	R3a	poné una alarma al mediodía
+reminder	create	R3a	poné una alarma cuando sean las 7 de la tarde
+-	-	-	recordá que el gas se paga el 10
+reminder	cancel	R1	cancelá el recordatorio de agregar leche a la lista
+reminder	cancel	R1	cancela el recordatorio de agua
+reminder	cancel	R1	borrá el recordatorio de tomar agua
+reminder	cancel	R1	eliminá los recordatorios
+reminder	cancel	R1	olvidate del recordatorio de la basura
+list	cancel	R1	olvidate de la lista de compras
+timer	cancel	R1	cancelá el timer de la pasta
+timer	cancel	R1	sacá el tímer
+timer	cancel	R1	anulá el temporizador
+timer	stop	R1	pará el timer
+timer	stop	R1	Para el timer
+timer	stop	R1	detené el temporizador
+timer	stop	R1	apagá el timer
+timer	stop	R1	callá el temporizador
+routine	stop	R1	apagá la rutina de la noche
+timer	cancel	R1	borrá todos los timers
+-	-	-	limpiá el timer
+reminder	cancel	R1	borrá el recordatorio de comprar pan y la lista de compras
+timer	pause	R1	pausá el timer de la pasta
+timer	resume	R1	seguí el timer
+timer	resume	R1	reanudá el temporizador
+timer	disable	R1	desactivá el timer
+routine	stop	R1	pará la rutina de la noche
+routine	disable	R1	desactivá la rutina buenas noches
+routine	cancel	R1	borrá la rutina buenas noches
+list	cancel	R1	borrá la lista de compras
+list	cancel	R1	eliminá la lista de compras
+list	cancel	R1	borra la lista de compras
+list	cancel	R1	vaciá la lista de compras
+list	cancel	R1	vacía la lista de compras
+list	cancel	R1	limpiá la lista del super
+list	stop	R1	pará la lista
+reminder	query	R1	¿qué recordatorios hay?
+reminder	query	R1	qué recordatorios tengo
+timer	query	R1	¿cuánto le falta al timer?
+timer	query	R1	cuánto queda del temporizador
+timer	query	R1	qué timers hay
+list	query	R1	qué hay en la lista de compras
+list	query	R1	cuáles son las listas
+list	query	R1	decime la lista de compras
+list	query	R1	lee la lista de compras
+routine	query	R1	qué rutinas hay
+timer	create	R2	poné un temporizador de 5 minutos
+timer	create	R2	poneme un tímer de media hora
+timer	create	R2	creá un timer de diez minutos para la pasta
+timer	create	R2	programá un nuevo temporizador de una hora
+timer	create	R2	activá un timer de 3 minutos
+timer	create	R2	podés poner un timer de 3 minutos
+timer	create	R2	temporizador de 5 minutos
+timer	create	R2	haceme un timer de 5 minutos
+timer	create	R2	metele un timer de 10 minutos
+timer	create	R2	tirame un timer de 3 minutos
+timer	create	R2	temporizador cinco minutos
+reminder	query	R1	¿tengo recordatorios?
+timer	query	R1	¿hay timers?
+timer	query	R1	¿hay algún temporizador?
+-	-	-	hay que poner la mesa
+-	-	-	haceme una lista de compras
+-	-	-	temporizador
+list	add_item	R2	agregá pan y leche a la lista de compras
+list	add_item	R2	agrega leche a la lista de compras
+list	add_item	R2	anotá yerba en la lista
+list	add_item	R2	poné tomates en la lista de compras
+list	remove_item	R2	quitá la leche de la lista
+list	remove_item	R2	sacá el pan de la lista de compras
+list	remove_item	R2	borrá la leche de la lista
+list	create	R2	crea una lista compartida de viajes
+timer	create	R3a	poné una alarma de 10 minutos
+timer	create	R3a	poneme una alarma en media hora
+reminder	create	R3a	poné una alarma a las 7
+reminder	create	R3a	programá la alarma para las siete
+timer	clarify	R3a	poné una alarma
+-	-	-	activá la alarma
+-	-	-	desactivá la alarma
+-	-	-	armá la alarma
+-	-	-	desarmá la alarma
+-	-	-	activá las alarmas
+timer	cancel	R1	cancelá la alarma
+timer	cancel	R1	sacá la alarma de la pasta
+timer	cancel	R1	cancelá las alarmas
+timer	stop	R1	apagá la alarma
+timer	stop	R1	pará la alarma
+timer	pause	R1	pausá la alarma
+timer	resume	R1	reanudá la alarma
+timer	cancel	R1	cancelá el despertador
+timer	stop	R1	apagá el despertador
+timer	disable	R1	desactivá el despertador
+timer	query	R1	qué alarmas hay
+timer	query	R1	cuánto falta para la alarma
+timer	query	R1	¿hay alguna alarma?
+timer	query	R1	decime las alarmas
+reminder	cancel	R1	cancelá la alarma de las 7
+reminder	cancel	R1	borrá el despertador de las 6:30
+reminder	cancel	R1	sacá la alarma de la una
+reminder	cancel	R1	cancelá la alarma de las siete y media
+reminder	cancel	R1	anulá la alarma de las veintitrés
+reminder	cancel	R1	olvidate de la alarma de las 8
+reminder	cancel	R1	cancelá la alarma del mediodía
+reminder	cancel	R1	cancelá la alarma para las 7
+reminder	cancel	R1	cancelá las alarmas de las 7
+reminder	query	R1	qué alarmas hay a las 7
+reminder	query	R1	¿hay alguna alarma a las 7?
+reminder	query	R1	decime la alarma de las 8 y media
+reminder	query	R1	cuánto falta para la alarma de las 7
+timer	cancel	R1	cancelá la alarma de 7 minutos
+timer	cancel	R1	cancelá la alarma de 7
+timer	cancel	R1	cancelá la alarma de las 7 minutos
+timer	cancel	R1	cancelá la alarma de la pasta
+timer	cancel	R1	cancelá la alarma de la lasaña
+timer	cancel	R1	cancelá el timer de las 7
+timer	pause	R1	pausá la alarma de las 7
+timer	resume	R1	reanudá la alarma de las 7
+reminder	cancel	R1	apagá la alarma de las 7
+reminder	cancel	R1	pará la alarma de las 7
+reminder	cancel	R1	para la alarma de las 7
+reminder	cancel	R1	frená la alarma de las 7
+reminder	cancel	R1	silenciá la alarma de mañana
+-	-	-	desactivá la alarma de las 7
+-	-	-	desactivar la alarma de las 7 de la mañana
+-	-	-	desactivá la alarma para mañana
+-	-	-	desactivá la alarma de la casa a las 23
+-	-	-	desactive las alarmas de las 7
+reminder	cancel	R1	desactivá el despertador de las 6:30
+reminder	cancel	R1	apagame el despertador de las 7
+reminder	cancel	R1	detené la alarma del mediodía
+reminder	cancel	R1	callá la alarma de las 7
+reminder	cancel	R1	apagá las alarmas de las 7
+reminder	cancel	R1	pará la alarma para las 8
+timer	stop	R1	apagá la alarma de 10 minutos
+timer	stop	R1	pará la alarma de las 7 minutos
+timer	stop	R1	apagá la alarma de 7
+timer	stop	R1	apagá la alarma de la pasta
+timer	disable	R1	desactivá el despertador de 10 minutos
+timer	stop	R1	apagá el timer de las 7
+-	-	-	activá la alarma de las 7
+-	-	-	armá la alarma de las 7
+-	-	-	desarmá la alarma de las 7
+-	-	-	desactivá las alarmas
+reminder	cancel	R1	cancelá el recordatorio de las 7
+reminder	create	R3a	poné una alarma a las 19 horas
+reminder	create	R3a	poné una alarma para las 8 horas
+reminder	create	R3a	poné una alarma a las 7 horas de la mañana
+reminder	create	R3a	poné una alarma a las 19 hs
+reminder	create	R3a	poné una alarma de las 19 horas
+timer	create	R3a	poné una alarma de 19 horas
+timer	create	R3a	poné una alarma de 2 horas
+timer	create	R3a	poné una alarma de las 7 minutos
+reminder	cancel	R1	cancelá la alarma de las 10 horas
+reminder	cancel	R1	cancelá la alarma de las 10 hs
+reminder	query	R1	qué alarmas hay a las 19 horas
+timer	cancel	R1	cancelá la alarma de 2 horas
+reminder	create	R3a	poné una alarma a las 20 y 5 minutos para la reunión
+reminder	create	R3a	poné una alarma a las 7 y 15 minutos de la mañana
+timer	create	R3a	poné una alarma de 1 hora y 5 minutos
+timer	create	R3a	poné una alarma de 20 y 5 minutos
+reminder	cancel	R1	cancelá la alarma de mañana
+reminder	cancel	R1	cancelá la alarma de hoy
+reminder	cancel	R1	cancelá la alarma de pasado mañana
+reminder	cancel	R1	borrá el despertador del martes
+reminder	query	R1	qué alarmas hay para mañana
+reminder	cancel	R1	apagá la alarma de mañana
+timer	cancel	R1	cancelá la alarma de la mañana
+timer	query	R1	a qué hora suena la alarma
+timer	query	R1	¿a qué hora suena el despertador?
+reminder	query	R1	a qué hora suena la alarma de mañana
+-	-	-	a qué hora abre el banco
+timer	create	R3a	poné una alarma de diecisiete minutos
+timer	create	R3a	poné una alarma de veintidós minutos
+timer	create	R3a	poné una alarma de veintiún minutos
+timer	create	R3a	poné una alarma de tres cuartos de hora
+timer	create	R3a	poné una alarma de hora y media
+timer	create	R3a	poné una alarma de setenta minutos
+deferred_action	create	R4	apagá la luz en 10 minutos
+deferred_action	create	R4	prendé el aire a las 8
+deferred_action	create	R4	cerrá la persiana mañana
+routine	execute	R6	ejecutá la rutina buenas noches
+routine	execute	R6	poné la rutina de buenas noches
+routine	propose	R6	activá la rutina buenas noches
+routine	propose	R6	creá una rutina que cuando salga el sol prenda la luz
+routine	propose	R6	automatizá las luces del living
+routine	propose	R6	quiero crear una nueva rutina que apague las luces
+routine	propose	R6	armame una rutina que apague las luces
+routine	propose	R6	una rutina que apague las luces
+intercom	execute	R6	anunciá que la comida está lista
+intercom	execute	R6	avisá en la cocina que la comida está lista
+intercom	execute	R6	decí en toda la casa que nos vamos
+intercom	execute	R6	anunciá que la luz se apaga en 10 minutos
+-	-	-	avisar en la cocina que la comida está lista
+-	-	-	anunciar en la cocina que la comida está lista
+notification	execute	R6	activá el no molestar
+notification	disable	R6	desactivá el no molestar
+-	-	-	solo urgentes esta noche
+-	-	-	solo notificame cosas urgentes
+-	-	-	dijo que anunciá en la cocina que llegó la cena
+-	-	-	decime qué hay en el fogón
+compound	execute	R5	apagá la luz y pausá la música
+compound	execute	R5	cancelá el timer y el recordatorio
+compound	execute	R5	apagá la luz del escritorio y de la cocina
+compound	execute	R5	poné el aire a 22 y apagá la luz
+compound	execute	R5	poné un temporizador de 5 minutos y apagá la luz
+compound	clarify	R5	prendé la luz y apagá la luz
+compound	clarify	R5	apagá la luz en 10 minutos y pausá la música
+compound	clarify	R5	apagá la luz y recordame sacar la basura
+compound	clarify	R5	abrí la persiana y cerrá la persiana
+compound	clarify	R5	prendé la luz y poné una alarma a las 7
+compound	execute	R5	apagá la luz y el timer
+compound	execute	R5	apagá el timer y la luz
+compound	execute	R5	pará la música y el timer
+compound	clarify	R5	prendé la luz y un timer de 5 minutos
+compound	clarify	R5	apagá la tele y el temporizador
+compound	clarify	R5	encendé las luces del living y de la cocina y del baño y del cuarto
+compound	execute	R5	encendé las luces del living y de la cocina y del baño
+-	-	-	apagá la luz
+-	-	-	prendé la luz del living
+-	-	-	poné la luz cálida y suave
+-	-	-	poné la luz al cuarenta y cinco por ciento
+-	-	-	subí el volumen
+-	-	-	pausá la música
+-	-	-	poné música de la lista de reproducción
+-	-	-	poné un tema en la lista de reproducción
+-	-	-	poné la lista de compras
+-	-	-	pausá la lista de reproducción
+-	-	-	pará la lista de reproducción
+-	-	-	seguí la lista de reproducción
+-	-	-	reanudá la lista de reproducción
+-	-	-	cancelá la lista de reproducción
+-	-	-	agregá esta canción a la lista de reproducción
+-	-	-	qué hay en la lista de reproducción
+-	-	-	decí algo gracioso
+-	-	-	cancelá
+-	-	-	pará
+-	-	-	olvidate de eso
+-	-	-	es un listado muy realista, cancelá
+-	-	-	cuando juega Peñarol
+-	-	-	cuándo es el cumpleaños de Ana
+-	-	-	qué hora es
+-	-	-	qué lindo timer
+-	-	-	qué rutina más aburrida
+-	-	-	para la lista de compras agregá leche
+-	-	-	sincroniza los comandos
+-	-	-	actualizá la lista de compras
+-	-	-	apagá la luz que está prendida y cerrá la persiana
+-	-	-	<empty>
+-	-	-	nexa
