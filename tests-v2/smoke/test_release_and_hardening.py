@@ -112,13 +112,45 @@ def inputs(tmp_path):
     return tmp_path
 
 
-def package(inputs, version="v1", *extra, ok=True):
-    out = inputs / version
-    run(sys.executable, DEPLOY / "package-release.py", version, out,
+def run_packager(inputs, deploy, version, out, *extra, ok=True):
+    return run(sys.executable, deploy / "package-release.py", version, out,
         "--target-dir", inputs / "bin", "--ml-src", inputs / "ml",
         "--frontend-dist", inputs / "dist", *extra, ok=ok)
+
+
+def package(inputs, version="v1", *extra, ok=True):
+    out = inputs / version
+    run_packager(inputs, DEPLOY, version, out, "--allow-dirty", *extra, ok=ok)
     assert out.exists() == ok
     return out
+
+
+def test_release_provenance_and_reproducibility(inputs, monkeypatch):
+    repo = inputs / "repo"
+    deploy = repo / "deploy/nexa"
+    shutil.copytree(DEPLOY, deploy, ignore=shutil.ignore_patterns("__pycache__"))
+    run("git", "init", "-q", cwd=repo)
+    run("git", "add", "deploy", cwd=repo)
+    run("git", "-c", "user.name=Smoke", "-c", "user.email=smoke@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "fixture", cwd=repo)
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1704067200")
+    first, second = inputs / "first", inputs / "second"
+    for out in (first, second):
+        run_packager(inputs, deploy, "v1", out)
+    for name in ("release-manifest.json", "SHA256SUMS"):
+        assert (first / name).read_bytes() == (second / name).read_bytes()
+    manifest = json.loads((first / "release-manifest.json").read_text())
+    assert manifest["git_dirty"] is False
+    assert manifest["timestamp_utc"] == "2024-01-01T00:00:00+00:00"
+
+    (repo / "untracked").touch()
+    dirty = inputs / "dirty"
+    rejected = run_packager(inputs, deploy, "v1", dirty, ok=False)
+    assert "dirty checkout" in rejected.stderr
+    assert not dirty.exists()
+    run_packager(inputs, deploy, "v1", dirty, "--allow-dirty")
+    assert json.loads((dirty / "release-manifest.json").read_text())["git_dirty"] is True
 
 
 def test_package_and_switch(inputs):

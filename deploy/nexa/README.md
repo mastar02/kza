@@ -21,7 +21,9 @@ python3 deploy/nexa/package-release.py v2.0.0 /tmp/nexa-release-v2.0.0
 ```
 
 El manifiesto identifica el commit del checkout y la plataforma y arquitectura
-del host de empaquetado. Usar binarios compilados para el host de destino.
+del host de empaquetado. El árbol debe estar limpio. Para pruebas locales,
+`--allow-dirty` permite cambios y el manifiesto registra `git_dirty`.
+Fijar `SOURCE_DATE_EPOCH` (segundos Unix) para reproducir la fecha UTC. Usar binarios compilados para el host de destino.
 `--allow-missing-frontend` permite un paquete parcial para pruebas.
 El instalador usa Python 3 con `stage-release.py` y `release_policy.py` en el mismo
 directorio. Verifica inventario, rutas prohibidas, hashes, binarios y units antes
