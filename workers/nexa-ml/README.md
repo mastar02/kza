@@ -12,6 +12,17 @@ Thin, stateless Python 3.13 worker speaking `nexa.v1.MlService` over `$XDG_RUNTI
 
 The RTX 3090 (24 GB, `cuda:0`) hosts llama-server 7B alongside two ambient Whisper large-v3 workers and one ECAPA speaker encoder for non-interactive ambient processing. The low-latency interactive path has exclusive use of `cuda:1` for Whisper Command v3-turbo and streaming Kokoro-82M.
 
+## Offline model cache
+
+Before starting the deployed worker, seed the persistent cache at
+`/var/lib/nexa/.cache` (mode `0700`, owned by `nexa:nexa`). For the default
+ECAPA model, place the full local SpeechBrain bundle, including
+`hyperparams.yaml` and `embedding_model.ckpt`, in
+`/var/lib/nexa/.cache/nexa-ml/speechbrain/speechbrain--spkrec-ecapa-voxceleb/`.
+Populate `HF_HOME` at `/var/lib/nexa/.cache/huggingface/` with the configured
+model and voice assets, preserving the Hub cache layout and snapshot links
+to blobs. The worker reuses these files across restarts with network access disabled.
+
 ## Layout (`src/nexa_ml/`)
 | Module | Role |
 |---|---|

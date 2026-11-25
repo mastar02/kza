@@ -71,11 +71,26 @@ def test_service_units():
         if path.stem in {"nexa-memoryd", "nexa-ml"}:
             assert s["IPAddressDeny"] == "any" and "IPAddressAllow" not in s
         if path.stem == "nexa-ml":
-            assert {"PYTHONDONTWRITEBYTECODE=1", "HOME=/var/lib/nexa", "XDG_CACHE_HOME=/tmp"} <= set(
-                s["Environment"].split()
-            )
+            assert "PYTHONDONTWRITEBYTECODE=1" in s["Environment"].split()
             assert s["WorkingDirectory"] == "/opt/nexa/current/ml"
             assert "%t/nexa/ml.sock" in s["ExecStart"]
+
+
+def test_ml_persistent_offline_cache():
+    unit = configparser.ConfigParser(interpolation=None)
+    unit.read(DEPLOY / "systemd/nexa-ml.service")
+    service = unit["Service"]
+    env = dict(item.split("=", 1) for item in service["Environment"].split())
+    cache = Path(env["HOME"]) / ".cache"
+    assert cache == Path("/var/lib/nexa/.cache")
+    assert Path(env["XDG_CACHE_HOME"]) == cache
+    assert Path(env["HF_HOME"]) == cache / "huggingface"
+    assert service["ReadWritePaths"].split() == [str(cache)]
+    provision = (DEPLOY / "provision-nexa-user.sh").read_text()
+    assert 'NEXA_USER="nexa"' in provision.splitlines()
+    commands = provision.replace(chr(92) + "\n", " ").splitlines()
+    assert any(line.startswith('install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 ')
+               and str(cache) in line.split() for line in commands)
 
 
 def test_provisioning_and_udev():

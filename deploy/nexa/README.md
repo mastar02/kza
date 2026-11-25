@@ -10,6 +10,17 @@ sudo bash deploy/nexa/provision-nexa-user.sh
 
 Verifica automáticamente que `nexa` **no** pertenezca a `sudo`, `adm`, `wheel` ni `docker`, asigna solo `audio,dialout,video,render`, habilita `loginctl enable-linger nexa`, instala la regla `udev` `99-xvf3800-nexa.rules` (`GROUP="nexa", MODE="0660"`), crea `/opt/nexa`, `/etc/nexa`, `/var/lib/nexa` y configura `TimeoutStopSec=30s` únicamente para el UID de `nexa`.
 
+Antes del primer arranque de ML, sembrar la caché persistente
+`/var/lib/nexa/.cache` (directorio `0700`, propietario `nexa:nexa`).
+Copiar el modelo ECAPA completo, incluidos `hyperparams.yaml` y
+`embedding_model.ckpt`, a
+`/var/lib/nexa/.cache/nexa-ml/speechbrain/speechbrain--spkrec-ecapa-voxceleb/`.
+Copiar la caché de Hugging Face de los modelos y voces configurados a
+`/var/lib/nexa/.cache/huggingface/`, conservando `hub/`, los snapshots,
+los blobs y sus enlaces. Verificar que `nexa` pueda leer los archivos y
+actualizar la caché. El worker arranca sin red y reutiliza estos datos
+entre reinicios.
+
 ## 2. Despliegue atómico y rollback (< 60 s)
 
 En el checkout del commit a distribuir, preparar los cuatro binarios nativos en

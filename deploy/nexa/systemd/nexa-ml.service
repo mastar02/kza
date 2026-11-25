@@ -6,7 +6,8 @@ PartOf=nexa.target
 Type=notify
 WorkingDirectory=/opt/nexa/current/ml
 ExecStart=/opt/nexa/ml-venv/bin/python -m nexa_ml --socket %t/nexa/ml.sock --config /etc/nexa/nexa.toml
-Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HOME=/var/lib/nexa XDG_CACHE_HOME=/tmp
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 HOME=/var/lib/nexa XDG_CACHE_HOME=/var/lib/nexa/.cache HF_HOME=/var/lib/nexa/.cache/huggingface
+ReadWritePaths=/var/lib/nexa/.cache
 RuntimeDirectory=nexa
 RuntimeDirectoryMode=0700
 UMask=0077
