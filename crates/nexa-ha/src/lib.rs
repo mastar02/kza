@@ -1,40 +1,23 @@
-//! Home Assistant WebSocket state cache, freshness bounds & fail-closed control policy (Phase 4B).
+//! Home Assistant state projection, read-only views and fail-closed control.
 
-use nexa_config::HaControlPolicyConfig;
-use thiserror::Error;
+mod breaker;
+mod client;
+mod control;
+mod operations;
+mod policy;
+pub mod readers;
+mod state;
+mod sync;
 
-#[derive(Debug, Error, PartialEq, Eq)]
-pub enum ControlPolicyError {
-    #[error("control denied by fail-closed policy for {entity_id}.{operation}")]
-    Denied {
-        entity_id: String,
-        operation: String,
-    },
-}
-
-/// Fail-closed gate verifying every Home Assistant mutation against explicit grants.
-pub fn authorize_action(
-    policy: &HaControlPolicyConfig,
-    entity_id: &str,
-    operation: &str,
-) -> Result<(), ControlPolicyError> {
-    if policy.allows(entity_id, operation) {
-        Ok(())
-    } else {
-        Err(ControlPolicyError::Denied {
-            entity_id: entity_id.to_string(),
-            operation: operation.to_string(),
-        })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn empty_policy_denies_all_mutations_fail_closed() {
-        let policy = HaControlPolicyConfig::default();
-        assert!(authorize_action(&policy, "light.living", "turn_on").is_err());
-    }
-}
+pub use breaker::CircuitBreakerConfig;
+pub use client::{HaClient, HaError};
+pub use control::{
+    ActionReceipt, ActionRequest, ActionStatus, ControlError, ControlService, EffectReceipt,
+    NotSentReason,
+};
+pub use operations::{Brightness, HvacMode, Operation, OperationError};
+pub use policy::{
+    ControlPolicy, ControlPolicyError, EffectIntent, MembershipSource, PlanError, ReviewedGroup,
+    authorize_action,
+};
+pub use state::{EntityState, StateFrame, StateReadError};
