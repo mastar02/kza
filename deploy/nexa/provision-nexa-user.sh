@@ -46,7 +46,7 @@ loginctl enable-linger "${NEXA_USER}"
 NEXA_UID="$(id -u "${NEXA_USER}")"
 
 # Immutable release binaries & models (read-only for nexa; writable only by release installer).
-install -d -o root -g "${NEXA_USER}" -m 0750 /opt/nexa /opt/nexa/releases /opt/nexa/models
+install -d -o root -g "${NEXA_USER}" -m 0750 /opt/nexa /opt/nexa/releases /opt/nexa/models /opt/nexa/bin /opt/nexa/lib
 # Validated TOML config (read-only for nexa) & owner-only secrets.
 install -d -o root -g "${NEXA_USER}" -m 0750 /etc/nexa
 install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 /etc/nexa/secrets
@@ -58,6 +58,7 @@ install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 \
   /var/lib/nexa/memory \
   /var/lib/nexa/household \
   /var/lib/nexa/auth \
+  /var/lib/nexa/audiod \
   /var/lib/nexa/clips \
   /var/lib/nexa/private_home
 install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0750 \

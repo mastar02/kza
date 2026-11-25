@@ -1,16 +1,17 @@
 [Unit]
-Description=Nexa Fast Local LLM Router (Qwen2.5-7B-Instruct Q4_K_M on cuda:0, :8101)
+Description=Nexa Fast Local LLM Router (Qwen2.5-7B-Instruct Q4_K_M on cuda:1, RTX 3070 8 GiB, :8101)
 PartOf=nexa.target
 
 [Service]
 Type=simple
-EnvironmentFile=/etc/nexa/secrets/llm-fast.env
-Environment=CUDA_VISIBLE_DEVICES=0
+EnvironmentFile=-/etc/nexa/secrets/llm-fast.env
+Environment=CUDA_VISIBLE_DEVICES=1
 RuntimeDirectory=nexa-llm-fast
 RuntimeDirectoryMode=0700
 ExecStart=/opt/nexa/bin/llama-server \
   --model /opt/nexa/models/Qwen2.5-7B-Instruct-Q4_K_M/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
-  --host 127.0.0.1 --port 8101 -ngl 99 -c 4096 --parallel 2
+  --host 127.0.0.1 --port 8101 -ngl 99 -c 4096 -ctk q8_0 -ctv q8_0 --parallel 2 \
+  --api-key-file /etc/nexa/secrets/llama-api-key
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

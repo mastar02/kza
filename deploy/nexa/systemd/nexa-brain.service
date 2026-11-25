@@ -6,7 +6,7 @@ Wants=network-online.target nexa-audiod.service nexa-ml.service nexa-memoryd.ser
 
 [Service]
 Type=notify
-ExecStart=/opt/nexa/current/bin/nexa-brain --config /etc/nexa
+ExecStart=/opt/nexa/current/bin/nexa-brain --config-dir /etc/nexa
 EnvironmentFile=/etc/nexa/secrets/brain.env
 RuntimeDirectory=nexa
 RuntimeDirectoryMode=0700
