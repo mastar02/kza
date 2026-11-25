@@ -2,8 +2,6 @@
 """Assemble a native Nexa release from prebuilt artifacts."""
 import argparse
 from datetime import datetime, timezone
-import fnmatch
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -12,6 +10,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+
+from release_policy import check_entry, digest
 
 DEPLOY = Path(__file__).resolve().parent
 ROOT = DEPLOY.parents[1]
@@ -66,19 +66,6 @@ def copy_tree(source, dest, ignore=None):
             copy_file(child, dest / child.name)
 
 
-def digest(path, check_content):
-    checksum = hashlib.sha256()
-    needle = b"/home/kza"
-    tail = b""
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            if check_content and needle in tail + chunk:
-                raise ValueError(f"private host path in {path}")
-            tail = chunk[-(len(needle) - 1):]
-            checksum.update(chunk)
-    return checksum.hexdigest()
-
-
 def assemble(args, stage):
     (stage / "bin").mkdir()
     for name in BINARIES:
@@ -103,9 +90,7 @@ def assemble(args, stage):
         rel = path.relative_to(stage).as_posix()
         if any(c in rel for c in "\r\n\\"):
             raise ValueError(f"unsupported checksum path: {rel!r}")
-        if any(fnmatch.fnmatchcase(path.name.lower(), pat)
-               for pat in (".env", "*.glb", "*.db", "*.sqlite*")):
-            raise ValueError(f"forbidden release entry: {rel}")
+        check_entry(path.relative_to(stage))
         if path.is_file():
             sums[rel] = digest(path, not rel.startswith("bin/"))
     manifest = {
@@ -118,7 +103,7 @@ def assemble(args, stage):
     }
     path = stage / "release-manifest.json"
     path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    sums[path.name] = digest(path, False)
+    sums[path.name] = digest(path, True)
     (stage / "SHA256SUMS").write_text(
         "".join(f"{sums[name]}  {name}\n" for name in sorted(sums)), encoding="utf-8"
     )

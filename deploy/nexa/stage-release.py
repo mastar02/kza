@@ -1,4 +1,4 @@
-"""Copy a closed set of regular files to private staging before checksum verification."""
+"""Copy into private staging and validate the inventory before switching releases."""
 import json
 import os
 from pathlib import Path
@@ -6,15 +6,34 @@ import re
 import shutil
 import sys
 
+from release_policy import check_entry, digest
 
-def stage(src, dest, version, test_root):
-    sums = src / "SHA256SUMS"
+
+def copy_release(source, dest):
+    if source.is_symlink() or not source.is_dir():
+        raise ValueError(f"expected a directory: {source}")
+    dest.mkdir()
+    for entry in source.iterdir():
+        target = dest / entry.name
+        if entry.is_symlink():
+            raise ValueError(f"unexpected symlink: {entry}")
+        if entry.is_dir():
+            copy_release(entry, target)
+        elif entry.is_file():
+            shutil.copyfile(entry, target)
+            target.chmod(0o750 if os.access(entry, os.X_OK) else 0o640)
+        else:
+            raise ValueError(f"expected a regular file: {entry}")
+
+
+def validate(root, version, test_root):
+    if root.is_symlink() or not root.is_dir():
+        raise ValueError("expected a release directory")
+    sums = root / "SHA256SUMS"
     if sums.is_symlink() or not sums.is_file():
         raise ValueError("missing regular SHA256SUMS")
-    dest.mkdir()
-    shutil.copyfile(sums, dest / sums.name)
     listed = set()
-    for line in (dest / sums.name).read_text(encoding="utf-8").splitlines():
+    for line in sums.read_text(encoding="utf-8").splitlines():
         match = re.fullmatch(r"[0-9a-fA-F]{64} [ *](.+)", line)
         if not match:
             raise ValueError("invalid checksum entry")
@@ -23,39 +42,45 @@ def stage(src, dest, version, test_root):
             raise ValueError(f"invalid checksum path: {path}")
         listed.add(path)
 
-    copied = set()
+    actual = set()
 
     def fail(error):
         raise error
 
-    for root, dirs, files in os.walk(src, onerror=fail):
-        directory = Path(root)
-        rel = directory.relative_to(src)
-        for name in dirs:
-            if (directory / name).is_symlink():
-                raise ValueError(f"unexpected symlink: {rel / name}")
-            (dest / rel / name).mkdir()
-        for name in files:
-            path = directory / name
-            if path == sums:
+    for directory, dirs, files in os.walk(root, onerror=fail):
+        for name in dirs + files:
+            path = Path(directory) / name
+            rel = path.relative_to(root)
+            check_entry(rel)
+            if path.is_symlink():
+                raise ValueError(f"unexpected symlink: {rel}")
+            if path.is_dir():
                 continue
-            if path.is_symlink() or not path.is_file() or rel / name not in listed:
-                raise ValueError(f"unexpected file: {rel / name}")
-            shutil.copyfile(path, dest / rel / name)
-            (dest / rel / name).chmod(0o750 if os.access(path, os.X_OK) else 0o640)
-            copied.add(rel / name)
-    if copied != listed:
+            if not path.is_file():
+                raise ValueError(f"expected regular file: {rel}")
+            if rel.parts[0] != "bin":
+                digest(path, True)
+            if path != sums:
+                actual.add(rel)
+    if actual != listed:
         raise ValueError("checksum inventory does not match release")
-    manifest = dest / "release-manifest.json"
-    if manifest.exists():
-        if json.loads(manifest.read_text(encoding="utf-8"))["version"] != version:
-            raise ValueError("version differs from release manifest")
-        if not test_root and not (dest / "frontend").is_dir():
-            raise ValueError("partial release requires test mode")
+    manifest = json.loads((root / "release-manifest.json").read_text(encoding="utf-8"))
+    if manifest["version"] != version:
+        raise ValueError("version differs from release manifest")
+    if not test_root and not any(path.parts[0] == "frontend" and len(path.parts) > 1 for path in actual):
+        raise ValueError("partial release requires test mode")
+    units = (path for path in actual if path.parent == Path("systemd") and not path.name.startswith("."))
+    if not any(path.suffix in (".service", ".target") for path in units):
+        raise ValueError("missing systemd units")
 
 
 if __name__ == "__main__":
     try:
-        stage(Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4])
+        src, dest, version, test_root = sys.argv[1:]
+        if src != "--verify-installed":
+            if Path(src).resolve() in Path(dest).resolve().parents:
+                raise ValueError("release source contains staging directory")
+            copy_release(Path(src), Path(dest))
+        validate(Path(dest), version, test_root)
     except (OSError, ValueError, KeyError, TypeError) as error:
         sys.exit(f"error: {error}")

@@ -23,8 +23,10 @@ python3 deploy/nexa/package-release.py v2.0.0 /tmp/nexa-release-v2.0.0
 El manifiesto identifica el commit del checkout y la plataforma y arquitectura
 del host de empaquetado. Usar binarios compilados para el host de destino.
 `--allow-missing-frontend` permite un paquete parcial para pruebas.
-El instalador usa Python 3 y su auxiliar `stage-release.py` en el mismo directorio.
-Verifica el inventario y los hashes en staging antes de promover la versión.
+El instalador usa Python 3 con `stage-release.py` y `release_policy.py` en el mismo
+directorio. Verifica inventario, rutas prohibidas, hashes, binarios y units antes
+de activar una versión, tanto en instalación como en rollback. En producción
+exige una release con manifiesto y al menos un archivo en `frontend/`.
 
 ```bash
 sudo bash deploy/nexa/install-release.sh install /tmp/nexa-release-v2.0.0 v2.0.0

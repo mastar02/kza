@@ -42,32 +42,37 @@ as_nexa() {
   fi
 }
 
+stage_tool="$(dirname "$0")/stage-release.py"
 if [[ $1 == install ]]; then
   [[ ! -e $dest && ! -L $dest ]] || die "release already exists: $version"
   stage="$lock/release"
-  python3 "$(dirname "$0")/stage-release.py" "$2" "$stage" "$version" "$prefix"
-  (
-    cd "$stage"
-    if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS
-    else shasum -a 256 -c SHA256SUMS; fi
-  )
+  python3 "$stage_tool" "$2" "$stage" "$version" "$prefix"
+else
+  stage="$dest"
+  python3 "$stage_tool" --verify-installed "$stage" "$version" "$prefix"
+fi
+(
+  cd "$stage"
+  if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS
+  else shasum -a 256 -c SHA256SUMS; fi
+)
+for bin in nexa-audiod nexa-brain nexa-memoryd nexa-web; do
+  [[ -f $stage/bin/$bin && -x $stage/bin/$bin ]] || die "missing executable: $bin"
+done
+if [[ $1 == install ]]; then
   if [[ -z $prefix ]]; then chown -R root:nexa "$stage"; fi
   chmod -R u=rX,g=rX,o= "$stage"
   find "$stage" -type d -exec chmod 0750 {} +
   for bin in nexa-audiod nexa-brain nexa-memoryd nexa-web; do
-    [[ -f $stage/bin/$bin ]] || die "missing binary: $bin"
     chmod 0750 "$stage/bin/$bin"
   done
   mv "$stage" "$dest"
 fi
 
-[[ -d $dest/bin ]] || die "release missing: $version"
-if [[ -d $dest/systemd ]]; then
-  shopt -s nullglob
-  for unit in "$dest"/systemd/*.{service,target}; do
-    as_nexa install -m 0644 "$unit" "$units/${unit##*/}"
-  done
-fi
+shopt -s nullglob
+for unit in "$dest"/systemd/*.{service,target}; do
+  as_nexa install -m 0644 "$unit" "$units/${unit##*/}"
+done
 ln -s "releases/$version" "$lock/current"
 python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$lock/current" "$base/current"
 

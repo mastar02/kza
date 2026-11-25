@@ -1,6 +1,8 @@
 """L5 release checks. Linux additionally verifies the real systemd datagrams."""
 import configparser
 from concurrent.futures import ThreadPoolExecutor
+import errno
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -51,6 +53,12 @@ def test_service_units():
             assert "/etc/nexa" in s["ExecStart"]
         if path.stem in BINARIES:
             assert s["ExecStart"].split()[0] == "/opt/nexa/current/bin/" + path.stem
+            assert s["ReadWritePaths"] == {
+                "nexa-audiod": "/var/lib/nexa/clips",
+                "nexa-brain": "/var/lib/nexa/household",
+                "nexa-memoryd": "/var/lib/nexa/memory",
+                "nexa-web": "/var/lib/nexa/auth",
+            }[path.stem]
         if path.stem in {"nexa-llm-fast", "nexa-dashboard-proxy"}:
             assert s["Type"] == "simple"
         if path.stem in {"nexa-memoryd", "nexa-ml"}:
@@ -148,7 +156,13 @@ def test_package_and_switch(inputs):
         assert os.readlink(current) == "releases/v1"
         ready.set()
         while not done.is_set():
-            assert os.readlink(current) in {"releases/v1", "releases/v2"}
+            try:
+                observed = os.readlink(current)
+            except OSError as error:
+                if sys.platform == "darwin" and error.errno in (errno.EINVAL, errno.ENOENT):
+                    continue
+                raise
+            assert observed in {"releases/v1", "releases/v2"}
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         observer = pool.submit(observe_current)
@@ -177,10 +191,72 @@ def test_partial_harness_environment(tmp_path):
     assert not (tmp_path / "opt").exists()
 
 
-@pytest.mark.parametrize("name", [".env", "casa.glb", "memory.db", "x.sqlite-wal"])
+@pytest.mark.parametrize("name", [".env", ".env.local", "prod.env", "casa.glb", "memory.db", "x.sqlite-wal"])
 def test_forbidden_files(inputs, name):
     (inputs / "dist" / name).touch()
     package(inputs, ok=False)
+
+
+def regenerate_sums(release):
+    sums = release / "SHA256SUMS"
+    sums.chmod(0o600)
+    sums.write_text("".join(
+        f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.relative_to(release).as_posix()}\n"
+        for p in sorted(release.rglob("*")) if p.is_file() and p != sums
+    ))
+
+
+@pytest.mark.parametrize("entry,content", [
+    ("ml/.env", "secret"), ("ml/prod.env", "secret"), ("ml/.env.local", "secret"),
+    ("ml/settings.toml", "/home/kza"), ("frontend/casa.glb", "model"),
+])
+def test_reject_handmade_release(inputs, entry, content):
+    release = package(inputs)
+    (release / entry).write_text(content)
+    regenerate_sums(release)
+    env = dict(os.environ, NEXA_INSTALL_TEST_ROOT=str(inputs), NEXA_SKIP_CHOWN="1", NEXA_SKIP_SYSTEMCTL="1")
+    run("bash", DEPLOY / "install-release.sh", "install", release, "v1", env=env, ok=False)
+    assert not (inputs / "opt/nexa/releases/v1").exists()
+    assert not (inputs / "opt/nexa/current").is_symlink()
+
+
+@pytest.mark.parametrize("missing", ["release-manifest.json", "frontend/index.html"])
+def test_production_stage_requires_complete_release(inputs, missing):
+    release = package(inputs)
+    (release / missing).unlink()
+    regenerate_sums(release)
+    run(sys.executable, DEPLOY / "stage-release.py", release, inputs / "stage", "v1", "", ok=False)
+
+
+def test_corrupt_rollback_and_empty_units(inputs):
+    env = dict(os.environ, NEXA_INSTALL_TEST_ROOT=str(inputs), NEXA_SKIP_CHOWN="1", NEXA_SKIP_SYSTEMCTL="1")
+
+    def install(*args, ok=True):
+        run("bash", DEPLOY / "install-release.sh", *args, env=env, ok=ok)
+
+    v1 = package(inputs)
+    v2 = package(inputs, "v2")
+    install("install", v1, "v1")
+    install("install", v2, "v2")
+    old = inputs / "opt/nexa/releases/v1"
+    current = inputs / "opt/nexa/current"
+    binary = old / "bin/nexa-web"
+    binary.write_bytes(b"corrupt")
+    install("rollback", "v1", ok=False)
+    assert os.readlink(current) == "releases/v2"
+    binary.unlink()
+    regenerate_sums(old)
+    install("rollback", "v1", ok=False)
+    assert os.readlink(current) == "releases/v2"
+    shutil.copy(v1 / "bin/nexa-web", binary)
+    for release in (old, package(inputs, "v3")):
+        for unit in (release / "systemd").iterdir():
+            unit.unlink()
+        regenerate_sums(release)
+    install("rollback", "v1", ok=False)
+    install("install", inputs / "v3", "v3", ok=False)
+    assert os.readlink(current) == "releases/v2"
+    assert not (inputs / "opt/nexa/releases/v3").exists()
 
 
 def test_private_config_and_units(inputs):
