@@ -13,6 +13,8 @@ RuntimeDirectoryMode=0700
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nexa/household
 LockPersonality=yes
 RestrictSUIDSGID=yes
 # Loopback only by default (HA :8123, llama-server :8101, LiteLLM :8200).

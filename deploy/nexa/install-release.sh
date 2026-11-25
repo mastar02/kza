@@ -1,86 +1,86 @@
 #!/usr/bin/env bash
-# Atomic compiled binary release installer & instant rollback for Nexa v2 (no pods, no .pyc slots).
-# Usage:
-#   sudo ./install-release.sh install <release-dir-with-SHA256SUMS> <version>
-#   sudo ./install-release.sh rollback <previous-version>
+# install <release-dir> <version> | rollback <previous-version>
 set -euo pipefail
+export LC_ALL=C
 
-NEXA_USER="nexa"
-RELEASES_ROOT="/opt/nexa/releases"
-CURRENT_LINK="/opt/nexa/current"
+die() { echo "ERROR: $*" >&2; exit 1; }
 
-run_as_nexa() {
-  local uid
-  uid="$(id -u "${NEXA_USER}")"
-  sudo -u "${NEXA_USER}" env "XDG_RUNTIME_DIR=/run/user/${uid}" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${uid}/bus" "$@"
-}
-
-restart_and_verify() {
-  run_as_nexa systemctl --user daemon-reload
-  run_as_nexa systemctl --user restart nexa.target
-  for svc in nexa-audiod nexa-ml nexa-memoryd nexa-brain nexa-web; do
-    if ! run_as_nexa systemctl --user is-active --quiet "${svc}.service"; then
-      echo "ERROR: ${svc}.service failed to become active after switch." >&2
-      run_as_nexa systemctl --user status "${svc}.service" --no-pager || true
-      exit 1
-    fi
-  done
-  echo "All Nexa v2 services active under user '${NEXA_USER}'."
-}
-
-cmd="${1:-}"
-case "${cmd}" in
-  install)
-    src_dir="${2:?missing release directory}"
-    version="${3:?missing release version (e.g. v2.0.0-abc1234)}"
-    if [[ ! -f "${src_dir}/SHA256SUMS" ]]; then
-      echo "ERROR: ${src_dir}/SHA256SUMS missing." >&2
-      exit 1
-    fi
-    (cd "${src_dir}" && sha256sum -c SHA256SUMS)
-
-    dest="${RELEASES_ROOT}/${version}"
-    if [[ -e "${dest}" ]]; then
-      echo "ERROR: Release directory ${dest} already exists (releases are immutable)." >&2
-      exit 1
-    fi
-
-    install -d -o root -g "${NEXA_USER}" -m 0750 "${dest}/bin"
-    for bin in nexa-audiod nexa-brain nexa-memoryd nexa-web; do
-      install -o root -g "${NEXA_USER}" -m 0750 "${src_dir}/bin/${bin}" "${dest}/bin/${bin}"
-    done
-    if [[ -d "${src_dir}/frontend" ]]; then
-      cp -a "${src_dir}/frontend" "${dest}/frontend"
-      chown -R "root:${NEXA_USER}" "${dest}/frontend"
-      chmod -R u=rX,g=rX,o= "${dest}/frontend"
-    fi
-    if [[ -d "${src_dir}/systemd" ]]; then
-      install -m 0644 -o "${NEXA_USER}" -g "${NEXA_USER}" \
-        "${src_dir}/systemd"/*.{service,target} "/home/${NEXA_USER}/.config/systemd/user/"
-    fi
-
-    # Atomic symlink swap.
-    ln -sfn "${dest}" "${CURRENT_LINK}.next"
-    mv -Tf "${CURRENT_LINK}.next" "${CURRENT_LINK}"
-    echo "Switched ${CURRENT_LINK} -> ${dest}"
-    restart_and_verify
-    ;;
-
-  rollback)
-    prev="${2:?missing previous version}"
-    target="${RELEASES_ROOT}/${prev}"
-    if [[ ! -d "${target}/bin" ]]; then
-      echo "ERROR: Previous release ${target} not found." >&2
-      exit 1
-    fi
-    ln -sfn "${target}" "${CURRENT_LINK}.next"
-    mv -Tf "${CURRENT_LINK}.next" "${CURRENT_LINK}"
-    echo "Rolled back ${CURRENT_LINK} -> ${target}"
-    restart_and_verify
-    ;;
-
-  *)
-    echo "Usage: $0 {install <release-dir> <version> | rollback <previous-version>}" >&2
-    exit 2
-    ;;
+case "${1:-}" in
+  install) [[ $# == 3 ]] || die "expected install <release-dir> <version>"; version=$3 ;;
+  rollback) [[ $# == 2 ]] || die "expected rollback <previous-version>"; version=$2 ;;
+  *) die "expected install or rollback" ;;
 esac
+[[ $version =~ ^[A-Za-z0-9._-]+$ && $version != *..* && $version != . ]] || die "invalid version"
+
+prefix=${NEXA_INSTALL_TEST_ROOT:-}
+if [[ -n $prefix || -n ${NEXA_SKIP_SYSTEMCTL:-} || -n ${NEXA_SKIP_CHOWN:-} ]]; then
+  [[ $prefix == /* && ${NEXA_SKIP_SYSTEMCTL:-} == 1 && ${NEXA_SKIP_CHOWN:-} == 1 ]] ||
+    die "test mode requires an absolute test directory and both skip flags"
+  prefix=$(cd "$prefix" && pwd -P)
+  [[ -n $prefix && $prefix != / ]] || die "unsafe test root"
+elif [[ $EUID != 0 ]]; then
+  die "production install requires root"
+fi
+
+base="$prefix/opt/nexa"
+releases="$base/releases"
+units="$prefix/home/nexa/.config/systemd/user"
+dest="$releases/$version"
+if [[ -n $prefix ]]; then mkdir -p "$releases" "$units"; fi
+
+# Serialize install/rollback. All temporary state resides on the destination filesystem.
+lock="$base/.install-lock"
+mkdir -m 0700 "$lock" || die "install lock unavailable: $lock"
+trap 'rm -rf "$lock"' EXIT
+trap 'exit 1' HUP INT TERM
+
+as_nexa() {
+  if [[ -n $prefix ]]; then "$@"; else
+    local uid
+    uid=$(id -u nexa)
+    sudo -u nexa env "XDG_RUNTIME_DIR=/run/user/$uid" "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus" "$@"
+  fi
+}
+
+stage_tool="$(dirname "$0")/stage-release.py"
+if [[ $1 == install ]]; then
+  [[ ! -e $dest && ! -L $dest ]] || die "release already exists: $version"
+  stage="$lock/release"
+  python3 "$stage_tool" "$2" "$stage" "$version" "$prefix"
+else
+  stage="$dest"
+  python3 "$stage_tool" --verify-installed "$stage" "$version" "$prefix"
+fi
+(
+  cd "$stage"
+  if command -v sha256sum >/dev/null; then sha256sum -c SHA256SUMS
+  else shasum -a 256 -c SHA256SUMS; fi
+)
+for bin in nexa-audiod nexa-brain nexa-memoryd nexa-web; do
+  [[ -f $stage/bin/$bin && -x $stage/bin/$bin ]] || die "missing executable: $bin"
+done
+if [[ $1 == install ]]; then
+  if [[ -z $prefix ]]; then chown -R root:nexa "$stage"; fi
+  chmod -R u=rX,g=rX,o= "$stage"
+  find "$stage" -type d -exec chmod 0750 {} +
+  for bin in nexa-audiod nexa-brain nexa-memoryd nexa-web; do
+    chmod 0750 "$stage/bin/$bin"
+  done
+  mv "$stage" "$dest"
+fi
+
+shopt -s nullglob
+for unit in "$dest"/systemd/*.{service,target}; do
+  as_nexa install -m 0644 "$unit" "$units/${unit##*/}"
+done
+ln -s "releases/$version" "$lock/current"
+python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$lock/current" "$base/current"
+
+if [[ -z $prefix ]]; then
+  as_nexa systemctl --user daemon-reload
+  as_nexa systemctl --user restart nexa.target
+  for svc in nexa-audiod nexa-ml nexa-memoryd nexa-brain nexa-web; do
+    as_nexa systemctl --user is-active --quiet "$svc.service" || die "$svc inactive after switch"
+  done
+fi
+echo "Switched $base/current -> releases/$version"

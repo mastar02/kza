@@ -12,6 +12,7 @@ ExecStart=/opt/nexa/bin/llama-server \
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
+ProtectSystem=strict
 LockPersonality=yes
 RestrictSUIDSGID=yes
 IPAddressDeny=any
@@ -22,7 +23,7 @@ Restart=on-failure
 RestartSec=5s
 StartLimitBurst=5
 StartLimitIntervalSec=180s
-TimeoutStopSec=15s
+TimeoutStopSec=10s
 
 [Install]
 WantedBy=nexa.target

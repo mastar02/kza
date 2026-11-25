@@ -12,11 +12,37 @@ Verifica automáticamente que `nexa` **no** pertenezca a `sudo`, `adm`, `wheel` 
 
 ## 2. Despliegue atómico y rollback (< 60 s)
 
+En el checkout del commit a distribuir, preparar los cuatro binarios nativos en
+`target/release/` y la SPA en `frontend/dist/`. Empaquetar en una carpeta nueva
+o vacía:
+
+```bash
+python3 deploy/nexa/package-release.py v2.0.0 /tmp/nexa-release-v2.0.0
+```
+
+El manifiesto identifica el commit del checkout y la plataforma y arquitectura
+del host de empaquetado. Usar binarios compilados para el host de destino.
+`--allow-missing-frontend` permite un paquete parcial para pruebas.
+El instalador usa Python 3 con `stage-release.py` y `release_policy.py` en el mismo
+directorio. Verifica inventario, rutas prohibidas, hashes, binarios y units antes
+de activar una versión, tanto en instalación como en rollback. En producción
+exige una release con manifiesto y al menos un archivo en `frontend/`.
+
 ```bash
 sudo bash deploy/nexa/install-release.sh install /tmp/nexa-release-v2.0.0 v2.0.0
 # Rollback inmediato a la release anterior:
 sudo bash deploy/nexa/install-release.sh rollback v1.9.9
 ```
+
+Para ejecutar L5, usar `tests-v2/smoke/run_l5_smoke.sh` con pytest disponible
+en `python3` (o seleccionar el intérprete con `PYTHON`). El smoke compila
+`nexa-memoryd` con Cargo y protoc o usa el binario indicado por `NEXA_MEMORYD_BIN`.
+En macOS verifica el socket privado y el apagado por SIGTERM. En Linux también
+exige los datagramas `READY=1` y `STOPPING=1` del proceso.
+
+Los cuatro daemons Rust y el worker ML usan `Type=notify`. ML carga el código
+desde la release con el intérprete del entorno compartido en `/opt/nexa/ml-venv`.
+NGINX y llama-server son ejecutables externos y conservan `Type=simple`.
 
 ## 3. Registro propuesto para `docs/SERVER_CONVENTIONS.md` (y Notion pág. 8)
 
