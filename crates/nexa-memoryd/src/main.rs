@@ -35,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     _ = tokio::signal::ctrl_c() => {},
                     _ = terminate.recv() => {},
                 }
+                notify_stopping();
             },
         )
         .await;
@@ -77,6 +78,16 @@ fn notify_ready() -> std::io::Result<Option<tokio::task::JoinHandle<()>>> {
         })
     }))
 }
+
+#[cfg(target_os = "linux")]
+fn notify_stopping() {
+    if sd_notify::notify(&[sd_notify::NotifyState::Stopping]).is_err() {
+        tracing::error!("systemd stopping notification failed");
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn notify_stopping() {}
 
 #[cfg(not(target_os = "linux"))]
 fn notify_ready() -> std::io::Result<Option<tokio::task::JoinHandle<()>>> {
