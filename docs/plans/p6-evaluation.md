@@ -300,6 +300,13 @@ afirmación de mejora o aceptación acústica.
 
 Se actualizaron los sellos de las fuentes tras el cierre de NLU R11 y la corrección de RESIDUO-3 del dispatcher, antes de abrir cualquier reserva de campo.
 
+El candidato de desarrollo incorpora la factoría híbrida, las palabras de
+refuerzo y el pool de Whisper (`faa78dda`, `7734aea0`, `1ebc2611`), y extrae
+la heurística de truncamiento del detector Whisper legado (`3e6e5a25`). Se
+actualizan los dos sellos de fuentes con los mismos símbolos y criterios.
+T071 debe sellar la configuración y el runtime efectivos de este candidato
+antes de abrir la reserva de T072. Conservar cualquier sello y resultado previo.
+
 ```json
 {
   "protocol": "p6-v1",
@@ -325,11 +332,11 @@ Se actualizaron los sellos de las fuentes tras el cierre de NLU R11 y la correcc
     "src/pipeline/response_handler.py": {"sha256": "11d229715fe54820de5b52590bd1c8e6b0c9c1a1e8976c386f1cdc90f5197004", "symbols": ["ResponseHandler.aplay_earcon", "ResponseHandler._result", "ResponseHandler._render", "ResponseHandler.cancel"]},
     "src/pipeline/wake_verification.py": {"sha256": "389719aec759a76ebcac291d2bb9d6a17252614b09efdc1eb1609a4c2a8a33e0", "symbols": ["WakeVerifier.evaluate"]},
     "src/stt/parakeet_stt.py": {"sha256": "4f8f4e86df5825d6c817cca8c747505c76971e18c9c37521d28adbdb66abd1c2", "symbols": ["ParakeetSTT.transcribe_with_confidence"]},
-    "src/stt/whisper_fast.py": {"sha256": "6344dfbbff7b950e4d77647ee7c7387faf465264e5c8712440c8a17289c6a78b", "symbols": ["FastWhisperSTT.transcribe_with_confidence"]},
+    "src/stt/whisper_fast.py": {"sha256": "132cdd418831dbd8a79e39da825cb7100834003c4669211f4bcb69e2505ff386", "symbols": ["FastWhisperSTT.transcribe_with_confidence"]},
     "src/users/speaker_identifier.py": {"sha256": "af96a453fe7fb6b1d7819bf288215cfb4cc27b7c471b6b84e9f3ca37d0fc1297", "symbols": ["SpeakerIdentifier.get_embedding"]},
     "src/users/voice_groups.py": {"sha256": "a8f37c1d91925bcfb356d60bd569e8b9e8a844bcdca4115473f6b51aeffa9ab8", "symbols": ["VoiceGroups.add", "VoiceGroups.metadata"]},
     "src/wakeword/detector.py": {"sha256": "2bf6523140c5267d12366a4a1edaf31e3535e862ae55da7494396186caf17d29", "symbols": ["WakeWordDetector.detect"]},
-    "src/wakeword/whisper_wake.py": {"sha256": "dda37cd47905a1e1325891bf7ac12a88e450d2c1aedf04458cb7a5c4af90a354", "symbols": ["WhisperWakeDetector.detect_with_provenance"]},
+    "src/wakeword/whisper_wake.py": {"sha256": "758f94321e3250fb3e52afb64da7014799c0e6b661a7411631e15d6c03a4d47f", "symbols": ["WhisperWakeDetector.detect_with_provenance"]},
     "tools/acoustic_calibration.py": {"sha256": "7779a270b5b60dc3173547f18b9932b42af643fb0ebe50b3a0ebe886021847c4", "symbols": ["summarize", "signal_gap"]},
     "tools/ambient_wer.py": {"sha256": "27d39e18691814d0dae9e8465e0cf5e84497bb05eade3030ed68b1fb8b24f747", "symbols": ["build_report"]},
     "tools/analyze_audio_quality.py": {"sha256": "72bbbfb055770cfbd4248c78a8eff782934f47c7fa9754240295b9b8b6c37b83", "symbols": ["measure_channel"]},
