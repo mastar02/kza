@@ -1,6 +1,12 @@
 use crate::{CancellationToken, CloudConsentGate, LlmError};
-use std::{io, process::Stdio};
-use tokio::{io::AsyncReadExt, process::Command};
+use std::{collections::VecDeque, io, process::Stdio};
+use tokio::{
+    io::AsyncReadExt,
+    process::{ChildStderr, Command},
+};
+
+const MAX_STDOUT_BYTES: usize = 4 * 1024 * 1024;
+const STDERR_TAIL_BYTES: usize = 4 * 1024;
 
 #[cfg(unix)]
 struct ProcessGroup(rustix::process::Pid);
@@ -15,6 +21,8 @@ impl Drop for ProcessGroup {
 
 /// Supervise a noninteractive CLI. Pass the cloud gate for commands that use
 /// the gateway. The caller owns command arguments and the cancellation deadline.
+/// Stdout is limited to 4 MiB. An unsuccessful exit includes an escaped tail of
+/// up to 4 KiB of stderr.
 pub async fn run_cli(
     mut command: Command,
     cloud: Option<&CloudConsentGate>,
@@ -29,7 +37,7 @@ pub async fn run_cli(
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .kill_on_drop(true);
     #[cfg(unix)]
     command.process_group(0);
@@ -46,16 +54,37 @@ pub async fn run_cli(
         .stdout
         .take()
         .ok_or_else(|| io::Error::other("missing CLI stdout"))?;
-    let mut output = Vec::new();
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| io::Error::other("missing CLI stderr"))?;
+    let read_stdout = async {
+        let mut output = Vec::new();
+        (&mut stdout)
+            .take(MAX_STDOUT_BYTES as u64)
+            .read_to_end(&mut output)
+            .await?;
+        if output.len() == MAX_STDOUT_BYTES && stdout.read(&mut [0]).await? != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("CLI stdout exceeded {MAX_STDOUT_BYTES} bytes"),
+            ));
+        }
+        Ok(output)
+    };
     let done = async {
-        stdout.read_to_end(&mut output).await?;
+        let (output, stderr) = tokio::try_join!(read_stdout, read_stderr_tail(stderr))?;
         let status = child.wait().await?;
         if !status.success() {
-            return Err(LlmError::Io(io::Error::other(format!(
-                "CLI exited with {status}"
-            ))));
+            let mut message = format!("CLI exited with {status}");
+            if !stderr.is_empty() {
+                let diagnostic = String::from_utf8_lossy(&stderr);
+                message.push_str(". Stderr tail: ");
+                message.extend(diagnostic.trim_end().escape_debug());
+            }
+            return Err(LlmError::Io(io::Error::other(message)));
         }
-        Ok(())
+        Ok(output)
     };
     let withdrawn = async {
         if let Some(gate) = cloud {
@@ -73,7 +102,21 @@ pub async fn run_cli(
     #[cfg(unix)]
     drop(group);
     if result.is_err() && child.id().is_some() {
-        child.kill().await?;
+        let _ = child.kill().await;
     }
-    result.map(|()| output)
+    result
+}
+
+async fn read_stderr_tail(mut stderr: ChildStderr) -> io::Result<Vec<u8>> {
+    let mut tail = VecDeque::with_capacity(STDERR_TAIL_BYTES);
+    let mut buffer = [0; STDERR_TAIL_BYTES];
+    loop {
+        let read = stderr.read(&mut buffer).await?;
+        if read == 0 {
+            return Ok(tail.into());
+        }
+        let discard = (tail.len() + read).saturating_sub(STDERR_TAIL_BYTES);
+        tail.drain(..discard);
+        tail.extend(&buffer[..read]);
+    }
 }

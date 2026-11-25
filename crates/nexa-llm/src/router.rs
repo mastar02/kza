@@ -43,11 +43,17 @@ impl FailoverRouter {
     }
 
     pub async fn clear_cooldown(&self, id: &str) -> Result<(), LlmError> {
-        self.health.update(id, false).await
+        Ok(self.health.update(id, false).await?)
     }
 
     pub async fn cooldown_remaining(&self, id: &str) -> Duration {
         self.health.remaining(id).await
+    }
+
+    /// Returns the failure streak for this endpoint, including after the
+    /// cooldown expires. A success or clear resets it to zero.
+    pub async fn consecutive_errors(&self, id: &str) -> u32 {
+        self.health.consecutive_errors(id).await
     }
 
     pub async fn metrics(&self, id: &str) -> Option<Metrics> {
@@ -87,7 +93,7 @@ impl FailoverRouter {
             match result {
                 Ok(tokens) => {
                     let elapsed = start.elapsed();
-                    self.health.update(&ep.id, false).await?;
+                    self.record_health(&ep.id, false).await;
                     self.metrics
                         .lock()
                         .await
@@ -98,7 +104,7 @@ impl FailoverRouter {
                 }
                 Err(e) => {
                     if e.retryable() {
-                        self.health.update(&ep.id, true).await?;
+                        self.record_health(&ep.id, true).await;
                     } else if !matches!(e, LlmError::Consent) {
                         return Err(e);
                     }
@@ -110,5 +116,11 @@ impl FailoverRouter {
             }
         }
         Err(last)
+    }
+
+    async fn record_health(&self, id: &str, failed: bool) {
+        if let Err(error) = self.health.update(id, failed).await {
+            tracing::warn!(kind = ?error.kind(), "Could not persist LLM cooldown state");
+        }
     }
 }

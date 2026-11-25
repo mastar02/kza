@@ -13,8 +13,9 @@ pub use router::FailoverRouter;
 pub use stripper::ThinkTagStripper;
 pub use tokio_util::sync::CancellationToken;
 
-/// One-way latch enforcing cloud egress consent (OQ-8).
-/// Once withdrawn, cloud calls remain blocked for the lifetime of the process.
+/// One-way latch enforcing cloud egress consent for this runtime instance (OQ-8).
+/// Withdrawal admits zero new cloud calls. In-flight bytes already queued before
+/// [`Self::withdraw`] may have reached the gateway.
 #[derive(Debug)]
 pub struct CloudConsentGate {
     initial_consent: bool,

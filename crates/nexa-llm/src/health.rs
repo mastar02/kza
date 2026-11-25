@@ -15,7 +15,7 @@ use tokio::{sync::Mutex, time::Instant};
 const BACKOFF: [u64; 4] = [60, 300, 1500, 3600];
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Saved {
-    failures: usize,
+    failures: u32,
     until: SystemTime,
 }
 
@@ -27,22 +27,21 @@ struct Entry {
 
 #[derive(Debug)]
 pub(crate) struct Cooldowns {
-    entries: Arc<Mutex<HashMap<String, Entry>>>,
+    state: Arc<Mutex<State>>,
     path: Option<PathBuf>,
+}
+
+#[derive(Debug, Default)]
+struct State {
+    entries: HashMap<String, Entry>,
+    dirty: bool,
 }
 
 impl Cooldowns {
     pub async fn load(path: Option<PathBuf>) -> Result<Self, LlmError> {
         let mut entries = HashMap::new();
         if let Some(path) = path.clone() {
-            let saved =
-                tokio::task::spawn_blocking(move || -> io::Result<HashMap<String, Saved>> {
-                    match File::open(path) {
-                        Ok(f) => Ok(serde_json::from_reader(f)?),
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(HashMap::new()),
-                        Err(e) => Err(e),
-                    }
-                })
+            let saved = tokio::task::spawn_blocking(move || Self::read_saved(&path))
                 .await
                 .map_err(io::Error::other)??;
             for (id, saved) in saved {
@@ -61,74 +60,113 @@ impl Cooldowns {
             }
         }
         Ok(Self {
-            entries: Arc::new(Mutex::new(entries)),
+            state: Arc::new(Mutex::new(State {
+                entries,
+                ..State::default()
+            })),
             path,
         })
     }
 
+    fn read_saved(path: &Path) -> io::Result<HashMap<String, Saved>> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(error) => return Err(error),
+        };
+        match serde_json::from_reader(file) {
+            Ok(saved) => Ok(saved),
+            Err(error) if error.is_io() => Err(error.into()),
+            Err(error) => {
+                let mut quarantine = path.as_os_str().to_owned();
+                quarantine.push(".corrupt");
+                let rename_error = std::fs::rename(path, quarantine).err();
+                tracing::warn!(
+                    line = error.line(),
+                    column = error.column(),
+                    quarantine_error = ?rename_error.map(|error| error.kind()),
+                    "Ignoring invalid LLM cooldown JSON"
+                );
+                Ok(HashMap::new())
+            }
+        }
+    }
+
     pub async fn remaining(&self, id: &str) -> Duration {
-        self.entries
+        self.state
             .lock()
             .await
+            .entries
             .get(id)
             .map(|entry| entry.deadline.saturating_duration_since(Instant::now()))
             .unwrap_or_default()
     }
 
-    pub async fn update(&self, id: &str, failed: bool) -> Result<(), LlmError> {
-        let mut entries = self.entries.clone().lock_owned().await;
-        if !failed && !entries.contains_key(id) {
+    pub async fn consecutive_errors(&self, id: &str) -> u32 {
+        self.state
+            .lock()
+            .await
+            .entries
+            .get(id)
+            .map_or(0, |entry| entry.saved.failures)
+    }
+
+    pub async fn update(&self, id: &str, failed: bool) -> io::Result<()> {
+        let mut state = self.state.clone().lock_owned().await;
+        let changed = if failed {
+            let failures = state
+                .entries
+                .get(id)
+                .map_or(1, |entry| entry.saved.failures.saturating_add(1));
+            let delay = Duration::from_secs(BACKOFF[(failures as usize).min(BACKOFF.len()) - 1]);
+            state.entries.insert(
+                id.to_owned(),
+                Entry {
+                    saved: Saved {
+                        failures,
+                        until: SystemTime::now() + delay,
+                    },
+                    deadline: Instant::now() + delay,
+                },
+            );
+            true
+        } else {
+            state.entries.remove(id).is_some()
+        };
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
+        state.dirty |= changed;
+        if !state.dirty {
             return Ok(());
         }
-        let next = failed.then(|| {
-            let failures = entries
-                .get(id)
-                .map_or(1, |e| e.saved.failures.saturating_add(1))
-                .min(4);
-            let delay = Duration::from_secs(BACKOFF[failures - 1]);
-            Entry {
-                saved: Saved {
-                    failures,
-                    until: SystemTime::now() + delay,
-                },
-                deadline: Instant::now() + delay,
-            }
-        });
-        let id = id.to_owned();
-        let commit = move |path: Option<&Path>| -> io::Result<()> {
-            if let Some(path) = path {
-                let dir = path
-                    .parent()
-                    .filter(|p| !p.as_os_str().is_empty())
-                    .unwrap_or(Path::new("."));
-                std::fs::create_dir_all(dir)?;
-                let mut tmp = NamedTempFile::new_in(dir)?;
-                let mut saved: HashMap<_, _> = entries.iter().map(|(k, v)| (k, &v.saved)).collect();
-                saved.remove(&id);
-                if let Some(e) = &next {
-                    saved.insert(&id, &e.saved);
-                }
-                serde_json::to_writer(&mut tmp, &saved)?;
-                tmp.as_file().sync_all()?;
-                tmp.persist(path)?;
-            }
-            match next {
-                Some(entry) => {
-                    entries.insert(id, entry);
-                }
-                None => {
-                    entries.remove(&id);
-                }
-            }
+
+        // Serialize writes in update order. A failed write leaves the current
+        // in-memory state dirty so a later update can persist it again.
+        let path = path.clone();
+        tokio::task::spawn_blocking(move || {
+            Self::persist(&path, &state.entries)?;
+            state.dirty = false;
             Ok(())
-        };
-        if let Some(path) = self.path.clone() {
-            tokio::task::spawn_blocking(move || commit(Some(&path)))
-                .await
-                .map_err(io::Error::other)??;
-        } else {
-            commit(None)?;
-        }
+        })
+        .await
+        .map_err(io::Error::other)?
+    }
+
+    fn persist(path: &Path, entries: &HashMap<String, Entry>) -> io::Result<()> {
+        let dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
+        std::fs::create_dir_all(dir)?;
+        let mut tmp = NamedTempFile::new_in(dir)?;
+        let saved: HashMap<_, _> = entries
+            .iter()
+            .map(|(id, entry)| (id, &entry.saved))
+            .collect();
+        serde_json::to_writer(&mut tmp, &saved)?;
+        tmp.as_file().sync_all()?;
+        tmp.persist(path)?;
         Ok(())
     }
 }
