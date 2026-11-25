@@ -692,3 +692,69 @@ fn a_deferred_routine_reply_never_dispatches_the_original_command() {
     );
     assert_eq!(reply.route, Route::RefusalOnly);
 }
+
+#[test]
+fn temperature_commands_enforce_inclusive_celsius_bounds() {
+    let router = RouterEngine::default();
+    for value in [10, 22, 35] {
+        let text = format!("Poné el aire a {value} grados");
+        let turn = router.route(&text, clear_wake());
+        assert_eq!(turn.decision.path, PathType::FastDomotics);
+        let Route::Domotics(command) = turn.route else {
+            panic!("{text}")
+        };
+        assert_eq!(command.operation, Operation::SetTemperature);
+        assert_eq!(command.slots.temperature, Some(f64::from(value)));
+    }
+    for value in ["0", "5", "9", "9,9", "35,1", "36", "40", "100", "999"] {
+        let text = format!("Poné el aire a {value} grados");
+        let turn = router.route(&text, clear_wake());
+        assert_eq!(turn.route, Route::Rejected, "{text}");
+        assert_eq!(turn.decision.reason.as_deref(), Some("invalid_temperature"));
+    }
+}
+
+#[test]
+fn bare_light_targets_require_a_known_room_or_fixture() {
+    let router = RouterEngine::default();
+    for target in [
+        "la luz quincho",
+        "la luz garage",
+        "la lámpara garage",
+        "la luz del quincho",
+    ] {
+        let turn = router.route(&format!("Prendé {target}"), clear_wake());
+        assert_eq!(turn.route, Route::Rejected, "{target}");
+        assert_eq!(turn.decision.reason.as_deref(), Some("unresolved_room"));
+    }
+    for (target, expected_target, room) in [
+        ("el velador", "velador", "escritorio"),
+        ("la lámpara", "lampara", "escritorio"),
+        ("la lámpara de pie", "lampara de pie", "escritorio"),
+        ("la luz principal", "principal", "escritorio"),
+        ("la luz salón", "salon", "living"),
+    ] {
+        let turn = router.route(&format!("Prendé {target}"), clear_wake());
+        let Route::Domotics(command) = turn.route else {
+            panic!("{target}: {turn:?}")
+        };
+        assert_eq!(command.room.as_deref(), Some(room));
+        assert_eq!(command.target, expected_target);
+    }
+}
+
+#[test]
+fn rejects_oversized_compound_input_before_parsing() {
+    use std::time::{Duration, Instant};
+    let router = RouterEngine::default();
+    let text = "prendé la luz y ".repeat(4096);
+    assert!(text.len() >= 65_536);
+    let start = Instant::now();
+    let turn = router.route(&text, clear_wake());
+    let elapsed = start.elapsed();
+    assert_eq!(turn.route, Route::Rejected);
+    assert_eq!(turn.acceptance.reason, GateReason::UtteranceTooLong);
+    assert!(!turn.acceptance.accept);
+    assert!(turn.decision.normalized_text.is_empty());
+    assert!(elapsed < Duration::from_millis(5), "{elapsed:?}");
+}

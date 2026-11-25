@@ -61,6 +61,7 @@ pub struct HomeCommand {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GrammarBlock {
     InvalidBrightness,
+    InvalidTemperature,
     Negation,
     Conditional,
     ReportedSpeech,
@@ -78,6 +79,7 @@ impl GrammarBlock {
     pub fn code(self) -> &'static str {
         match self {
             Self::InvalidBrightness => "invalid_brightness_percentage",
+            Self::InvalidTemperature => "invalid_temperature",
             Self::Negation => "non_immediate:negation",
             Self::Conditional => "non_immediate:subjunctive_cond",
             Self::ReportedSpeech => "non_immediate:report_of_speech",
@@ -144,7 +146,8 @@ fn unqualified_target(target: &str) -> &str {
 fn resolve_room(
     target: &str,
     source_room: Option<&str>,
-    fixture: bool,
+    domain: Domain,
+    noun: &str,
 ) -> Result<Option<String>, GrammarBlock> {
     let explicit = unqualified_target(target);
     if let Some(room) = canonical_room(explicit) {
@@ -156,7 +159,8 @@ fn resolve_room(
     ) {
         return Ok(None);
     }
-    if explicit != target && !fixture {
+    if explicit != target && (domain != Domain::Light || matches!(noun, "luz" | "luces" | "brillo"))
+    {
         return Err(GrammarBlock::UnknownRoom);
     }
     if target.is_empty() {
@@ -177,7 +181,16 @@ fn resolve_room(
     {
         return Err(GrammarBlock::UnknownRoom);
     }
-    Ok(source_room.map(str::to_owned))
+    let known_fixture = matches!(
+        (noun, target),
+        ("luz" | "lampara", "principal")
+            | ("luces" | "lamparas", "principales")
+            | ("lampara" | "lamparas", "de pie")
+    );
+    if known_fixture || domain == Domain::MediaPlayer {
+        return Ok(source_room.map(str::to_owned));
+    }
+    Err(GrammarBlock::UnknownRoom)
 }
 
 pub(crate) fn entity_at(word: &str) -> Option<Domain> {
@@ -583,7 +596,7 @@ pub(crate) fn parse_core(core: &str, source_room: Option<&str>) -> GrammarMatch 
     let room = if domain == Domain::Scene {
         None
     } else {
-        match resolve_room(target, source_room, fixture) {
+        match resolve_room(target, source_room, domain, noun) {
             Ok(room) => room,
             Err(reason) => return GrammarMatch::Blocked(reason),
         }
@@ -761,6 +774,9 @@ fn extended(domain: Domain, verb: Option<Verb>, tail: &str) -> CommandParts<'_> 
             if let Some(m) = TEMPERATURE_SETTING.captures(tail)
                 && let Some(value) = number(m[2].trim())
             {
+                if !(10.0..=35.0).contains(&value) {
+                    return Err(GrammarBlock::InvalidTemperature);
+                }
                 slots.temperature = Some(value);
                 (
                     Operation::SetTemperature,
