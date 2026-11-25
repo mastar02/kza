@@ -48,6 +48,12 @@ _LEVEL_TO_PB = {
 }
 
 
+def _role_name(value: int) -> str:
+    """Enum name for a role, tolerating unknown proto3 numeric values (never raises)."""
+    known = common_pb2.Role.DESCRIPTOR.values_by_number.get(value)
+    return known.name if known is not None else f"ROLE_UNKNOWN_{value}"
+
+
 def _slot_health(snap: SlotSnapshot) -> ml_pb2.ModelSlotHealth:
     if snap.state is SlotState.READY:
         state = common_pb2.HEALTH_STATE_DEGRADED if snap.consecutive_failures else common_pb2.HEALTH_STATE_OK
@@ -230,7 +236,7 @@ class MlServicer(ml_pb2_grpc.MlServiceServicer):
                 actor.role != common_pb2.ROLE_OPERATOR
                 or common_pb2.PERMISSION_ADMIN_MANAGE not in actor.permissions
             ):
-                logger.warning("ReloadModel denied for role %s", common_pb2.Role.Name(actor.role))
+                logger.warning("ReloadModel denied for role %s", _role_name(actor.role))
                 await context.abort(grpc.StatusCode.PERMISSION_DENIED, "operator with admin.manage required")
             if request.slot_id not in self._rt.slot_ids:
                 raise InvalidInputError("unknown slot_id")

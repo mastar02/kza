@@ -466,8 +466,12 @@ async def test_tts_unknown_voice_is_invalid_argument_not_failure(harness: Harnes
             ),
             grpc.StatusCode.PERMISSION_DENIED,
         ),
+        (
+            common_pb2.ActorContext(subject="op", role=999, permissions=[common_pb2.PERMISSION_ADMIN_MANAGE]),
+            grpc.StatusCode.PERMISSION_DENIED,
+        ),
     ],
-    ids=["actor-absent", "no-subject", "role-home", "operator-without-admin-manage"],
+    ids=["actor-absent", "no-subject", "role-home", "operator-without-admin-manage", "unknown-role-999"],
 )
 async def test_reload_requires_authorized_operator(
     harness: Harness,
