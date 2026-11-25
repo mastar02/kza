@@ -3,6 +3,7 @@
 import asyncio
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AsyncExitStack
 import json
 import threading
 from weakref import ref
@@ -802,33 +803,52 @@ async def test_callback_cannot_combine_old_boundary_with_new_queue(tmp_path):
 async def test_shared_native_model_serializes_entries_but_revoked_waiter_exits_without_live_room(
     tmp_path, stage
 ):
-    async with ambient_graph(
-        tmp_path, stage=stage, rooms=("synthetic-a", "synthetic-b")
-    ) as g:
+    async with (
+        ambient_graph(
+            tmp_path, stage=stage, rooms=("synthetic-a", "synthetic-b")
+        ) as g,
+        AsyncExitStack() as cleanup,
+    ):
+        # Await actual graph teardown before the fixture's short close observer.
+        cleanup.push_async_callback(g.privacy.begin_close)
         adapter = g.transcriber._stt if stage == "stt" else g.transcriber._tagger
+        active, waiting = "synthetic-a", "synthetic-b"
+        loop = asyncio.get_running_loop()
+        waiter_admission = asyncio.Queue()
+        lock = adapter._inference_lock
+
+        class ObservedAdmission:
+            def acquire(self, *, timeout):
+                acquired = lock.acquire(timeout=timeout)
+                if PRODUCER_CONTEXT.get().room_id == waiting:
+                    loop.call_soon_threadsafe(waiter_admission.put_nowait, acquired)
+                return acquired
+
+            def release(self):
+                lock.release()
+
+        adapter._inference_lock = ObservedAdmission()
+        gate = g.gates[stage]
         observers = {
-            room: asyncio.create_task(g.transcriber._handle_segment(room, g.segment()))
-            for room in ("synthetic-a", "synthetic-b")
+            active: asyncio.create_task(
+                g.transcriber._handle_segment(active, g.segment())
+            )
         }
         try:
-            await until(g.gates[stage].entered.is_set)
-            await until(lambda: len(adapter.snapshot_operations()) == 2)
-            # The first entrant holds the model; the other native scope is queued.
-            contexts = {
-                task.get_context()
-                .get(PRODUCER_CONTEXT)
-                .room_id: task.get_context().get(PRODUCER_CONTEXT)
-                for task in adapter.snapshot_operations()
-            }
-            locked = adapter._inference_lock
-            assert locked.locked()
-            # Backend callbacks record their room without keeping private arrays.
-            active = (
-                g.engine.active_room if stage == "stt" else g.identifier.active_room
+            await until(gate.entered.is_set)
+            observers[waiting] = asyncio.create_task(
+                g.transcriber._handle_segment(waiting, g.segment())
             )
-            waiting = next(room for room in observers if room != active)
-            await asyncio.sleep(0.02)
-            assert g.gates[stage].calls == 1
+            assert await asyncio.wait_for(waiter_admission.get(), 2) is False, (
+                "the second room acquired the occupied model"
+            )
+            contexts = {
+                context.room_id: context
+                for task in adapter.snapshot_operations()
+                if (context := task.get_context().get(PRODUCER_CONTEXT)) is not None
+            }
+            assert contexts.keys() == observers.keys()
+            assert gate.calls == 1
             await g.privacy.acall(
                 g.privacy.ledger.delete_conversation,
                 contexts[waiting].sources[0].conversation_id,
@@ -841,10 +861,10 @@ async def test_shared_native_model_serializes_entries_but_revoked_waiter_exits_w
                     for task in adapter.snapshot_operations()
                 )
             )
-            assert not observers[active].done() and g.gates[stage].calls == 1
+            assert not observers[active].done() and gate.calls == 1
             assert not observers[waiting].cancelled()
         finally:
-            g.gates[stage].release.set()
+            gate.release.set()
             await asyncio.gather(*observers.values(), return_exceptions=True)
         rows = await g.store.undistilled_live()
         assert len(rows) == 1 and rows[0]["room_id"] == active
