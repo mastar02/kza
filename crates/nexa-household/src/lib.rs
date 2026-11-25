@@ -6,7 +6,8 @@
 //!
 //! Start the exclusive database owner with [HouseholdWorker::open_in]. Poll
 //! timers for completions, claim notices when a room's output is available,
-//! and pass scheduled or user-initiated occurrences to the routine engine.
+//! and poll scheduled routines or pass user-initiated occurrences to the
+//! routine engine.
 //! Execute only effects returned by a new claim and report their observed
 //! outcomes. Revalidate authorization in the adapter at execution time.
 
@@ -208,6 +209,15 @@ impl<C: Clock + 'static> HouseholdWorker<C> {
         })
         .await?
     }
+
+    /// Claim the scheduled occurrences due at the given wall-clock instant.
+    pub async fn poll_due_scheduled_routines(
+        &self,
+        now_ms: Timestamp,
+    ) -> Result<Vec<routines::RoutineRun>> {
+        self.call(move |household| household.poll_due_scheduled_routines(now_ms))
+            .await
+    }
 }
 
 /// Check whether a reminder's home actions are still within the grace window.
@@ -251,8 +261,11 @@ fn json_column<T: serde::de::DeserializeOwned>(
     row: &Row<'_>,
     column: usize,
 ) -> rusqlite::Result<T> {
-    let text: String = row.get(column)?;
-    serde_json::from_str(&text).map_err(|error| {
+    decode_json(&row.get::<_, String>(column)?, column)
+}
+
+fn decode_json<T: serde::de::DeserializeOwned>(text: &str, column: usize) -> rusqlite::Result<T> {
+    serde_json::from_str(text).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
             column,
             rusqlite::types::Type::Text,

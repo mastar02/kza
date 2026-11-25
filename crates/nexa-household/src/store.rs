@@ -9,6 +9,7 @@ pub const DATABASE_FILE: &str = "household.db";
 const MIGRATIONS: &[&str] = &[
     include_str!("schema/001_scheduling.sql"),
     include_str!("schema/002_household.sql"),
+    include_str!("schema/003_routine_schedules.sql"),
 ];
 
 /// Owns a configured SQLite connection. A database can be reopened by path.
@@ -147,13 +148,13 @@ mod tests {
             .connection()
             .query_row("SELECT name FROM timers", [], |row| row.get(0))?;
         assert_eq!(name, "Mate");
-        assert_eq!(store.schema_version()?, 2);
-        store.connection().pragma_update(None, "user_version", 3)?;
+        assert_eq!(store.schema_version()?, 3);
+        store.connection().pragma_update(None, "user_version", 4)?;
         assert!(matches!(
             HouseholdStore::configure(store.0, "memory"),
             Err(Error::NewerSchema {
-                found: 3,
-                supported: 2
+                found: 4,
+                supported: 3
             })
         ));
         Ok(())
@@ -174,6 +175,26 @@ mod tests {
             |row| row.get(0),
         )?;
         assert!(rolled_back);
+        Ok(())
+    }
+
+    #[test]
+    fn failed_schedule_migration_rolls_back_added_columns() -> Result<()> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute_batch(MIGRATIONS[0])?;
+        connection.execute_batch(MIGRATIONS[1])?;
+        connection.pragma_update(None, "user_version", 2)?;
+        connection.execute_batch("CREATE INDEX routines_due ON routines(id)")?;
+        let mut store = HouseholdStore(connection);
+        assert!(matches!(store.migrate(), Err(Error::Sqlite(_))));
+        assert_eq!(store.schema_version()?, 2);
+        let new_columns: i64 = store.connection().query_row(
+            "SELECT count(*) FROM pragma_table_info('routines')
+             WHERE name IN ('updated_at_ms', 'schedule_json', 'next_due_at_ms')",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(new_columns, 0);
         Ok(())
     }
 

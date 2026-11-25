@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use serde::Serialize;
 
 use crate::{
     Clock, Error, HomeAction, Household, Result, Timestamp, json_column, millis, query_all,
@@ -14,6 +15,7 @@ use crate::{
 pub const LATE_ACTION_GRACE: Duration = Duration::from_secs(120);
 pub const VOICE_CHOICE_WINDOW: Duration = Duration::from_secs(30);
 const MAX_VOICE_CHOICES: usize = 3;
+const RECENT_NOTICE_LIMIT: u32 = 50;
 static NEXT_CHOICE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,6 +86,16 @@ pub struct Reminder {
     pub room: String,
     pub due_at: Timestamp,
     pub state: ReminderState,
+    pub revision: i64,
+}
+
+/// The replacement contents of a pending reminder. Ownership is immutable.
+#[derive(Debug, Clone, Copy)]
+pub struct ReminderUpdate<'a> {
+    pub message: &'a str,
+    pub room: &'a str,
+    pub due_at: Timestamp,
+    pub actions: &'a [HomeAction],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +110,24 @@ pub struct NoticeReceipt {
     pub state: NoticeState,
     pub attempts: i64,
     pub next_attempt_at: Option<Timestamp>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReminderNotice {
+    pub reminder: ReminderId,
+    pub receipt: NoticeReceipt,
+}
+
+/// Counts per reminder. Due is a subset of pending. Delivery and outcome
+/// counters can overlap with lifecycle counts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ReminderStatus {
+    pub pending: u64,
+    pub due: u64,
+    pub delivering: u64,
+    pub completed: u64,
+    pub failed_or_uncertain: u64,
+    pub late_not_executed: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,7 +184,7 @@ pub enum ChoiceAnswer {
 struct Choice {
     id: ChoiceId,
     expires_at: Duration,
-    candidates: Vec<ReminderId>,
+    candidates: Vec<(ReminderId, i64)>,
 }
 
 #[derive(Debug, Default)]
@@ -162,7 +192,7 @@ pub(crate) struct VoiceChoices {
     pending: HashMap<VoiceContext, Choice>,
 }
 
-const COLUMNS: &str = "id, message, owner, room, due_at, state";
+const COLUMNS: &str = "id, message, owner, room, due_at, state, revision";
 
 fn read(row: &Row<'_>) -> rusqlite::Result<Reminder> {
     Ok(Reminder {
@@ -172,6 +202,7 @@ fn read(row: &Row<'_>) -> rusqlite::Result<Reminder> {
         room: row.get(3)?,
         due_at: row.get(4)?,
         state: row.get(5)?,
+        revision: row.get(6)?,
     })
 }
 
@@ -184,10 +215,16 @@ fn read_action(row: &Row<'_>) -> rusqlite::Result<ReminderAction> {
     })
 }
 
-fn cancel(db: &Connection, id: ReminderId, owner: Option<&str>) -> Result<bool> {
+fn cancel(
+    db: &Connection,
+    id: ReminderId,
+    owner: Option<&str>,
+    expected_revision: Option<i64>,
+) -> Result<bool> {
     let changed = db.execute(
-        "UPDATE reminders SET state = 'cancelled' WHERE id = ?1 AND owner IS ?2 AND state = 'pending'",
-        params![id.0, owner],
+        "UPDATE reminders SET state = 'cancelled', revision = revision + 1
+         WHERE id = ?1 AND owner IS ?2 AND state = 'pending' AND (?3 IS NULL OR revision = ?3)",
+        params![id.0, owner, expected_revision],
     )? == 1;
     if changed {
         db.execute(
@@ -224,7 +261,7 @@ fn skip_actions(db: &Connection, id: ReminderId) -> Result<()> {
 
 fn close_if_done(db: &Connection, id: ReminderId) -> Result<()> {
     db.execute(
-        "UPDATE reminders SET state = 'completed'
+        "UPDATE reminders SET state = 'completed', revision = revision + 1
          WHERE id = ?1 AND state = 'pending'
          AND EXISTS (SELECT 1 FROM reminder_notices WHERE reminder_id = ?1
                      AND status IN ('delivered', 'dismissed', 'uncertain'))
@@ -237,6 +274,34 @@ fn close_if_done(db: &Connection, id: ReminderId) -> Result<()> {
 
 fn is_late(now: Timestamp, due_at: Timestamp, policy: ReminderPolicy) -> bool {
     now.saturating_sub(due_at) > millis(policy.late_action_grace)
+}
+
+fn validate_contents(owner: Option<&str>, contents: &ReminderUpdate<'_>) -> Result<()> {
+    required(contents.message, "reminder message is required")?;
+    required(contents.room, "reminder room is required")?;
+    if let Some(owner) = owner {
+        required(owner, "personal reminder owner is required")?;
+        if !contents.actions.is_empty() {
+            return Err(Error::InvalidInput(
+                "home actions require a shared reminder",
+            ));
+        }
+    }
+    for action in contents.actions {
+        action.validate()?;
+    }
+    Ok(())
+}
+
+fn insert_actions(db: &Connection, id: ReminderId, actions: &[HomeAction]) -> Result<()> {
+    for (position, action) in actions.iter().enumerate() {
+        db.execute(
+            "INSERT INTO reminder_home_actions(reminder_id, position, command, status)
+             VALUES (?1, ?2, ?3, 'pending')",
+            params![id.0, position, serde_json::to_string(action)?],
+        )?;
+    }
+    Ok(())
 }
 
 fn words(text: &str) -> BTreeSet<String> {
@@ -316,19 +381,15 @@ impl<C: Clock> Household<C> {
         due_at: Timestamp,
         actions: &[HomeAction],
     ) -> Result<Reminder> {
-        required(message, "reminder message is required")?;
-        required(room, "reminder room is required")?;
-        if let Some(owner) = owner {
-            required(owner, "personal reminder owner is required")?;
-            if !actions.is_empty() {
-                return Err(Error::InvalidInput(
-                    "home actions require a shared reminder",
-                ));
-            }
-        }
-        for action in actions {
-            action.validate()?;
-        }
+        validate_contents(
+            owner,
+            &ReminderUpdate {
+                message,
+                room,
+                due_at,
+                actions,
+            },
+        )?;
         self.transaction(|db| {
             let reminder = db.query_row(
                 &format!(
@@ -345,14 +406,56 @@ impl<C: Clock> Household<C> {
                     params![reminder.id.0, due_at],
                 )?;
             }
-            for (position, action) in actions.iter().enumerate() {
-                db.execute(
-                    "INSERT INTO reminder_home_actions(reminder_id, position, command, status)
-                     VALUES (?1, ?2, ?3, 'pending')",
-                    params![reminder.id.0, position, serde_json::to_string(action)?],
-                )?;
-            }
+            insert_actions(db, reminder.id, actions)?;
             Ok(reminder)
+        })
+    }
+
+    /// Replace an editable pending reminder in its exact owner scope.
+    /// A shared reminder with delivery in flight or confirmed is locked.
+    pub fn update_reminder(
+        &mut self,
+        id: ReminderId,
+        owner: Option<&str>,
+        expected_revision: i64,
+        contents: &ReminderUpdate<'_>,
+    ) -> Result<Reminder> {
+        self.transaction(|db| {
+            let (revision, state): (i64, ReminderState) = db.query_row(
+                "SELECT revision, state FROM reminders WHERE id = ?1 AND owner IS ?2",
+                params![id.0, owner],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional()?.ok_or(Error::NotFound("reminder"))?;
+            if revision != expected_revision {
+                return Err(Error::Conflict("reminder revision changed"));
+            }
+            if state != ReminderState::Pending {
+                return Err(Error::Conflict("reminder is closed"));
+            }
+            validate_contents(owner, contents)?;
+            if owner.is_none() {
+                // Keep the total attempt count so an old receipt cannot close a new delivery.
+                let editable = db.execute(
+                    "UPDATE reminder_notices SET status = 'pending', next_attempt_at = ?2,
+                         round_attempts = 0, fallback_rounds = 0
+                     WHERE reminder_id = ?1 AND status IN ('pending', 'parked')
+                     AND NOT EXISTS (SELECT 1 FROM reminder_home_actions WHERE reminder_id = ?1
+                                     AND status NOT IN ('pending', 'late_not_executed'))",
+                    params![id.0, contents.due_at],
+                )? == 1;
+                if !editable {
+                    return Err(Error::Conflict("reminder delivery has started"));
+                }
+                db.execute("DELETE FROM reminder_home_actions WHERE reminder_id = ?1", [id.0])?;
+                insert_actions(db, id, contents.actions)?;
+            }
+            Ok(db.query_row(
+                &format!("UPDATE reminders SET message = ?4, room = ?5, due_at = ?6, revision = revision + 1
+                          WHERE id = ?1 AND owner IS ?2 AND revision = ?3 AND state = 'pending'
+                          RETURNING {COLUMNS}"),
+                params![id.0, owner, expected_revision, contents.message.trim(), contents.room, contents.due_at],
+                read,
+            )?)
         })
     }
 
@@ -368,10 +471,24 @@ impl<C: Clock> Household<C> {
     }
 
     pub fn pending_reminders(&self, owner: Option<&str>) -> Result<Vec<Reminder>> {
+        self.list_reminders_all(owner, false)
+    }
+
+    /// List pending reminders in the exact owner scope, optionally including closed records.
+    pub fn list_reminders_all(
+        &self,
+        owner: Option<&str>,
+        include_completed: bool,
+    ) -> Result<Vec<Reminder>> {
+        let state_filter = if include_completed {
+            ""
+        } else {
+            "AND state = 'pending'"
+        };
         query_all(
             self.db(),
             &format!(
-                "SELECT {COLUMNS} FROM reminders WHERE owner IS ?1 AND state = 'pending'
+                "SELECT {COLUMNS} FROM reminders WHERE owner IS ?1 {state_filter}
                       ORDER BY due_at, id"
             ),
             [owner],
@@ -380,7 +497,7 @@ impl<C: Clock> Household<C> {
     }
 
     pub fn cancel_reminder(&mut self, id: ReminderId, owner: Option<&str>) -> Result<bool> {
-        self.transaction(|db| cancel(db, id, owner))
+        self.transaction(|db| cancel(db, id, owner, None))
     }
 
     /// Match parsed content words against shared reminders. Time words parsed
@@ -412,7 +529,7 @@ impl<C: Clock> Household<C> {
             match candidates.as_slice() {
                 [] => Ok((Some(VoiceCancel::NoMatch), candidates)),
                 [only] if !spoken.is_empty() && spoken.is_subset(&words(&only.message)) => {
-                    let result = if cancel(db, only.id, None)? {
+                    let result = if cancel(db, only.id, None, Some(only.revision))? {
                         VoiceCancel::Cancelled(only.id)
                     } else {
                         VoiceCancel::NoMatch
@@ -439,7 +556,10 @@ impl<C: Clock> Household<C> {
                     .clock
                     .monotonic()
                     .saturating_add(self.reminder_policy.voice_choice_window),
-                candidates: candidates.iter().map(|reminder| reminder.id).collect(),
+                candidates: candidates
+                    .iter()
+                    .map(|reminder| (reminder.id, reminder.revision))
+                    .collect(),
             },
         );
         Ok(VoiceCancel::Choose { id, candidates })
@@ -465,12 +585,12 @@ impl<C: Clock> Household<C> {
             return Ok(VoiceCancel::NoMatch);
         }
         if let ChoiceAnswer::Ordinal(position) = answer
-            && let Some(selected) = position
+            && let Some(&(selected, revision)) = position
                 .checked_sub(1)
                 .and_then(|index| choice.candidates.get(index))
-            && self.cancel_reminder(*selected, None)?
+            && self.transaction(|db| cancel(db, selected, None, Some(revision)))?
         {
-            return Ok(VoiceCancel::Cancelled(*selected));
+            return Ok(VoiceCancel::Cancelled(selected));
         }
         Ok(VoiceCancel::NoMatch)
     }
@@ -480,6 +600,64 @@ impl<C: Clock> Household<C> {
             "SELECT status, attempts, next_attempt_at FROM reminder_notices WHERE reminder_id = ?1",
             [id.0], |row| Ok(NoticeReceipt { state: row.get(0)?, attempts: row.get(1)?, next_attempt_at: row.get(2)? }),
         ).optional()?)
+    }
+
+    /// List outstanding notices and up to 50 closed receipts in the exact
+    /// owner scope, newest due first. Personal reminders have no audio notices.
+    pub fn list_reminder_notices(&self, owner: Option<&str>) -> Result<Vec<ReminderNotice>> {
+        query_all(
+            self.db(),
+            "WITH scoped AS (
+                 SELECT r.id, r.due_at, n.status, n.attempts, n.next_attempt_at
+                 FROM reminders r JOIN reminder_notices n ON n.reminder_id = r.id
+                 WHERE r.owner IS ?1
+             ), recent AS (
+                 SELECT * FROM scoped WHERE status NOT IN ('pending', 'claimed', 'parked')
+                 ORDER BY due_at DESC, id DESC LIMIT ?2
+             )
+             SELECT * FROM scoped WHERE status IN ('pending', 'claimed', 'parked')
+             UNION ALL SELECT * FROM recent
+             ORDER BY due_at DESC, id DESC",
+            params![owner, RECENT_NOTICE_LIMIT],
+            |row| {
+                Ok(ReminderNotice {
+                    reminder: ReminderId(row.get(0)?),
+                    receipt: NoticeReceipt {
+                        state: row.get(2)?,
+                        attempts: row.get(3)?,
+                        next_attempt_at: row.get(4)?,
+                    },
+                })
+            },
+        )
+    }
+
+    /// Aggregate health counters across all reminders without returning record details.
+    pub fn reminder_status(&self) -> Result<ReminderStatus> {
+        Ok(self.db().query_row(
+            "SELECT count(*) FILTER (WHERE r.state = 'pending'),
+                    count(*) FILTER (WHERE r.state = 'pending' AND r.due_at <= ?1),
+                    count(*) FILTER (WHERE n.status = 'claimed' OR EXISTS (
+                        SELECT 1 FROM reminder_home_actions a WHERE a.reminder_id = r.id AND a.status = 'claimed'
+                    )),
+                    count(*) FILTER (WHERE r.state = 'completed'),
+                    count(*) FILTER (WHERE n.status = 'uncertain' OR EXISTS (
+                        SELECT 1 FROM reminder_home_actions a WHERE a.reminder_id = r.id AND a.status IN ('failed', 'uncertain')
+                    )),
+                    count(*) FILTER (WHERE EXISTS (
+                        SELECT 1 FROM reminder_home_actions a WHERE a.reminder_id = r.id AND a.status = 'late_not_executed'
+                    ))
+             FROM reminders r LEFT JOIN reminder_notices n ON n.reminder_id = r.id",
+            [self.clock.now()],
+            |row| Ok(ReminderStatus {
+                pending: row.get(0)?,
+                due: row.get(1)?,
+                delivering: row.get(2)?,
+                completed: row.get(3)?,
+                failed_or_uncertain: row.get(4)?,
+                late_not_executed: row.get(5)?,
+            }),
+        )?)
     }
 
     /// Claim the next deliverable shared reminder for a ready output room.
