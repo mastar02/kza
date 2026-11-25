@@ -862,18 +862,23 @@ def test_preview_samples_follow_permutation_and_consecutive_runs_differ():
 def test_role_to_view_mapping_matches_state_js_and_role_permissions():
     from src.dashboard.authority import DashboardRole, _permissions
     state = (REPOSITORY / 'src/dashboard/frontend/home/nexo/state.js').read_text()
-    app = (REPOSITORY / 'src/dashboard/frontend/home/nexo/app.js').read_text()
     views = {name: re.findall(r"'([a-z:]+)'", permissions) for name, permissions in
              re.findall(r"(\w+): \[([^\]]*)\]", re.search(r'const VIEWS = \{([^}]*)\}', state).group(1))}
-    hashes = dict(re.findall(r"(\w+): '(#[a-z-]+)'", re.search(r'const viewHashes = \{([^}]*)\}', app).group(1)))
+    hashes = dict(re.findall(r"(\w+): '(#[a-z-]+)'", re.search(r'const VIEW_HASHES = \{([^}]*)\}', state).group(1)))
+    assert set(views) == set(hashes)
     roles = {'operator': _permissions(DashboardRole.OPERATOR, None), 'home': _permissions(DashboardRole.HOME, 'person'),
              'evaluator': _permissions(DashboardRole.EVALUATOR, None)}
     special = {'evaluation': 'evaluator', 'access': 'operator', 'mymemory': 'home'}
+    # Actividad joined NEXO after the timing protocol was frozen: the probe does not measure it, by design.
+    unmeasured = {'activity'}
     for view, permissions in views.items():
+        if view in unmeasured:
+            assert hashes[view] not in probe.VIEW_ROLES, view
+            continue
         role = probe.VIEW_ROLES[hashes[view]]
         assert set(permissions) <= roles[role], view
         assert special.get(view, role) == role
-    assert set(probe.VIEW_HASHES) == set(hashes.values())
+    assert set(probe.VIEW_HASHES) == {hashes[view] for view in hashes if view not in unmeasured}
 
 
 def test_no_performance_observer_in_product_frontend_outside_vendor():
