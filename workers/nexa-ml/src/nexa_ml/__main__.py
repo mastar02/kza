@@ -8,6 +8,7 @@ import pathlib
 import sys
 
 from nexa_ml.config import DEFAULT_CONFIG_PATH, ConfigError, MlConfig, load_config
+from nexa_ml.offline import enforce_offline_env
 
 logger = logging.getLogger("nexa_ml")
 
@@ -28,10 +29,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def apply_offline_env(config: MlConfig) -> None:
-    """Force Hugging Face offline mode before any model library is imported."""
+    """Force (overwrite) Hugging Face offline mode before any model library is imported."""
     if config.offline:
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
-        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+        enforce_offline_env()
 
 
 def main(argv: list[str] | None = None) -> int:

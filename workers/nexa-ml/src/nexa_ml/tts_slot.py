@@ -14,8 +14,10 @@ shares the model with an abandoned stream.
 """
 
 import asyncio
+import inspect
 import logging
 import math
+import pathlib
 import re
 import threading
 from collections.abc import AsyncIterator, Callable
@@ -24,6 +26,7 @@ from typing import Any
 
 import numpy as np
 
+from nexa_ml.offline import assert_offline_effective, reject_remote_source
 from nexa_ml.slot import InvalidInputError, ModelSlot
 
 logger = logging.getLogger(__name__)
@@ -84,20 +87,98 @@ def result_audio(result: Any) -> np.ndarray | None:
     return array if array.size else None
 
 
+def supported_kwargs(factory: Callable[..., Any], candidates: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the keyword arguments ``factory`` accepts (``None`` values dropped).
+
+    Kokoro 0.7.x has ``KModel(config, model)`` / ``KPipeline(lang_code, model, trf, device)``;
+    0.9.x adds ``repo_id`` to both. Inspecting the real signature keeps one adapter
+    working across both without passing an unknown keyword.
+    """
+    present = {k: v for k, v in candidates.items() if v is not None}
+    params = inspect.signature(factory).parameters
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return present
+    return {k: v for k, v in present.items() if k in params}
+
+
+@dataclass(frozen=True)
+class KokoroLocalFiles:
+    """Optional local Kokoro layout: ``<dir>/config.json``, ``<dir>/*.pth``, ``<dir>/voices/*.pt``."""
+
+    root: pathlib.Path
+    config: pathlib.Path
+    weights: pathlib.Path
+
+    @classmethod
+    def find(cls, repo_id: str, models_dir: str | None) -> "KokoroLocalFiles | None":
+        """Locate a complete local layout (``repo_id`` as a dir, or ``<models_dir>/kokoro``)."""
+        candidates = [pathlib.Path(repo_id)]
+        if models_dir:
+            candidates.append(pathlib.Path(models_dir) / "kokoro")
+        for root in candidates:
+            config = root / "config.json"
+            weights = sorted(root.glob("*.pth"))
+            if root.is_dir() and config.is_file() and weights:
+                return cls(root, config, weights[0])
+        return None
+
+    def voice_path(self, voice: str) -> str | None:
+        """Local ``voices/<voice>.pt`` if present."""
+        path = self.root / "voices" / f"{voice}.pt"
+        return str(path) if path.is_file() else None
+
+
 class KokoroEngine:
     """Real Kokoro adapter: one shared ``KModel`` and one ``KPipeline`` per language.
 
-    Only constructed by :func:`kokoro_loader` on the slot thread; never imported
-    by tests.
+    Constructed only on the slot thread by :func:`kokoro_loader`. With
+    ``offline=True`` it refuses URI sources, verifies the Hugging Face client is
+    offline (so any cache miss raises instead of downloading) and prefers a
+    complete local layout when one exists.
+
+    Args:
+        repo_id: Hugging Face repo id or a local directory.
+        device: Torch device.
+        default_lang: Language whose pipeline is built eagerly.
+        models_dir: Optional local model root (``<models_dir>/kokoro``).
+        offline: Fail closed instead of reaching the network.
+        kokoro_module: Injectable module (tests); defaults to ``import kokoro``.
     """
 
-    def __init__(self, repo_id: str, device: str, default_lang: str) -> None:
-        import kokoro  # noqa: PLC0415 - heavy, lazy by design
+    def __init__(
+        self,
+        repo_id: str,
+        device: str,
+        default_lang: str,
+        *,
+        models_dir: str | None = None,
+        offline: bool = True,
+        kokoro_module: Any = None,
+    ) -> None:
+        if offline:
+            reject_remote_source(repo_id)
+            assert_offline_effective()
+        if kokoro_module is None:
+            import kokoro as kokoro_module  # noqa: PLC0415 - heavy, lazy by design
 
-        self._kokoro = kokoro
+        self._kokoro = kokoro_module
         self._repo_id = repo_id
         self._device = device
-        self._model = kokoro.KModel(repo_id=repo_id).to(device).eval()
+        self._offline = offline
+        self._local = KokoroLocalFiles.find(repo_id, models_dir)
+        kmodel_cls = kokoro_module.KModel
+        model_kwargs = supported_kwargs(
+            kmodel_cls,
+            {
+                "repo_id": None if self._local else repo_id,
+                "config": str(self._local.config) if self._local else None,
+                "model": str(self._local.weights) if self._local else None,
+            },
+        )
+        default_repo = getattr(kmodel_cls, "REPO_ID", repo_id)
+        if self._local is None and "repo_id" not in model_kwargs and repo_id != default_repo:
+            raise ValueError("installed kokoro cannot load a non-default repo_id without a local layout")
+        self._model = kmodel_cls(**model_kwargs).to(device).eval()
         self._pipelines: dict[str, Any] = {}
         self.pipeline(default_lang)
 
@@ -105,22 +186,39 @@ class KokoroEngine:
         """Return (creating on the slot thread if needed) the pipeline for ``lang_code``."""
         pipe = self._pipelines.get(lang_code)
         if pipe is None:
-            pipe = self._kokoro.KPipeline(
-                lang_code=lang_code, repo_id=self._repo_id, model=self._model, device=self._device
+            factory = self._kokoro.KPipeline
+            kwargs = supported_kwargs(
+                factory,
+                {
+                    "lang_code": lang_code,
+                    "repo_id": self._repo_id if self._local is None else None,
+                    "model": self._model,
+                    "device": self._device,
+                },
             )
+            pipe = factory(**kwargs)
             self._pipelines[lang_code] = pipe
         return pipe
 
-    def check_voice(self, pipe: Any, voice: str) -> None:
-        """Load (and cache) a voice pack; a missing pack is a client error, not INTERNAL.
+    def prepare_voice(self, pipe: Any, voice: str) -> str:
+        """Resolve and load (cache) a voice pack; a missing pack is a client error.
+
+        Returns:
+            The voice argument to pass to the pipeline (a local ``.pt`` path when
+            the local layout has it, otherwise the voice name).
 
         Raises:
             InvalidInputError: The voice pack is not available locally.
+            OfflineViolationError: Offline mode is no longer effective.
         """
+        if self._offline:
+            assert_offline_effective()
+        resolved = (self._local.voice_path(voice) if self._local else None) or voice
         try:
-            pipe.load_voice(voice)
-        except (OSError, ValueError, KeyError) as exc:  # HF offline miss / unknown voice
+            pipe.load_voice(resolved)
+        except (OSError, ValueError, KeyError) as exc:  # HF offline cache miss / unknown voice
             raise InvalidInputError("voice is not available") from exc
+        return resolved
 
     def close(self) -> None:
         """Drop pipelines and the model so ``gc`` can release VRAM."""
@@ -128,9 +226,11 @@ class KokoroEngine:
         self._model = None
 
 
-def kokoro_loader(repo_id: str, device: str, default_lang: str) -> Callable[[], Any]:
+def kokoro_loader(
+    repo_id: str, device: str, default_lang: str, *, models_dir: str | None, offline: bool
+) -> Callable[[], Any]:
     """Return a zero-arg factory building a :class:`KokoroEngine`."""
-    return lambda: KokoroEngine(repo_id, device, default_lang)
+    return lambda: KokoroEngine(repo_id, device, default_lang, models_dir=models_dir, offline=offline)
 
 
 class TtsSlot:
@@ -138,7 +238,7 @@ class TtsSlot:
 
     Args:
         slot: Underlying model slot; its model must expose ``pipeline(lang_code)``
-            returning a ``KPipeline``-like callable.
+            returning a ``KPipeline``-like callable and ``prepare_voice(pipe, voice)``.
         default_voice: Voice used when the request leaves it empty.
         default_lang: Language used when the request leaves it empty.
     """
@@ -187,10 +287,8 @@ class TtsSlot:
                 if stop.is_set():
                     return produced
                 pipe = engine.pipeline(opts.lang_code)
-                check_voice = getattr(engine, "check_voice", None)
-                if callable(check_voice):
-                    check_voice(pipe, opts.voice)
-                source = iter(pipe(opts.text, voice=opts.voice, speed=opts.speed))
+                voice = engine.prepare_voice(pipe, opts.voice)
+                source = iter(pipe(opts.text, voice=voice, speed=opts.speed))
                 while not stop.is_set():
                     try:
                         result = next(source)
@@ -203,10 +301,12 @@ class TtsSlot:
                         produced += 1
                 return produced
             finally:
-                close = getattr(source, "close", None)
-                if callable(close):
-                    close()
-                emit(_END)
+                try:
+                    close = getattr(source, "close", None)
+                    if callable(close):
+                        close()
+                finally:
+                    emit(_END)  # always: a failing close() must never leave the RPC waiting
 
         future = self.slot.submit(produce)
         finished = False

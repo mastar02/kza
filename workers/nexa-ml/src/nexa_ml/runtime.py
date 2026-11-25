@@ -10,6 +10,7 @@ from typing import Any
 from nexa_ml import __version__
 from nexa_ml.config import MlConfig
 from nexa_ml.embed_slot import EMBED_SLOT_ID, EmbedSlot, sentence_transformer_loader
+from nexa_ml.offline import enforce_offline_env
 from nexa_ml.slot import ExecutorKind, InvalidInputError, ModelSlot, SlotSnapshot, SlotState
 from nexa_ml.speaker_slot import SPEAKER_SLOT_ID, SpeakerSlot, ecapa_loader
 from nexa_ml.tts_slot import TTS_SLOT_ID, TtsSlot, kokoro_loader
@@ -48,8 +49,16 @@ class ModelLoaders:
 
 
 def real_loaders(config: MlConfig) -> ModelLoaders:
-    """Build the production loaders (heavy imports stay inside each factory)."""
+    """Build the production loaders (heavy imports stay inside each factory).
+
+    With ``config.offline`` the Hugging Face flags are forced here as well, so any
+    caller (``__main__`` or the GPU smoke test) gets the same zero-network guarantee.
+    """
     md, offline = config.models_dir, config.offline
+    if offline:
+        enforce_offline_env()
+    else:
+        logger.warning("ml.offline=false: model loaders may reach the network")
 
     def ambient(_index: int) -> Callable[[], Any]:
         return faster_whisper_loader(
@@ -69,8 +78,12 @@ def real_loaders(config: MlConfig) -> ModelLoaders:
             offline=offline,
         ),
         ambient_stt=ambient,
-        tts=kokoro_loader(config.tts_model, config.tts_device, config.tts_lang_code),
-        speaker=ecapa_loader(config.speaker_encoder_model, config.speaker_encoder_device, md),
+        tts=kokoro_loader(
+            config.tts_model, config.tts_device, config.tts_lang_code, models_dir=md, offline=offline
+        ),
+        speaker=ecapa_loader(
+            config.speaker_encoder_model, config.speaker_encoder_device, md, offline=offline
+        ),
         embed=sentence_transformer_loader(config.embeddings_model, config.embeddings_device, md, offline),
     )
 

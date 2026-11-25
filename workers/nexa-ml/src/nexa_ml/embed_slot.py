@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from nexa_ml.offline import assert_offline_effective, reject_remote_source
 from nexa_ml.slot import InvalidInputError, ModelSlot
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,9 @@ def sentence_transformer_loader(
     """Return a zero-arg factory creating the ``SentenceTransformer`` (lazy import)."""
 
     def load() -> Any:
+        if offline:
+            reject_remote_source(model_id)
+            assert_offline_effective()
         from sentence_transformers import SentenceTransformer  # noqa: PLC0415 - heavy, lazy
 
         return SentenceTransformer(model_id, device=device, cache_folder=models_dir, local_files_only=offline)

@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from nexa_ml.audio import parse_device
+from nexa_ml.offline import assert_offline_effective, reject_remote_source
 from nexa_ml.slot import (
     InvalidInputError,
     ModelSlot,
@@ -145,6 +146,9 @@ def faster_whisper_loader(
     """
 
     def load() -> Any:
+        if offline:
+            reject_remote_source(name)
+            assert_offline_effective()
         from faster_whisper import WhisperModel  # noqa: PLC0415 - heavy, lazy by design
 
         kind, index = parse_device(device)

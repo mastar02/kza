@@ -15,6 +15,7 @@ from typing import Any
 
 import numpy as np
 
+from nexa_ml.offline import assert_offline_effective, reject_remote_source
 from nexa_ml.slot import ModelSlot
 
 logger = logging.getLogger(__name__)
@@ -37,22 +38,52 @@ class SpeakerEmbedding:
     latency_ms: int
 
 
+def resolve_ecapa_source(source: str, savedir: str, *, offline: bool) -> str:
+    """Pick the directory SpeechBrain loads from, failing closed when offline.
+
+    Offline: URI sources are rejected and the files must already exist locally,
+    either in ``source`` (a directory) or in the explicit ``savedir`` cache. The
+    returned directory is used as ``source`` *and* as ``pretrained_path`` so the
+    hyperparams never point back at the Hub.
+
+    Raises:
+        OfflineViolationError: Remote source or online Hugging Face client.
+        FileNotFoundError: No local ``hyperparams.yaml`` + ``embedding_model.ckpt``.
+    """
+    if not offline:
+        return source
+    reject_remote_source(source)
+    assert_offline_effective()
+    for candidate in (pathlib.Path(source), pathlib.Path(savedir)):
+        if (candidate / "hyperparams.yaml").is_file() and (candidate / "embedding_model.ckpt").is_file():
+            return str(candidate)
+    raise FileNotFoundError("ECAPA files are not cached locally (offline mode)")
+
+
 class EcapaEncoder:
     """Real SpeechBrain ECAPA adapter exposing ``embed(audio) -> np.ndarray``.
 
     Constructed only on the slot thread by :func:`ecapa_loader`.
     """
 
-    def __init__(self, source: str, device: str, savedir: str) -> None:
+    def __init__(self, source: str, device: str, savedir: str, *, offline: bool = True) -> None:
+        local = resolve_ecapa_source(source, savedir, offline=offline)
         import torchaudio  # noqa: PLC0415 - heavy, lazy by design
 
         if not hasattr(torchaudio, "list_audio_backends"):  # speechbrain 1.x on torchaudio>=2.9
             torchaudio.list_audio_backends = lambda: ["ffmpeg"]
         from speechbrain.inference.speaker import EncoderClassifier  # noqa: PLC0415
 
-        self._classifier = EncoderClassifier.from_hparams(
-            source=source, savedir=savedir, run_opts={"device": device}
-        )
+        kwargs: dict[str, Any] = {"source": local, "savedir": savedir, "run_opts": {"device": device}}
+        if offline:
+            kwargs["overrides"] = {"pretrained_path": local}
+            try:  # load in place; never symlink/copy or fetch
+                from speechbrain.utils.fetching import LocalStrategy  # noqa: PLC0415
+
+                kwargs["local_strategy"] = LocalStrategy.NO_LINK
+            except ImportError:  # pragma: no cover - older speechbrain
+                pass
+        self._classifier = EncoderClassifier.from_hparams(**kwargs)
 
     def embed(self, audio: np.ndarray) -> np.ndarray:
         """Encode one mono 16 kHz utterance into its raw (unnormalised) embedding."""
@@ -71,13 +102,13 @@ class EcapaEncoder:
 def default_savedir(source: str, models_dir: str | None) -> str:
     """Explicit SpeechBrain ``savedir`` (its default is cwd-relative and read-only in prod)."""
     root = pathlib.Path(models_dir) if models_dir else pathlib.Path.home() / ".cache" / "nexa-ml"
-    return str(root / "speechbrain" / source.replace("/", "--"))
+    return str(root / "speechbrain" / source.replace("/", "--").replace(":", "_"))
 
 
-def ecapa_loader(source: str, device: str, models_dir: str | None) -> Callable[[], Any]:
+def ecapa_loader(source: str, device: str, models_dir: str | None, *, offline: bool) -> Callable[[], Any]:
     """Return a zero-arg factory building the single :class:`EcapaEncoder`."""
     savedir = default_savedir(source, models_dir)
-    return lambda: EcapaEncoder(source, device, savedir)
+    return lambda: EcapaEncoder(source, device, savedir, offline=offline)
 
 
 def embed_blocking(encoder: Any, audio: np.ndarray, model_key: str) -> SpeakerEmbedding:
