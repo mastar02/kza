@@ -37,7 +37,11 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt().with_target(true).init();
+    let ansi = io::IsTerminal::is_terminal(&io::stdout()) && std::env::var_os("NO_COLOR").is_none();
+    tracing_subscriber::fmt()
+        .with_target(true)
+        .with_ansi(ansi)
+        .init();
     let args = Args::parse();
     let production = if args.test_mode {
         None

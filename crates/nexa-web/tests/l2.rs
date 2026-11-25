@@ -575,6 +575,7 @@ fn cli(insecure: bool, static_dir: &Path) -> (Process, SocketAddr) {
         .arg(static_dir)
         .stdout(Stdio::piped())
         .env_remove("NOTIFY_SOCKET")
+        .env_remove("CLICOLOR_FORCE")
         .env("NO_COLOR", "1");
     if insecure {
         cmd.arg("--allow-insecure-cookies");
