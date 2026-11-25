@@ -140,3 +140,27 @@ jobs:
           python -m pip install uv
           uv pip compile pyproject.toml --extra gpu --python-version 3.13 \
             --python-platform x86_64-unknown-linux-gnu -o /dev/null
+
+  e2e-playwright:
+    name: Chromium contra nexa-web real (L4)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Build frontend
+        run: npm --prefix frontend ci && npm --prefix frontend run build
+      - name: Build test server
+        run: cargo build --locked -p nexa-web
+      - name: Install Playwright and Chromium
+        working-directory: tests-v2/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run browser suite
+        run: NEXA_WEB_BIN="$PWD/target/debug/nexa-web" npm --prefix tests-v2/e2e test
