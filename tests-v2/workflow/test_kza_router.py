@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -473,7 +473,7 @@ def test_distill_sanitizes_local_paths_and_agy_dual_pool_in_payload(tmp_path: Pa
         "LEE PRIMERO: /Users/gabriel/Documents/Proyectos/kza/scripts/kza_router.py y "
         "/Users/gabriel/.local/state/kza-router/reports/kza-qa.md en SHA 7d3b205769447d5d59139e982c68ed1fd5e0c31d "
         "(verifica con `git rev-parse HEAD`) http://127.0.0.1:8080/nexo y /var/folders/ng/abc/log. "
-        "Correr /Users/gabriel/Documents/Proyectos/kza/.venv/bin/python -m pytest tests/unit/workflow/. "
+        "Correr /Users/gabriel/Documents/Proyectos/kza/.venv/bin/python -m pytest tests-v2/workflow/. "
         "Emitir APROBADO o BLOQUEA literal en el report_path."
     )
     distilled = kza_router.distill_routing_summary(raw_task)
@@ -564,7 +564,7 @@ def test_sanitize_handles_tilde_volumes_spaces_multiline_and_global_throttle_blo
         "Emitir APROBADO o BLOQUEA literal en el report_path.\n"
         "Auditar ~/secret/notes.txt, $HOME/.ssh/id_rsa, /Volumes/Backup/kza.db, "
         '"/Users/gabriel/My Folder/SYNTHETIC_CASE.json" y SHA ABCDEF1234567890.\n'
-        "Correr .venv/bin/python -m pytest tests/unit/workflow/."
+        "Correr .venv/bin/python -m pytest tests-v2/workflow/."
     )
     distilled = kza_router.distill_routing_summary(noisy)
     assert "secret/notes.txt" not in distilled
@@ -614,7 +614,7 @@ def test_distill_mixed_quotes_backticks_long_preamble_and_same_line_goal(tmp_pat
     assert "Revisar el controlador." in res_emit
     assert "APROBADO" not in res_emit
 
-    same_line_pytest = "Correr pytest tests/unit/workflow/test_kza_quota.py. Auditar la retención de sesiones."
+    same_line_pytest = "Correr pytest tests-v2/workflow/test_kza_quota.py. Auditar la retención de sesiones."
     res_pytest = kza_router.distill_routing_summary(same_line_pytest)
     assert "Auditar la retención de sesiones." in res_pytest
     assert "pytest" not in res_pytest
@@ -623,7 +623,7 @@ def test_distill_mixed_quotes_backticks_long_preamble_and_same_line_goal(tmp_pat
     long_protocol = "\n".join(
         [
             "LEE PRIMERO: Emitir veredicto explícito APROBADO o BLOQUEA (verifica con `git rev-parse HEAD`).",
-            "Correr /Users/gabriel/Documents/Proyectos/kza/.venv/bin/python -m pytest tests/unit/workflow/test_kza_quota.py.",
+            "Correr /Users/gabriel/Documents/Proyectos/kza/.venv/bin/python -m pytest tests-v2/workflow/test_kza_quota.py.",
         ]
         * 5
     )

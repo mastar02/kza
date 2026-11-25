@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "scripts"
 if str(SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_DIR))
 
@@ -51,9 +51,9 @@ def test_safety_guard_blocks_prohibited_commands(tool_name: str, cmd: str) -> No
     "cmd",
     [
         "git status -sb",
-        "git add scripts/kza_quota.py tests/unit/workflow/test_kza_quota.py",
+        "git add scripts/kza_quota.py tests-v2/workflow/test_kza_quota.py",
         "git push -u origin feat/kza-multi-console-workflow",
-        "pytest tests/unit/workflow/",
+        "pytest tests-v2/workflow/",
         "python3 scripts/kza_seat.py sync-templates",
         "git add models/.gitkeep",
         "git add .env.example",
