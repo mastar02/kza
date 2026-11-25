@@ -24,14 +24,13 @@ Cinco daemons nativos coordinan captura por habitación, inferencia offline, mem
 - Docstrings Google-style y type hints en clases y funciones públicas.
 - Orden de imports: stdlib → third-party → `import absoluto del paquete` (nunca relativos).
 - Logging con `logger = logging.getLogger(__name__)`; mensajes de voz/UI en español, código/logs en inglés.
-- Tests con `.venv/bin/pytest` + fixtures y mocks del componente; para el monolito histórico, `tests/conftest.py` y `tests/mocks/`.
+- Tests con `.venv/bin/pytest` (`tests-v2/`, `tools/nexa-migrate/tests`, `workers/nexa-ml`), `cargo nextest --workspace` y Vitest/Playwright en `frontend/`.
 - Respetar asignación de GPUs (`cuda:1` comando+TTS+7B, `cuda:0` ambient+ECAPA, BGE-M3 en CPU) y centralizar la configuración en los tres TOML de Nexa.
 - Conservar la separación entre voz, persona, cuenta, roles, consentimiento y administración, y las releases gestionadas autocontenidas (`mem:decisions`).
 
 ### NUNCA hacer
 - Bloquear el event loop con I/O síncrono ni usar `print()` en código de aplicación.
 - Cambiar asignación de GPUs, agregar dependencias pesadas sin justificar (8 GB VRAM/GPU) o crear archivos de config nuevos fuera del contrato tipado.
-- Modificar `src/main.py` sin revisar la cadena de DI completa.
 - Hacer push directo a `main`, usar `git stash`, `git add -A` / `git add .`, ni commitear `.env`, `data/`, `models/`, secretos, audio, PII o `casa.glb`.
 - Pedir confirmación cuando el siguiente paso de un plan autorizado es obvio; detenerse solo ante decisión ambigua, bloqueante real o acción destructiva.
 

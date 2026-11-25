@@ -18,4 +18,4 @@
 
 ## Archivo del monolito
 
-**T7.0b · HECHO en la rama de trabajo.** El [roadmap](architecture/NEXA_V2_ROADMAP.md) identifica los dos tags de archivo y el gate de retiro en el servidor. Las pruebas del orquestador se mantienen en [tests-v2/workflow](../tests-v2/workflow/). El [manifiesto de rescate](research/2026-10-25-production-recovery.json) conserva la trazabilidad de producción.
+**T7.0b · HECHO e integrado en `v2/main`.** El [roadmap](architecture/NEXA_V2_ROADMAP.md) identifica los dos tags de archivo y el gate de retiro en el servidor. Las pruebas del orquestador se mantienen en [tests-v2/workflow](../tests-v2/workflow/). El [manifiesto de rescate](research/2026-10-25-production-recovery.json) conserva la trazabilidad de producción.
