@@ -10,3 +10,10 @@ workspace = true
 
 [dependencies]
 nexa-proto.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+regex = "1"
+fancy-regex = "0.18"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+proptest.workspace = true

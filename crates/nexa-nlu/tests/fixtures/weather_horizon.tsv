@@ -1,0 +1,79 @@
+# Python weather horizon corpus at ee934479. Columns: kind, offset, weekday, next week, transcript.
+current	None	None	false	qué tiempo hace
+current	None	None	false	qué tiempo hace hoy
+current	None	None	false	¿Qué tiempo hace esta mañana?
+current	None	None	false	llueve por la mañana
+current	None	None	false	hace frío a la mañana
+current	None	None	false	cómo está el clima esta noche
+forecast	0	None	false	¿va a llover esta mañana?
+forecast	0	None	false	va a llover por la mañana
+forecast	0	None	false	va a llover a la mañana
+forecast	0	None	false	va a llover en la mañana
+forecast	0	None	false	¿va a llover hoy?
+forecast	0	None	false	va a llover
+forecast	0	None	false	cuál es el pronóstico
+forecast	0	None	false	qué tiempo va a hacer esta noche
+forecast	0	None	false	qué temperatura habrá hoy
+forecast	0	None	false	va a llover hoy a la tarde
+forecast	1	None	false	va a llover mañana
+forecast	1	None	false	Mañana llueve?
+forecast	1	None	false	va a llover mañana por la mañana
+forecast	1	None	false	qué tiempo hace mañana a la mañana
+forecast	1	None	false	el pronóstico de mañana
+forecast	2	None	false	qué tiempo hace pasado mañana
+forecast	2	None	false	va a llover pasado mañana a la mañana
+forecast	None	5	false	¿va a llover el sábado?
+forecast	None	0	false	qué tiempo va a hacer este lunes
+forecast	None	2	false	cómo está el clima el miércoles
+forecast	None	5	true	va a llover el sábado que viene
+forecast	None	5	true	va a llover el próximo sábado
+forecast	None	5	true	va a llover el sábado próximo
+unsupported	None	None	false	va a llover la semana que viene
+unsupported	None	None	false	qué tiempo va a hacer la próxima semana
+unsupported	None	None	false	el pronóstico para esta semana
+unsupported	None	None	false	va a llover el fin de semana
+unsupported	None	None	false	va a llover el sábado de la semana que viene
+unsupported	None	None	false	qué tiempo va a hacer el mes que viene
+unsupported	None	None	false	va a llover los próximos días
+unsupported	None	None	false	va a llover en tres días
+unsupported	None	None	false	va a llover el 25
+unsupported	None	None	false	va a llover el 3 de diciembre
+unsupported	None	None	false	qué tiempo hace el lunes 10
+unsupported	None	None	false	va a llover el lunes 17
+unsupported	None	None	false	va a llover el sábado 8?
+unsupported	None	None	false	va a llover el 1ro
+unsupported	None	None	false	qué tiempo va a hacer el 1ero de diciembre
+unsupported	None	None	false	va a llover el 1er día del mes
+unsupported	None	None	false	va a llover el día 25
+unsupported	None	None	false	va a llover el primero de diciembre
+unsupported	None	None	false	va a llover en diciembre
+unsupported	None	None	false	llovió ayer?
+unsupported	None	None	false	estuvo lloviendo el sábado pasado
+unsupported	None	None	false	el martes pasado llovió?
+unsupported	None	None	false	cuál fue el pronóstico del sábado pasado
+unsupported	None	None	false	qué tiempo hizo el miércoles pasado
+unsupported	None	None	false	estuvo lloviendo el mes pasado
+unsupported	None	None	false	qué tiempo va a hacer el mes pasado
+unsupported	None	None	false	llovió mucho la semana pasada
+unsupported	None	None	false	hizo frío el año pasado
+unsupported	None	None	false	estuvo lloviendo el pasado sábado
+unsupported	None	None	false	estuvo lloviendo la pasada semana
+unsupported	None	None	false	va a llover el pasado mes
+unsupported	None	None	false	estuvo lloviendo el sábado
+unsupported	None	None	false	cuál fue el pronóstico del sábado
+unsupported	None	None	false	¿llovió el martes?
+unsupported	None	None	false	qué tiempo hizo el domingo
+unsupported	None	None	false	cómo estuvieron las temperaturas el lunes
+unsupported	None	None	false	cuáles fueron las temperaturas del domingo
+unsupported	None	None	false	cuántos grados hicieron el jueves
+unsupported	None	None	false	qué temperatura hubo el sábado
+unsupported	None	None	false	¿nevó el martes?
+forecast	None	5	false	cuál era el pronóstico del sábado
+forecast	None	5	true	cuál fue el pronóstico del sábado que viene
+current	None	None	false	estuvo lloviendo
+forecast	None	5	false	va a llover el sábado
+several_days	None	None	false	va a llover el lunes, pasado mañana
+several_days	None	None	false	va a llover hoy o mañana
+several_days	None	None	false	va a llover mañana o el sábado
+several_days	None	None	false	va a llover mañana o pasado mañana
+several_days	None	None	false	va a llover el sábado o pasado mañana
