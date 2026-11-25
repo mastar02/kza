@@ -17,7 +17,7 @@ from typing import BinaryIO
 ROOT = Path(__file__).resolve().parents[2]
 VOICE_MODEL = "speechbrain/spkrec-ecapa-voxceleb"
 FACT_MODEL = "BAAI/bge-m3"
-VERSIONS = {"memory": 1, "ambient": 1, "household": 2, "auth": 0}
+VERSIONS = {"memory": 1, "ambient": 1, "household": 3, "auth": 0}
 LOCATIONS = {
     "memory": "memory/memory.db", "ambient": "memory/ambient.db",
     "household": "household/household.db", "auth": "auth/auth.db",
@@ -260,8 +260,8 @@ def target_schema(name: str) -> str:
         return sql + memory_ddl() if name == "memory" else sql.replace("ambient.", "")
     if name == "household":
         schema = ROOT / "crates/nexa-household/src/schema"
-        return "\n".join((schema / file).read_text() for file in
-                         ("001_scheduling.sql", "002_household.sql"))
+        migrations = ("001_scheduling.sql", "002_household.sql", "003_routine_schedules.sql")
+        return "\n".join((schema / file).read_text() for file in migrations)
     rust = (ROOT / "crates/nexa-web/src/auth.rs").read_text()
     prefix = "CREATE TABLE IF NOT EXISTS auth_meta"
     return prefix + rust.split(prefix, 1)[1].split(';"', 1)[0] + ";"

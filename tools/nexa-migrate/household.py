@@ -2,8 +2,11 @@
 
 import hashlib
 import json
+import re
 import sqlite3
 from collections import defaultdict
+from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo, available_timezones
 
 from privacy import Privacy
 from storage import Catalog, decode, encode, identifier, millis, require, timestamp
@@ -52,12 +55,10 @@ def migrate_household(source: Catalog, db: sqlite3.Connection, privacy: Privacy,
                               deadline, remaining, row.get("ring_until")))
         source.count("timers", "migrated")
     recurring = migrate_reminders(source, db, privacy)
-    constrained = migrate_routines(source, db, now)
+    routines = migrate_routines(source, db, now)
     migrate_lists(source, db, privacy)
     migrate_alerts(source, db, alerts)
-    return {"recurring_reminders_imported_as_single_occurrence": recurring,
-            "routines_with_legacy_schedule": constrained[0],
-            "routines_disabled_due_to_legacy_conditions": constrained[1]}
+    return {"recurring_reminders_imported_as_single_occurrence": recurring, **routines}
 
 
 def optional_time(value: object) -> int | None:
@@ -65,9 +66,7 @@ def optional_time(value: object) -> int | None:
 
 
 def task_reason(privacy: Privacy, row: dict, owner: str | None) -> str | None:
-    if owner is None:
-        return None
-    return privacy.reason((row.get("conversation_id"),), (owner,))
+    return privacy.reason((row.get("conversation_id"),), (owner,) if owner else ())
 
 
 def home_action(action: dict) -> dict:
@@ -129,9 +128,11 @@ def migrate_reminders(source: Catalog, db: sqlite3.Connection, privacy: Privacy)
                                 if receipt["status"] in {"confirmed", "sending", "uncertain"}), None)
         if state == "pending" and terminal_notice is not None:
             state = "completed"
+        revision = row.get("revision", 1 if state == "pending" else 2)
+        require(type(revision) is int and revision > 0, "invalid reminder revision")
         ids[key] = insert(db, "reminders", (
             legacy_id(row), row.get("message", row.get("text")), owner,
-            row.get("room", row.get("delivery_room")) or "", due, state,
+            row.get("room", row.get("delivery_room")) or "", due, state, revision,
         ))
         source.count("reminders", "migrated")
         recurring += bool(row.get("recurrence"))
@@ -187,23 +188,97 @@ def routine_steps(definition: dict) -> str:
     return encode([{"kind": "home", "action": home_action(action)} for action in definition["actions"]])
 
 
-def migrate_routines(source: Catalog, db: sqlite3.Connection, now: float) -> tuple[int, int]:
+def routine_schedule(value: object, legacy_timezone: object, timezones: set[str]) -> dict | None:
+    """Normalize the Python wall-clock format and Rust's tagged variants."""
+    if not isinstance(value, dict):
+        return None
+    if value.get("kind") == "once" and value.keys() == {"kind", "at_ms"}:
+        at_ms = value["at_ms"]
+        return value if type(at_ms) is int and -(2**63) <= at_ms < 2**63 else None
+    if value.keys() == {"at", "weekdays"}:
+        at, weekdays = value["at"], value["weekdays"]
+        if not isinstance(at, str) or not re.fullmatch(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]", at):
+            return None
+        if not isinstance(weekdays, list) or not weekdays or any(
+            type(day) is not int or not 0 <= day <= 6 for day in weekdays
+        ):
+            return None
+        hour, minute = map(int, at.split(":"))
+        zone, days = legacy_timezone, [day + 1 for day in weekdays]
+    elif value.get("kind") == "daily" and value.keys() - {"days"} == {
+        "kind", "hour", "minute", "timezone",
+    }:
+        hour, minute, zone, days = value["hour"], value["minute"], value["timezone"], value.get("days", [])
+    else:
+        return None
+    if (type(hour) is not int or not 0 <= hour <= 23
+        or type(minute) is not int or not 0 <= minute <= 59
+        or not isinstance(zone, str) or zone not in timezones
+        or not isinstance(days, list) or any(type(day) is not int or not 1 <= day <= 7 for day in days)):
+        return None
+    schedule = {"kind": "daily", "hour": hour, "minute": minute, "timezone": zone}
+    if days:
+        schedule["days"] = sorted(set(days))
+    return schedule
+
+
+def next_routine_due(schedule: dict, now_ms: int) -> int | None:
+    """Match Rust's inclusive search, skipping gaps and using the first DST fold."""
+    if schedule["kind"] == "once":
+        return schedule["at_ms"] if schedule["at_ms"] >= now_ms else None
+    zone = ZoneInfo(schedule["timezone"])
+    day = datetime.fromtimestamp(now_ms // 1000, UTC).astimezone(zone).date()
+    weekdays = schedule.get("days", [])
+    while True:
+        if not weekdays or day.isoweekday() in weekdays:
+            local = datetime(day.year, day.month, day.day, schedule["hour"], schedule["minute"], tzinfo=zone)
+            utc = local.astimezone(UTC)
+            if utc.astimezone(zone) == local:
+                at_ms = int(utc.timestamp()) * 1000
+                if at_ms >= now_ms:
+                    return at_ms
+        day += timedelta(days=1)
+
+
+def migrate_routines(source: Catalog, db: sqlite3.Connection, now: float) -> dict[str, int]:
     ids = {}
-    scheduled = disabled = 0
+    schedules = {}
+    now_ms = millis(now)
+    # Factory is a tzdb placeholder that chrono-tz deliberately omits.
+    timezones = available_timezones() - {"Factory"}
+    legacy_scheduled = disabled_conditions = disabled_schedule = 0
     for row in sorted(source.rows("routines"), key=lambda x: str(x.get("routine_id", x.get("id")))):
         key = row.get("routine_id", row.get("id"))
+        definition = {}
         if "definition_json" in row:
             definition = decode(row["definition_json"])
-            name = definition["name"]
-            conditions = bool(definition.get("conditions"))
-            enabled = int(definition["enabled"] and not conditions)
-            disabled += bool(definition["enabled"] and conditions)
-            scheduled += bool(definition.get("schedule"))
-            steps = routine_steps(definition)
+            name, enabled, steps = definition["name"], int(definition["enabled"]), routine_steps(definition)
         else:
             name, enabled, steps = row["name"], row["enabled"], row["steps"]
+        legacy_schedule = definition.get("schedule")
+        legacy_scheduled += legacy_schedule is not None
+        native_schedule = row.get("schedule_json")
+        schedule = routine_schedule(
+            decode(native_schedule) if native_schedule is not None else legacy_schedule,
+            definition.get("timezone") if native_schedule is None else None,
+            timezones,
+        )
+        unsupported_schedule = (native_schedule is not None or legacy_schedule is not None) and schedule is None
+        conditions = bool(definition.get("conditions"))
+        if enabled == 1:
+            disabled_conditions += conditions
+            disabled_schedule += unsupported_schedule
+        if conditions or unsupported_schedule:
+            enabled = 0
+        deleted_at = row.get("deleted_at")
+        updated_at_ms = row.get("updated_at_ms")
+        if updated_at_ms is None:
+            updated_at_ms = optional_time(row.get("updated_at")) or 0
         ids[key] = insert(db, "routines", (legacy_id(row), identifier(name), name_key(name),
-                                          enabled, row["revision"], steps, row.get("deleted_at")))
+                                          enabled, row["revision"], steps, deleted_at, updated_at_ms,
+                                          encode(schedule) if schedule is not None else None, None))
+        if enabled == 1 and deleted_at is None and schedule is not None:
+            schedules[ids[key]] = schedule
         source.count("routines", "migrated")
     actions = defaultdict(list)
     for row in source.rows("routine_run_actions"):
@@ -211,6 +286,7 @@ def migrate_routines(source: Catalog, db: sqlite3.Connection, now: float) -> tup
     for row in sorted(source.rows("routine_runs"), key=lambda x: str(x.get("run_id", x.get("id")))):
         key, routine = row.get("run_id", row.get("id")), row["routine_id"]
         run_source = row["source"]
+        occurrence_key = row["occurrence_key"]
         if "snapshot_json" in row:
             snapshot = decode(row["snapshot_json"])
             if run_source == "household_voice" and snapshot["routine_id"] != routine:
@@ -223,16 +299,18 @@ def migrate_routines(source: Catalog, db: sqlite3.Connection, now: float) -> tup
                 run_source = "voice"
             status = {"running": "interrupted", "uncertain": "interrupted"}.get(row["status"], row["status"])
             started = timestamp(row.get("scheduled_for") or snapshot["created_at"])
+            if run_source == "scheduled" and row.get("scheduled_for") is not None:
+                occurrence_key = f"scheduled:{started}"
             indexed = actions.pop(key, [])
             next_step = sum(item["status"] == "confirmed" for item in indexed)
             source.count("routine_run_actions", "discarded", len(indexed))
             steps = routine_steps(snapshot)
-            finished, claimed, due = max(started, millis(now)), 0, None
+            finished, claimed, due = max(started, now_ms), 0, None
             if routine not in ids:
                 # Python physically deletes idle routines but retains their runs.
                 name = identifier(snapshot["name"])
                 ids[routine] = insert(db, "routines", (
-                    None, name, name_key(name), 0, snapshot["revision"], steps, millis(now),
+                    None, name, name_key(name), 0, snapshot["revision"], steps, now_ms, now_ms, None, None,
                 ))
         else:
             status, started, finished, steps, next_step, claimed, due = (
@@ -241,13 +319,25 @@ def migrate_routines(source: Catalog, db: sqlite3.Connection, now: float) -> tup
             )
         require(routine in ids, "orphan routine run")
         insert(db, "routine_runs", (
-            legacy_id(row), ids[routine], row["occurrence_key"], run_source, started,
+            legacy_id(row), ids[routine], occurrence_key, run_source, started,
             finished, status, steps, next_step, claimed, due,
         ))
         source.count("routine_runs", "migrated")
     if actions:
         source.count("routine_run_actions", "discarded", sum(map(len, actions.values())))
-    return scheduled, disabled
+    for routine_id, schedule in schedules.items():
+        next_due = next_routine_due(schedule, now_ms)
+        while next_due is not None and db.execute(
+            "SELECT 1 FROM routine_runs WHERE routine_id = ? AND occurrence_key = ?",
+            (routine_id, f"scheduled:{next_due}"),
+        ).fetchone() is not None:
+            next_due = next_routine_due(schedule, next_due + 1)
+        db.execute("UPDATE routines SET next_due_at_ms = ? WHERE id = ?", (next_due, routine_id))
+    return {
+        "routines_with_legacy_schedule": legacy_scheduled,
+        "routines_disabled_due_to_legacy_conditions": disabled_conditions,
+        "routines_disabled_due_to_unsupported_schedule": disabled_schedule,
+    }
 
 
 def migrate_lists(source: Catalog, db: sqlite3.Connection, privacy: Privacy) -> None:

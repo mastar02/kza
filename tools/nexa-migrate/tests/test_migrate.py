@@ -14,7 +14,9 @@ import subprocess
 import sys
 import time
 from contextlib import closing
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -33,7 +35,7 @@ TRANSCRIPT = "synthetic transcript never in the report"
 TOKEN = "synthetic-token-never-in-report"
 EMBEDDING = struct.pack("<192f", 1, *([0] * 191))
 VERSIONS = {"memory/memory.db": 1, "memory/ambient.db": 1,
-            "household/household.db": 2, "auth/auth.db": 0}
+            "household/household.db": 3, "auth/auth.db": 0}
 
 
 def ddl(file: str, marker: str) -> str:
@@ -58,6 +60,17 @@ def add_ledger(db: sqlite3.Connection, entries: list[tuple]) -> list[tuple]:
         previous = digest
     db.executemany("INSERT INTO deletion_ledger_v1 VALUES (?,?,?,?,?,?)", rows)
     return rows
+
+
+def append_ledger_entry(db: sqlite3.Connection, kind: str, identity: str) -> None:
+    seq, previous = db.execute("SELECT seq + 1,row_sha256 FROM deletion_ledger_v1 ORDER BY seq DESC "
+                               "LIMIT 1").fetchone()
+    subject = hmac.new(SALT, identity.encode(), hashlib.sha256).hexdigest()
+    at = AT + seq
+    content = json.dumps([seq, kind, subject, at], separators=(",", ":"))
+    digest = hashlib.sha256((previous + content).encode()).hexdigest()
+    db.execute("INSERT INTO deletion_ledger_v1 VALUES (?,?,?,?,?,?)",
+               (seq, kind, subject, at, previous, digest))
 
 
 def sources(capture: str, conversation: str) -> str:
@@ -338,7 +351,7 @@ def test_full_migration_and_privacy(legacy, tmp_path, run_migration, vec_extensi
         "filtered_tombstoned": 0, "filtered_retired": 0,
     }
     assert report["tables"]["sessions"]["discarded"] == 1
-    assert report["destination_schema_versions"] == {"memory": 1, "ambient": 1, "household": 2, "auth": 0}
+    assert report["destination_schema_versions"] == {"memory": 1, "ambient": 1, "household": 3, "auth": 0}
     for file, version in VERSIONS.items():
         path = dest / file
         assert stat.S_IMODE(path.stat().st_mode) == 0o600
@@ -349,6 +362,146 @@ def test_full_migration_and_privacy(legacy, tmp_path, run_migration, vec_extensi
         assert rows(dest, file, "PRAGMA journal_mode", vec_extension) == [("wal",)]
     assert stat.S_IMODE(dest.stat().st_mode) == 0o700
     assert stat.S_IMODE((dest / "memory/legacy-deletion-ledger.json").stat().st_mode) == 0o600
+
+
+def test_shared_tasks_respect_tombstones(legacy, tmp_path, run_migration):
+    source, _ = legacy
+    (source / "reminders.db").unlink()
+    (source / "lists.db").unlink()
+    (source / "routines.db").unlink()
+    with closing(sqlite3.connect(source / "memory_privacy.db")) as db, db:
+        db.execute("INSERT INTO conversation_tombstones VALUES ('table-only',?,?)", (AT, ALIVE))
+        append_ledger_entry(db, "conversation_erased", "ledger-only")
+    with closing(sqlite3.connect(source / "household.db")) as db, db:
+        schema = ROOT / "crates/nexa-household/src/schema"
+        for file in ("001_scheduling.sql", "002_household.sql", "003_routine_schedules.sql"):
+            db.executescript((schema / file).read_text())
+        db.executescript("PRAGMA user_version=3; ALTER TABLE reminders ADD COLUMN conversation_id TEXT;"
+                         "ALTER TABLE lists ADD COLUMN conversation_id TEXT;")
+        for index, conversation in enumerate(("table-only", "ledger-only", "live-shared", None), 1):
+            db.execute("INSERT INTO reminders VALUES (?, ?, NULL, '', ?, 'pending', 7, ?)",
+                       (index, f"shared reminder {index}", round(FUTURE * 1000), conversation))
+            db.execute("INSERT INTO lists VALUES (?, ?, ?, NULL, NULL, 1, ?)",
+                       (index, f"shared list {index}", f"shared list {index}", conversation))
+            db.execute("INSERT INTO reminder_home_actions VALUES (?,0,?,'pending')",
+                       (index, '{"entity_id":"light.synthetic","service":"turn_on","data":{}}'))
+            db.execute("INSERT INTO reminder_notices VALUES (?,'pending',?,NULL,0,0,0)",
+                       (index, round(FUTURE * 1000)))
+            db.execute("INSERT INTO list_items VALUES (?, ?, ?, NULL, 0)", (index, index, f"item {index}"))
+        db.execute("UPDATE reminders SET state='completed' WHERE id=4")
+        db.execute("UPDATE reminder_notices SET status='delivered', next_attempt_at=NULL WHERE reminder_id=4")
+        future = round(FUTURE * 1000)
+        for index, name, schedule, enabled, deleted_at in (
+            (1, "Future", {"kind": "once", "at_ms": future}, 1, None),
+            (2, "Expired", {"kind": "once", "at_ms": round(AT * 1000)}, 1, None),
+            (3, "Disabled", {"kind": "once", "at_ms": future}, 0, None),
+            (4, "Deleted", {"kind": "once", "at_ms": future}, 1, round(AT * 1000)),
+            (5, "Already claimed", {"kind": "once", "at_ms": future}, 1, None),
+            (6, "Invalid", {"kind": "daily", "hour": 12, "minute": 0, "timezone": "UTC", "days": [0]}, 1, None),
+        ):
+            db.execute("INSERT INTO routines VALUES (?,?,?,?,1,'[]',?,?,?,NULL)",
+                       (index, name, name.lower(), enabled, deleted_at, 123, json.dumps(schedule)))
+        db.execute("INSERT INTO routine_runs VALUES (1,5,?,'scheduled',?,?,'succeeded','[]',0,0,NULL)",
+                   (f"scheduled:{future}", future, future))
+
+    dest = tmp_path / "nexa"
+    result = run_migration(source, dest)
+    assert result.returncode == 0, result.stderr
+    home = lambda sql: rows(dest, "household/household.db", sql)
+    assert home("SELECT id,owner,state,revision FROM reminders ORDER BY id") == [
+        (3, None, "pending", 7), (4, None, "completed", 7),
+    ]
+    assert home("SELECT id,owner FROM lists ORDER BY id") == [(3, None), (4, None)]
+    assert home("SELECT reminder_id FROM reminder_home_actions ORDER BY reminder_id") == [(3,), (4,)]
+    assert home("SELECT reminder_id FROM reminder_notices ORDER BY reminder_id") == [(3,), (4,)]
+    assert home("SELECT list_id FROM list_items ORDER BY list_id") == [(3,), (4,)]
+    report = json.loads((dest / "migration-report.json").read_text())
+    for table in ("reminders", "lists", "reminder_home_actions", "reminder_notices", "list_items"):
+        assert report["tables"][table]["migrated"] == 2
+        assert report["tables"][table]["filtered_tombstoned"] == 2
+    assert home("SELECT enabled,updated_at_ms,next_due_at_ms FROM routines ORDER BY id") == [
+        (1, 123, future), (1, 123, None), (0, 123, None),
+        (1, 123, None), (1, 123, None), (0, 123, None),
+    ]
+    assert home("SELECT schedule_json FROM routines WHERE id IN (1,6) ORDER BY id") == [
+        (json.dumps({"kind": "once", "at_ms": future}, separators=(",", ":")),), (None,),
+    ]
+    assert report["translations"]["routines_disabled_due_to_unsupported_schedule"] == 1
+    assert home("PRAGMA integrity_check") == [("ok",)]
+    assert home("PRAGMA foreign_key_check") == []
+    assert home("PRAGMA user_version") == [(3,)]
+
+
+def test_legacy_routine_schedules_and_reminder_revisions(legacy, tmp_path, vec_extension, monkeypatch):
+    source, _ = legacy
+    monkeypatch.syspath_prepend(str(TOOL))
+    import nexa_migrate
+
+    monday = datetime(2025, 11, 3, 9, tzinfo=UTC)
+    next_monday = datetime(2025, 11, 10, 9, tzinfo=UTC)
+    monkeypatch.setattr(nexa_migrate, "time", SimpleNamespace(time=monday.timestamp))
+    monkeypatch.setenv("NEXA_SQLITE_VEC", str(vec_extension))
+    with closing(sqlite3.connect(source / "routines.db")) as db, db:
+        definition = json.loads(db.execute("SELECT definition_json FROM routines").fetchone()[0])
+        db.execute("ALTER TABLE routines ADD COLUMN updated_at TEXT")
+        schedule = {"at": "06:00", "weekdays": [0]}
+        for name, value, conditions in (
+            ("Daily", schedule, []),
+            ("Conditional", schedule, [{"entity_id": "switch.synthetic", "state": "on"}]),
+            ("Cron", {"cron": "* * * * *"}, []),
+            ("Bad time", {"at": "24:00", "weekdays": [0]}, []),
+            ("Bad day", {"at": "06:00", "weekdays": [7]}, []),
+            ("Bad zone", schedule, []),
+        ):
+            record = dict(definition, name=name, schedule=value, conditions=conditions)
+            if name == "Bad zone":
+                record["timezone"] = "synthetic/private-zone"
+            db.execute("INSERT INTO routines VALUES (?,1,?,?,?,?)",
+                       (name, ALIVE, monday.isoformat(), json.dumps(record), monday.isoformat()))
+        snapshot = dict(definition, name="Daily", routine_id="Daily", revision=1, schedule=schedule)
+        db.execute("INSERT INTO routine_runs VALUES ('prior-claim','Daily',?,?,'scheduled',"
+                   "'succeeded',NULL,?,?)",
+                   ("scheduled:" + monday.isoformat(), ALIVE, json.dumps(snapshot), monday.isoformat()))
+    with closing(sqlite3.connect(source / "reminders.db")) as db, db:
+        for state in ("fired", "cancelled"):
+            db.execute("INSERT INTO reminders(id,user_id,text,trigger_at,created_at,scope,state) "
+                       "VALUES (?,?,?,?,?,'shared',?)", (state, ALIVE, state, FUTURE, AT, state))
+    dest = tmp_path / "nexa"
+    report = nexa_migrate.migrate(source, dest, False, None)
+    home = lambda sql: rows(dest, "household/household.db", sql)
+    assert home("SELECT state,revision FROM reminders ORDER BY state,id") == [
+        ("cancelled", 2), ("completed", 2), ("pending", 1), ("pending", 1),
+    ]
+    assert home("SELECT occurrence_key FROM routine_runs WHERE source='scheduled'") == [
+        (f"scheduled:{int(monday.timestamp() * 1000)}",),
+    ]
+    result = {name: (enabled, json.loads(schedule) if schedule else None, due, updated)
+              for name, enabled, schedule, due, updated in home(
+                  "SELECT name,enabled,schedule_json,next_due_at_ms,updated_at_ms FROM routines")}
+    canonical = {"kind": "daily", "hour": 6, "minute": 0, "timezone": "America/Montevideo", "days": [1]}
+    updated = int(monday.timestamp() * 1000)
+    assert result.pop("Daily") == (1, canonical, int(next_monday.timestamp() * 1000), updated)
+    assert result.pop("Conditional") == (0, canonical, None, updated)
+    assert result.pop("Synthetic scene") == (1, None, None, 0)
+    assert result == dict.fromkeys(("Cron", "Bad time", "Bad day", "Bad zone"), (0, None, None, updated))
+    assert report["translations"]["routines_with_legacy_schedule"] == 6
+    assert report["translations"]["routines_disabled_due_to_legacy_conditions"] == 1
+    assert report["translations"]["routines_disabled_due_to_unsupported_schedule"] == 4
+    assert "synthetic/private-zone" not in (dest / "migration-report.json").read_text()
+
+
+@pytest.mark.parametrize(("hour", "now", "expected"), [
+    (2, "2025-03-09T05:00:00+00:00", "2025-03-10T06:30:00+00:00"),
+    (1, "2025-11-02T04:00:00+00:00", "2025-11-02T05:30:00+00:00"),
+    (1, "2025-11-02T06:00:00+00:00", "2025-11-03T06:30:00+00:00"),
+])
+def test_daily_routine_dst(hour, now, expected, monkeypatch):
+    monkeypatch.syspath_prepend(str(TOOL))
+    from household import next_routine_due
+
+    schedule = {"kind": "daily", "hour": hour, "minute": 30, "timezone": "America/New_York"}
+    assert next_routine_due(schedule, int(datetime.fromisoformat(now).timestamp() * 1000)) == int(
+        datetime.fromisoformat(expected).timestamp() * 1000)
 
 
 def test_read_only_live_wal_copy_and_timestamps(legacy, tmp_path, run_migration):
@@ -559,17 +712,29 @@ def test_legacy_profile_keeps_erasure_lineage_after_raw_capture_expiry(
 def test_withdrawn_consent_does_not_reenable_a_restored_opt_in(legacy, tmp_path, run_migration, vec_extension):
     source, _ = legacy
     with closing(sqlite3.connect(source / "memory_privacy.db")) as db, db:
-        seq, prev = db.execute("SELECT seq + 1,row_sha256 FROM deletion_ledger_v1 ORDER BY seq DESC "
-                               "LIMIT 1").fetchone()
-        kind = "voice_consent_withdrawn"
-        subject = hmac.new(SALT, (ALIVE + "#2").encode(), hashlib.sha256).hexdigest()
-        at = AT + 8
-        content = json.dumps([seq, kind, subject, at], separators=(",", ":"))
-        digest = hashlib.sha256((prev + content).encode()).hexdigest()
-        db.execute("INSERT INTO deletion_ledger_v1 VALUES (?,?,?,?,?,?)",
-                   (seq, kind, subject, at, prev, digest))
+        append_ledger_entry(db, "voice_consent_withdrawn", f"{ALIVE}#2")
     dest = tmp_path / "nexa"
     result = run_migration(source, dest)
     assert result.returncode == 0, result.stderr
     assert rows(dest, "memory/memory.db", "SELECT count(*) FROM voice_attribution_consents WHERE granted=1",
                 vec_extension) == [(0,)]
+
+
+@pytest.mark.parametrize("withdrawal", [False, True])
+def test_native_consent_with_legacy_ledger(legacy, tmp_path, run_migration, vec_extension, withdrawal):
+    source, _ = legacy
+    updated = round((AT + 100) * 1000)
+    with closing(sqlite3.connect(source / "memory_privacy.db")) as db, db:
+        db.execute("DROP TABLE voice_attribution_consents")
+        sql = (ROOT / "crates/nexa-memoryd/src/memory.sql").read_text()
+        db.executescript(sql[sql.index("CREATE TABLE voice_attribution_consents"):
+                             sql.index("CREATE TABLE voice_attribution_events")])
+        db.execute("INSERT INTO voice_attribution_consents VALUES (?,'profile-good',3,2,1,?)", (ALIVE, updated))
+        if withdrawal:
+            append_ledger_entry(db, "voice_consent_withdrawn", f"{ALIVE}#104")
+    dest = tmp_path / "nexa"
+    result = run_migration(source, dest)
+    assert result.returncode == 0, result.stderr
+    expected = (None, None, None, 0, updated) if withdrawal else ("profile-good", 3, 2, 1, updated)
+    assert rows(dest, "memory/memory.db", "SELECT profile_id,profile_revision,link_revision,granted,"
+                "updated_at_unix_ms FROM voice_attribution_consents", vec_extension) == [expected]
