@@ -20,7 +20,7 @@ Aplicable a `kza-qa`, `kza-pregate` y `kza-privacy` en cualquier runtime (`claud
 
 ## Invariantes KZA Adicionales
 - Separación voz / persona / cuenta / roles / consentimiento / administración.
-- Releases autocontenidas (`scripts/build_runtime.py`).
+- Releases autocontenidas (`deploy/nexa/package-release.py`).
 - Cero fuga de secretos, `.env`, audio, embeddings o rutas `/home/kza/*`.
 - Cero interferencia con templates/worktrees de otros proyectos (`tu-*`, `gsm-*`).
 

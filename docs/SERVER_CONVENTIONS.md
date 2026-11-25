@@ -36,7 +36,7 @@ usuario reinició journald; después volvió a observarse CPU alta. La investiga
 posterior identificó una avalancha de captura USB de KZA, y el operador retiró
 únicamente el micrófono involucrado. La reparación de esa ruta USB sigue pendiente.
 Journald se estabilizó durante más de tres minutos sin reiniciarlo ni modificar
-su configuración. Ver la [prueba de aislamiento](runbooks/2026-10-28-journald-usb-flood.md).
+su configuración. Ver la [prueba de aislamiento](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/runbooks/2026-10-28-journald-usb-flood.md).
 La rotación no prueba el borrado global requerido por privacidad. Ver
 [despliegue y limitaciones](architecture/DEPLOYMENT.md).
 

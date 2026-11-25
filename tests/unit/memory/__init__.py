@@ -1,3 +1,0 @@
-"""
-Memory module tests.
-"""
