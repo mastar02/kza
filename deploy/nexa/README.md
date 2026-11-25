@@ -10,6 +10,17 @@ sudo bash deploy/nexa/provision-nexa-user.sh
 
 Verifica automáticamente que `nexa` **no** pertenezca a `sudo`, `adm`, `wheel` ni `docker`, asigna solo `audio,dialout,video,render`, habilita `loginctl enable-linger nexa`, instala la regla `udev` `99-xvf3800-nexa.rules` (`GROUP="nexa", MODE="0660"`), crea `/opt/nexa`, `/etc/nexa`, `/var/lib/nexa` y configura `TimeoutStopSec=30s` únicamente para el UID de `nexa`.
 
+Antes del primer arranque de ML, sembrar la caché persistente
+`/var/lib/nexa/.cache` (directorio `0700`, propietario `nexa:nexa`).
+Copiar el modelo ECAPA completo, incluidos `hyperparams.yaml` y
+`embedding_model.ckpt`, a
+`/var/lib/nexa/.cache/nexa-ml/speechbrain/speechbrain--spkrec-ecapa-voxceleb/`.
+Copiar la caché de Hugging Face de los modelos y voces configurados a
+`/var/lib/nexa/.cache/huggingface/`, conservando `hub/`, los snapshots,
+los blobs y sus enlaces. Verificar que `nexa` pueda leer los archivos y
+actualizar la caché. El worker arranca sin red y reutiliza estos datos
+entre reinicios.
+
 ## 2. Despliegue atómico y rollback (< 60 s)
 
 En el checkout del commit a distribuir, preparar los cuatro binarios nativos en
@@ -21,7 +32,10 @@ python3 deploy/nexa/package-release.py v2.0.0 /tmp/nexa-release-v2.0.0
 ```
 
 El manifiesto identifica el commit del checkout y la plataforma y arquitectura
-del host de empaquetado. Usar binarios compilados para el host de destino.
+del host de empaquetado. El árbol debe estar limpio. Para pruebas locales,
+`--allow-dirty` permite cambios y el manifiesto registra `git_dirty`. El instalador de producción rechaza
+las releases que declaran `git_dirty: true`, incluso en rollback.
+Fijar `SOURCE_DATE_EPOCH` (segundos Unix) para reproducir la fecha UTC. Usar binarios compilados para el host de destino.
 `--allow-missing-frontend` permite un paquete parcial para pruebas.
 El instalador usa Python 3 con `stage-release.py` y `release_policy.py` en el mismo
 directorio. Verifica inventario, rutas prohibidas, hashes, binarios y units antes
@@ -44,6 +58,14 @@ Los cuatro daemons Rust y el worker ML usan `Type=notify`. ML carga el código
 desde la release con el intérprete del entorno compartido en `/opt/nexa/ml-venv`.
 NGINX y llama-server son ejecutables externos y conservan `Type=simple`.
 
+En `/etc/nexa/nginx-proxy.conf`, configurar `pid` con la ruta absoluta a
+`$XDG_RUNTIME_DIR/nexa-proxy/nginx.pid` del usuario nexa (sustituir
+`$XDG_RUNTIME_DIR` por `/run/user/<UID>`). Dirigir `error_log` a `stderr` y
+`access_log` a `off` o a un archivo en `/var/lib/nexa/proxy/`. Dentro de
+`http`, asignar subdirectorios distintos de `/var/lib/nexa/proxy/` a
+`client_body_temp_path`, `proxy_temp_path`, `fastcgi_temp_path`,
+`uwsgi_temp_path` y `scgi_temp_path` para los módulos habilitados.
+
 ## 3. Registro propuesto para `docs/SERVER_CONVENTIONS.md` (y Notion pág. 8)
 
 | Campo | Valor |
@@ -53,5 +75,5 @@ NGINX y llama-server son ejecutables externos y conservan `Type=simple`.
 | Unidades | `nexa-audiod`, `nexa-ml`, `nexa-memoryd`, `nexa-brain`, `nexa-web`, `nexa-llm-fast`, `nexa-dashboard-proxy` (`nexa.target`) |
 | IPC interno | Unix Domain Sockets `$XDG_RUNTIME_DIR/nexa/{audio,ml,memory,brain}.sock` (`0600`) — **0 puertos TCP internos nuevos** |
 | Puertos TCP | Sub-rango reservado KZA `9500-9599`: `127.0.0.1:9500` (`nexa-web`), `192.168.1.2:9540` (NGINX TLS), `127.0.0.1:8101` (`nexa-llm-fast`) |
-| GPUs | `cuda:1` (`whisper-v3-turbo` + `Kokoro` + `llama-server 7B :8101`); `cuda:0` (`2x whisper large-v3` + `1x ECAPA`) |
+| GPUs | `cuda:1` (`whisper-v3-turbo` + `Kokoro-82M streaming`); `cuda:0` (`llama-server 7B :8101` + `2x whisper large-v3` + `1x ECAPA`) |
 | Logs | `journalctl --user -u 'nexa-*' -f` (cumple R9) |

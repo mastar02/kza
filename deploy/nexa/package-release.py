@@ -66,7 +66,19 @@ def copy_tree(source, dest, ignore=None):
             copy_file(child, dest / child.name)
 
 
-def assemble(args, stage):
+def release_timestamp():
+    epoch = os.environ.get("SOURCE_DATE_EPOCH")
+    if epoch is None:
+        return datetime.now(timezone.utc).isoformat()
+    if not re.fullmatch(r"[0-9]+", epoch):
+        raise ValueError("SOURCE_DATE_EPOCH must be non-negative integer seconds")
+    try:
+        return datetime.fromtimestamp(int(epoch), timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError) as error:
+        raise ValueError("SOURCE_DATE_EPOCH is outside the supported timestamp range") from error
+
+
+def assemble(args, stage, git_dirty):
     (stage / "bin").mkdir()
     for name in BINARIES:
         source = args.target_dir / name
@@ -96,9 +108,10 @@ def assemble(args, stage):
     manifest = {
         "version": args.version,
         "git_sha": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "git_dirty": git_dirty,
         "platform": platform.system(),
         "architecture": platform.machine(),
-        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "timestamp_utc": release_timestamp(),
         "files": sorted(sums),
     }
     path = stage / "release-manifest.json"
@@ -118,6 +131,7 @@ def main():
     parser.add_argument("--ml-src", type=Path, default=ROOT / "workers/nexa-ml")
     parser.add_argument("--systemd-dir", type=Path, default=DEPLOY / "systemd")
     parser.add_argument("--allow-missing-frontend", action="store_true", help="partial CI/dry run only")
+    parser.add_argument("--allow-dirty", action="store_true", help="allow a dirty checkout for development/tests")
     args = parser.parse_args()
     try:
         if not re.fullmatch(r"[A-Za-z0-9._-]+", args.version) or ".." in args.version or args.version == ".":
@@ -128,13 +142,18 @@ def main():
         for source in (args.frontend_dist, args.ml_src, args.systemd_dir, args.target_dir):
             if source.resolve() in (out.resolve(), *out.resolve().parents):
                 raise ValueError("output directory overlaps an input")
+        git_dirty = bool(subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=all"], cwd=ROOT
+        ))
+        if git_dirty and not args.allow_dirty:
+            raise ValueError("dirty checkout; --allow-dirty is for development/tests")
         out.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=out.parent) as tmp:
             stage = Path(tmp) / "release"
             stage.mkdir()
-            assemble(args, stage)
+            assemble(args, stage, git_dirty)
             stage.replace(out)
-    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    except (OSError, OverflowError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")
 
 

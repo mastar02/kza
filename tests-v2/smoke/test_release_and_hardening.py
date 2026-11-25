@@ -61,11 +61,36 @@ def test_service_units():
             }[path.stem]
         if path.stem in {"nexa-llm-fast", "nexa-dashboard-proxy"}:
             assert s["Type"] == "simple"
+            assert s["RuntimeDirectoryMode"] == "0700"
+        if path.stem == "nexa-dashboard-proxy":
+            assert s["RuntimeDirectory"] == "nexa-proxy"
+            assert s["ReadWritePaths"] == "/var/lib/nexa/proxy"
+        if path.stem == "nexa-llm-fast":
+            assert s["RuntimeDirectory"] == "nexa-llm-fast"
+            assert s["Environment"] == "CUDA_VISIBLE_DEVICES=0"
         if path.stem in {"nexa-memoryd", "nexa-ml"}:
             assert s["IPAddressDeny"] == "any" and "IPAddressAllow" not in s
         if path.stem == "nexa-ml":
+            assert "PYTHONDONTWRITEBYTECODE=1" in s["Environment"].split()
             assert s["WorkingDirectory"] == "/opt/nexa/current/ml"
             assert "%t/nexa/ml.sock" in s["ExecStart"]
+
+
+def test_ml_persistent_offline_cache():
+    unit = configparser.ConfigParser(interpolation=None)
+    unit.read(DEPLOY / "systemd/nexa-ml.service")
+    service = unit["Service"]
+    env = dict(item.split("=", 1) for item in service["Environment"].split())
+    cache = Path(env["HOME"]) / ".cache"
+    assert cache == Path("/var/lib/nexa/.cache")
+    assert Path(env["XDG_CACHE_HOME"]) == cache
+    assert Path(env["HF_HOME"]) == cache / "huggingface"
+    assert service["ReadWritePaths"].split() == [str(cache)]
+    provision = (DEPLOY / "provision-nexa-user.sh").read_text()
+    assert 'NEXA_USER="nexa"' in provision.splitlines()
+    commands = provision.replace(chr(92) + "\n", " ").splitlines()
+    assert any(line.startswith('install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 ')
+               and str(cache) in line.split() for line in commands)
 
 
 def test_provisioning_and_udev():
@@ -77,6 +102,9 @@ def test_provisioning_and_udev():
     assert re.search(r'grep -qx "\$\{forbidden\}".*?exit 1\s+fi', provision, re.S)
     assert 'for grp in audio dialout video render; do' in provision
     assert re.findall(r"^\s*usermod .*", provision, re.M) == ['    usermod -aG "${grp}" "${NEXA_USER}"']
+    commands = provision.replace(chr(92) + "\n", " ").splitlines()
+    assert any(line.startswith('install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 ')
+               and "/var/lib/nexa/proxy" in line.split() for line in commands)
     assert "99-xvf3800-nexa.rules" in provision
     active = [line for line in rules.splitlines() if line and not line.startswith("#")]
     assert len(active) == 1
@@ -99,13 +127,60 @@ def inputs(tmp_path):
     return tmp_path
 
 
-def package(inputs, version="v1", *extra, ok=True):
-    out = inputs / version
-    run(sys.executable, DEPLOY / "package-release.py", version, out,
+def run_packager(inputs, deploy, version, out, *extra, ok=True):
+    return run(sys.executable, deploy / "package-release.py", version, out,
         "--target-dir", inputs / "bin", "--ml-src", inputs / "ml",
         "--frontend-dist", inputs / "dist", *extra, ok=ok)
+
+
+def package(inputs, version="v1", *extra, ok=True):
+    out = inputs / version
+    run_packager(inputs, DEPLOY, version, out, "--allow-dirty", *extra, ok=ok)
     assert out.exists() == ok
     return out
+
+
+def test_release_provenance_and_reproducibility(inputs, monkeypatch):
+    repo = inputs / "repo"
+    deploy = repo / "deploy/nexa"
+    shutil.copytree(DEPLOY, deploy, ignore=shutil.ignore_patterns("__pycache__"))
+    run("git", "init", "-q", cwd=repo)
+    run("git", "add", "deploy", cwd=repo)
+    run("git", "-c", "user.name=Smoke", "-c", "user.email=smoke@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "fixture", cwd=repo)
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1704067200")
+    first, second = inputs / "first", inputs / "second"
+    for out in (first, second):
+        run_packager(inputs, deploy, "v1", out)
+    for name in ("release-manifest.json", "SHA256SUMS"):
+        assert (first / name).read_bytes() == (second / name).read_bytes()
+    manifest = json.loads((first / "release-manifest.json").read_text())
+    assert manifest["git_dirty"] is False
+    assert manifest["timestamp_utc"] == "2024-01-01T00:00:00+00:00"
+
+    (repo / "untracked").touch()
+    dirty = inputs / "dirty"
+    rejected = run_packager(inputs, deploy, "v1", dirty, ok=False)
+    assert "dirty checkout" in rejected.stderr
+    assert not dirty.exists()
+    run_packager(inputs, deploy, "v1", dirty, "--allow-dirty")
+    assert json.loads((dirty / "release-manifest.json").read_text())["git_dirty"] is True
+
+    stage = DEPLOY / "stage-release.py"
+    run(sys.executable, stage, first, inputs / "prod-clean", "v1", "")
+    rejected = run(sys.executable, stage, dirty, inputs / "prod-dirty", "v1", "", ok=False)
+    assert "dirty release requires test mode" in rejected.stderr
+    run(sys.executable, stage, dirty, inputs / "test-dirty", "v1", str(inputs))
+
+
+@pytest.mark.parametrize("epoch", ["invalid", "999999999999999999999"])
+def test_reject_invalid_source_date_epoch(inputs, monkeypatch, epoch):
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", epoch)
+    out = inputs / "invalid-epoch"
+    rejected = run_packager(inputs, DEPLOY, "v1", out, "--allow-dirty", ok=False)
+    assert "SOURCE_DATE_EPOCH" in rejected.stderr
+    assert not out.exists()
 
 
 def test_package_and_switch(inputs):
