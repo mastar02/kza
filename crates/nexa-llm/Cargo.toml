@@ -20,6 +20,7 @@ tempfile = "3"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["process"] }
 tokio-util = "0.7"
+tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

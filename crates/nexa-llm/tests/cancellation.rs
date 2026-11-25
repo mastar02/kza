@@ -95,3 +95,71 @@ async fn cli_returns_output_and_reaps_on_withdrawal() -> Result {
     ));
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_limits_stdout_and_reaps_child_on_overflow() -> Result {
+    let cancel = CancellationToken::new();
+    let timeout = Duration::from_secs(10);
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args(["-c", "head -c 4194304 /dev/zero"]);
+    let output = tokio::time::timeout(timeout, run_cli(cmd, None, &cancel)).await??;
+    assert_eq!(output.len(), 4 * 1024 * 1024);
+    assert!(output.iter().all(|&byte| byte == 0));
+
+    let dir = tempfile::tempdir()?;
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "echo $$ > pid && head -c 4194305 /dev/zero && exec sleep 30",
+    ])
+    .current_dir(dir.path());
+    let error = tokio::time::timeout(timeout, run_cli(cmd, None, &cancel))
+        .await?
+        .err()
+        .ok_or("oversized stdout must fail before EOF")?;
+    assert!(
+        matches!(error, LlmError::Io(ref source) if source.kind() == std::io::ErrorKind::InvalidData)
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("CLI stdout exceeded 4194304 bytes")
+    );
+
+    let pid = std::fs::read_to_string(dir.path().join("pid"))?;
+    let pid = rustix::process::Pid::from_raw(pid.trim().parse()?).ok_or("invalid pid")?;
+    assert_eq!(
+        rustix::process::test_kill_process(pid),
+        Err(rustix::io::Errno::SRCH)
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn cli_reports_only_sanitized_stderr_tail_on_failure() -> Result {
+    let mut cmd = Command::new("/bin/sh");
+    cmd.args([
+        "-c",
+        "printf 'discarded stderr prefix\\n' >&2; \
+         head -c 131072 /dev/zero >&2; \
+         printf 'stdout payload'; \
+         printf '\\033[31m\\r\\377diagnostic tail\\n' >&2; exit 7",
+    ]);
+    let cancel = CancellationToken::new();
+    let error = tokio::time::timeout(Duration::from_secs(10), run_cli(cmd, None, &cancel))
+        .await?
+        .err()
+        .ok_or("CLI exit 7 must fail")?;
+    assert!(matches!(error, LlmError::Io(_)));
+    let message = error.to_string();
+    assert!(message.contains("exit status: 7"));
+    assert!(message.contains(r"\u{1b}[31m\r�diagnostic tail"));
+    assert!(message.chars().all(|character| !character.is_control()));
+    assert!(!message.contains("discarded stderr prefix"));
+    assert!(!message.contains("stdout payload"));
+    // The escaped fill bytes take two characters each, and the tail is 4 KiB.
+    assert!(message.len() < 2 * 4096 + 128);
+    Ok(())
+}

@@ -108,30 +108,131 @@ async fn exponential_cooldown_persistence_and_clear() -> Result {
     let ep = endpoint(&mock.uri(), false);
     let r = router(vec![ep.clone()], path.clone()).await?;
     let cancel = CancellationToken::new();
-    for seconds in [60, 300, 1500, 3600, 3600] {
+    assert_eq!(r.consecutive_errors("fast").await, 0);
+    assert_eq!(r.consecutive_errors("unknown").await, 0);
+    for (failures, seconds) in [(1, 60), (2, 300), (3, 1500), (4, 3600), (5, 3600)] {
         assert!(matches!(
             r.stream("", 1, &cancel, |_| {}).await,
             Err(LlmError::Status(_))
         ));
+        assert_eq!(r.consecutive_errors("fast").await, failures);
         assert_eq!(r.cooldown_remaining("fast").await, seconds * SEC);
         assert!(matches!(
             r.stream("", 1, &cancel, |_| {}).await,
             Err(LlmError::Unavailable)
         ));
         advance(seconds * SEC).await;
+        assert_eq!(r.consecutive_errors("fast").await, failures);
     }
     drop(r);
     let r = router(vec![ep.clone()], path.clone()).await?;
     assert!(r.cooldown_remaining("fast").await > 3500 * SEC);
+    assert_eq!(r.consecutive_errors("fast").await, 5);
     r.clear_cooldown("fast").await?;
+    assert_eq!(r.consecutive_errors("fast").await, 0);
     drop(r);
     let r = router(vec![ep], path).await?;
     assert_eq!(r.cooldown_remaining("fast").await, Duration::ZERO);
+    assert_eq!(r.consecutive_errors("fast").await, 0);
     assert!(matches!(
         r.stream("", 1, &cancel, |_| {}).await,
         Err(LlmError::Status(_))
     ));
     assert_eq!(r.cooldown_remaining("fast").await, 60 * SEC);
+    assert_eq!(r.consecutive_errors("fast").await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn persistence_failure_preserves_failover_and_success() -> Result {
+    manual_clock();
+    let fast = MockServer::start().await;
+    let cloud = MockServer::start().await;
+    let failure = Mock::given(path("/v1/completions"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount_as_scoped(&fast)
+        .await;
+    cloud_success(&cloud).await;
+    let tmp = tempfile::tempdir()?;
+    let cooldown_path = tmp.path().join("cooldowns.json");
+    let router = router(
+        vec![endpoint(&fast.uri(), false), endpoint(&cloud.uri(), true)],
+        Some(cooldown_path.clone()),
+    )
+    .await?;
+    // Atomic replacement of a directory by the JSON file fails even as root.
+    std::fs::create_dir(&cooldown_path)?;
+    let cancel = CancellationToken::new();
+    let mut answer = String::new();
+    assert_eq!(
+        router
+            .stream("hola", 12, &cancel, |text| answer.push_str(text))
+            .await?,
+        "cloud"
+    );
+    assert_eq!(answer, "sí!");
+    assert_eq!(router.consecutive_errors("fast").await, 1);
+    assert_eq!(router.cooldown_remaining("fast").await, 60 * SEC);
+
+    drop(failure);
+    Mock::given(path("/v1/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: {\"choices\":[{\"text\":\"local\"}]}\n\ndata: [DONE]\n\n",
+            "text/event-stream",
+        ))
+        .expect(2)
+        .mount(&fast)
+        .await;
+    advance(60 * SEC).await;
+    answer.clear();
+    assert_eq!(
+        router
+            .stream("hola", 12, &cancel, |text| answer.push_str(text))
+            .await?,
+        "fast"
+    );
+    assert_eq!(answer, "local");
+    assert_eq!(router.consecutive_errors("fast").await, 0);
+    assert_eq!(
+        router.metrics("fast").await.ok_or("missing metrics")?.calls,
+        1
+    );
+    assert!(cooldown_path.is_dir());
+
+    std::fs::remove_dir(&cooldown_path)?;
+    assert_eq!(router.stream("hola", 12, &cancel, |_| {}).await?, "fast");
+    assert_eq!(std::fs::read_to_string(&cooldown_path)?, "{}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn corrupt_cooldowns_are_quarantined_on_startup() -> Result {
+    for corrupt in ["{", r#"{"fast":{"failures":"invalid"}}"#] {
+        let tmp = tempfile::tempdir()?;
+        let path = tmp.path().join("cooldowns.json");
+        std::fs::write(&path, corrupt)?;
+        let r = router(vec![], Some(path.clone())).await?;
+        assert_eq!(r.consecutive_errors("fast").await, 0);
+        assert_eq!(r.cooldown_remaining("fast").await, Duration::ZERO);
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("cooldowns.json.corrupt"))?,
+            corrupt
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn corrupt_cooldowns_allow_startup_when_quarantine_fails() -> Result {
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("cooldowns.json");
+    std::fs::write(&path, "{")?;
+    std::fs::create_dir(tmp.path().join("cooldowns.json.corrupt"))?;
+    let r = router(vec![], Some(path.clone())).await?;
+    assert_eq!(r.consecutive_errors("fast").await, 0);
+    assert!(path.is_file());
     Ok(())
 }
 
