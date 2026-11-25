@@ -1596,6 +1596,7 @@ dependencies = [
  "prost",
  "rusqlite",
  "sd-notify 0.5.0",
+ "serde_json",
  "sha2",
  "sqlite-vec",
  "tempfile",

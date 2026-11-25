@@ -15,8 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unsupported fact embeddings model".into());
     }
     let mut store = Store::open(&config.paths.data_dir.join("memory"))?;
-    // This service version has no RPC for the global switch. The administrator
-    // opts in through the deployed Nexa config, independently of personal consent.
+    // Seed the persisted operator switch from deployment config on first use.
     store.configure_voice_attribution(config.memory.voice_proposals_enabled)?;
     let runtime_dir = std::env::var_os("RUNTIME_DIRECTORY")
         .map(PathBuf::from)

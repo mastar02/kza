@@ -6,7 +6,10 @@ use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nexa_proto::v1::{AmbientControlStatus, MemoryFact, MemorySearchHit};
-use rusqlite::{Connection, Row, Transaction, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior, params};
+use serde_json::{Map, Value, json};
+
+use crate::erasure::{Kind, ensure_not_erased, is_erased};
 use thiserror::Error;
 
 pub const FACT_MODEL: &str = "BAAI/bge-m3";
@@ -180,24 +183,6 @@ impl Store {
         result
     }
 
-    pub fn configure_voice_attribution(&mut self, enabled: bool) -> Result<()> {
-        let tx = self.write()?;
-        let now = now_ms()?;
-        tx.execute(
-            "UPDATE voice_attribution_control
-             SET enabled=?1, revision=revision+1, updated_at_unix_ms=?2 WHERE enabled<>?1",
-            params![enabled, now],
-        )?;
-        if !enabled {
-            tx.execute(
-                "UPDATE voice_attribution_consents SET granted=0, profile_id=NULL,
-                 profile_revision=NULL, link_revision=NULL, updated_at_unix_ms=?1 WHERE granted=1",
-                [now],
-            )?;
-        }
-        Ok(tx.commit()?)
-    }
-
     pub fn ambient_control(&self) -> Result<AmbientControlStatus> {
         ambient_control(self.read()?)
     }
@@ -241,7 +226,7 @@ impl Store {
         let embedding = vector(&tx, VectorKind::Fact, FACT_MODEL, embedding)?;
         ensure_conversation_live(&tx, conversation)?;
         if !owner.is_empty() {
-            crate::erasure::ensure_not_erased(&tx, crate::erasure::Kind::RetiredUser, owner)?;
+            ensure_not_erased(&tx, Kind::RetiredUser, owner)?;
         }
 
         let fact_id = new_id(&tx)?;
@@ -296,13 +281,23 @@ impl Store {
         let conn = self.read()?;
         let embedding = vector(conn, VectorKind::Fact, FACT_MODEL, embedding)?;
         if !owner.is_empty() {
-            crate::erasure::ensure_not_erased(conn, crate::erasure::Kind::RetiredUser, owner)?;
+            ensure_not_erased(conn, Kind::RetiredUser, owner)?;
         }
         let mut stmt = conn.prepare(
             "SELECT f.fact_id, f.conversation_id, f.owner_user_id, f.content, f.category,
                     f.created_at_unix_ms, f.confirmed, v.distance
              FROM (SELECT fact_id, distance FROM fact_vec
-                   WHERE embedding MATCH ?1 AND k=?2 AND owner_user_id=?3) v
+                   WHERE embedding MATCH ?1 AND k=?2 AND owner_user_id=?3
+                   AND fact_id IN (
+                       SELECT candidate.fact_id FROM facts candidate
+                       WHERE candidate.confirmed=1 AND candidate.owner_user_id=?3
+                       AND NOT EXISTS (
+                           SELECT 1 FROM fact_owner_revisions r WHERE r.fact_id=candidate.fact_id
+                           AND r.change_kind='unassign'
+                           AND r.revision=(SELECT max(revision) FROM fact_owner_revisions
+                                           WHERE fact_id=candidate.fact_id)
+                       )
+                   )) v
              JOIN facts f ON f.fact_id=v.fact_id
              WHERE f.owner_user_id=?3 AND f.confirmed=1",
         )?;
@@ -319,12 +314,312 @@ impl Store {
                     score: 1.0 - distance,
                 })
             })?;
-            hits.extend(batch.collect::<std::result::Result<Vec<_>, _>>()?);
+            for hit in batch {
+                let hit = hit?;
+                if let Some(fact) = &hit.fact
+                    && fact_is_live(conn, &fact.fact_id)?
+                {
+                    hits.push(hit);
+                }
+            }
         }
         hits.sort_by(|a, b| b.score.total_cmp(&a.score));
         hits.truncate(top_k as usize);
         Ok(hits)
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum FactView<'a> {
+    Facts,
+    Proposals,
+    Returned,
+    Mine(&'a str),
+}
+
+impl Store {
+    pub(crate) fn fact_page(
+        &self,
+        view: FactView<'_>,
+        cursor: &str,
+        limit: usize,
+    ) -> Result<Value> {
+        optional_id(cursor)?;
+        let conn = self.read()?;
+        let (predicate, owner, key) = match view {
+            FactView::Facts => (
+                "f.confirmed=1 AND r.change_kind IS NOT 'unassign'",
+                "",
+                "facts",
+            ),
+            FactView::Proposals => (
+                "f.confirmed=0 AND r.change_kind IS NOT 'unassign'",
+                "",
+                "proposals",
+            ),
+            FactView::Returned => (
+                "f.owner_user_id='' AND r.change_kind='unassign'",
+                "",
+                "facts",
+            ),
+            FactView::Mine(owner) => {
+                ensure_not_erased(conn, Kind::RetiredUser, owner)?;
+                (
+                    "f.owner_user_id<>'' AND f.owner_user_id=?2 AND o.person_id=?2",
+                    owner,
+                    "facts",
+                )
+            }
+        };
+        let sql = format!(
+            "SELECT {FACT_FIELDS}, COALESCE(r.revision, 0)
+             FROM facts f LEFT JOIN fact_owners o ON o.fact_id=f.fact_id
+             LEFT JOIN fact_owner_revisions r ON r.fact_id=f.fact_id
+                 AND r.revision=(SELECT max(revision) FROM fact_owner_revisions WHERE fact_id=f.fact_id)
+             WHERE f.fact_id>?1 AND (?2='' OR o.person_id=?2) AND {predicate}
+             ORDER BY f.fact_id"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut rows = stmt.query(params![cursor, owner])?;
+        let mut page = Vec::with_capacity(limit);
+        let mut last_id = None;
+        let mut next = None;
+        while let Some(row) = rows.next()? {
+            let fact = fact_from_row(row)?;
+            if !fact_is_live(conn, &fact.fact_id)? {
+                continue;
+            }
+            if page.len() == limit {
+                next = last_id;
+                break;
+            }
+            let personal = matches!(view, FactView::Mine(_));
+            page.push(fact_json(&fact, row.get(7)?, personal));
+            last_id = Some(fact.fact_id);
+        }
+        Ok(json!({(key): page, "next": next, "limit": limit}))
+    }
+
+    pub(crate) fn owner_counts(&self) -> Result<Value> {
+        let conn = self.read()?;
+        let mut stmt = conn.prepare(
+            "SELECT f.fact_id, f.owner_user_id, COALESCE(o.person_id, '')
+             FROM facts f LEFT JOIN fact_owners o ON o.fact_id=f.fact_id
+             WHERE f.owner_user_id<>'' OR o.person_id IS NOT NULL",
+        )?;
+        let mut rows = stmt.query([])?;
+        let mut counts = std::collections::BTreeMap::<String, usize>::new();
+        let mut prune_pending = false;
+        while let Some(row) = rows.next()? {
+            let owner: String = row.get(1)?;
+            let assigned: String = row.get(2)?;
+            if !person_is_live(conn, &owner)? || !person_is_live(conn, &assigned)? {
+                prune_pending = true;
+            } else if !owner.is_empty() && fact_is_live(conn, &row.get::<_, String>(0)?)? {
+                *counts.entry(owner).or_default() += 1;
+            }
+        }
+        Ok(json!({"counts": counts, "retired_owner_prune_pending": prune_pending}))
+    }
+
+    pub(crate) fn confirm_proposal(&mut self, fact_id: &str) -> Result<Value> {
+        id(fact_id)?;
+        let tx = self.write()?;
+        let mut fact = live_fact(&tx, fact_id)?;
+        if !fact.confirmed {
+            tx.execute("UPDATE facts SET confirmed=1 WHERE fact_id=?1", [fact_id])?;
+            fact.confirmed = true;
+        }
+        let revision = owner_revision(&tx, fact_id)?;
+        let payload = json!({"fact": fact_json(&fact, revision, false)});
+        tx.commit()?;
+        Ok(payload)
+    }
+
+    pub(crate) fn assign_owner(
+        &mut self,
+        fact_id: &str,
+        owner: &str,
+        expected: Option<u64>,
+    ) -> Result<Value> {
+        id(fact_id)?;
+        id(owner)?;
+        let tx = self.write()?;
+        ensure_not_erased(&tx, Kind::RetiredUser, owner)?;
+        let fact = live_fact(&tx, fact_id)?;
+        let previous = owner_revision(&tx, fact_id)?;
+        check_revision(expected, previous)?;
+        let revision = if fact.owner_user_id == owner {
+            previous
+        } else {
+            change_owner(&tx, fact_id, owner, previous)?
+        };
+        tx.commit()?;
+        Ok(json!({"fact_id": fact_id, "owner_user_id": owner, "owner_revision": revision}))
+    }
+
+    pub(crate) fn return_fact(&mut self, fact_id: &str, user: &str) -> Result<Value> {
+        id(fact_id)?;
+        let tx = self.write()?;
+        ensure_not_erased(&tx, Kind::RetiredUser, user)?;
+        let owned: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM fact_owners o JOIN facts f USING (fact_id)
+             WHERE o.fact_id=?1 AND o.person_id=?2 AND f.owner_user_id=?2)",
+            params![fact_id, user],
+            |row| row.get(0),
+        )?;
+        if !owned {
+            return Err(Error::NotFound("fact unavailable"));
+        }
+        live_fact(&tx, fact_id)?;
+        let previous = owner_revision(&tx, fact_id)?;
+        change_owner(&tx, fact_id, "", previous)?;
+        tx.commit()?;
+        Ok(json!({"returned": true}))
+    }
+}
+
+const FACT_FIELDS: &str = "f.fact_id, f.conversation_id, f.owner_user_id, f.content, f.category,
+     f.created_at_unix_ms, f.confirmed";
+
+fn fact_json(fact: &MemoryFact, owner_revision: u64, personal: bool) -> Value {
+    let mut value = json!({
+        "id": fact.fact_id,
+        "fact_id": fact.fact_id,
+        "owner_user_id": fact.owner_user_id,
+        "content": fact.content,
+        "category": fact.category,
+        "created_at_unix_ms": fact.created_at_unix_ms,
+        "confirmed": fact.confirmed,
+        "state": if fact.confirmed { "confirmed" } else { "proposed" },
+    });
+    if !personal {
+        value["conversation_id"] = json!(fact.conversation_id);
+        value["owner_revision"] = json!(owner_revision);
+    }
+    value
+}
+
+fn live_fact(conn: &Connection, fact_id: &str) -> Result<MemoryFact> {
+    let sql = format!("SELECT {FACT_FIELDS} FROM facts f WHERE f.fact_id=?1");
+    let fact = conn.query_row(&sql, [fact_id], fact_from_row).optional()?;
+    match fact {
+        Some(fact) if fact_is_live(conn, fact_id)? => Ok(fact),
+        _ => Err(Error::NotFound("fact unavailable")),
+    }
+}
+
+fn fact_is_live(conn: &Connection, fact_id: &str) -> Result<bool> {
+    let mut stmt = conn.prepare_cached(
+        "WITH RECURSIVE ancestry(fact_id) AS (
+             SELECT ?1 UNION
+             SELECT d.depends_on_fact_id FROM fact_dependencies d JOIN ancestry a USING (fact_id)
+         ), sources(fact_id, conversation_id) AS (
+             SELECT a.fact_id, f.conversation_id FROM ancestry a JOIN facts f USING (fact_id)
+             UNION
+             SELECT a.fact_id, s.conversation_id FROM ancestry a JOIN fact_sources s USING (fact_id)
+         )
+         SELECT f.fact_id, s.conversation_id, f.owner_user_id, COALESCE(o.person_id, ''),
+                COALESCE(c.owner_user_id, '')
+         FROM sources s JOIN facts f USING (fact_id)
+         LEFT JOIN fact_owners o USING (fact_id)
+         LEFT JOIN ambient.capture_conversations c ON c.conversation_id=s.conversation_id",
+    )?;
+    let mut rows = stmt.query([fact_id])?;
+    while let Some(row) = rows.next()? {
+        if is_erased(conn, Kind::Fact, &row.get::<_, String>(0)?)?
+            || !conversation_is_live(conn, &row.get::<_, String>(1)?)?
+            || !person_is_live(conn, &row.get::<_, String>(2)?)?
+            || !person_is_live(conn, &row.get::<_, String>(3)?)?
+            || !person_is_live(conn, &row.get::<_, String>(4)?)?
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn owner_revision(conn: &Connection, fact_id: &str) -> Result<u64> {
+    Ok(conn.query_row(
+        "SELECT max(COALESCE((SELECT max(revision) FROM fact_owner_revisions WHERE fact_id=?1), 0),
+                    COALESCE((SELECT revision FROM fact_owners WHERE fact_id=?1), 0))",
+        [fact_id],
+        |row| row.get(0),
+    )?)
+}
+
+fn change_owner(tx: &Transaction<'_>, fact_id: &str, owner: &str, previous: u64) -> Result<u64> {
+    // Transferring the source or a derivative independently could leave its content
+    // readable in the old scope even after changing ownership.
+    let has_dependencies: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM fact_dependencies WHERE fact_id=?1 OR depends_on_fact_id=?1)",
+        [fact_id],
+        |row| row.get(0),
+    )?;
+    if has_dependencies {
+        return Err(Error::Precondition("fact has linked dependencies"));
+    }
+    let revision = previous + 1;
+    let kind = if owner.is_empty() {
+        tx.execute("DELETE FROM fact_owners WHERE fact_id=?1", [fact_id])?;
+        "unassign"
+    } else {
+        tx.execute(
+            "INSERT INTO fact_owners VALUES (?1, ?2, 'manual', ?3)
+             ON CONFLICT(fact_id) DO UPDATE SET person_id=excluded.person_id,
+                 method=excluded.method, revision=excluded.revision",
+            params![fact_id, owner, revision],
+        )?;
+        "assign"
+    };
+    tx.execute(
+        "UPDATE facts SET owner_user_id=?1 WHERE fact_id=?2",
+        params![owner, fact_id],
+    )?;
+    tx.execute(
+        "INSERT INTO fact_owner_revisions VALUES (?1, ?2, ?3, ?4)",
+        params![fact_id, revision, kind, now_ms()?],
+    )?;
+    // vec0 uses owner_user_id as a partition key, so move the vector atomically.
+    let embedding: Option<Vec<u8>> = tx
+        .query_row(
+            "SELECT embedding FROM fact_vec WHERE fact_id=?1",
+            [fact_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(embedding) = embedding {
+        tx.execute("DELETE FROM fact_vec WHERE fact_id=?1", [fact_id])?;
+        tx.execute(
+            "INSERT INTO fact_vec VALUES (?1, ?2, ?3)",
+            params![fact_id, embedding, owner],
+        )?;
+    }
+    Ok(revision)
+}
+
+pub(crate) fn check_revision(expected: Option<u64>, current: u64) -> Result<()> {
+    if expected.is_some_and(|revision| revision != current) {
+        return Err(Error::Conflict("revision conflict"));
+    }
+    Ok(())
+}
+
+pub(crate) fn json_object(input: &str) -> Result<Map<String, Value>> {
+    if input.is_empty() {
+        return Ok(Map::new());
+    }
+    serde_json::from_str(input).map_err(|_| Error::Invalid("expected JSON object"))
+}
+
+pub(crate) fn json_revision(body: &Map<String, Value>, key: &str) -> Result<Option<u64>> {
+    body.get(key)
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or(Error::Invalid("invalid expected revision"))
+        })
+        .transpose()
 }
 
 fn ambient_control(conn: &Connection) -> Result<AmbientControlStatus> {
@@ -350,14 +645,31 @@ fn fact_from_row(row: &Row<'_>) -> rusqlite::Result<MemoryFact> {
 }
 
 pub(crate) fn ensure_conversation_live(conn: &Connection, conversation: &str) -> Result<()> {
-    if conn.query_row(
+    if !conversation_is_live(conn, conversation)? {
+        return Err(Error::Precondition("conversation erased"));
+    }
+    Ok(())
+}
+
+pub(crate) fn conversation_is_live(conn: &Connection, conversation: &str) -> Result<bool> {
+    let tombstoned: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM conversation_tombstones WHERE conversation_id=?1)",
         [conversation],
         |row| row.get(0),
-    )? {
-        return Err(Error::Precondition("conversation erased"));
+    )?;
+    Ok(!tombstoned && !is_erased(conn, Kind::Conversation, conversation)?)
+}
+
+pub(crate) fn person_is_live(conn: &Connection, person: &str) -> Result<bool> {
+    Ok(person.is_empty() || !is_erased(conn, Kind::RetiredUser, person)?)
+}
+
+pub(crate) fn page_limit(limit: u32) -> usize {
+    if limit == 0 {
+        50
+    } else {
+        limit.min(100) as usize
     }
-    crate::erasure::ensure_not_erased(conn, crate::erasure::Kind::Conversation, conversation)
 }
 
 pub(crate) fn id(value: &str) -> Result<()> {
