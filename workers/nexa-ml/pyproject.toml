@@ -15,9 +15,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Kokoro: no published wheel declares Python 3.13 support. 0.7.x pins numpy==1.26.4
+# (no cp313 wheels; conflicts with numpy>=2) and lacks repo_id; 0.8.1-0.9.4 declare
+# Requires-Python "<3.13,>=3.10". The only workable target is kokoro==0.9.4 installed with
+# uv, which ignores Requires-Python upper bounds (pip refuses it). CI proves the extra
+# resolves on 3.13 with uv; real 3.13 runtime behaviour is verified only by `-m gpu` on the
+# server. tts_slot.KokoroEngine adapts to both 0.7.x and 0.9.x constructor signatures.
 gpu = [
     "faster-whisper>=1.1.0",
-    "kokoro>=0.7.0",
+    "kokoro==0.9.4",
+    "misaki[en]==0.9.4",
     "speechbrain>=1.0.0",
     "sentence-transformers>=3.0.0",
 ]

@@ -26,6 +26,8 @@ Thin, stateless Python 3.13 worker speaking `nexa.v1.MlService` over `$XDG_RUNTI
 - **Slot ids** (`GetHealth.models[].slot_id`, `ReloadModel.slot_id`): `stt-command`, `stt-ambient-<i>`, `tts`, `speaker`, `embed`.
 - **TTS stream end:** after the last audio chunk the server sends one extra chunk with empty `pcm_f32le` and `is_final=true` (no lookahead, so chunk 0 is never delayed).
 - **Status codes:** `INVALID_ARGUMENT` input/voice/slot · `UNAVAILABLE` slot down/reloading · `RESOURCE_EXHAUSTED` queue full/OOM · `CANCELLED` client cancel · `INTERNAL` anything else. Details never echo audio or text.
+- **ReloadModel authz:** requires a verified `ActorContext` with `subject` (`UNAUTHENTICATED` otherwise), `ROLE_OPERATOR` and `PERMISSION_ADMIN_MANAGE` (`PERMISSION_DENIED` otherwise), checked before the slot id is resolved or logged.
+- **Zero network (`ml.offline=true`, default):** `HF_HUB_OFFLINE`/`TRANSFORMERS_OFFLINE` are forced to `1` (overwriting any inherited value); every real loader rejects URI sources and fails closed when the Hugging Face client is not offline. ECAPA loads only from local files (`source` dir or `<models_dir>/speechbrain/...` cache); Kokoro prefers a local layout `<models_dir>/kokoro/{config.json,*.pth,voices/*.pt}` and otherwise only the offline HF cache.
 - **No lazy reload:** a failed load/reload leaves the slot `UNAVAILABLE` until an explicit `ReloadModel`.
 - **PCM:** mono float32 LE at 16 kHz for STT/speaker (no resampling); Kokoro emits 24 kHz.
 
@@ -38,3 +40,6 @@ python -m pytest -m "not gpu" -q
 # Server-only smoke with real models
 NEXA_ML_CONFIG=/etc/nexa/nexa.toml python -m pytest -m gpu -s tests/gpu
 ```
+
+### GPU extra on CPython 3.13
+No published Kokoro wheel declares 3.13 support (0.9.4: `Requires-Python <3.13`; 0.7.x pins `numpy==1.26.4`). Install the extra with **uv** (it ignores Requires-Python upper bounds), e.g. `uv pip install --python /opt/nexa/ml-venv/bin/python "workers/nexa-ml[gpu]"`; `pip` refuses it. CI only proves the resolution; runtime behaviour on 3.13 is validated by `-m gpu` on the server.
