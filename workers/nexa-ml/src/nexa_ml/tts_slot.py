@@ -14,6 +14,7 @@ shares the model with an abandoned stream.
 """
 
 import asyncio
+import importlib.util
 import inspect
 import logging
 import math
@@ -128,6 +129,27 @@ class KokoroLocalFiles:
         return str(path) if path.is_file() else None
 
 
+# Kokoro builds misaki.en.G2P for English ('a' US, 'b' GB); misaki 0.9.4 (en.py:499-503)
+# calls ``spacy.cli.download`` when the spaCy model package is missing.
+SPACY_G2P_LANGS = frozenset("ab")
+SPACY_EN_MODEL = "en_core_web_sm"  # misaki uses en_core_web_trf only with trf=True (never here)
+
+
+def spacy_model_installed(name: str) -> bool:
+    """Whether a spaCy model package is importable locally (no spaCy import, no network)."""
+    return importlib.util.find_spec(name) is not None
+
+
+def require_local_g2p(lang_code: str, *, offline: bool, installed: Callable[[str], bool]) -> None:
+    """Fail closed before ``KPipeline`` would trigger a spaCy model download.
+
+    Raises:
+        FileNotFoundError: Offline, English G2P requested and the spaCy model is missing.
+    """
+    if offline and lang_code in SPACY_G2P_LANGS and not installed(SPACY_EN_MODEL):
+        raise FileNotFoundError(f"spaCy model {SPACY_EN_MODEL} is not installed (offline mode)")
+
+
 class KokoroEngine:
     """Real Kokoro adapter: one shared ``KModel`` and one ``KPipeline`` per language.
 
@@ -143,6 +165,7 @@ class KokoroEngine:
         models_dir: Optional local model root (``<models_dir>/kokoro``).
         offline: Fail closed instead of reaching the network.
         kokoro_module: Injectable module (tests); defaults to ``import kokoro``.
+        spacy_installed: Injectable spaCy-model presence probe (tests).
     """
 
     def __init__(
@@ -154,10 +177,13 @@ class KokoroEngine:
         models_dir: str | None = None,
         offline: bool = True,
         kokoro_module: Any = None,
+        spacy_installed: Callable[[str], bool] = spacy_model_installed,
     ) -> None:
         if offline:
             reject_remote_source(repo_id)
             assert_offline_effective()
+        self._spacy_installed = spacy_installed
+        require_local_g2p(default_lang, offline=offline, installed=spacy_installed)
         if kokoro_module is None:
             import kokoro as kokoro_module  # noqa: PLC0415 - heavy, lazy by design
 
@@ -186,6 +212,7 @@ class KokoroEngine:
         """Return (creating on the slot thread if needed) the pipeline for ``lang_code``."""
         pipe = self._pipelines.get(lang_code)
         if pipe is None:
+            require_local_g2p(lang_code, offline=self._offline, installed=self._spacy_installed)
             factory = self._kokoro.KPipeline
             kwargs = supported_kwargs(
                 factory,

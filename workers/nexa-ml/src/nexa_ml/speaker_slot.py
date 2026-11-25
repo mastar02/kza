@@ -6,16 +6,19 @@ an acoustic signal, never a person, account, role or permission. Matching agains
 enrolled voices, thresholds and any authority decision live elsewhere.
 """
 
+import inspect
 import logging
 import pathlib
+import re
 import time
+import types
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-from nexa_ml.offline import assert_offline_effective, reject_remote_source
+from nexa_ml.offline import OfflineViolationError, assert_offline_effective, reject_remote_source
 from nexa_ml.slot import ModelSlot
 
 logger = logging.getLogger(__name__)
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 SPEAKER_SLOT_ID = "speaker"
 SPEAKER_EMBEDDING_DIM = 192
 MIN_SPEAKER_SECONDS = 0.5
+_ANY_URI_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://")
 
 
 class EmbeddingShapeError(RuntimeError):
@@ -56,8 +60,64 @@ def resolve_ecapa_source(source: str, savedir: str, *, offline: bool) -> str:
     assert_offline_effective()
     for candidate in (pathlib.Path(source), pathlib.Path(savedir)):
         if (candidate / "hyperparams.yaml").is_file() and (candidate / "embedding_model.ckpt").is_file():
+            reject_remote_manifest(candidate / "hyperparams.yaml")
             return str(candidate)
     raise FileNotFoundError("ECAPA files are not cached locally (offline mode)")
+
+
+def reject_remote_manifest(hparams: pathlib.Path) -> None:
+    """Fail closed if ``hyperparams.yaml`` references any URI (``http://``, ``s3://``...).
+
+    Raises:
+        OfflineViolationError: A remote reference is present.
+    """
+    if _ANY_URI_RE.search(hparams.read_text(encoding="utf-8", errors="replace")):
+        raise OfflineViolationError("hyperparams.yaml references a remote URI (offline mode)")
+
+
+def from_hparams_kwargs(
+    local: str, savedir: str, device: str, *, offline: bool, fetching: Any
+) -> dict[str, Any]:
+    """Build ``EncoderClassifier.from_hparams`` kwargs.
+
+    Offline: ``pretrained_path`` is pinned to the local dir, files are used in place
+    (``LocalStrategy.NO_LINK``) and SpeechBrain's own fetcher is told not to use the
+    network (``FetchConfig(allow_network=False)``).
+
+    Args:
+        local: Local model directory.
+        savedir: Explicit SpeechBrain savedir.
+        device: Torch device.
+        offline: Enforce zero network.
+        fetching: ``speechbrain.utils.fetching`` (injectable for tests).
+
+    Raises:
+        OfflineViolationError: The installed SpeechBrain cannot disable network fetching.
+    """
+    kwargs: dict[str, Any] = {"source": local, "savedir": savedir, "run_opts": {"device": device}}
+    if not offline:
+        return kwargs
+    fetch_config_cls = getattr(fetching, "FetchConfig", None)
+    local_strategy = getattr(fetching, "LocalStrategy", None)
+    if fetch_config_cls is None or "allow_network" not in inspect.signature(fetch_config_cls).parameters:
+        raise OfflineViolationError("installed speechbrain has no FetchConfig(allow_network=...)")
+    kwargs["overrides"] = {"pretrained_path": local}
+    kwargs["fetch_config"] = fetch_config_cls(allow_network=False)
+    if local_strategy is not None and hasattr(local_strategy, "NO_LINK"):
+        kwargs["local_strategy"] = local_strategy.NO_LINK
+    return kwargs
+
+
+def _load_speechbrain() -> Any:
+    """Import SpeechBrain lazily (torchaudio>=2.9 shim included)."""
+    import torchaudio  # noqa: PLC0415 - heavy, lazy by design
+
+    if not hasattr(torchaudio, "list_audio_backends"):  # speechbrain 1.x on torchaudio>=2.9
+        torchaudio.list_audio_backends = lambda: ["ffmpeg"]
+    from speechbrain.inference.speaker import EncoderClassifier  # noqa: PLC0415
+    from speechbrain.utils import fetching  # noqa: PLC0415
+
+    return types.SimpleNamespace(EncoderClassifier=EncoderClassifier, fetching=fetching)
 
 
 class EcapaEncoder:
@@ -66,24 +126,13 @@ class EcapaEncoder:
     Constructed only on the slot thread by :func:`ecapa_loader`.
     """
 
-    def __init__(self, source: str, device: str, savedir: str, *, offline: bool = True) -> None:
-        local = resolve_ecapa_source(source, savedir, offline=offline)
-        import torchaudio  # noqa: PLC0415 - heavy, lazy by design
-
-        if not hasattr(torchaudio, "list_audio_backends"):  # speechbrain 1.x on torchaudio>=2.9
-            torchaudio.list_audio_backends = lambda: ["ffmpeg"]
-        from speechbrain.inference.speaker import EncoderClassifier  # noqa: PLC0415
-
-        kwargs: dict[str, Any] = {"source": local, "savedir": savedir, "run_opts": {"device": device}}
-        if offline:
-            kwargs["overrides"] = {"pretrained_path": local}
-            try:  # load in place; never symlink/copy or fetch
-                from speechbrain.utils.fetching import LocalStrategy  # noqa: PLC0415
-
-                kwargs["local_strategy"] = LocalStrategy.NO_LINK
-            except ImportError:  # pragma: no cover - older speechbrain
-                pass
-        self._classifier = EncoderClassifier.from_hparams(**kwargs)
+    def __init__(
+        self, source: str, device: str, savedir: str, *, offline: bool = True, speechbrain_api: Any = None
+    ) -> None:
+        local = resolve_ecapa_source(source, savedir, offline=offline)  # fail closed before any import
+        api = speechbrain_api if speechbrain_api is not None else _load_speechbrain()
+        kwargs = from_hparams_kwargs(local, savedir, device, offline=offline, fetching=api.fetching)
+        self._classifier = api.EncoderClassifier.from_hparams(**kwargs)
 
     def embed(self, audio: np.ndarray) -> np.ndarray:
         """Encode one mono 16 kHz utterance into its raw (unnormalised) embedding."""

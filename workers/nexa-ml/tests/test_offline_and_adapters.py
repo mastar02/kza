@@ -247,3 +247,159 @@ def test_supported_kwargs_filters_by_signature() -> None:
 
     assert supported_kwargs(narrow, {"a": 1, "b": None, "c": 3}) == {"a": 1}
     assert supported_kwargs(wide, {"a": 1, "c": 3}) == {"a": 1, "c": 3}
+
+
+# ---------------------------------------------------------------- Kokoro English G2P (spaCy)
+@pytest.mark.usefixtures("offline_env")
+@pytest.mark.parametrize("lang", ["a", "b"])
+def test_kokoro_english_offline_without_spacy_model_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, lang: str
+) -> None:
+    downloads: list[str] = []
+    fake_spacy = types.ModuleType("spacy")
+    fake_spacy.cli = types.SimpleNamespace(download=downloads.append)
+    monkeypatch.setitem(sys.modules, "spacy", fake_spacy)
+    mod = _kokoro_09()
+    probes: list[str] = []
+
+    def missing(name: str) -> bool:
+        probes.append(name)
+        return False
+
+    with pytest.raises(FileNotFoundError):
+        KokoroEngine("hexgrad/Kokoro-82M", "cpu", lang, kokoro_module=mod, spacy_installed=missing)
+    assert probes == ["en_core_web_sm"]
+    assert "kpipeline" not in mod.calls and "kmodel" not in mod.calls  # nothing constructed
+    assert downloads == []  # spacy.cli.download never invoked
+
+
+@pytest.mark.usefixtures("offline_env")
+def test_kokoro_english_pipeline_on_demand_also_guarded() -> None:
+    mod = _kokoro_09()
+    engine = KokoroEngine(
+        "hexgrad/Kokoro-82M", "cpu", "e", kokoro_module=mod, spacy_installed=lambda _n: False
+    )
+    with pytest.raises(FileNotFoundError):
+        engine.pipeline("a")
+    assert [c["lang_code"] for c in mod.calls["kpipeline"]] == ["e"]
+
+
+@pytest.mark.usefixtures("offline_env")
+def test_kokoro_english_with_local_spacy_model_builds_pipeline() -> None:
+    mod = _kokoro_09()
+    KokoroEngine(
+        "hexgrad/Kokoro-82M", "cpu", "a", kokoro_module=mod, spacy_installed=lambda n: n == "en_core_web_sm"
+    )
+    assert mod.calls["kpipeline"][0]["lang_code"] == "a"
+
+
+@pytest.mark.usefixtures("online_env")
+def test_kokoro_online_mode_skips_spacy_guard() -> None:
+    mod = _kokoro_09()
+    KokoroEngine(
+        "hexgrad/Kokoro-82M", "cpu", "a", offline=False, kokoro_module=mod, spacy_installed=lambda _n: False
+    )
+    assert mod.calls["kpipeline"][0]["lang_code"] == "a"
+
+
+def test_spacy_probe_does_not_import_spacy() -> None:
+    from nexa_ml.tts_slot import spacy_model_installed
+
+    assert spacy_model_installed("nexa_ml_definitely_missing_model") is False
+    assert spacy_model_installed("json") is True
+
+
+# ---------------------------------------------------------------- SpeechBrain fetch config / manifest
+def _fake_fetching() -> Any:
+    import dataclasses
+    import enum
+
+    @dataclasses.dataclass(frozen=True)
+    class FetchConfig:
+        overwrite: bool = False
+        allow_updates: bool = False
+        allow_network: bool = True
+
+    class LocalStrategy(enum.Enum):
+        SYMLINK = 1
+        COPY = 2
+        COPY_SKIP_CACHE = 3
+        NO_LINK = 4
+
+    return types.SimpleNamespace(FetchConfig=FetchConfig, LocalStrategy=LocalStrategy)
+
+
+def _ecapa_dir(
+    root: pathlib.Path, manifest: str = "pretrained_path: speechbrain/spkrec-ecapa-voxceleb\n"
+) -> pathlib.Path:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "hyperparams.yaml").write_text(manifest)
+    (root / "embedding_model.ckpt").write_bytes(b"x")
+    return root
+
+
+class _FakeClassifier:
+    calls: list[dict[str, Any]] = []
+
+    @classmethod
+    def from_hparams(cls, **kwargs: Any) -> "_FakeClassifier":
+        cls.calls.append(kwargs)
+        return cls()
+
+
+@pytest.mark.usefixtures("offline_env")
+def test_ecapa_from_hparams_gets_no_network_fetch_config(tmp_path: pathlib.Path) -> None:
+    from nexa_ml.speaker_slot import EcapaEncoder
+
+    local = _ecapa_dir(tmp_path / "cache")
+    _FakeClassifier.calls = []
+    api = types.SimpleNamespace(EncoderClassifier=_FakeClassifier, fetching=_fake_fetching())
+    EcapaEncoder("speechbrain/spkrec-ecapa-voxceleb", "cuda:0", str(local), speechbrain_api=api)
+    (kwargs,) = _FakeClassifier.calls
+    assert kwargs["fetch_config"].allow_network is False
+    assert kwargs["local_strategy"].name == "NO_LINK"
+    assert kwargs["overrides"] == {"pretrained_path": str(local)}
+    assert kwargs["source"] == str(local) and kwargs["run_opts"] == {"device": "cuda:0"}
+
+
+@pytest.mark.usefixtures("offline_env")
+@pytest.mark.parametrize(
+    "manifest",
+    [
+        "pretrained_path: https://evil.example/ecapa\n",
+        "paths:\n  embedding_model: http://10.0.0.9/embedding_model.ckpt\n",
+        "pretrained_path: s3://bucket/ecapa\n",
+    ],
+)
+def test_ecapa_remote_uri_in_manifest_rejected_before_from_hparams(
+    tmp_path: pathlib.Path, manifest: str
+) -> None:
+    from nexa_ml.speaker_slot import EcapaEncoder
+
+    local = _ecapa_dir(tmp_path / "cache", manifest)
+    _FakeClassifier.calls = []
+    api = types.SimpleNamespace(EncoderClassifier=_FakeClassifier, fetching=_fake_fetching())
+    with pytest.raises(OfflineViolationError):
+        EcapaEncoder("speechbrain/spkrec-ecapa-voxceleb", "cuda:0", str(local), speechbrain_api=api)
+    assert _FakeClassifier.calls == []
+
+
+@pytest.mark.usefixtures("offline_env")
+def test_ecapa_fails_closed_without_fetch_config_support(tmp_path: pathlib.Path) -> None:
+    from nexa_ml.speaker_slot import EcapaEncoder
+
+    local = _ecapa_dir(tmp_path / "cache")
+    _FakeClassifier.calls = []
+    api = types.SimpleNamespace(EncoderClassifier=_FakeClassifier, fetching=types.SimpleNamespace())
+    with pytest.raises(OfflineViolationError):
+        EcapaEncoder("speechbrain/spkrec-ecapa-voxceleb", "cuda:0", str(local), speechbrain_api=api)
+    assert _FakeClassifier.calls == []
+
+
+def test_ecapa_online_mode_passes_plain_kwargs(tmp_path: pathlib.Path) -> None:
+    from nexa_ml.speaker_slot import from_hparams_kwargs
+
+    kwargs = from_hparams_kwargs(
+        "speechbrain/x", str(tmp_path), "cpu", offline=False, fetching=_fake_fetching()
+    )
+    assert set(kwargs) == {"source", "savedir", "run_opts"}
