@@ -285,11 +285,14 @@ impl Brain {
         }
     }
 
-    /// Advance due timers, shared notices, and existing routine runs using the injected clock.
+    /// Advance due timers, shared notices, and routine runs using the injected clock.
     pub async fn poll_household(&self) -> Result<(), Status> {
+        let clock = Arc::clone(&self.clock);
         let (timers, runs, delivered) = self
             .household
-            .call(|db| {
+            .call(move |db| {
+                // The running snapshot already includes newly claimed active occurrences.
+                db.poll_due_scheduled_routines(clock.now())?;
                 Ok((
                     db.complete_due_timers()?,
                     db.running_routines()?,

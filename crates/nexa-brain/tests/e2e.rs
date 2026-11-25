@@ -1,3 +1,5 @@
+#[path = "e2e/pre_release.rs"]
+mod pre_release;
 mod support;
 
 use std::{os::unix::fs::PermissionsExt, time::Duration};

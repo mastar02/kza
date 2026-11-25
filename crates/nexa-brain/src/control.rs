@@ -17,8 +17,11 @@ use nexa_household::{
     HomeAction,
     alerts::{Alert, AlertId, AlertPreferences, AlertPriority},
     lists::{ItemId, ListId, ListSnapshot},
-    reminders::{Reminder, ReminderId, ReminderState},
-    routines::{Occurrence, Routine, RoutineId, RoutineSpec, RoutineStep, RunClaim, RunState},
+    reminders::{NoticeState, Reminder, ReminderId, ReminderState, ReminderUpdate},
+    routines::{
+        Occurrence, Routine, RoutineId, RoutineSchedule, RoutineSpec, RoutineStep, RunClaim,
+        RunState, ScheduledRoutineSpec,
+    },
 };
 use nexa_proto::v1::{
     self as v1, Permission as P, Role,
@@ -165,7 +168,7 @@ impl Control {
             .ok_or_else(|| Status::unavailable("memory service unavailable"))
     }
 
-    fn routine_spec(&self, value: &str) -> Result<RoutineSpec, Status> {
+    fn routine_spec(&self, value: &str) -> Result<ScheduledRoutineSpec, Status> {
         let payload: RoutinePayload = parse_json(value)?;
         let spec = RoutineSpec {
             name: payload.name,
@@ -194,7 +197,22 @@ impl Control {
                 RoutineStep::Delay { .. } => {}
             }
         }
-        Ok(spec)
+        if let Some(RoutineSchedule::Daily {
+            hour,
+            minute,
+            timezone,
+            days,
+        }) = &payload.schedule
+            && (chrono::NaiveTime::from_hms_opt(*hour, *minute, 0).is_none()
+                || timezone.parse::<chrono_tz::Tz>().is_err()
+                || days.iter().any(|day| !(1..=7).contains(day)))
+        {
+            return Err(Status::invalid_argument("invalid daily routine schedule"));
+        }
+        Ok(ScheduledRoutineSpec {
+            spec,
+            schedule: payload.schedule,
+        })
     }
 
     fn alert_zones(&self, config: AlertPreferences) -> v1::AlertZonesConfig {
@@ -285,8 +303,7 @@ impl BrainControlService for Control {
                 priority: endpoint.priority,
                 in_cooldown: during,
                 cooldown_until_unix_ms: until,
-                // The router exposes cooldown duration but not the internal error streak.
-                consecutive_errors: 0,
+                consecutive_errors: self.0.llm.consecutive_errors(&endpoint.id).await,
             });
         }
         ok(v1::LlmEndpointsSnapshot { endpoints })
@@ -432,7 +449,7 @@ impl BrainControlService for Control {
         match self.routine_spec(&request.spec_json) {
             Ok(spec) => ok(v1::RoutinePreviewResponse {
                 valid: true,
-                preview_json: routine_json(&spec),
+                preview_json: routine_json(&spec.spec, spec.schedule.as_ref()),
                 errors: Vec::new(),
             }),
             Err(error) => ok(v1::RoutinePreviewResponse {
@@ -451,6 +468,7 @@ impl BrainControlService for Control {
         let actor = authorize(request.actor.as_ref(), &[P::RoutinesManage])?;
         let spec = self.routine_spec(&request.spec_json)?;
         if spec
+            .spec
             .steps
             .iter()
             .any(|step| matches!(step, RoutineStep::Home { .. }))
@@ -467,19 +485,31 @@ impl BrainControlService for Control {
             .0
             .household
             .call(move |db| match id {
-                None if expected == 0 => db.create_routine(&spec),
+                None if expected == 0 => db.create_scheduled_routine(&spec),
                 None => Err(nexa_household::Error::Conflict(
                     "new routine cannot have a revision",
                 )),
-                Some(id) => db
-                    .update_routine(id, expected, &spec)?
-                    .ok_or(nexa_household::Error::Conflict("routine revision changed")),
+                Some(id) => {
+                    let conflict = || nexa_household::Error::Conflict("routine revision changed");
+                    let current = db
+                        .routine(id)?
+                        .filter(|current| current.revision == expected)
+                        .ok_or_else(conflict)?;
+                    let updated = if current.spec.enabled != spec.spec.enabled
+                        && current.spec.name == spec.spec.name
+                        && current.spec.steps == spec.spec.steps
+                        && current.schedule == spec.schedule
+                    {
+                        db.set_routine_enabled(id, expected, spec.spec.enabled)?
+                    } else {
+                        db.update_scheduled_routine(id, expected, &spec)?
+                    };
+                    updated.ok_or_else(conflict)
+                }
             })
             .await
             .map_err(household_status)?;
-        let mut result = routine_record(routine)?;
-        result.updated_at_unix_ms = self.0.now();
-        ok(result)
+        ok(routine_record(routine)?)
     }
 
     async fn delete_routine(&self, request: Request<v1::DeleteRoutineRequest>) -> Reply<v1::Empty> {
@@ -675,21 +705,20 @@ impl BrainControlService for Control {
         } else {
             None
         };
-        if request.include_completed {
-            return Err(Status::unimplemented(
-                "household store exposes only pending reminder listings",
-            ));
-        }
+        let include_completed = request.include_completed;
         let reminders = self
             .0
             .household
             .call(move |db| {
-                let mut reminders = db.pending_reminders(None)?;
+                let mut reminders = db.list_reminders_all(None, include_completed)?;
                 if let Some(owner) = owner {
-                    reminders.extend(db.pending_reminders(Some(&owner))?);
+                    reminders.extend(db.list_reminders_all(Some(&owner), include_completed)?);
                 }
                 reminders.sort_by_key(|reminder| (reminder.due_at, reminder.id.0));
-                Ok(reminders.into_iter().map(reminder_record).collect())
+                reminders
+                    .into_iter()
+                    .map(|reminder| reminder_record(db, reminder))
+                    .collect()
             })
             .await
             .map_err(household_status)?;
@@ -707,78 +736,134 @@ impl BrainControlService for Control {
         } else {
             &request.payload_json
         })?;
-        let owner = if body.personal {
+        let operation = request.operation.as_str();
+        let scope = body.is_personal()?;
+        let owner = if scope.unwrap_or(body.text.is_some()) {
             Some(personal(actor)?)
         } else {
             None
         };
-        let value = match request.operation.as_str() {
-            "create" => {
-                if request.expected_revision != 0
-                    || !request.reminder_id.is_empty()
-                    || !self.0.zone(&body.room)
-                {
+        let raw_id = body.reminder_id.as_deref().unwrap_or(&request.reminder_id);
+        if !request.reminder_id.is_empty() && raw_id != request.reminder_id {
+            return Err(Status::invalid_argument("conflicting reminder IDs"));
+        }
+        let raw_revision = body.expected_revision.unwrap_or(request.expected_revision);
+        if request.expected_revision != 0 && raw_revision != request.expected_revision {
+            return Err(Status::invalid_argument("conflicting reminder revisions"));
+        }
+        let expected = revision(raw_revision)?;
+        let due = body.due_at()?;
+        let record = match operation {
+            "create" | "update" => {
+                let reminder_id = if operation == "create" {
+                    if expected != 0 || !raw_id.is_empty() {
+                        return Err(Status::invalid_argument(
+                            "invalid new reminder ID or revision",
+                        ));
+                    }
+                    None
+                } else {
+                    Some(ReminderId(id(raw_id)?))
+                };
+                if body.recurrence.is_some() {
                     return Err(Status::invalid_argument(
-                        "invalid new reminder ID, revision or room",
+                        "recurring reminders are unsupported",
                     ));
                 }
-                let due = body
-                    .due_at_unix_ms
-                    .filter(|value| *value > 0)
-                    .ok_or_else(|| Status::invalid_argument("a due date is required"))?;
-                if !body.actions.is_empty() {
+                let message = match (body.title, body.text) {
+                    (Some(_), Some(_)) => {
+                        return Err(Status::invalid_argument("conflicting reminder titles"));
+                    }
+                    (title, text) => title.or(text).unwrap_or_default(),
+                };
+                let room = body
+                    .room
+                    .or_else(|| {
+                        body.trigger_at.as_ref()?;
+                        self.0
+                            .room_for_zone(&self.0.config.core.household.default_output_zone)
+                            .map(str::to_owned)
+                    })
+                    .filter(|room| self.0.zone(room))
+                    .ok_or_else(|| Status::invalid_argument("invalid reminder room"))?;
+                let due_at =
+                    due.ok_or_else(|| Status::invalid_argument("a due date is required"))?;
+                let actions = body
+                    .actions
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(ReminderHomeAction::into_action)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !actions.is_empty() {
                     authorize(Some(actor), &[P::HomeControl])?;
-                    for action in &body.actions {
+                    for action in &actions {
                         self.0.allow_home(&scheduled_action(action)?)?;
                     }
                 }
                 self.0
                     .household
                     .call(move |db| {
-                        db.create_reminder(
-                            &body.title,
-                            owner.as_deref(),
-                            &body.room,
-                            due,
-                            &body.actions,
-                        )
+                        let owner = owner.as_deref();
+                        let reminder = if let Some(id) = reminder_id {
+                            db.update_reminder(
+                                id,
+                                owner,
+                                expected,
+                                &ReminderUpdate {
+                                    message: &message,
+                                    room: &room,
+                                    due_at,
+                                    actions: &actions,
+                                },
+                            )?
+                        } else {
+                            db.create_reminder(&message, owner, &room, due_at, &actions)?
+                        };
+                        reminder_record(db, reminder)
                     })
                     .await
-                    .map_err(household_status)?
             }
             "cancel" | "dismiss_notice" => {
-                let id = ReminderId(id(&request.reminder_id)?);
-                let operation = request.operation;
-                let expected = request.expected_revision;
+                let id = ReminderId(id(raw_id)?);
+                let cancel = operation == "cancel";
+                // The web DELETE route supplies only an ID and revision. An
+                // unscoped request may cancel a shared or the actor's own row.
+                let own_cancel = (cancel && scope.is_none() && has(actor, P::TasksPersonal))
+                    .then(|| actor.user_id.clone());
                 self.0
                     .household
                     .call(move |db| {
                         use nexa_household::Error;
                         let owner = owner.as_deref();
-                        let record = db.reminder(id, owner)?.ok_or(Error::NotFound("reminder"))?;
-                        if reminder_revision(&record) != expected {
+                        let record = match (db.reminder(id, owner)?, own_cancel.as_deref()) {
+                            (None, Some(own)) => db.reminder(id, Some(own))?,
+                            (record, _) => record,
+                        }
+                        .ok_or(Error::NotFound("reminder"))?;
+                        if record.revision != expected {
                             return Err(Error::Conflict("reminder revision changed"));
                         }
-                        if operation == "cancel" {
+                        let owner = record.owner.as_deref();
+                        if cancel {
                             if !db.cancel_reminder(id, owner)? {
                                 return Err(Error::Conflict("reminder cannot be cancelled"));
                             }
-                        } else if owner.is_some() || !db.dismiss_reminder_notice(id)? {
+                        } else if owner.is_some()
+                            || due.is_some_and(|due| due != record.due_at)
+                            || !db.dismiss_reminder_notice(id)?
+                        {
                             return Err(Error::Conflict("notice cannot be dismissed"));
                         }
-                        db.reminder(id, owner)?.ok_or(Error::NotFound("reminder"))
+                        let reminder =
+                            db.reminder(id, owner)?.ok_or(Error::NotFound("reminder"))?;
+                        reminder_record(db, reminder)
                     })
                     .await
-                    .map_err(household_status)?
-            }
-            "update" => {
-                return Err(Status::unimplemented(
-                    "household store does not support reminder updates",
-                ));
             }
             _ => return Err(Status::invalid_argument("unknown reminder operation")),
-        };
-        ok(reminder_record(value))
+        }
+        .map_err(household_status)?;
+        ok(record)
     }
 
     async fn list_alerts(&self, request: Request<v1::ActorRequest>) -> Reply<v1::AlertsSnapshot> {
@@ -928,8 +1013,9 @@ impl BrainControlService for Control {
         let mut request = request.into_inner();
         let needed: &[_] = match request.view.as_str() {
             "summary" | "facts" | "proposals" => &[P::MemoryRead],
-            "returned" | "owners_counts" => &[P::MemoryRead, P::MemoryAssign],
+            "returned" | "owners_counts" | "voice_consents" => &[P::MemoryRead, P::MemoryAssign],
             "mine" => &[P::MemoryOwnRead],
+            "voice_mine" => &[P::MemoryOwnVoice],
             _ => {
                 authorize(request.actor.as_ref(), &[P::MemoryRead])?;
                 return Err(Status::invalid_argument("unknown memory view"));
@@ -948,8 +1034,15 @@ impl BrainControlService for Control {
         authorize(request.actor.as_ref(), &[])?;
         let needed: &[_] = match request.operation.as_str() {
             "assign_owner" | "reopen_voice_consent" => &[P::MemoryAssign],
-            "confirm_proposal" | "reject_proposal" | "return_fact" => &[P::MemoryReview],
+            "confirm_proposal" | "reject_proposal" => &[P::MemoryReview],
+            "return_fact" => &[P::MemoryOwnWrite],
             "resume_attribution" => &[P::MemoryAssign, P::VoicesReview, P::AdminManage],
+            "voice_consent_grant" | "voice_consent_revoke" | "voice_verification" => {
+                &[P::MemoryOwnVoice]
+            }
+            "confirm_voice_profile" | "delete_voice_profile" | "correct_voice_group" => {
+                &[P::VoicesReview]
+            }
             "erase_conversation" => &[P::ConversationsRead, P::AdminManage],
             _ => return Err(Status::invalid_argument("unknown memory operation")),
         };
@@ -1032,7 +1125,22 @@ impl BrainControlService for Control {
         request: Request<v1::ActorRequest>,
     ) -> Reply<v1::ListSyncResponse> {
         authorize(request.into_inner().actor.as_ref(), &[P::TasksWrite])?;
-        Err(Status::unimplemented("sync_household_lists pending"))
+        let lists = self
+            .0
+            .household
+            .call(|db| db.lists(None))
+            .await
+            .map_err(household_status)?;
+        let configured = lists.iter().any(|list| list.ha_entity.is_some());
+        ok(v1::ListSyncResponse {
+            payload_json: json!({
+                "lists": lists.len(),
+                "synced": 0,
+                "ha_todo_configured": configured,
+                "status": if configured { "adapter_unavailable" } else { "not_configured" },
+            })
+            .to_string(),
+        })
     }
 
     async fn list_reminder_notices(
@@ -1040,7 +1148,36 @@ impl BrainControlService for Control {
         request: Request<v1::ActorRequest>,
     ) -> Reply<v1::ReminderNoticesResponse> {
         authorize(request.into_inner().actor.as_ref(), &[P::TasksRead])?;
-        Err(Status::unimplemented("list_reminder_notices pending"))
+        // Household only creates delivery notices for shared reminders.
+        let notices = self
+            .0
+            .household
+            .call(|db| db.list_reminder_notices(None))
+            .await
+            .map_err(household_status)?;
+        let notices: Vec<_> = notices
+            .into_iter()
+            .map(|notice| {
+                let state = match notice.receipt.state {
+                    NoticeState::Pending => "pending",
+                    NoticeState::Claimed => "claimed",
+                    NoticeState::Delivered => "delivered",
+                    NoticeState::Dismissed => "dismissed",
+                    NoticeState::Uncertain => "uncertain",
+                    NoticeState::Cancelled => "cancelled",
+                    NoticeState::Parked => "parked",
+                };
+                json!({
+                    "reminder_id": notice.reminder.0.to_string(),
+                    "state": state,
+                    "attempts": notice.receipt.attempts,
+                    "next_attempt_at_unix_ms": notice.receipt.next_attempt_at,
+                })
+            })
+            .collect();
+        ok(v1::ReminderNoticesResponse {
+            payload_json: json!({ "notices": notices }).to_string(),
+        })
     }
 
     async fn get_reminder_status(
@@ -1048,7 +1185,16 @@ impl BrainControlService for Control {
         request: Request<v1::ActorRequest>,
     ) -> Reply<v1::ReminderStatusResponse> {
         authorize(request.into_inner().actor.as_ref(), &[P::DiagnosticsRead])?;
-        Err(Status::unimplemented("get_reminder_status pending"))
+        let status = self
+            .0
+            .household
+            .call(|db| db.reminder_status())
+            .await
+            .map_err(household_status)?;
+        ok(v1::ReminderStatusResponse {
+            payload_json: serde_json::to_string(&status)
+                .map_err(|_| Status::internal("could not encode reminder status"))?,
+        })
     }
 }
 
@@ -1058,10 +1204,15 @@ struct RoutinePayload {
     name: String,
     enabled: bool,
     steps: Vec<RoutineStep>,
+    schedule: Option<RoutineSchedule>,
 }
 
-fn routine_json(spec: &RoutineSpec) -> String {
-    json!({"name": spec.name, "enabled": spec.enabled, "steps": spec.steps}).to_string()
+fn routine_json(spec: &RoutineSpec, schedule: Option<&RoutineSchedule>) -> String {
+    let mut value = json!({"name": spec.name, "enabled": spec.enabled, "steps": spec.steps});
+    if let Some(schedule) = schedule {
+        value["schedule"] = json!(schedule);
+    }
+    value.to_string()
 }
 
 fn routine_record(routine: Routine) -> Result<v1::RoutineRecord, Status> {
@@ -1070,9 +1221,13 @@ fn routine_record(routine: Routine) -> Result<v1::RoutineRecord, Status> {
         name: routine.spec.name.clone(),
         enabled: routine.spec.enabled,
         revision: unsigned(routine.revision),
-        spec_json: routine_json(&routine.spec),
-        updated_at_unix_ms: 0,
-        schedule_json: String::new(),
+        spec_json: routine_json(&routine.spec, routine.schedule.as_ref()),
+        updated_at_unix_ms: unsigned(routine.updated_at_ms),
+        schedule_json: routine
+            .schedule
+            .as_ref()
+            .map(|schedule| json!(schedule).to_string())
+            .unwrap_or_default(),
     })
 }
 
@@ -1108,37 +1263,141 @@ fn list_record(snapshot: ListSnapshot) -> v1::HouseholdListRecord {
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct ReminderPayload {
-    personal: bool,
-    title: String,
-    #[serde(alias = "room_id")]
-    room: String,
+    personal: Option<bool>,
+    scope: Option<ReminderScope>,
+    title: Option<String>,
+    text: Option<String>,
+    #[serde(alias = "room_id", alias = "delivery_room")]
+    room: Option<String>,
     due_at_unix_ms: Option<i64>,
-    actions: Vec<HomeAction>,
+    trigger_at: Option<serde_json::Number>,
+    #[serde(alias = "ha_actions")]
+    actions: Option<Vec<ReminderHomeAction>>,
+    recurrence: Option<String>,
+    expected_revision: Option<u64>,
+    reminder_id: Option<String>,
 }
 
-fn reminder_revision(value: &Reminder) -> u64 {
-    if value.state == ReminderState::Pending {
-        1
-    } else {
-        2
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReminderScope {
+    Private,
+    Shared,
+}
+
+impl ReminderPayload {
+    fn is_personal(&self) -> Result<Option<bool>, Status> {
+        let scope = self
+            .scope
+            .as_ref()
+            .map(|scope| matches!(scope, ReminderScope::Private));
+        if let (Some(personal), Some(scope)) = (self.personal, scope)
+            && personal != scope
+        {
+            return Err(Status::invalid_argument("conflicting reminder scopes"));
+        }
+        Ok(self.personal.or(scope))
+    }
+
+    fn due_at(&self) -> Result<Option<i64>, Status> {
+        let invalid_due = || Status::invalid_argument("invalid reminder due date");
+        match (self.due_at_unix_ms, &self.trigger_at) {
+            (None, None) => Ok(None),
+            (Some(ms), None) if ms > 0 => Ok(Some(ms)),
+            (None, Some(timestamp)) => {
+                // Contemporary Unix seconds have fewer than twelve digits.
+                const MILLIS_THRESHOLD: i64 = 100_000_000_000;
+                if let Some(ms) = timestamp.as_i64().filter(|ms| *ms >= MILLIS_THRESHOLD) {
+                    return Ok(Some(ms));
+                }
+                let time = timestamp.as_f64().ok_or_else(invalid_due)?;
+                let millis = if time < MILLIS_THRESHOLD as f64 {
+                    time * 1000.0
+                } else {
+                    time
+                }
+                .round();
+                if !(1.0..(i64::MAX as f64)).contains(&millis) {
+                    return Err(invalid_due());
+                }
+                Ok(Some(millis as i64))
+            }
+            _ => Err(invalid_due()),
+        }
     }
 }
 
-fn reminder_record(value: Reminder) -> v1::ReminderRecord {
-    let (status, revision) = match value.state {
-        ReminderState::Pending => ("pending", 1),
-        ReminderState::Completed => ("completed", 2),
-        ReminderState::Cancelled => ("cancelled", 2),
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReminderHomeAction {
+    domain: Option<String>,
+    service: String,
+    entity_id: String,
+    data: Option<serde_json::Map<String, Value>>,
+}
+
+impl ReminderHomeAction {
+    fn into_action(self) -> Result<HomeAction, Status> {
+        let service = match self.domain {
+            Some(domain)
+                if !domain.is_empty() && !domain.contains('.') && !self.service.contains('.') =>
+            {
+                format!("{domain}.{}", self.service)
+            }
+            Some(_) => {
+                return Err(Status::invalid_argument(
+                    "invalid reminder action domain or service",
+                ));
+            }
+            None => self.service,
+        };
+        Ok(HomeAction {
+            service,
+            entity_id: self.entity_id,
+            data: self.data.unwrap_or_default(),
+        })
+    }
+}
+
+fn reminder_record(
+    db: &nexa_household::Household<Arc<dyn crate::BrainClock>>,
+    value: Reminder,
+) -> nexa_household::Result<v1::ReminderRecord> {
+    let status = match value.state {
+        ReminderState::Pending => "pending",
+        ReminderState::Completed => "completed",
+        ReminderState::Cancelled => "cancelled",
     };
-    v1::ReminderRecord {
+    let mut payload = json!({"room_id": value.room, "delivery_room": value.room});
+    if value.owner.is_none() {
+        let actions: Vec<_> = db
+            .reminder_actions(value.id)?
+            .into_iter()
+            .map(|action| {
+                let command = action.command;
+                let (domain, service) = command.service.split_once('.').unwrap_or_else(|| {
+                    let domain = command
+                        .entity_id
+                        .split_once('.')
+                        .map_or("", |(domain, _)| domain);
+                    (domain, &command.service)
+                });
+                json!({"domain": domain, "service": service, "entity_id": command.entity_id})
+            })
+            .collect();
+        if !actions.is_empty() {
+            payload["ha_actions"] = json!(actions);
+        }
+    }
+    Ok(v1::ReminderRecord {
         reminder_id: value.id.0.to_string(),
         owner_user_id: value.owner.unwrap_or_default(),
         title: value.message,
         status: status.into(),
         due_at_unix_ms: unsigned(value.due_at),
-        revision,
-        payload_json: json!({"room_id": value.room}).to_string(),
-    }
+        revision: unsigned(value.revision),
+        payload_json: payload.to_string(),
+    })
 }
 
 fn alert_record(value: Alert) -> v1::AlertRecord {

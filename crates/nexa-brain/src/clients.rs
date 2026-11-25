@@ -229,6 +229,83 @@ pub struct UdsMemory(pub MemoryServiceClient<Channel>);
 
 #[tonic::async_trait]
 impl MemoryClient for UdsMemory {
+    async fn overview(
+        &self,
+        request: v1::MemoryOverviewRequest,
+    ) -> Result<v1::MemoryOverviewResponse, Status> {
+        self.0
+            .clone()
+            .list_memory_overview(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn mutate(
+        &self,
+        request: v1::MemoryMutationRequest,
+    ) -> Result<v1::MemoryMutationResponse, Status> {
+        self.0
+            .clone()
+            .mutate_memory_item(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn voice_switch(
+        &self,
+        request: v1::ActorRequest,
+    ) -> Result<v1::VoiceGlobalSwitchStatus, Status> {
+        self.0
+            .clone()
+            .get_voice_global_switch(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn set_voice_switch(
+        &self,
+        request: v1::SetVoiceGlobalSwitchRequest,
+    ) -> Result<v1::VoiceGlobalSwitchStatus, Status> {
+        self.0
+            .clone()
+            .set_voice_global_switch(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn review_capture(
+        &self,
+        request: v1::VoiceCaptureReviewRequest,
+    ) -> Result<v1::VoiceCaptureReviewResponse, Status> {
+        self.0
+            .clone()
+            .get_voice_capture_review(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn query_captures(
+        &self,
+        request: v1::VoiceCaptureQueryRequest,
+    ) -> Result<v1::VoiceCaptureQueryResponse, Status> {
+        self.0
+            .clone()
+            .query_voice_captures(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn evaluation_sample(
+        &self,
+        request: v1::EvaluationSampleRequest,
+    ) -> Result<v1::EvaluationSampleResponse, Status> {
+        self.0
+            .clone()
+            .get_evaluation_sample(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
     async fn erase_conversation(
         &self,
         request: v1::EraseConversationRequest,
