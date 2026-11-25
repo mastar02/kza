@@ -15,6 +15,23 @@ nexa-household.workspace = true
 nexa-llm.workspace = true
 nexa-nlu.workspace = true
 nexa-proto.workspace = true
-tokio.workspace = true
+prost.workspace = true
+async-stream = "0.3"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+chrono-tz = "0.10"
+futures-util = "0.3"
+hyper-util = { version = "0.1", features = ["tokio"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustix = { version = "1", features = ["fs", "process"] }
+serde.workspace = true
+serde_json = "1"
+tokio = { workspace = true, features = ["fs"] }
+tokio-stream = { version = "0.1", features = ["net", "sync"] }
+tonic.workspace = true
+tower = { version = "0.4", features = ["util"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
+wiremock = "0.6"

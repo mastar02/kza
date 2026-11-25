@@ -1,0 +1,369 @@
+//! Voice orchestration and the local Nexa control plane.
+
+pub mod clients;
+pub mod control;
+pub mod events;
+mod home;
+pub mod notify;
+pub mod pipeline;
+mod tasks;
+
+use std::{
+    fmt::Debug,
+    io,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
+use nexa_config::LoadedBundle;
+use nexa_ha::{ControlPolicy, ControlService, HaClient};
+use nexa_household::{Clock, HouseholdWorker, reminders::ReminderPolicy};
+use nexa_llm::{CancellationToken, Endpoint, FailoverRouter};
+use nexa_nlu::{
+    RouterEngine, gate::GateSettings, household::HouseholdIntentSettings,
+    router_engine::RouterSettings,
+};
+use nexa_proto::v1::{CloudConsentStatus, LiveEventKind};
+use serde_json::json;
+use tonic::Status;
+
+use clients::{AudioClient, MemoryClient, MlClient};
+use events::Events;
+use home::Home;
+
+pub type BrainError = Box<dyn std::error::Error + Send + Sync>;
+type Worker = HouseholdWorker<Arc<dyn BrainClock>>;
+
+#[derive(Debug)]
+pub struct Dependencies {
+    pub audio: Arc<dyn AudioClient>,
+    pub ml: Arc<dyn MlClient>,
+    pub memory: Option<Arc<dyn MemoryClient>>,
+    pub home: Option<HomeDependencies>,
+    pub clock: Arc<dyn BrainClock>,
+}
+
+/// A clock shared by the voice router, control plane, and household database.
+pub trait BrainClock: Clock + Debug {}
+impl<T: Clock + Debug> BrainClock for T {}
+
+/// Keep the process lock for as long as any blocking database operation can run.
+#[derive(Debug)]
+struct LockedClock {
+    clock: Arc<dyn BrainClock>,
+    _owner: std::fs::File,
+}
+
+impl Clock for LockedClock {
+    fn now(&self) -> i64 {
+        self.clock.now()
+    }
+
+    fn monotonic(&self) -> Duration {
+        self.clock.monotonic()
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct HomeDependencies {
+    pub client: HaClient,
+    pub control: ControlService,
+    forecast: ForecastReader,
+}
+
+#[derive(Clone)]
+struct ForecastReader {
+    client: reqwest::Client,
+    url: reqwest::Url,
+    token: reqwest::header::HeaderValue,
+}
+
+impl Debug for ForecastReader {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ForecastReader").finish_non_exhaustive()
+    }
+}
+
+impl HomeDependencies {
+    pub fn new(bundle: &LoadedBundle, token: &str) -> Result<Self, BrainError> {
+        let config = &bundle.core.home_assistant;
+        let client = HaClient::new(config, token)?;
+        let control = ControlService::new(
+            client.clone(),
+            ControlPolicy::new(bundle.ha_controls.clone()),
+        );
+        let mut url = reqwest::Url::parse(&config.url)?;
+        url.path_segments_mut()
+            .map_err(|()| io::Error::other("invalid HA path"))?
+            .pop_if_empty()
+            .extend(["api", "services", "weather", "get_forecasts"]);
+        url.set_query(Some("return_response=true"));
+        let mut token = reqwest::header::HeaderValue::from_str(&format!("Bearer {token}"))?;
+        token.set_sensitive(true);
+        let forecast = ForecastReader {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_millis(config.timeout_ms))
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
+            url,
+            token,
+        };
+        Ok(Self {
+            client,
+            control,
+            forecast,
+        })
+    }
+}
+
+#[derive(Debug)]
+pub struct Brain {
+    config: LoadedBundle,
+    audio: Arc<dyn AudioClient>,
+    ml: Arc<dyn MlClient>,
+    memory: Option<Arc<dyn MemoryClient>>,
+    clock: Arc<dyn BrainClock>,
+    quiet: std::sync::Mutex<std::collections::HashSet<String>>,
+    started: Instant,
+    household: Worker,
+    llm: FailoverRouter,
+    endpoints: [Endpoint; 2],
+    consent_file: PathBuf,
+    consent: tokio::sync::Mutex<u64>,
+    router: RouterEngine,
+    timezone: chrono_tz::Tz,
+    home: Home,
+    pub events: Events,
+    shutdown: CancellationToken,
+    active: pipeline::ActiveTurns,
+}
+
+impl Brain {
+    /// Prepare local engines and open the household store exactly once.
+    pub async fn open(config: LoadedBundle, deps: Dependencies) -> Result<Arc<Self>, BrainError> {
+        let timezone = config.core.household.timezone.parse()?;
+        let data = &config.core.paths.data_dir;
+        let household_dir = data.join("household");
+        tokio::fs::create_dir_all(&household_dir).await?;
+        let lock_path = household_dir.join("owner.lock");
+        let household_lock = tokio::task::spawn_blocking(move || {
+            use std::os::unix::fs::OpenOptionsExt;
+            let lock = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(lock_path)?;
+            rustix::fs::flock(&lock, rustix::fs::FlockOperation::NonBlockingLockExclusive)?;
+            Ok::<_, io::Error>(lock)
+        })
+        .await??;
+        let consent_file = data.join("cloud-consent-withdrawn");
+        let withdrawal = match tokio::fs::read_to_string(&consent_file).await {
+            Ok(value) => Some(value.trim().parse::<u64>().unwrap_or_default()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        let llm =
+            FailoverRouter::from_config(&config.core.llm, Some(data.join("llm-cooldowns.json")))
+                .await?;
+        if withdrawal.is_some() {
+            llm.consent().withdraw();
+        }
+        let locked_clock = LockedClock {
+            clock: deps.clock.clone(),
+            _owner: household_lock,
+        };
+        let household =
+            HouseholdWorker::open_in(household_dir, Arc::new(locked_clock) as Arc<dyn BrainClock>)
+                .await?;
+        let policy = ReminderPolicy {
+            late_action_grace: Duration::from_secs(
+                config.core.household.late_action_grace_s.into(),
+            ),
+            voice_choice_window: Duration::from_secs(
+                config.core.household.voice_choice_window_s.into(),
+            ),
+            ..ReminderPolicy::default()
+        };
+        household
+            .call(move |db| db.set_reminder_policy(policy))
+            .await?;
+        let nlu = &config.core.nlu;
+        let router = RouterEngine::new(RouterSettings {
+            gate: GateSettings {
+                enforce_confidence: true,
+                enforce_compression_ratio: nlu.enforce_compression_ratio,
+                max_compression_ratio: nlu.max_compression_ratio,
+                ..GateSettings::default()
+            },
+            household: HouseholdIntentSettings {
+                unvetoed_max_words: usize::from(nlu.unvetoed_max_words),
+                compound_max_parts: usize::from(nlu.compound_max_parts),
+                compound_execute: nlu.compound_execute,
+                ..HouseholdIntentSettings::default()
+            },
+            indoor_rooms: config
+                .rooms
+                .rooms
+                .iter()
+                .map(|room| room.name.clone())
+                .collect(),
+            ..RouterSettings::default()
+        });
+        Ok(Arc::new(Self {
+            endpoints: Endpoint::from_config(&config.core.llm),
+            config,
+            audio: deps.audio,
+            ml: deps.ml,
+            memory: deps.memory,
+            clock: deps.clock,
+            quiet: Default::default(),
+            started: Instant::now(),
+            household,
+            llm,
+            consent_file,
+            consent: tokio::sync::Mutex::new(withdrawal.unwrap_or_default()),
+            router,
+            timezone,
+            home: Home::new(deps.home),
+            events: Events::default(),
+            shutdown: CancellationToken::new(),
+            active: pipeline::ActiveTurns::default(),
+        }))
+    }
+
+    /// Run the local voice, state, and housekeeping loops until shutdown.
+    pub async fn run_background(self: Arc<Self>) {
+        tokio::join!(
+            Arc::clone(&self).run_voice(),
+            Arc::clone(&self).run_household(),
+            self.run_home_events(),
+        );
+    }
+
+    pub fn shutdown(&self) {
+        self.shutdown.cancel();
+    }
+
+    pub fn shutdown_token(&self) -> CancellationToken {
+        self.shutdown.clone()
+    }
+
+    pub(crate) fn now(&self) -> u64 {
+        unsigned(self.clock.now())
+    }
+
+    pub(crate) fn event(
+        &self,
+        kind: LiveEventKind,
+        room: &str,
+        turn: &str,
+        payload: serde_json::Value,
+    ) {
+        self.events.publish(kind, room, turn, self.now(), payload);
+    }
+
+    pub(crate) async fn cloud_status(&self) -> CloudConsentStatus {
+        self.cloud_status_at(*self.consent.lock().await)
+    }
+
+    fn cloud_status_at(&self, updated_at_unix_ms: u64) -> CloudConsentStatus {
+        CloudConsentStatus {
+            consent_granted: self.llm.consent().is_allowed(),
+            withdrawn_latched: self.llm.consent().is_withdrawn(),
+            updated_at_unix_ms,
+        }
+    }
+
+    #[allow(
+        clippy::result_large_err,
+        reason = "Returns the Tonic status if the withdrawal could not be persisted"
+    )]
+    pub(crate) async fn withdraw_cloud(self: &Arc<Self>) -> Result<CloudConsentStatus, Status> {
+        // Complete the durable withdrawal even if the client disconnects.
+        let brain = Arc::clone(self);
+        tokio::spawn(async move {
+            let mut timestamp = brain.consent.lock().await;
+            let changed = !brain.llm.consent().is_withdrawn();
+            brain.llm.consent().withdraw();
+            if changed {
+                brain.event(
+                    LiveEventKind::Cooldown,
+                    "",
+                    "",
+                    json!({"event": "cloud_consent_withdrawn"}),
+                );
+            }
+            if *timestamp == 0 || changed {
+                let now = brain.now().max(1);
+                let path = brain.consent_file.clone();
+                tokio::task::spawn_blocking(move || {
+                    use std::io::Write;
+                    use std::os::unix::fs::OpenOptionsExt;
+                    let mut marker = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(false)
+                        .mode(0o600)
+                        .open(&path)?;
+                    marker.write_all(now.to_string().as_bytes())?;
+                    marker.sync_all()?;
+                    if let Some(parent) = path.parent() {
+                        std::fs::File::open(parent)?.sync_all()?;
+                    }
+                    Ok::<_, io::Error>(())
+                })
+                .await
+                .map_err(|_| Status::internal("withdrawal persistence worker failed"))?
+                .map_err(|_| Status::internal("could not persist cloud withdrawal"))?;
+                *timestamp = now;
+            }
+            Ok(brain.cloud_status_at(*timestamp))
+        })
+        .await
+        .map_err(|_| Status::internal("withdrawal worker failed"))?
+    }
+
+    fn output_zone(&self, room: &str) -> String {
+        format!("zone_{room}")
+    }
+
+    fn room_for_zone(&self, zone: &str) -> Option<&str> {
+        self.config
+            .rooms
+            .rooms
+            .iter()
+            .find(|room| zone.strip_prefix("zone_") == Some(room.room_id.as_str()))
+            .map(|room| room.room_id.as_str())
+    }
+
+    pub(crate) fn zone(&self, id: &str) -> bool {
+        self.config
+            .rooms
+            .rooms
+            .iter()
+            .any(|room| room.room_id == id)
+    }
+}
+
+pub(crate) fn unsigned(value: i64) -> u64 {
+    u64::try_from(value).unwrap_or_default()
+}
+
+pub(crate) fn id(prefix: &str) -> String {
+    static SEQUENCE: AtomicU64 = AtomicU64::new(1);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    format!(
+        "{prefix}-{}-{:x}-{:x}",
+        std::process::id(),
+        now.as_nanos(),
+        SEQUENCE.fetch_add(1, Ordering::Relaxed)
+    )
+}
