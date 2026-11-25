@@ -672,3 +672,100 @@ def test_distill_mixed_quotes_backticks_long_preamble_and_same_line_goal(tmp_pat
         assert canary not in sent
     assert "<sha>" in sent
     assert "~3.8s" in sent
+
+
+def test_router_time_to_reset_prioritizes_expiring_pool_offline_and_in_decisions_payload(tmp_path: Path) -> None:
+    import time as _time
+    import kza_quota
+
+    now = _time.time()
+    # Claude has 40% 7d used and resets in 2h (high expiring headroom).
+    # Codex has 40% 7d used and resets in 6 days (burning early -> conserved).
+    c_ev = kza_quota.evaluate_window_quota(10.0, 40.0, five_hour_resets_at=now + 7200, seven_day_resets_at=now + 7200, now=now)
+    x_ev = kza_quota.evaluate_window_quota(10.0, 40.0, five_hour_resets_at=now + 14400, seven_day_resets_at=now + 6 * 86400, now=now)
+
+    snap = {
+        "quota_emergency": False,
+        "eligible_runtimes": ["claude", "codex"],
+        "subscriptions": {
+            "claude": {
+                "weight": c_ev["weight"],
+                "base_weight": c_ev["base_weight"],
+                "reset_urgency": c_ev["reset_urgency"],
+                "pace_delta_pct": c_ev["pace_delta_pct"],
+                "headroom_pct_per_h": c_ev["headroom_pct_per_h"],
+                "excluded": False,
+                "status": "degraded",
+                "five_hour_pct": 10.0,
+                "five_hour_resets_at": now + 7200,
+                "seven_day_pct": 40.0,
+                "seven_day_resets_at": now + 7200,
+                "details": {"selected_account": "claude-1"},
+            },
+            "codex": {
+                "weight": x_ev["weight"],
+                "base_weight": x_ev["base_weight"],
+                "reset_urgency": x_ev["reset_urgency"],
+                "pace_delta_pct": x_ev["pace_delta_pct"],
+                "headroom_pct_per_h": x_ev["headroom_pct_per_h"],
+                "excluded": False,
+                "status": "degraded",
+                "five_hour_pct": 10.0,
+                "five_hour_resets_at": now + 14400,
+                "seven_day_pct": 40.0,
+                "seven_day_resets_at": now + 6 * 86400,
+                "details": {"selected_account": "codex", "selected_cli": "codex"},
+            },
+            "muse": {"weight": 0.0, "excluded": True, "status": "excluded"},
+            "agy": {"weight": 0.0, "excluded": True, "status": "excluded"},
+        },
+    }
+
+    # Offline deterministic routing prefers expiring Claude pool over early-burning Codex pool for kza-dev.
+    dec_offline = kza_router.route_task(
+        role="kza-dev",
+        summary="Implement Rust crate skeleton",
+        complexity="high",
+        offline=True,
+        state_dir=tmp_path,
+        quota_snapshot=snap,
+    )
+    assert dec_offline["runtime"] == "claude"
+    assert dec_offline["quota_urgencies"]["claude:claude-opus-5-5"] > 0.70
+    assert dec_offline["quota_urgencies"]["codex:gpt-6.2-sol"] == 0.0
+
+    # Decisions API payload exposes urg=, pace=, headroom= and tie-breaker favors expiring pool on near-tie.
+    captured: dict = {}
+
+    def _near_tie_api(payload: dict, api_key: str) -> dict:
+        captured.update(payload)
+        return {
+            "model": "gpt-6-luna",
+            "answers": [
+                {
+                    "name": "selected_candidate",
+                    "type": "choice",
+                    "choice": "codex:gpt-6.2-sol",
+                    "probabilities": [
+                        {"value": "codex:gpt-6.2-sol", "probability": 0.51},
+                        {"value": "claude:claude-opus-5-5", "probability": 0.49},
+                    ],
+                },
+                {"name": "task_rigor", "type": "score", "score": 3.0},
+            ],
+            "usage": {"input_tokens": 1350, "cached_tokens": 1024, "output_tokens": 0},
+        }
+
+    dec_api = kza_router.route_task(
+        role="kza-dev",
+        summary="Implement Rust crate skeleton",
+        complexity="high",
+        state_dir=tmp_path,
+        quota_snapshot=snap,
+        api_caller=_near_tie_api,
+        api_key_override="test-key",
+    )
+    assert dec_api["selected_candidate"] == "claude:claude-opus-5-5"
+    assert "urg=" in captured["input"]
+    assert "pace=" in captured["input"]
+    assert "headroom=" in captured["input"]

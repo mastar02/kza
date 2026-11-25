@@ -276,7 +276,10 @@ def test_codex_multi_account_selects_healthier_codex2_and_per_account_throttle(t
     assert codex_sub["excluded"] is False
     assert codex_sub["details"]["selected_account"] == "codex"
     assert codex_sub["details"]["selected_cli"] == "codex"
-    assert 0.85 < codex_sub["weight"] < 0.90
+    # 65% used on a 7d bank resetting in 1h recovers penalty above base_weight and carries high urgency.
+    assert 0.85 < codex_sub["base_weight"] < 0.90
+    assert codex_sub["base_weight"] < codex_sub["weight"] < 1.0
+    assert codex_sub["reset_urgency"] > 0.50
 
 
 def test_claude_empty_env_falls_back_to_claude1_and_empty_arg_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -536,3 +539,127 @@ def test_agy_band_throttled_priority_and_corrupt_telemetry_resilience(
         kza_quota.main(["--help"])
     help_out = capsys.readouterr().out
     assert "Agy pool" in help_out
+
+
+def test_time_to_reset_weighting_conserves_early_burn_and_prioritizes_expiring_quota(tmp_path: Path) -> None:
+    now = 1_800_000_000.0
+
+    # 1. Same 40% 7d usage: pool resetting in 4h (expiring headroom) beats pool resetting in 6d (early burn).
+    expiring = kza_quota.evaluate_window_quota(
+        None, 40.0, seven_day_resets_at=now + 4 * 3600.0, now=now
+    )
+    early_burn = kza_quota.evaluate_window_quota(
+        None, 40.0, seven_day_resets_at=now + 6 * 86400.0, now=now
+    )
+    assert expiring["excluded"] is False and early_burn["excluded"] is False
+    assert expiring["weight"] > expiring["base_weight"]
+    assert early_burn["weight"] < early_burn["base_weight"]
+    assert expiring["weight"] > early_burn["weight"] + 0.10
+    assert expiring["pace_delta_pct"] > 50.0
+    assert early_burn["pace_delta_pct"] < -20.0
+    assert expiring["reset_urgency"] > 0.50
+    assert early_burn["reset_urgency"] == 0.0
+    assert expiring["headroom_pct_per_h"] > early_burn["headroom_pct_per_h"] * 20
+
+    # 2. 5h expiring urgency is suppressed when the 7d bank is strained/over-burning.
+    strained_7d = kza_quota.evaluate_window_quota(
+        30.0,
+        85.0,
+        five_hour_resets_at=now + 1800.0,
+        seven_day_resets_at=now + 5 * 86400.0,
+        now=now,
+    )
+    healthy_7d = kza_quota.evaluate_window_quota(
+        30.0,
+        20.0,
+        five_hour_resets_at=now + 1800.0,
+        seven_day_resets_at=now + 5 * 86400.0,
+        now=now,
+    )
+    assert healthy_7d["reset_urgency"] > 0.40
+    assert strained_7d["reset_urgency"] == 0.0
+
+    # 3. Hard exclusions (>=92% 5h / >=95% 7d) are NEVER bypassed even 5 minutes before reset.
+    hard_5h = kza_quota.evaluate_window_quota(
+        92.0, 10.0, five_hour_resets_at=now + 300.0, seven_day_resets_at=now + 3600.0, now=now
+    )
+    hard_7d = kza_quota.evaluate_window_quota(
+        10.0, 95.0, five_hour_resets_at=now + 300.0, seven_day_resets_at=now + 300.0, now=now
+    )
+    assert hard_5h["excluded"] is True and hard_5h["weight"] == 0.0 and hard_5h["reset_urgency"] == 0.0
+    assert hard_7d["excluded"] is True and hard_7d["weight"] == 0.0 and hard_7d["reset_urgency"] == 0.0
+
+    # 4. Multi-account Codex selection prefers expiring bank (45% used, resets in 4h) over lower-used 6d bank (35%, 6d).
+    d1 = tmp_path / "c1" / "2026" / "11" / "25"
+    d2 = tmp_path / "c2" / "2026" / "11" / "25"
+    d1.mkdir(parents=True)
+    d2.mkdir(parents=True)
+    (d1 / "s1.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": now - 10,
+                "payload": {
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {"used_percent": 45.0, "window_minutes": 10080, "resets_at": now + 4 * 3600.0},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (d2 / "s2.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": now - 10,
+                "payload": {
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {"used_percent": 35.0, "window_minutes": 10080, "resets_at": now + 6 * 86400.0},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    q = kza_quota.probe_codex(sessions_dirs={"codex": tmp_path / "c1", "codex-2": tmp_path / "c2"}, now=now)
+    assert q.details["selected_account"] == "codex"
+    assert q.reset_urgency > 0.50
+
+    # 5. At equal 0% usage, account resetting in 2h beats account resetting in 6d via reset_urgency.
+    (d1 / "s1.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": now - 5,
+                "payload": {
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {"used_percent": 0.0, "window_minutes": 10080, "resets_at": now + 2 * 3600.0},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    (d2 / "s2.jsonl").write_text(
+        json.dumps(
+            {
+                "timestamp": now - 5,
+                "payload": {
+                    "rate_limits": {
+                        "limit_id": "codex",
+                        "primary": {"used_percent": 0.0, "window_minutes": 10080, "resets_at": now + 6 * 86400.0},
+                    }
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    q_tie = kza_quota.probe_codex(sessions_dirs={"codex": tmp_path / "c1", "codex-2": tmp_path / "c2"}, now=now)
+    assert q_tie.details["selected_account"] == "codex"
+    assert q_tie.weight == 1.0
+    assert q_tie.reset_urgency > 0.80

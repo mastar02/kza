@@ -35,6 +35,12 @@ HARD_EXCLUDE_5H_PCT = 92.0
 HARD_EXCLUDE_7D_PCT = 95.0
 AGY_CACHE_TTL_SECONDS = 300.0
 
+WINDOW_5H_SECONDS = 5.0 * 3600.0
+WINDOW_7D_SECONDS = 7.0 * 24.0 * 3600.0
+URGENCY_HORIZON_5H_SECONDS = 1.5 * 3600.0
+URGENCY_HORIZON_7D_SECONDS = 12.0 * 3600.0
+URGENCY_MIN_REMAINING_PCT = 15.0
+
 AGY_BAND_WEIGHTS: dict[str, float] = {
     "high": 1.0,
     "medium": 0.85,
@@ -68,6 +74,10 @@ class SubscriptionQuota:
     five_hour_resets_at: float | None = None
     seven_day_pct: float | None = None
     seven_day_resets_at: float | None = None
+    base_weight: float | None = None
+    reset_urgency: float = 0.0
+    pace_delta_pct: float | None = None
+    headroom_pct_per_h: float | None = None
     throttled_until: float | None = None
     throttle_reason: str | None = None
     source: str = ""
@@ -165,35 +175,209 @@ def _effective_pct(used_pct: float | None, resets_at: float | None, now: float) 
     return max(0.0, min(100.0, used_pct))
 
 
+def _base_window_curve(pct: float | None, limit: float) -> float:
+    """Compute pure usage-percentage weight in [0.15, 1.0] before reset timing adjustments."""
+    if pct is None or pct <= 0.0:
+        return 1.0
+    if pct < PENALTY_START_PCT:
+        return round(1.0 - 0.15 * (pct / PENALTY_START_PCT), 4)
+    span = max(1.0, limit - PENALTY_START_PCT)
+    ratio = min(1.0, (pct - PENALTY_START_PCT) / span)
+    # Smooth progressive decay from 0.85 at 70% down to 0.15 just below limit.
+    return round(max(0.15, 0.85 - 0.70 * (ratio**1.25)), 4)
+
+
+def _evaluate_single_window(
+    pct: float | None,
+    resets_at: float | None,
+    now: float | None,
+    *,
+    limit: float,
+    window_seconds: float,
+    urgency_horizon_seconds: float,
+) -> dict[str, Any]:
+    """Evaluate one quota window (5h or 7d) combining usage percentage with time-to-reset pace."""
+    base_w = _base_window_curve(pct, limit)
+    if pct is None or resets_at is None or now is None:
+        return {
+            "base_weight": base_w,
+            "weight": base_w,
+            "reset_urgency": 0.0,
+            "pace_delta_pct": None,
+            "headroom_pct_per_h": None,
+            "remaining_seconds": None,
+        }
+
+    rem_s = max(0.0, min(window_seconds, resets_at - now))
+    rem_h = rem_s / 3600.0
+    rem_frac = rem_s / window_seconds
+    elapsed_frac = 1.0 - rem_frac
+    remaining_pct = max(0.0, 100.0 - pct)
+    headroom_pct_per_h = round(remaining_pct / max(0.25, rem_h), 2)
+    expected_pace_pct = 100.0 * elapsed_frac
+    pace_delta_pct = round(expected_pace_pct - pct, 2)
+
+    # Adjust base weight by pace vs. remaining time:
+    # - Under-burning (pace_delta > 0): recover part of the usage penalty as reset nears.
+    # - Over-burning (pace_delta < 0): damp weight to conserve banks burning faster than clock.
+    if pct <= 0.0:
+        adj_w = 1.0
+    elif pace_delta_pct > 0.0:
+        penalty = max(0.0, 1.0 - base_w)
+        pace_frac = min(1.0, pace_delta_pct / 60.0)
+        time_frac = elapsed_frac**1.5
+        near_cap = pct >= (limit - 10.0)
+        max_recovery_ratio = 0.35 if near_cap else 0.80
+        recovery = max_recovery_ratio * penalty * (0.45 * pace_frac + 0.55 * time_frac)
+        adj_w = round(min(1.0, base_w + recovery), 4)
+    elif pace_delta_pct < 0.0:
+        overburn = min(1.0, abs(pace_delta_pct) / 60.0)
+        damp = 0.18 * overburn * (0.35 + 0.65 * rem_frac)
+        adj_w = round(max(0.15, base_w - damp), 4)
+    else:
+        adj_w = base_w
+
+    # Use-it-or-lose-it urgency when healthy spare quota is approaching its reset horizon.
+    reset_urgency = 0.0
+    if 0.0 < rem_s <= urgency_horizon_seconds and remaining_pct >= URGENCY_MIN_REMAINING_PCT and pct < (limit - 5.0):
+        proximity = 1.0 - (rem_s / urgency_horizon_seconds)
+        headroom_scale = min(1.0, remaining_pct / 50.0)
+        reset_urgency = round(proximity * headroom_scale, 4)
+
+    return {
+        "base_weight": base_w,
+        "weight": adj_w,
+        "reset_urgency": reset_urgency,
+        "pace_delta_pct": pace_delta_pct,
+        "headroom_pct_per_h": headroom_pct_per_h,
+        "remaining_seconds": round(rem_s, 1),
+    }
+
+
+def evaluate_window_quota(
+    five_hour_pct: float | None,
+    seven_day_pct: float | None,
+    *,
+    five_hour_resets_at: float | None = None,
+    seven_day_resets_at: float | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Compute time-to-reset aware weight, urgency, pace delta, and hard exclusion for 5h/7d windows."""
+    if five_hour_pct is not None and five_hour_pct >= HARD_EXCLUDE_5H_PCT:
+        return {
+            "weight": 0.0,
+            "base_weight": 0.0,
+            "excluded": True,
+            "exclude_reason": f"5h usage {five_hour_pct:.1f}% >= {HARD_EXCLUDE_5H_PCT:.0f}%",
+            "reset_urgency": 0.0,
+            "pace_delta_pct": None,
+            "headroom_pct_per_h": None,
+            "five_hour_pace_delta_pct": None,
+            "seven_day_pace_delta_pct": None,
+        }
+    if seven_day_pct is not None and seven_day_pct >= HARD_EXCLUDE_7D_PCT:
+        return {
+            "weight": 0.0,
+            "base_weight": 0.0,
+            "excluded": True,
+            "exclude_reason": f"7d usage {seven_day_pct:.1f}% >= {HARD_EXCLUDE_7D_PCT:.0f}%",
+            "reset_urgency": 0.0,
+            "pace_delta_pct": None,
+            "headroom_pct_per_h": None,
+            "five_hour_pace_delta_pct": None,
+            "seven_day_pace_delta_pct": None,
+        }
+
+    m5 = _evaluate_single_window(
+        five_hour_pct,
+        five_hour_resets_at,
+        now,
+        limit=HARD_EXCLUDE_5H_PCT,
+        window_seconds=WINDOW_5H_SECONDS,
+        urgency_horizon_seconds=URGENCY_HORIZON_5H_SECONDS,
+    )
+    m7 = _evaluate_single_window(
+        seven_day_pct,
+        seven_day_resets_at,
+        now,
+        limit=HARD_EXCLUDE_7D_PCT,
+        window_seconds=WINDOW_7D_SECONDS,
+        urgency_horizon_seconds=URGENCY_HORIZON_7D_SECONDS,
+    )
+
+    base_weight = min(m5["base_weight"], m7["base_weight"])
+    weight = min(m5["weight"], m7["weight"])
+
+    # Gate 5h expiring urgency by 7d health so we never burn a strained 7d bank just because 5h resets soon.
+    u5 = m5["reset_urgency"]
+    if seven_day_pct is not None and m7["weight"] < 0.80:
+        u5 = round(u5 * max(0.0, (m7["weight"] - 0.50) / 0.30), 4)
+    u7 = m7["reset_urgency"]
+    if five_hour_pct is not None and m5["weight"] < 0.50:
+        u7 = round(u7 * max(0.0, (m5["weight"] - 0.25) / 0.25), 4)
+
+    reset_urgency = round(max(u7, 0.75 * u5), 4)
+
+    # Report pace_delta and headroom from the constraining/active window.
+    if seven_day_pct is not None and (five_hour_pct is None or m7["weight"] <= m5["weight"]):
+        limiting = m7
+    elif five_hour_pct is not None:
+        limiting = m5
+    else:
+        limiting = m7 if m7["pace_delta_pct"] is not None else m5
+
+    # Prefer headroom of an actively expiring window if urgency > 0.
+    headroom = limiting["headroom_pct_per_h"]
+    if u7 > 0.0 and m7["headroom_pct_per_h"] is not None:
+        headroom = m7["headroom_pct_per_h"]
+    elif u5 > 0.0 and m5["headroom_pct_per_h"] is not None and headroom is None:
+        headroom = m5["headroom_pct_per_h"]
+
+    return {
+        "weight": weight,
+        "base_weight": base_weight,
+        "excluded": False,
+        "exclude_reason": None,
+        "reset_urgency": reset_urgency,
+        "pace_delta_pct": limiting["pace_delta_pct"],
+        "headroom_pct_per_h": headroom,
+        "five_hour_pace_delta_pct": m5["pace_delta_pct"],
+        "seven_day_pace_delta_pct": m7["pace_delta_pct"],
+    }
+
+
 def compute_window_weight(
     five_hour_pct: float | None,
     seven_day_pct: float | None,
+    *,
+    five_hour_resets_at: float | None = None,
+    seven_day_resets_at: float | None = None,
+    now: float | None = None,
 ) -> tuple[float, bool, str | None]:
-    """Compute preventive + progressive penalty weight and hard exclusion from 5h/7d usage.
+    """Compute preventive + progressive + time-to-reset weight and hard exclusion from 5h/7d usage.
 
     Policy:
-    - Hard exclusion at >=92% (5h) or >=95% (7d).
+    - Hard exclusion at >=92% (5h) or >=95% (7d), never overridden by reset proximity.
     - Gentle preventive slope from 0% to 70% (weight decays linearly from 1.0 to 0.85).
     - Progressive penalty from 70% up to the hard threshold (weight decays from 0.85 to 0.15).
+    - When `resets_at` and `now` are supplied, adjusts weight for burn pace vs. remaining time
+      (recovering penalty when under-burning near reset, conserving banks over-burning early).
     """
-    if five_hour_pct is not None and five_hour_pct >= HARD_EXCLUDE_5H_PCT:
-        return 0.0, True, f"5h usage {five_hour_pct:.1f}% >= {HARD_EXCLUDE_5H_PCT:.0f}%"
-    if seven_day_pct is not None and seven_day_pct >= HARD_EXCLUDE_7D_PCT:
-        return 0.0, True, f"7d usage {seven_day_pct:.1f}% >= {HARD_EXCLUDE_7D_PCT:.0f}%"
+    ev = evaluate_window_quota(
+        five_hour_pct,
+        seven_day_pct,
+        five_hour_resets_at=five_hour_resets_at,
+        seven_day_resets_at=seven_day_resets_at,
+        now=now,
+    )
+    return ev["weight"], ev["excluded"], ev["exclude_reason"]
 
-    def _curve(pct: float | None, limit: float) -> float:
-        if pct is None or pct <= 0.0:
-            return 1.0
-        if pct < PENALTY_START_PCT:
-            return round(1.0 - 0.15 * (pct / PENALTY_START_PCT), 4)
-        span = max(1.0, limit - PENALTY_START_PCT)
-        ratio = min(1.0, (pct - PENALTY_START_PCT) / span)
-        # Smooth progressive decay from 0.85 at 70% down to 0.15 just below limit.
-        return round(max(0.15, 0.85 - 0.70 * (ratio**1.25)), 4)
 
-    w5 = _curve(five_hour_pct, HARD_EXCLUDE_5H_PCT)
-    w7 = _curve(seven_day_pct, HARD_EXCLUDE_7D_PCT)
-    return min(w5, w7), False, None
+def _pool_priority_score(weight: float, reset_urgency: float, excluded: bool) -> float:
+    """Rank eligible accounts/pools combining time-aware weight with expiring-quota urgency."""
+    if excluded or weight <= 0.0:
+        return 0.0
+    return round(weight + 0.12 * max(0.0, reset_urgency), 4)
 
 
 def _load_throttles(state_dir: Path, now: float) -> dict[str, dict[str, Any]]:
@@ -296,6 +480,7 @@ def _apply_throttle(quota: SubscriptionQuota, throttle: dict[str, Any] | None) -
         return quota
     quota.status = "throttled"
     quota.weight = 0.0
+    quota.reset_urgency = 0.0
     quota.excluded = True
     quota.throttled_until = throttle["expires_at"]
     quota.throttle_reason = throttle["reason"]
@@ -354,7 +539,8 @@ def probe_claude(
         r7 = _parse_timestamp(seven_raw.get("resets_at"))
         p5 = _effective_pct(_to_float(five_raw.get("used_percentage")), r5, ts)
         p7 = _effective_pct(_to_float(seven_raw.get("used_percentage")), r7, ts)
-        weight, excluded, reason = compute_window_weight(p5, p7)
+        ev = evaluate_window_quota(p5, p7, five_hour_resets_at=r5, seven_day_resets_at=r7, now=ts)
+        weight, excluded, reason = ev["weight"], ev["excluded"], ev["exclude_reason"]
 
         acct_entry = {
             "account": acct_name,
@@ -366,6 +552,10 @@ def probe_claude(
             "seven_day_pct": p7,
             "seven_day_resets_at": r7,
             "weight": weight,
+            "base_weight": ev["base_weight"],
+            "reset_urgency": ev["reset_urgency"],
+            "pace_delta_pct": ev["pace_delta_pct"],
+            "headroom_pct_per_h": ev["headroom_pct_per_h"],
             "excluded": excluded,
             "exclude_reason": reason,
         }
@@ -374,14 +564,18 @@ def probe_claude(
         if best is None:
             best = acct_entry
         else:
-            # Prefer non-excluded, then higher weight, then lower peak usage.
+            # Prefer non-excluded, then higher time-to-reset priority, then urgency, then lower peak usage.
             best_key = (
                 0 if best["excluded"] else 1,
+                _pool_priority_score(best["weight"], best["reset_urgency"], best["excluded"]),
+                best["reset_urgency"],
                 best["weight"],
                 -max(best["five_hour_pct"] or 0.0, best["seven_day_pct"] or 0.0),
             )
             cur_key = (
                 0 if acct_entry["excluded"] else 1,
+                _pool_priority_score(acct_entry["weight"], acct_entry["reset_urgency"], acct_entry["excluded"]),
+                acct_entry["reset_urgency"],
                 acct_entry["weight"],
                 -max(acct_entry["five_hour_pct"] or 0.0, acct_entry["seven_day_pct"] or 0.0),
             )
@@ -404,6 +598,10 @@ def probe_claude(
         runtime="claude",
         status=status,
         weight=best["weight"],
+        base_weight=best["base_weight"],
+        reset_urgency=best["reset_urgency"],
+        pace_delta_pct=best["pace_delta_pct"],
+        headroom_pct_per_h=best["headroom_pct_per_h"],
         excluded=best["excluded"],
         exclude_reason=best["exclude_reason"],
         five_hour_pct=best["five_hour_pct"],
@@ -502,6 +700,10 @@ def _probe_codex_dir(
             "sessions_dir": str(sdir),
             "status": "unknown",
             "weight": 0.80,
+            "base_weight": 0.80,
+            "reset_urgency": 0.0,
+            "pace_delta_pct": None,
+            "headroom_pct_per_h": None,
             "excluded": False,
             "exclude_reason": None,
             "five_hour_pct": None,
@@ -518,7 +720,8 @@ def _probe_codex_dir(
     else:
         ev_ts, fp, rl = latest_event
         p5, r5, p7, r7 = _extract_codex_windows(rl, now)
-        weight, excluded, reason = compute_window_weight(p5, p7)
+        ev = evaluate_window_quota(p5, p7, five_hour_resets_at=r5, seven_day_resets_at=r7, now=now)
+        weight, excluded, reason = ev["weight"], ev["excluded"], ev["exclude_reason"]
         status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
         entry = {
             "account": account,
@@ -526,6 +729,10 @@ def _probe_codex_dir(
             "sessions_dir": str(sdir),
             "status": status,
             "weight": weight,
+            "base_weight": ev["base_weight"],
+            "reset_urgency": ev["reset_urgency"],
+            "pace_delta_pct": ev["pace_delta_pct"],
+            "headroom_pct_per_h": ev["headroom_pct_per_h"],
             "excluded": excluded,
             "exclude_reason": reason,
             "five_hour_pct": p5,
@@ -543,6 +750,7 @@ def _probe_codex_dir(
     if account_throttle:
         entry["status"] = "throttled"
         entry["weight"] = 0.0
+        entry["reset_urgency"] = 0.0
         entry["excluded"] = True
         entry["throttled_until"] = account_throttle["expires_at"]
         entry["throttle_reason"] = account_throttle["reason"]
@@ -587,6 +795,8 @@ def probe_codex(
         else:
             best_key = (
                 0 if best["excluded"] else 1,
+                _pool_priority_score(best["weight"], best["reset_urgency"], best["excluded"]),
+                best["reset_urgency"],
                 best["weight"],
                 1 if best["status"] in ("ok", "degraded") else 0,
                 -max(best["five_hour_pct"] or 0.0, best["seven_day_pct"] or 0.0),
@@ -594,6 +804,8 @@ def probe_codex(
             )
             cur_key = (
                 0 if entry["excluded"] else 1,
+                _pool_priority_score(entry["weight"], entry["reset_urgency"], entry["excluded"]),
+                entry["reset_urgency"],
                 entry["weight"],
                 1 if entry["status"] in ("ok", "degraded") else 0,
                 -max(entry["five_hour_pct"] or 0.0, entry["seven_day_pct"] or 0.0),
@@ -612,6 +824,10 @@ def probe_codex(
         runtime="codex",
         status=best["status"],
         weight=best["weight"],
+        base_weight=best["base_weight"],
+        reset_urgency=best["reset_urgency"],
+        pace_delta_pct=best["pace_delta_pct"],
+        headroom_pct_per_h=best["headroom_pct_per_h"],
         excluded=best["excluded"],
         exclude_reason=best["exclude_reason"],
         five_hour_pct=best["five_hour_pct"],
@@ -740,13 +956,18 @@ def probe_muse(
 
     p5 = _effective_pct(raw_p5, r5, ts)
     p7 = _effective_pct(raw_p7, r7, ts)
-    weight, excluded, ex_reason = compute_window_weight(p5, p7)
+    ev = evaluate_window_quota(p5, p7, five_hour_resets_at=r5, seven_day_resets_at=r7, now=ts)
+    weight, excluded, ex_reason = ev["weight"], ev["excluded"], ev["exclude_reason"]
     status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
 
     q = SubscriptionQuota(
         runtime="muse",
         status=status,
         weight=weight,
+        base_weight=ev["base_weight"],
+        reset_urgency=ev["reset_urgency"],
+        pace_delta_pct=ev["pace_delta_pct"],
+        headroom_pct_per_h=ev["headroom_pct_per_h"],
         excluded=excluded,
         exclude_reason=ex_reason,
         five_hour_pct=p5,
@@ -875,11 +1096,16 @@ def _build_agy_groups(
         p7 = _effective_pct(_agy_bucket_pct(b7), r7, now) if b7 else None
 
         if p5 is not None or p7 is not None:
-            weight, excluded, reason = compute_window_weight(p5, p7)
+            ev = evaluate_window_quota(p5, p7, five_hour_resets_at=r5, seven_day_resets_at=r7, now=now)
+            weight, excluded, reason = ev["weight"], ev["excluded"], ev["exclude_reason"]
             status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
             entry: dict[str, Any] = {
                 "status": status,
                 "weight": weight,
+                "base_weight": ev["base_weight"],
+                "reset_urgency": ev["reset_urgency"],
+                "pace_delta_pct": ev["pace_delta_pct"],
+                "headroom_pct_per_h": ev["headroom_pct_per_h"],
                 "excluded": excluded,
                 "exclude_reason": reason,
                 "five_hour_pct": p5,
@@ -894,6 +1120,10 @@ def _build_agy_groups(
             entry = {
                 "status": band_status,
                 "weight": band_weight,
+                "base_weight": band_weight,
+                "reset_urgency": 0.0,
+                "pace_delta_pct": None,
+                "headroom_pct_per_h": None,
                 "excluded": band_excluded,
                 "exclude_reason": "agy band set to throttled" if band_excluded else None,
                 "five_hour_pct": None,
@@ -908,6 +1138,7 @@ def _build_agy_groups(
         if band_excluded:
             entry["status"] = "throttled"
             entry["weight"] = 0.0
+            entry["reset_urgency"] = 0.0
             entry["excluded"] = True
             entry["exclude_reason"] = "agy band set to throttled"
 
@@ -915,6 +1146,7 @@ def _build_agy_groups(
         if th:
             entry["status"] = "throttled"
             entry["weight"] = 0.0
+            entry["reset_urgency"] = 0.0
             entry["excluded"] = True
             entry["throttled_until"] = th["expires_at"]
             entry["throttle_reason"] = th["reason"]
@@ -1001,7 +1233,13 @@ def probe_agy(
     )
     ranked = sorted(
         groups.items(),
-        key=lambda kv: (0 if kv[1]["excluded"] else 1, kv[1]["weight"], 1 if kv[0] == "gemini" else 0),
+        key=lambda kv: (
+            0 if kv[1]["excluded"] else 1,
+            _pool_priority_score(kv[1]["weight"], kv[1]["reset_urgency"], kv[1]["excluded"]),
+            kv[1]["reset_urgency"],
+            kv[1]["weight"],
+            1 if kv[0] == "gemini" else 0,
+        ),
         reverse=True,
     )
     best_gk, best = ranked[0]
@@ -1011,6 +1249,10 @@ def probe_agy(
         runtime="agy",
         status=best["status"],
         weight=best["weight"],
+        base_weight=best["base_weight"],
+        reset_urgency=best["reset_urgency"],
+        pace_delta_pct=best["pace_delta_pct"],
+        headroom_pct_per_h=best["headroom_pct_per_h"],
         excluded=best["excluded"],
         exclude_reason=best["exclude_reason"],
         five_hour_pct=best["five_hour_pct"],
@@ -1076,6 +1318,9 @@ def collect_all_quotas(
             "penalty_start_pct": PENALTY_START_PCT,
             "hard_exclude_5h_pct": HARD_EXCLUDE_5H_PCT,
             "hard_exclude_7d_pct": HARD_EXCLUDE_7D_PCT,
+            "time_to_reset_weighting": True,
+            "urgency_horizon_5h_hours": URGENCY_HORIZON_5H_SECONDS / 3600.0,
+            "urgency_horizon_7d_hours": URGENCY_HORIZON_7D_SECONDS / 3600.0,
         },
         "quota_emergency": len(eligible) == 0,
         "eligible_runtimes": eligible,
@@ -1097,15 +1342,23 @@ def _format_human(snapshot: dict[str, Any]) -> str:
         acct = details.get("selected_account") or (f"agy:{details['selected_group']}" if details.get("selected_group") else None)
         acct_tag = f" | acct={acct}" if acct else ""
         extra = f" ({sub['exclude_reason']})" if sub.get("exclude_reason") else ""
+        urg = float(sub.get("reset_urgency") or 0.0)
+        pace = sub.get("pace_delta_pct")
+        urg_tag = f" | urg={urg:.2f}" if urg > 0.0 else ""
+        pace_tag = f" | pace={pace:+.0f}%" if pace is not None else ""
         lines.append(
-            f"  - {name:6s} | status={sub['status']:11s} | weight={sub['weight']:.2f} | 5h={p5:6s} | 7d={p7:6s}{acct_tag} | src={sub['source']}{extra}"
+            f"  - {name:6s} | status={sub['status']:11s} | weight={sub['weight']:.2f}{urg_tag}{pace_tag} | 5h={p5:6s} | 7d={p7:6s}{acct_tag} | src={sub['source']}{extra}"
         )
         if name == "agy" and isinstance(details.get("groups"), dict):
             for gk, ginfo in details["groups"].items():
                 gp5 = "null" if ginfo["five_hour_pct"] is None else f"{ginfo['five_hour_pct']:.1f}%"
                 gp7 = "null" if ginfo["seven_day_pct"] is None else f"{ginfo['seven_day_pct']:.1f}%"
+                gurg = float(ginfo.get("reset_urgency") or 0.0)
+                gpace = ginfo.get("pace_delta_pct")
+                gurg_tag = f" | urg={gurg:.2f}" if gurg > 0.0 else ""
+                gpace_tag = f" | pace={gpace:+.0f}%" if gpace is not None else ""
                 lines.append(
-                    f"      pool={gk:6s} | status={ginfo['status']:11s} | weight={ginfo['weight']:.2f} | 5h={gp5:6s} | 7d={gp7:6s}"
+                    f"      pool={gk:6s} | status={ginfo['status']:11s} | weight={ginfo['weight']:.2f}{gurg_tag}{gpace_tag} | 5h={gp5:6s} | 7d={gp7:6s}"
                 )
     return "\n".join(lines)
 

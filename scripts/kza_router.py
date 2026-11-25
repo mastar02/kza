@@ -679,7 +679,7 @@ Follow strict proportionality to maximize Round-1 quality per quota unit across 
 - Reserve flagship heavyweights (`claude:claude-opus-5-5`, `codex:gpt-6.2-sol`, `muse:muse-wonder-full-1.0`, `agy:gemini-4-neon-high`, `agy:gemini-4-hydrogen-high`, `agy:claude-opus-5-5-high`) for `complexity=high`, multi-module architecture, subtle async/concurrency bugs, privacy/authority gates (`kza-privacy`), deep 4-lens `kza-qa`, or high-rigor specs.
 - Prefer efficient medium-tier specialists (`claude:claude-sonnet-5-5`, `codex:gpt-6.2-astra`, `muse:muse-wonder-1.0`, `agy:gemini-4-carbon-medium`, `agy:claude-sonnet-5-5-medium`) for `kza-pregate`, `kza-ops` tooling, `complexity=low` or cleanly scoped `complexity=medium` tasks, and routine checks—unless the task summary reveals subtle concurrency, security, or privacy risk.
 - For `kza-ui`, evaluate browser/computer-use strength alongside real quota weights: `codex:gpt-6.1-terra` excels at interactive desktop/browser E2E flows, while `agy:gemini-4-neon-high` and `agy:gemini-4-carbon-medium` offer strong multimodal UI inspection, and `claude:claude-opus-5-5` handles multimodal DOM/privacy checks when other families are excluded or depleted.
-- Respect `quota_weight` and reset horizons (`resets_in_h`) seriously: when one pool has a noticeably healthier `quota_weight` (for example `1.00` vs `0.85` or lower), or has healthy remaining quota about to reset soon (`resets_in_h <= 12h`, use-before-reset), shift work toward that pool to keep all fleets balanced and avoid losing expiring capacity. Remember `agy:3p` has its own quota separate from `agy:gemini` and from `claude-1`.
+- Respect `quota_weight` (already pace- and time-to-reset adjusted), `urg=` (`reset_urgency`), `pace=`, `headroom=`, and reset horizons (`resets_in_h`) seriously: when one pool has a noticeably healthier `quota_weight` (for example `1.00` vs `0.85` or lower), or has healthy remaining quota about to reset soon (`urg > 0`, `resets_in_h <= 12h` on 7d or `<= 1.5h` on 5h, use-before-reset), shift work toward that pool to maximize every subscription before reset and conserve long-horizon banks burning early. Remember `agy:3p` has its own quota separate from `agy:gemini` and from `claude-1`.
 - Notice Codex operates on standard tier (`service_tier` default, `/fast` disabled) to preserve weekly quota capacity across `codex` and `codex-2`.
 
 === 4. TASK RIGOR SCORING RUBRIC (`task_rigor`) & ROUND-1 QUALITY SIGNALS ===
@@ -708,8 +708,30 @@ def _candidate_quota_info(candidate: ModelCandidate, subs: dict[str, Any]) -> tu
     return float(sub.get("weight", 0.0)), bool(sub.get("excluded", False)), sub
 
 
+def _candidate_reset_urgency(pool: dict[str, Any], now: float) -> float:
+    """Return bounded [0, 1] use-before-reset urgency for a non-excluded pool."""
+    if not isinstance(pool, dict) or pool.get("excluded"):
+        return 0.0
+    raw = pool.get("reset_urgency")
+    if raw is not None and not isinstance(raw, bool):
+        try:
+            val = float(raw)
+            if val == val:  # finite check (NaN != NaN)
+                return max(0.0, min(1.0, val))
+        except (TypeError, ValueError):
+            pass
+    r5 = kza_quota._parse_timestamp(pool.get("five_hour_resets_at"))
+    r7 = kza_quota._parse_timestamp(pool.get("seven_day_resets_at"))
+    if r5 is None and r7 is None:
+        return 0.0
+    p5 = kza_quota._to_float(pool.get("five_hour_pct"))
+    p7 = kza_quota._to_float(pool.get("seven_day_pct"))
+    ev = kza_quota.evaluate_window_quota(p5, p7, five_hour_resets_at=r5, seven_day_resets_at=r7, now=now)
+    return float(ev["reset_urgency"])
+
+
 def _fmt_pool_metrics(pool: dict[str, Any], now: float) -> str:
-    """Format PII-free quota metrics (`5h`, `7d`, `resets_in_h`) for a single pool."""
+    """Format PII-free quota metrics (`5h`, `7d`, `resets`, `urg`, `pace`, `headroom`) for a single pool."""
     p5 = pool.get("five_hour_pct")
     p7 = pool.get("seven_day_pct")
     r5 = pool.get("five_hour_resets_at")
@@ -725,6 +747,15 @@ def _fmt_pool_metrics(pool: dict[str, Any], now: float) -> str:
         resets.append(f"7d_in={(float(r7) - now) / 3600.0:.1f}h")
     if resets:
         parts.append(f"resets({','.join(resets)})")
+    urg = _candidate_reset_urgency(pool, now)
+    if urg > 0.0:
+        parts.append(f"urg={urg:.2f}")
+    pace = kza_quota._to_float(pool.get("pace_delta_pct"))
+    if pace is not None:
+        parts.append(f"pace={pace:+.0f}%")
+    headroom = kza_quota._to_float(pool.get("headroom_pct_per_h"))
+    if headroom is not None:
+        parts.append(f"headroom={headroom:.1f}%/h")
     return " ".join(parts)
 
 
@@ -964,8 +995,9 @@ def _deterministic_scores(
     complexity: str,
     quota_weights: dict[str, float],
     candidate_weights: dict[str, float] | None = None,
+    candidate_urgencies: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Compute transparent deterministic score per eligible candidate."""
+    """Compute transparent deterministic score per eligible candidate (capability + time-aware quota + reset urgency)."""
     effort_bonus = {
         "low": {"low": 0.04, "medium": 0.03, "high": -0.02},
         "medium": {"low": -0.02, "medium": 0.03, "high": 0.02},
@@ -980,9 +1012,16 @@ def _deterministic_scores(
             if candidate_weights and c.candidate_id in candidate_weights
             else quota_weights.get(c.runtime, 0.50)
         )
+        urg = (
+            max(0.0, min(1.0, candidate_urgencies.get(c.candidate_id, 0.0)))
+            if candidate_urgencies
+            else 0.0
+        )
         bonus = effort_bonus.get(c.effort, 0.0)
-        # Blend capability (60%) and real quota health (40%) multiplicatively damped by severe scarcity.
-        score = (0.60 * (suit + bonus) + 0.40 * qw) * (0.45 + 0.55 * qw)
+        # Blend capability (58%), pace/reset-adjusted quota health (34%), and use-before-reset urgency (8%),
+        # multiplicatively damped by severe scarcity.
+        effective_health = min(1.0, qw + (0.10 * urg if qw >= 0.35 else 0.0))
+        score = (0.58 * (suit + bonus) + 0.34 * qw + 0.08 * urg) * (0.45 + 0.55 * effective_health)
         scores[c.candidate_id] = round(score, 6)
     return scores
 
@@ -1066,13 +1105,16 @@ def route_task(
     if not family_filtered:
         raise RuntimeError(f"No candidates remain after excluding families {excluded_fams}.")
 
+    now_ts = time.time()
     eligible: list[ModelCandidate] = []
     cand_weights: dict[str, float] = {}
+    cand_urgencies: dict[str, float] = {}
     for c in family_filtered:
-        cw, c_excl, _ = _candidate_quota_info(c, subs)
+        cw, c_excl, pinfo = _candidate_quota_info(c, subs)
         if not c_excl and cw > 0.0:
             eligible.append(c)
             cand_weights[c.candidate_id] = cw
+            cand_urgencies[c.candidate_id] = _candidate_reset_urgency(pinfo, now_ts)
 
     quota_emergency_used = False
     if not eligible:
@@ -1084,11 +1126,19 @@ def route_task(
         quota_emergency_used = True
         eligible = family_filtered
         for c in eligible:
-            cw, _, _ = _candidate_quota_info(c, subs)
+            cw, _, pinfo = _candidate_quota_info(c, subs)
             cand_weights[c.candidate_id] = cw
+            cand_urgencies[c.candidate_id] = _candidate_reset_urgency(pinfo, now_ts)
 
     sanitized = distill_routing_summary(summary)
-    det_scores = _deterministic_scores(eligible, role, complexity, quota_weights, candidate_weights=cand_weights)
+    det_scores = _deterministic_scores(
+        eligible,
+        role,
+        complexity,
+        quota_weights,
+        candidate_weights=cand_weights,
+        candidate_urgencies=cand_urgencies,
+    )
 
     source = "fallback-deterministic"
     fallback_reason: str | None = None
@@ -1124,14 +1174,16 @@ def route_task(
                 task_rigor = rigor
                 eligible_ids = {c.candidate_id for c in eligible}
                 if probs:
-                    # Gentle tie-breaking by quota health without double-penalizing healthy subscriptions.
+                    # Gentle tie-breaking by time-aware quota health + expiring-quota urgency.
                     weighted_probs: dict[str, float] = {}
                     for cid, prob in probs.items():
                         if cid not in eligible_ids:
                             continue
                         qw = max(0.05, cand_weights.get(cid, 0.1))
-                        mult = (0.85 + 0.15 * qw) if qw >= 0.25 else (0.50 + 0.50 * qw)
-                        weighted_probs[cid] = prob * mult
+                        urg = cand_urgencies.get(cid, 0.0)
+                        base_mult = (0.85 + 0.15 * qw) if qw >= 0.25 else (0.50 + 0.50 * qw)
+                        urg_mult = 1.0 + (0.08 * urg if qw >= 0.35 else 0.0)
+                        weighted_probs[cid] = prob * base_mult * urg_mult
                     if weighted_probs:
                         selected_id = max(weighted_probs.items(), key=lambda kv: kv[1])[0]
                         source = f"openai-decisions:{DECISIONS_MODEL}"
@@ -1196,6 +1248,7 @@ def route_task(
         "fast_mode": uses_codex_fast_mode(selected),
         "cli_command": cli_command,
         "quota_weights": quota_weights,
+        "quota_urgencies": cand_urgencies,
         "deterministic_scores": det_scores,
         "probabilities": probabilities,
         "task_rigor": task_rigor,
