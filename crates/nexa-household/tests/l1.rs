@@ -12,16 +12,18 @@ use nexa_household::intercom::{AnnouncementOutput, Intercom, Playback, Targets, 
 use nexa_household::lists::{ListSnapshot, TodoChange, TodoSync};
 use nexa_household::reminders::{
     ActionOutcome, ActionState, ChoiceAnswer, ChoiceId, NoticeOutcome, NoticeState, Reminder,
-    ReminderPolicy, ReminderState, VoiceCancel, VoiceContext,
+    ReminderPolicy, ReminderState, ReminderStatus, ReminderUpdate, VoiceCancel, VoiceContext,
 };
 use nexa_household::routines::{
-    Occurrence, RoutineSpec, RoutineStep, RunClaim, RunState, StepOutcome, VoiceBrake,
+    Occurrence, RoutineSpec, RoutineStep, RunClaim, RunSource, RunState, ScheduledRoutineSpec,
+    StepOutcome, VoiceBrake,
 };
 use nexa_household::timers::{RING_STOP_WINDOW, TimerState};
 use nexa_household::{
     Clock, Error, HomeAction, Household, HouseholdStore, HouseholdWorker, Timestamp,
 };
 use proptest::prelude::*;
+use rusqlite::{Connection, types::Value};
 
 #[derive(Debug, Default)]
 struct TestClock {
@@ -55,6 +57,12 @@ fn household() -> (Household<Arc<TestClock>>, Arc<TestClock>) {
     let clock = Arc::new(TestClock::default());
     let store = HouseholdStore::in_memory().expect("memory SQLite");
     (Household::new(store, Arc::clone(&clock)), clock)
+}
+
+fn unix_ms(value: &str) -> Timestamp {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .expect("test timestamp")
+        .timestamp_millis()
 }
 
 fn action() -> HomeAction {
@@ -119,6 +127,89 @@ fn intercom() -> Intercom {
         },
     ])
     .expect("configured zones")
+}
+
+fn v2_snapshot(db: &Connection) -> rusqlite::Result<Vec<Vec<Vec<Value>>>> {
+    [
+        "SELECT * FROM timers ORDER BY id",
+        "SELECT id, message, owner, room, due_at, state FROM reminders ORDER BY id",
+        "SELECT * FROM reminder_notices ORDER BY reminder_id",
+        "SELECT * FROM reminder_home_actions ORDER BY reminder_id, position",
+        "SELECT id, name, name_key, enabled, revision, steps, deleted_at FROM routines ORDER BY id",
+        "SELECT * FROM routine_runs ORDER BY id",
+        "SELECT * FROM lists ORDER BY id",
+        "SELECT * FROM list_items ORDER BY id",
+        "SELECT * FROM alerts ORDER BY id",
+        "SELECT * FROM alert_preferences",
+        "SELECT * FROM sqlite_sequence ORDER BY name",
+    ]
+    .iter()
+    .map(|sql| {
+        let mut statement = db.prepare(sql)?;
+        let columns = statement.column_count();
+        statement
+            .query_map([], |row| (0..columns).map(|index| row.get(index)).collect())?
+            .collect()
+    })
+    .collect()
+}
+
+#[test]
+fn migrate_v2_file_preserves_existing_records_and_revisions()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join(nexa_household::DATABASE_FILE);
+    let v2 = Connection::open(&path)?;
+    v2.pragma_update(None, "foreign_keys", true)?;
+    v2.execute_batch(include_str!("../src/schema/001_scheduling.sql"))?;
+    v2.execute_batch(include_str!("../src/schema/002_household.sql"))?;
+    v2.execute_batch(
+        "PRAGMA user_version = 2;
+         INSERT INTO timers(name, name_key, room, state, deadline) VALUES ('Mate', 'mate', 'cocina', 'running', 60);
+         INSERT INTO reminders(message, owner, room, due_at, state) VALUES
+             ('Regar', NULL, 'cocina', 50, 'pending'),
+             ('Leer', 'test-owner', 'living', 40, 'completed'),
+             ('Mandado', 'test-owner', 'living', 45, 'cancelled');
+         INSERT INTO reminder_notices(reminder_id, status, next_attempt_at, attempts) VALUES (1, 'pending', 51, 2);
+         INSERT INTO reminder_home_actions VALUES (1, 0,
+             '{\"service\":\"switch.turn_off\",\"entity_id\":\"switch.lamp\",\"data\":{}}', 'pending');
+         INSERT INTO routines(name, name_key, enabled, revision, steps, deleted_at) VALUES
+             ('Saludar', 'saludar', 1, 7, '[{\"kind\":\"announce\",\"room\":\"living\",\"message\":\"Hola\"}]', NULL),
+             ('Archivada', 'archivada', 0, 3, '[]', 35);
+         INSERT INTO routine_runs(routine_id, occurrence_key, source, started_at, finished_at, status, steps)
+             VALUES (2, 'scheduled:20', 'scheduled', 21, 22, 'succeeded', '[]');
+         INSERT INTO lists(name, name_key, owner, revision) VALUES ('Compras', 'compras', 'test-owner', 3);
+         INSERT INTO list_items(list_id, text, completed) VALUES (1, 'Pan', 1);
+         INSERT INTO alerts(condition_key, priority, message, opened_at, last_seen_at) VALUES ('demo', 1, 'Alerta', 15, 16);
+         INSERT INTO alert_preferences VALUES (1, '[\"living\"]', 4);",
+    )?;
+    let original = v2_snapshot(&v2)?;
+    drop(v2);
+
+    let mut store = HouseholdStore::open(&path)?;
+    assert_eq!(store.schema_version()?, 3);
+    store.migrate()?;
+    assert!(store.poll_due_scheduled_routines(100)?.is_empty());
+    let household = Household::new(store, TestClock::default());
+    let routine = &household.routines()?[0];
+    assert_eq!(routine.revision, 7);
+    assert_eq!(routine.updated_at_ms, 0);
+    assert_eq!(routine.schedule, None);
+    assert_eq!(routine.next_due_at_ms, None);
+    assert_eq!(household.pending_reminders(None)?[0].revision, 1);
+    let closed = household.list_reminders_all(Some("test-owner"), true)?;
+    assert_eq!(
+        closed
+            .iter()
+            .map(|reminder| reminder.revision)
+            .collect::<Vec<_>>(),
+        [2, 2]
+    );
+
+    let migrated = Connection::open(&path)?;
+    assert_eq!(v2_snapshot(&migrated)?, original);
+    assert!(!migrated.prepare("PRAGMA foreign_key_check")?.exists([])?);
+    Ok(())
 }
 
 #[test]
@@ -531,6 +622,417 @@ fn routine_occurrence_has_one_claim_across_wal_connections()
         let (RunClaim::Created(claimed) | RunClaim::Existing(claimed)) = claim;
         assert_eq!(claimed, run);
     }
+    Ok(())
+}
+
+#[test]
+fn reminder_update_requires_current_revision_and_exact_owner() -> nexa_household::Result<()> {
+    let (mut household, _) = household();
+    let personal = household.create_reminder("Lectura", Some("owner-a"), "living", 2, &[])?;
+    let shared = household.create_reminder("Mate", None, "living", 3, &[])?;
+    let edit = ReminderUpdate {
+        message: " Revisar notas ",
+        room: "cocina",
+        due_at: 7,
+        actions: &[],
+    };
+    for (id, owner) in [
+        (personal.id, Some("owner-b")),
+        (personal.id, None),
+        (shared.id, Some("owner-a")),
+    ] {
+        assert!(matches!(
+            household.update_reminder(id, owner, 0, &edit),
+            Err(Error::NotFound("reminder"))
+        ));
+    }
+    assert_eq!(
+        household.reminder(personal.id, Some("owner-a"))?,
+        Some(personal.clone())
+    );
+    let updated =
+        household.update_reminder(personal.id, Some("owner-a"), personal.revision, &edit)?;
+    assert_eq!(updated.revision, personal.revision + 1);
+    assert_eq!(updated.message, "Revisar notas");
+    assert_eq!(updated.room, "cocina");
+    assert_eq!(updated.due_at, 7);
+    assert_eq!(updated.owner, personal.owner);
+    assert!(matches!(
+        household.update_reminder(personal.id, Some("owner-a"), personal.revision, &edit),
+        Err(Error::Conflict(_))
+    ));
+    assert!(matches!(
+        household.update_reminder(
+            personal.id,
+            Some("owner-a"),
+            updated.revision,
+            &ReminderUpdate {
+                actions: &[action()],
+                ..edit
+            }
+        ),
+        Err(Error::InvalidInput(_))
+    ));
+    assert!(household.cancel_reminder(personal.id, Some("owner-a"))?);
+    let cancelled = household
+        .reminder(personal.id, Some("owner-a"))?
+        .expect("cancelled");
+    assert_eq!(cancelled.revision, updated.revision + 1);
+    assert!(matches!(
+        household.update_reminder(personal.id, Some("owner-a"), cancelled.revision, &edit),
+        Err(Error::Conflict(_))
+    ));
+    assert!(household.dismiss_reminder_notice(shared.id)?);
+    let completed = household.reminder(shared.id, None)?.expect("completed");
+    assert_eq!(completed.revision, shared.revision + 1);
+    assert!(matches!(
+        household.update_reminder(shared.id, None, completed.revision, &edit),
+        Err(Error::Conflict(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn reminder_update_reschedules_notice_and_preserves_delivery_fencing() -> nexa_household::Result<()>
+{
+    let (mut household, clock) = household();
+    let shared = household.create_reminder("Mate", None, "living", 0, &[action()])?;
+    let delivery = household.claim_reminder_notice("living")?.expect("notice");
+    let edit = ReminderUpdate {
+        message: "Café",
+        room: "cocina",
+        due_at: 8,
+        actions: &[],
+    };
+    assert!(matches!(
+        household.update_reminder(shared.id, None, shared.revision, &edit),
+        Err(Error::Conflict(_))
+    ));
+    assert!(household.finish_reminder_notice(&delivery, NoticeOutcome::NotStarted)?);
+
+    let updated = household.update_reminder(shared.id, None, shared.revision, &edit)?;
+    assert_eq!(updated.revision, shared.revision + 1);
+    assert!(household.reminder_actions(shared.id)?.is_empty());
+    let receipt = household
+        .reminder_notice(shared.id)?
+        .expect("rescheduled notice");
+    assert_eq!(receipt.next_attempt_at, Some(8));
+    assert_eq!(receipt.attempts, delivery.attempt);
+    assert!(household.claim_reminder_notice("cocina")?.is_none());
+    clock.set_wall(8);
+    assert!(household.claim_reminder_notice("living")?.is_none());
+    let next = household
+        .claim_reminder_notice("cocina")?
+        .expect("rescheduled notice");
+    assert_eq!(next.reminder, updated);
+    assert_eq!(next.attempt, delivery.attempt + 1);
+    assert!(!household.finish_reminder_notice(&delivery, NoticeOutcome::Delivered)?);
+    assert!(household.finish_reminder_notice(&next, NoticeOutcome::Delivered)?);
+    assert_eq!(
+        household
+            .reminder(shared.id, None)?
+            .expect("completed")
+            .state,
+        ReminderState::Completed
+    );
+    Ok(())
+}
+
+#[test]
+fn voice_choice_cannot_cancel_a_reminder_edited_since_the_prompt() -> nexa_household::Result<()> {
+    let (mut household, _) = household();
+    let first = household.create_reminder("comprar pan", None, "cocina", 1, &[])?;
+    household.create_reminder("comprar café", None, "cocina", 2, &[])?;
+    let (choice, _) = choices(household.begin_voice_cancel(&voice(), "comprar")?);
+    let updated = household.update_reminder(
+        first.id,
+        None,
+        first.revision,
+        &ReminderUpdate {
+            message: "Merienda",
+            room: "cocina",
+            due_at: 3,
+            actions: &[],
+        },
+    )?;
+    assert_eq!(
+        household.answer_reminder_choice(&voice(), choice, ChoiceAnswer::Ordinal(1))?,
+        VoiceCancel::NoMatch
+    );
+    assert_eq!(household.reminder(first.id, None)?, Some(updated));
+    Ok(())
+}
+
+#[test]
+fn reminder_listings_and_status_respect_scope_and_track_outcomes() -> nexa_household::Result<()> {
+    let (mut household, clock) = household();
+    let personal = household.create_reminder("Leer", Some("owner-a"), "living", 1, &[])?;
+    let cancelled = household.create_reminder("Cancelar", Some("owner-a"), "living", 0, &[])?;
+    household.create_reminder("Otro", Some("owner-b"), "living", 500_000, &[])?;
+    assert!(household.cancel_reminder(cancelled.id, Some("owner-a"))?);
+    let late = household.create_reminder("Tarde", None, "living", 0, &[action(), action()])?;
+    clock.set_wall(200_000);
+    let notice = household
+        .claim_reminder_notice("living")?
+        .expect("late notice");
+    assert_eq!(notice.reminder.id, late.id);
+    assert!(notice.late);
+    assert!(household.finish_reminder_notice(&notice, NoticeOutcome::Delivered)?);
+
+    let failed = household.create_reminder("Falla", None, "living", clock.now(), &[action()])?;
+    let notice = household
+        .claim_reminder_notice("living")?
+        .expect("notice for action");
+    assert!(household.finish_reminder_notice(&notice, NoticeOutcome::Delivered)?);
+    let effect = household
+        .claim_reminder_action(failed.id)?
+        .expect("claimed action");
+    assert_eq!(household.reminder_status()?.delivering, 1);
+    assert!(household.finish_reminder_action(&effect, ActionOutcome::Failed)?);
+    let uncertain = household.create_reminder("Duda", None, "living", clock.now(), &[])?;
+    let notice = household
+        .claim_reminder_notice("living")?
+        .expect("next notice");
+    assert_eq!(notice.reminder.id, uncertain.id);
+    assert!(household.finish_reminder_notice(&notice, NoticeOutcome::Uncertain)?);
+    let in_flight = household.create_reminder("En curso", None, "living", clock.now(), &[])?;
+    assert!(household.claim_reminder_notice("living")?.is_some());
+    let future = household.create_reminder("Futuro", None, "living", 500_000, &[])?;
+
+    assert_eq!(
+        household.list_reminders_all(Some("owner-a"), false)?,
+        std::slice::from_ref(&personal)
+    );
+    let personal_history = household.list_reminders_all(Some("owner-a"), true)?;
+    assert_eq!(personal_history[0].id, cancelled.id);
+    assert_eq!(personal_history[0].state, ReminderState::Cancelled);
+    assert_eq!(personal_history[1], personal);
+    assert_eq!(
+        household.list_reminders_all(None, false)?,
+        [in_flight.clone(), future.clone()]
+    );
+    let history = household.list_reminders_all(None, true)?;
+    assert_eq!(
+        history
+            .iter()
+            .filter(|reminder| reminder.state == ReminderState::Completed)
+            .count(),
+        3
+    );
+    assert!(history.iter().all(|reminder| reminder.owner.is_none()));
+    assert!(household.list_reminder_notices(Some("owner-a"))?.is_empty());
+    let notices = household.list_reminder_notices(None)?;
+    assert_eq!(
+        notices
+            .iter()
+            .map(|notice| (notice.reminder, notice.receipt.state))
+            .collect::<Vec<_>>(),
+        [
+            (future.id, NoticeState::Pending),
+            (in_flight.id, NoticeState::Claimed),
+            (uncertain.id, NoticeState::Uncertain),
+            (failed.id, NoticeState::Delivered),
+            (late.id, NoticeState::Delivered),
+        ]
+    );
+    assert_eq!(
+        household.reminder_status()?,
+        ReminderStatus {
+            pending: 4,
+            due: 2,
+            delivering: 1,
+            completed: 3,
+            failed_or_uncertain: 2,
+            late_not_executed: 1,
+        }
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn scheduled_routine_polls_once_across_connections_and_advances_local_weekdays()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let clock = Arc::new(TestClock::default());
+    let due = unix_ms("2026-11-20T10:30:00Z"); // Friday, 07:30 in Montevideo.
+    let monday = unix_ms("2026-11-23T10:30:00Z");
+    clock.set_wall(due - 4_000);
+    let mut household = Household::new(
+        HouseholdStore::open_in(directory.path())?,
+        Arc::clone(&clock),
+    );
+    let schedule = serde_json::from_str(
+        r#"{"kind":"daily","hour":7,"minute":30,"timezone":"America/Montevideo","days":[5,2,1,3,4,5]}"#,
+    )?;
+    let definition = routine_spec().with_schedule(schedule);
+    let routine = household.create_scheduled_routine(&definition)?;
+    assert_eq!(routine.updated_at_ms, due - 4_000);
+    assert_eq!(routine.next_due_at_ms, Some(due));
+    assert_eq!(
+        serde_json::to_string(&routine.schedule)?,
+        r#"{"kind":"daily","hour":7,"minute":30,"timezone":"America/Montevideo","days":[1,2,3,4,5]}"#
+    );
+    clock.advance(1_000);
+    let updated = household
+        .update_routine(routine.id, routine.revision, &routine.spec)?
+        .expect("updated");
+    assert_eq!(updated.updated_at_ms, due - 3_000);
+    assert_eq!(updated.schedule, routine.schedule);
+    assert_eq!(updated.next_due_at_ms, Some(due));
+    clock.advance(1_000);
+    let disabled = household
+        .set_routine_enabled(routine.id, updated.revision, false)?
+        .expect("disabled");
+    assert_eq!(disabled.updated_at_ms, due - 2_000);
+    assert_eq!(disabled.next_due_at_ms, None);
+    assert!(household.poll_due_scheduled_routines(due)?.is_empty());
+    clock.advance(1_000);
+    let enabled = household
+        .set_routine_enabled(routine.id, disabled.revision, true)?
+        .expect("enabled");
+    assert_eq!(enabled.updated_at_ms, due - 1_000);
+    assert_eq!(enabled.next_due_at_ms, Some(due));
+    assert!(household.poll_due_scheduled_routines(due - 1)?.is_empty());
+    clock.set_wall(due);
+
+    let first = HouseholdWorker::new(household);
+    let second = HouseholdWorker::new(Household::new(
+        HouseholdStore::open_in(directory.path())?,
+        Arc::clone(&clock),
+    ));
+    let (one, two) = tokio::join!(
+        first.poll_due_scheduled_routines(clock.now()),
+        second.poll_due_scheduled_routines(clock.now())
+    );
+    let runs: Vec<_> = one?.into_iter().chain(two?).collect();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].source, RunSource::Scheduled);
+    assert_eq!(runs[0].state, RunState::Running);
+    assert_eq!(runs[0].occurrence_key, format!("scheduled:{due}"));
+    let mut reopened = Household::new(
+        HouseholdStore::open_in(directory.path())?,
+        Arc::clone(&clock),
+    );
+    assert!(reopened.poll_due_scheduled_routines(due)?.is_empty());
+    let persisted = reopened.routine(routine.id)?.expect("scheduled definition");
+    assert_eq!(persisted.schedule, enabled.schedule);
+    assert_eq!(persisted.next_due_at_ms, Some(monday));
+    assert_eq!(persisted.updated_at_ms, enabled.updated_at_ms);
+    assert_eq!(persisted.revision, enabled.revision);
+
+    // The existing run blocks a second set of effects. The skipped slot is durable too.
+    clock.set_wall(monday);
+    let skipped = reopened.poll_due_scheduled_routines(clock.now())?;
+    assert_eq!(skipped.len(), 1);
+    assert_eq!(skipped[0].state, RunState::Skipped);
+    assert!(
+        reopened
+            .poll_due_scheduled_routines(clock.now())?
+            .is_empty()
+    );
+    assert_eq!(
+        reopened
+            .routine(routine.id)?
+            .expect("scheduled definition")
+            .next_due_at_ms,
+        Some(unix_ms("2026-11-24T10:30:00Z"))
+    );
+    Ok(())
+}
+
+#[test]
+fn one_shot_schedule_can_be_replaced_and_cannot_be_rearmed_by_an_edit()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (mut household, clock) = household();
+    let legacy = household.create_routine(&routine_spec())?;
+    let definition: ScheduledRoutineSpec = serde_json::from_value(serde_json::json!({
+        "name": legacy.spec.name,
+        "enabled": true,
+        "steps": legacy.spec.steps,
+        "schedule": { "kind": "once", "at_ms": 20 },
+    }))?;
+    clock.set_wall(10);
+    let updated = household
+        .update_scheduled_routine(legacy.id, legacy.revision, &definition)?
+        .expect("scheduled");
+    assert_eq!(updated.updated_at_ms, 10);
+    assert_eq!(updated.next_due_at_ms, Some(20));
+    clock.set_wall(20);
+    let claim =
+        household.claim_routine(legacy.id, Occurrence::Scheduled(20), Some(updated.revision))?;
+    assert!(matches!(claim, RunClaim::Created(_)));
+    assert_eq!(
+        household
+            .routine(legacy.id)?
+            .expect("scheduled")
+            .next_due_at_ms,
+        None
+    );
+    let reenabled = household
+        .set_routine_enabled(legacy.id, updated.revision, true)?
+        .expect("enabled");
+    assert_eq!(reenabled.next_due_at_ms, None);
+    assert!(household.poll_due_scheduled_routines(20)?.is_empty());
+
+    let plain: ScheduledRoutineSpec = serde_json::from_value(serde_json::to_value(&legacy.spec)?)?;
+    assert!(plain.schedule.is_none());
+    let cleared = household
+        .update_scheduled_routine(legacy.id, reenabled.revision, &plain)?
+        .expect("cleared");
+    assert_eq!(cleared.schedule, None);
+    Ok(())
+}
+
+#[test]
+fn daily_schedule_handles_dst_and_coalesces_overdue_slots()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let (mut household, clock) = household();
+    let spring = unix_ms("2026-03-08T05:00:00Z");
+    clock.set_wall(spring);
+    let daily = serde_json::from_str(
+        r#"{"kind":"daily","hour":2,"minute":30,"timezone":"America/New_York"}"#,
+    )?;
+    let routine = household.create_scheduled_routine(&routine_spec().with_schedule(daily))?;
+    let monday = unix_ms("2026-03-09T06:30:00Z");
+    assert_eq!(routine.next_due_at_ms, Some(monday));
+    clock.set_wall(unix_ms("2026-03-12T12:00:00Z"));
+    let runs = household.poll_due_scheduled_routines(clock.now())?;
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].occurrence_key, format!("scheduled:{monday}"));
+    assert!(
+        household
+            .poll_due_scheduled_routines(clock.now())?
+            .is_empty()
+    );
+    assert_eq!(
+        household
+            .routine(routine.id)?
+            .expect("routine")
+            .next_due_at_ms,
+        Some(unix_ms("2026-03-13T06:30:00Z"))
+    );
+
+    assert!(household.delete_routine(routine.id, routine.revision)?);
+    clock.set_wall(unix_ms("2026-11-01T05:00:00Z"));
+    let daily = serde_json::from_str(
+        r#"{"kind":"daily","hour":1,"minute":30,"timezone":"America/New_York"}"#,
+    )?;
+    let routine = household.create_scheduled_routine(&routine_spec().with_schedule(daily))?;
+    let first_fold = unix_ms("2026-11-01T05:30:00Z");
+    assert_eq!(routine.next_due_at_ms, Some(first_fold));
+    assert_eq!(household.poll_due_scheduled_routines(first_fold)?.len(), 1);
+    assert!(
+        household
+            .poll_due_scheduled_routines(unix_ms("2026-11-01T06:30:00Z"))?
+            .is_empty()
+    );
+    assert_eq!(
+        household
+            .routine(routine.id)?
+            .expect("routine")
+            .next_due_at_ms,
+        Some(unix_ms("2026-11-02T06:30:00Z"))
+    );
     Ok(())
 }
 
