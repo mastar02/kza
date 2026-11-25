@@ -1,9 +1,11 @@
 //! Deterministic, local-only fixtures for integration tests and browser automation.
 
 use std::{
+    collections::HashMap,
     io,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use axum::Router;
@@ -21,7 +23,13 @@ use crate::{
     sys::{Gpu, MonitorError, Service, SystemMonitor},
 };
 
-const OBSERVED: u64 = 1_700_000_000_000;
+fn now_unix_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|d| u64::try_from(d.as_millis()).ok())
+        .unwrap_or(1_700_000_000_000)
+}
 pub const OPERATOR_TOKEN: &str = "test-operator";
 pub const HOME_TOKEN: &str = "test-home";
 pub const EVALUATOR_TOKEN: &str = "test-evaluator";
@@ -145,6 +153,8 @@ struct Fixtures {
     capture: Mutex<CaptureControlStatus>,
     ambient: Mutex<AmbientControlStatus>,
     consent: Mutex<CloudConsentStatus>,
+    light_state: Mutex<String>,
+    receipts: Mutex<HashMap<String, HomeActionReceipt>>,
 }
 
 impl Default for Fixtures {
@@ -161,6 +171,8 @@ impl Default for Fixtures {
                 consent_granted: true,
                 ..Default::default()
             }),
+            light_state: Mutex::new("off".into()),
+            receipts: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -180,14 +192,15 @@ fn locked<T>(value: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, FixtureLo
 #[async_trait]
 impl Audio for Fixtures {
     async fn get_microphones(&self, _: Empty) -> Result<MicrophonesSnapshot, Status> {
+        let observed = now_unix_ms();
         Ok(MicrophonesSnapshot {
-            observed_at_unix_ms: OBSERVED,
+            observed_at_unix_ms: observed,
             stale: false,
             microphones: vec![MicrophoneRoomStatus {
                 room_id: "test-room".into(),
                 room_name: "Test Room".into(),
                 state: MicCaptureState::Receiving as i32,
-                last_frame_unix_ms: OBSERVED,
+                last_frame_unix_ms: observed,
                 ..Default::default()
             }],
         })
@@ -236,8 +249,10 @@ impl Brain for Fixtures {
         &self,
         _: GetHomeCatalogRequest,
     ) -> Result<HomeCatalogSnapshot, Status> {
+        let observed = now_unix_ms();
+        let state = locked(&self.light_state)?.clone();
         Ok(HomeCatalogSnapshot {
-            observed_at_unix_ms: OBSERVED,
+            observed_at_unix_ms: observed,
             stale: false,
             rooms: vec![HomeRoom {
                 room_id: "test-room".into(),
@@ -251,12 +266,55 @@ impl Brain for Fixtures {
                 domain: "light".into(),
                 room_id: "test-room".into(),
                 friendly_name: "Fixture light".into(),
-                state: "off".into(),
+                state,
                 available: true,
                 capabilities: vec!["turn_on".into(), "turn_off".into()],
-                observed_at_unix_ms: OBSERVED,
+                observed_at_unix_ms: observed,
             }],
         })
+    }
+
+    async fn execute_home_action(
+        &self,
+        request: HomeActionRequest,
+    ) -> Result<HomeActionReceipt, Status> {
+        if request.entity_id != "light.fixture"
+            || !matches!(request.operation.as_str(), "turn_on" | "turn_off")
+        {
+            return Err(Status::permission_denied("entity or operation denied"));
+        }
+        let mut receipts = locked(&self.receipts)?;
+        if let Some(existing) = receipts.get(&request.request_id) {
+            if existing.entity_id != request.entity_id || existing.operation != request.operation {
+                return Err(Status::already_exists("conflicting request_id"));
+            }
+            return Ok(existing.clone());
+        }
+        *locked(&self.light_state)? = if request.operation == "turn_on" {
+            "on".into()
+        } else {
+            "off".into()
+        };
+        let receipt = HomeActionReceipt {
+            request_id: request.request_id.clone(),
+            entity_id: request.entity_id,
+            operation: request.operation,
+            status: "confirmed".into(),
+            detail: String::new(),
+            completed_at_unix_ms: now_unix_ms(),
+        };
+        receipts.insert(request.request_id, receipt.clone());
+        Ok(receipt)
+    }
+
+    async fn get_home_action_receipt(
+        &self,
+        request: GetHomeActionReceiptRequest,
+    ) -> Result<HomeActionReceipt, Status> {
+        locked(&self.receipts)?
+            .get(&request.request_id)
+            .cloned()
+            .ok_or_else(|| Status::not_found("home action receipt not found"))
     }
 
     async fn subscribe_live_events(
@@ -340,7 +398,7 @@ impl Brain for Fixtures {
         let mut consent = locked(&self.consent)?;
         consent.consent_granted = false;
         consent.withdrawn_latched = true;
-        consent.updated_at_unix_ms = OBSERVED;
+        consent.updated_at_unix_ms = now_unix_ms();
         Ok(*consent)
     }
 
@@ -392,7 +450,7 @@ impl Memory for Fixtures {
         Ok(ErasureReceipt {
             erasure_id: request.user_id,
             tombstone_recorded: true,
-            completed_at_unix_ms: OBSERVED,
+            completed_at_unix_ms: now_unix_ms(),
             ..Default::default()
         })
     }
@@ -411,7 +469,7 @@ impl Memory for Fixtures {
         }
         state.revision += 1;
         state.paused = request.paused;
-        state.updated_at_unix_ms = OBSERVED;
+        state.updated_at_unix_ms = now_unix_ms();
         Ok(*state)
     }
 }
