@@ -94,3 +94,43 @@ jobs:
                   assert wf.getnchannels() == 1 and wf.getframerate() == 16000 and wf.getsampwidth() == 2
           print(f'Verified {len(wavs)} WAV fixtures ({total_bytes / 1024:.1f} KiB total)')
           "
+
+  python-ml-ci:
+    name: nexa-ml worker (ruff, stub drift, L2 gRPC sin torch)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: workers/nexa-ml
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install worker with dev extra only (no gpu extra, no torch)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Assert torch and model libraries are not installed
+        run: |
+          python -c "
+          import importlib.util, sys
+          heavy = ['torch', 'faster_whisper', 'kokoro', 'speechbrain', 'sentence_transformers']
+          found = [m for m in heavy if importlib.util.find_spec(m) is not None]
+          sys.exit(f'Heavy ML packages must not be installed in PR CI: {found}' if found else 0)
+          "
+
+      - name: Ruff lint & format check
+        run: |
+          ruff check .
+          ruff format --check src tests scripts
+
+      - name: Generated stubs match crates/nexa-proto (drift check)
+        run: |
+          python scripts/gen_pb.py
+          git diff --exit-code -- src/nexa_ml/pb
+
+      - name: L2 tests (real grpc.aio over UDS, model fakes)
+        run: python -m pytest -m "not gpu" -q

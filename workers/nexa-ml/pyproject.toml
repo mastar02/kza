@@ -25,7 +25,7 @@ dev = [
     "grpcio-tools==1.81.0",
     "pytest>=8.3.0",
     "pytest-asyncio>=0.24.0",
-    "ruff>=0.8.0",
+    "ruff==0.8.6",
 ]
 
 [tool.setuptools.packages.find]
