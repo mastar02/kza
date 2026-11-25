@@ -24,6 +24,7 @@ LOCATIONS = {
 }
 HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
 JSON_FILES = {"users.json", "users_accounts_v1.json", "alerts.json"}
+LEDGER_PAIR = ("deletion_ledger_v1", "deletion_ledger_salt_v1")
 
 
 class MigrationError(Exception):
@@ -191,6 +192,11 @@ def quoted(name: str) -> str:
     return '"' + name + '"'
 
 
+def _ledger_populated(db: sqlite3.Connection) -> bool:
+    return any(db.execute(f"SELECT count(*) FROM {quoted(name)}").fetchone()[0] > 0
+               for name in LEDGER_PAIR)
+
+
 @dataclass
 class Counts:
     source: int = 0
@@ -209,10 +215,23 @@ class Catalog:
     counts: dict[str, Counts] = field(default_factory=dict)
 
     def add(self, db: sqlite3.Connection, supported: set[str]) -> None:
-        for name, in db.execute("SELECT name FROM sqlite_schema WHERE type='table'"):
-            if name in supported:
-                require(name not in self.tables, "duplicate supported source table")
-                self.tables[name] = db
+        names = {name for name, in db.execute("SELECT name FROM sqlite_schema WHERE type='table'")
+                 if name in supported}
+        pair = names.intersection(LEDGER_PAIR)
+        duplicate = "duplicate supported source table"
+        require(self.tables.keys().isdisjoint(names - pair), duplicate)
+
+        if pair and not self.tables.keys().isdisjoint(LEDGER_PAIR):
+            ledger, salt = LEDGER_PAIR
+            existing = self.tables.get(ledger)
+            if len(pair) != len(LEDGER_PAIR) or existing is None or self.tables.get(salt) is not existing:
+                raise MigrationError(duplicate)
+            if _ledger_populated(db):
+                require(not _ledger_populated(existing), duplicate)
+            else:
+                names -= pair
+
+        self.tables.update(dict.fromkeys(names, db))
 
     def rows(self, table: str) -> list[dict]:
         self.counts.setdefault(table, Counts())
