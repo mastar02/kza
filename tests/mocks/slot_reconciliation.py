@@ -14,6 +14,11 @@ _CACHE_LOCK = threading.Lock()
 _TABLE_COLUMNS_CACHE: dict[str, dict] = {}
 _SCHEMA_COMPATIBLE_CACHE: dict[str, str] = {}
 
+# Under two Tier 2 workers, advance-N can exceed 55 s while completing the
+# real privacy transitions and shutdown. Also budget for staging and derivation.
+_PHASE_TIMEOUT_S = 90
+_SCENARIO_TIMEOUT_S = 360
+
 
 def clear_revision_caches() -> None:
     """Clear in-process memoization caches for revision schema lookups."""
@@ -379,7 +384,7 @@ def exercise_material_reconciliation(task, evidence, repo, *, new_revision,
     from tests.mocks.slot_reconciliation_child import read_phase_bag
 
     started = time.monotonic()
-    deadline = started + 240
+    deadline = started + _SCENARIO_TIMEOUT_S
     task, evidence, repo = Path(task).resolve(), Path(evidence).resolve(), Path(repo).resolve()
     assert not task.is_relative_to(repo) and not repo.is_relative_to(task)
     snapshots = task / "closed-snapshots"
@@ -398,7 +403,7 @@ def exercise_material_reconciliation(task, evidence, repo, *, new_revision,
             for branch, control in prepared["full_controls"].items()}, "phases": {}, "derivations": {}}
 
     def phase(controller, branch, mode):
-        budget = min(55, deadline - time.monotonic() - 20)
+        budget = min(_PHASE_TIMEOUT_S, deadline - time.monotonic() - 20)
         if budget <= 0:
             raise TimeoutError("reconciliation_parent_deadline")
         result = run_phase(controller, prepared, evidence, branch, mode, timeout=budget)
@@ -485,7 +490,7 @@ def exercise_pre_u3b_derivation(task, evidence, repo, *, new_revision):
     from tests.mocks.slot_reconciliation_child import read_phase_bag
 
     started = time.monotonic()
-    deadline = started + 240
+    deadline = started + _SCENARIO_TIMEOUT_S
     task, evidence, repo = Path(task).resolve(), Path(evidence).resolve(), Path(repo).resolve()
     assert not task.is_relative_to(repo) and not repo.is_relative_to(task)
     snapshots = task / "closed-snapshots"
@@ -498,7 +503,7 @@ def exercise_pre_u3b_derivation(task, evidence, repo, *, new_revision):
         "phases": {}}
 
     def phase(controller, branch, mode):
-        budget = min(55, deadline - time.monotonic() - 20)
+        budget = min(_PHASE_TIMEOUT_S, deadline - time.monotonic() - 20)
         if budget <= 0:
             raise TimeoutError("reconciliation_parent_deadline")
         result = run_phase(controller, prepared, evidence, branch, mode, timeout=budget)
