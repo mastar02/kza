@@ -13,3 +13,20 @@ nexa-proto.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+nexa-config.workspace = true
+prost.workspace = true
+rusqlite = { version = "0.37", features = ["bundled"] }
+sha2 = "0.10"
+sqlite-vec = "=0.1.7"
+thiserror.workspace = true
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+sd-notify = "0.5"
+
+[dev-dependencies]
+hyper-util = { version = "0.1", features = ["tokio"] }
+proptest.workspace = true
+tempfile = "3"
+tower = { version = "0.4", features = ["util"] }

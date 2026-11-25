@@ -1,16 +1,84 @@
-//! `nexa-memoryd` — Privacy, semantic memory, voice registry & atomic erasure daemon (Phase 4E target).
-//!
-//! Exclusive owner of WAL SQLite + embedded vector search (`sqlite-vec`), with zero network egress.
+//! Exclusive SQLite + sqlite-vec writer serving the private memory Unix socket.
 
-use nexa_proto::sockets;
-use tracing::info;
+use std::path::{Path, PathBuf};
+
+use nexa_config::NexaConfig;
+use nexa_memoryd::db::{FACT_MODEL, Store};
+use nexa_memoryd::service::{BoundSocket, MemoryRpc};
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt().with_target(true).init();
-    info!(
-        service = "nexa-memoryd",
-        socket = sockets::MEMORY,
-        "nexa-memoryd skeleton initialized (Phase 1 foundation)"
-    );
+    let config_dir = config_directory()?;
+    let config = NexaConfig::load_file(config_dir.join("nexa.toml"))?;
+    if config.ml.embeddings_model != FACT_MODEL {
+        return Err("unsupported fact embeddings model".into());
+    }
+    let mut store = Store::open(&config.paths.data_dir.join("memory"))?;
+    // This service version has no RPC for the global switch. The administrator
+    // opts in through the deployed Nexa config, independently of personal consent.
+    store.configure_voice_attribution(config.memory.voice_proposals_enabled)?;
+    let runtime_dir = std::env::var_os("RUNTIME_DIRECTORY")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("nexa")))
+        .unwrap_or(config.paths.runtime_dir);
+    let socket = BoundSocket::bind(&runtime_dir)?;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    let watchdog = notify_ready()?;
+    tracing::info!(service = "nexa-memoryd", "private memory socket ready");
+
+    let result = socket
+        .serve(
+            MemoryRpc::new(store, config.memory.ambient_enabled),
+            async {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    _ = terminate.recv() => {},
+                }
+            },
+        )
+        .await;
+    if let Some(watchdog) = watchdog {
+        watchdog.abort();
+    }
+    result?;
+    Ok(())
+}
+
+fn config_directory() -> Result<PathBuf, &'static str> {
+    let mut args = std::env::args_os().skip(1);
+    match args.next() {
+        None => Ok(PathBuf::from("/etc/nexa")),
+        Some(flag) if flag == "--config" => {
+            let dir = args.next().ok_or("--config requires a directory")?;
+            if args.next().is_some() {
+                return Err("usage: nexa-memoryd [--config DIRECTORY]");
+            }
+            Ok(PathBuf::from(dir))
+        }
+        _ => Err("usage: nexa-memoryd [--config DIRECTORY]"),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn notify_ready() -> std::io::Result<Option<tokio::task::JoinHandle<()>>> {
+    use sd_notify::{NotifyState, notify, watchdog_enabled};
+
+    notify(&[NotifyState::Ready])?;
+    Ok(watchdog_enabled().map(|period| {
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(period / 2);
+            loop {
+                interval.tick().await;
+                if notify(&[NotifyState::Watchdog]).is_err() {
+                    tracing::error!("systemd watchdog notification failed");
+                }
+            }
+        })
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn notify_ready() -> std::io::Result<Option<tokio::task::JoinHandle<()>>> {
+    Ok(None)
 }
