@@ -1,5 +1,18 @@
 # Convenciones del servidor compartido — espejo local
 
+## Nota operativa 2026-11-25
+
+Alta del usuario Linux dedicado `nexa` para Nexa v2. La excepción R10 permite cinco daemons nativos y dos auxiliares bajo systemd de usuario, sin pods. El host `192.168.1.2` tiene 2× RTX 3070 de 8 GiB. El reparto físico vigente está en el [inventario](architecture/HARDWARE.md).
+
+| Acceso | Dirección y alcance |
+| --- | --- |
+| Dashboard HTTPS | NGINX en `192.168.30.2:9540` hacia nexa-web en `127.0.0.1:9500` |
+| Inferencia local | llama-server en `127.0.0.1:8101` |
+| IPC | `$XDG_RUNTIME_DIR/nexa/{audio,ml,memory,brain}.sock`, modo `0600` |
+| Logs | Como `nexa`, `journalctl --user -u 'nexa-*'` |
+
+A continuación se conserva el espejo histórico de Notion (páginas 8 y 9) con sus fechas, direcciones y asignaciones originales.
+
 > Espejo de Notion KZA **pág. 8** ("Convenciones del servidor compartido") y **pág. 9** ("Onboarding — cómo sumar un proyecto nuevo"), extraído el **2026-06-09** vía MCP.
 > La fuente canónica sigue siendo Notion; si este doc y Notion difieren, **gana Notion**. Root del workspace: page_id `345ab24f-c493-80b2-b6f4-ef917e865f26`.
 > Nota: la pág. 8 es un log append-only con actualizaciones fechadas; ante conflicto entre secciones, prevalece la más reciente.

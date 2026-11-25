@@ -1,4 +1,4 @@
-# KZA — Asistente de Voz Local para Domótica
+# Nexa v2 — ingeniería y operación
 
 > Detalle extenso (mapa de archivos/módulos, ejemplos de estilo, hardware, persistencia, comandos y guía multi-consola) en [`docs/referencia/guia-operativa.md`](docs/referencia/guia-operativa.md).
 
@@ -6,24 +6,14 @@
 
 - **Leer primero:** `AGENTS.md` y `docs/runbooks/2026-11-05-mac-development-handoff.md`.
 - **Entorno Mac (autorizado 2026-11-05):** trabajar con la cuenta habitual sin privilegios y checkout local (`/Users/gabriel/Documents/Proyectos/kza`, `.venv` CPython 3.13); en Linux se usa `yo` en `/home/yo/projects/kza`.
-- **Separación estricta de producción:** `kza` es la cuenta administrativa/runtime del servidor. **Nunca** editar código, instalar dependencias, compilar ni hacer `git pull` en `/home/kza/kza` o `/home/kza/app`, ni reiniciar/publicar servicios sin GO explícito de release.
-- **Releases compiladas:** construir y probar artefactos de bytecode CPython 3.13 sin `.py` con `scripts/build_runtime.py` (`docs/architecture/DEPLOYMENT.md`). La release operativa `b0866e8` (2026-10-28) conserva estado privado separado y el checkout anterior para rollback.
+- **Separación estricta de producción:** `kza` es la cuenta administrativa/runtime del monolito histórico. **Nunca** editar código, instalar dependencias, compilar ni hacer `git pull` en `/home/kza/kza` o `/home/kza/app`, ni reiniciar/publicar servicios sin GO explícito de release.
+- **Releases nativas:** cuatro binarios Rust, worker Python 3.13 y SPA. Empaquetar y promover según el [contrato de despliegue](docs/architecture/DEPLOYMENT.md). La ejecución de Nexa corresponde al usuario dedicado `nexa`.
 
-## Resumen del Sistema
+## Resumen del sistema
 
-Sistema de control por voz local para Home Assistant. Latencia `<300ms` para domótica (fast path 100 % local); razonamiento complejo delegado al gateway LLM `:8200` (MiniMax cloud, decisión 2026-05-30 con `cloud.consent`). **2× RTX 3070 hoy:** `cuda:1` = STT + SpeakerID + TTS + `llama-server` 7B `:8101`; `cuda:0` = Emotion (deshabilitado) + fallback ambient (casi libre); BGE-M3 corre en CPU. Cualquier reasignación de GPUs se discute primero. Python 3.13, `async/await`, ~38K líneas, 8,900+ tests.
+Cinco daemons nativos coordinan captura por habitación, inferencia offline, memoria SQLite, decisiones domésticas y NEXO. La configuración usa tres TOML tipados. La cuenta de la SPA y su rol autorizan las operaciones. El consentimiento limita las salidas cloud. Consultar [roadmap](docs/architecture/NEXA_V2_ROADMAP.md) e [inventario de hardware](docs/architecture/HARDWARE.md).
 
-```
-Mic → WakeWord(CPU) → STT(GPU1) → Router 7B(GPU1 :8101) → TTS(GPU1) → Speaker
-                         ↕                  ↕
-                   SpeakerID(GPU1)   Reasoner cloud (gateway :8200)
-                   Emotion(GPU0)     ChromaDB / HomeAssistant
-                   BGE-M3(CPU)
-```
-
-- **Paths:** Fast path (`<300ms`: HA → VectorSearch → TTS) · Music path (`~500ms`: Spotify → MoodMapper → ZoneController) · Slow path (gateway `:8200` → Memory → TTS).
-- **Multi-usuario:** `MultiUserOrchestrator` → `PriorityRequestQueue` → `ContextManager` → `CancellationManager`.
-- **Source of truth cross-project:** espejo local `docs/SERVER_CONVENTIONS.md` (puertos `9500-9599`, gateway `:8200`, Podman rootless). Notion se consulta solo bajo demanda; su MCP está retirado en KZA (no asumir `mcp__notion__*`). No leer memorias de `homelab-infra` ni `homelab-services`.
+- **Contrato compartido:** conservar el espejo local de Notion en `docs/SERVER_CONVENTIONS.md`. Consultar Notion bajo demanda, sin asumir su MCP ni leer memorias de homelab-infra u homelab-services.
 
 ## Reglas de Ingeniería — LEER SIEMPRE
 
@@ -32,17 +22,17 @@ Mic → WakeWord(CPU) → STT(GPU1) → Router 7B(GPU1 :8101) → TTS(GPU1) → 
 - Inyección de dependencias por constructor; composición en lugar de herencia profunda.
 - `@dataclass` para DTOs y `Enum` para estados/tipos (`ModelState`, `PathType`, `AlertPriority`).
 - Docstrings Google-style y type hints en clases y funciones públicas.
-- Orden de imports: stdlib → third-party → `from src.modulo import Clase` (nunca relativos).
+- Orden de imports: stdlib → third-party → `import absoluto del paquete` (nunca relativos).
 - Logging con `logger = logging.getLogger(__name__)`; mensajes de voz/UI en español, código/logs en inglés.
-- Tests con `.venv/bin/pytest` + fixtures en `tests/conftest.py`, mocks en `tests/mocks/`.
-- Respetar asignación de GPUs (`cuda:1` audio+7B, `cuda:0` casi libre, BGE-M3 en CPU) y centralizar toda config en `config/settings.yaml`.
+- Tests con `.venv/bin/pytest` + fixtures y mocks del componente; para el monolito histórico, `tests/conftest.py` y `tests/mocks/`.
+- Respetar asignación de GPUs (`cuda:1` comando+TTS+7B, `cuda:0` ambient+ECAPA, BGE-M3 en CPU) y centralizar la configuración en los tres TOML de Nexa.
 - Conservar la separación entre voz, persona, cuenta, roles, consentimiento y administración, y las releases gestionadas autocontenidas (`mem:decisions`).
 
 ### NUNCA hacer
 - Bloquear el event loop con I/O síncrono ni usar `print()` en código de aplicación.
-- Cambiar asignación de GPUs, agregar dependencias pesadas sin justificar (8 GB VRAM/GPU) o crear archivos de config nuevos fuera de `config/settings.yaml`.
+- Cambiar asignación de GPUs, agregar dependencias pesadas sin justificar (8 GB VRAM/GPU) o crear archivos de config nuevos fuera del contrato tipado.
 - Modificar `src/main.py` sin revisar la cadena de DI completa.
-- Hacer push directo a `main`, usar `git stash`, `git add -A` / `git add .`, ni commitear `.env`, `data/`, `models/`, secretos, audio o PII.
+- Hacer push directo a `main`, usar `git stash`, `git add -A` / `git add .`, ni commitear `.env`, `data/`, `models/`, secretos, audio, PII o `casa.glb`.
 - Pedir confirmación cuando el siguiente paso de un plan autorizado es obvio; detenerse solo ante decisión ambigua, bloqueante real o acción destructiva.
 
 ## Workflow Multi-Consola (`herdr-app` + `hc` + `gpt-6-luna`)
@@ -60,7 +50,7 @@ Mic → WakeWord(CPU) → STT(GPU1) → Router 7B(GPU1 :8101) → TTS(GPU1) → 
 ```bash
 # Tests (Mac .venv CPython 3.13)
 .venv/bin/pytest tests/unit/workflow/
-.venv/bin/pytest tests/ -k "test_speaker"
+.venv/bin/pytest tests-v2/smoke tools/nexa-migrate/tests
 
 # Orquestación multi-consola
 python3 scripts/kza_quota.py --json
