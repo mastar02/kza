@@ -1,6 +1,6 @@
 //! Portable AudioService with injected amplifier and playback adapters.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -20,7 +20,9 @@ use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
 use crate::barge_in::BargeIn;
-use crate::capture_seal::{CaptureControl, CaptureError, CapturePhase};
+use crate::capture_seal::{
+    CaptureError, CapturePhase, SharedCapture, change_capture, running_epoch,
+};
 use crate::dsp::{frame_duration, frame_rms};
 use crate::ma1260::{Command, CommandFrame, LAST_ZONE, percent_to_step, step_to_percent};
 use crate::traits::{AmpTransport, AudioError, PlaybackOutput, PlaybackSession, PlaybackSpec};
@@ -92,7 +94,8 @@ impl Drop for PlaybackSlot<'_> {
 }
 
 pub struct AudioService<A, P> {
-    capture: Arc<Mutex<CaptureControl>>,
+    capture: SharedCapture,
+    capture_status: watch::Receiver<CaptureControlStatus>,
     amp: A,
     output: P,
     zones: BTreeMap<String, Zone>,
@@ -100,6 +103,7 @@ pub struct AudioService<A, P> {
     playbacks: PlaybackRegistry,
     utterances: broadcast::Sender<AudioUtterance>,
     started: Instant,
+    barge_in_enabled: bool,
 }
 
 impl<A, P> fmt::Debug for AudioService<A, P> {
@@ -114,12 +118,13 @@ impl<A, P> fmt::Debug for AudioService<A, P> {
 #[allow(clippy::result_large_err)] // Tonic's public error type carries gRPC metadata.
 impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
     pub fn new(
-        capture: Arc<Mutex<CaptureControl>>,
+        capture: SharedCapture,
         amp: A,
         output: P,
         zones: impl IntoIterator<Item = ZoneState>,
     ) -> Result<Self, Status> {
         let mut configured = BTreeMap::new();
+        let mut amplifier_zones = BTreeSet::new();
         for mut zone in zones {
             let amp_zone = u8::try_from(zone.ma1260_zone)
                 .ok()
@@ -132,6 +137,9 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
             {
                 return Err(Status::invalid_argument("invalid or duplicate audio zone"));
             }
+            if !amplifier_zones.insert(amp_zone) {
+                return Err(Status::invalid_argument("duplicate amplifier zone mapping"));
+            }
             zone.speaking = false;
             configured.insert(
                 zone.zone_id.clone(),
@@ -142,8 +150,10 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
                 },
             );
         }
+        let capture_status = lock(&capture)?.watch_status();
         Ok(Self {
             capture,
+            capture_status,
             amp,
             output,
             zones: configured,
@@ -154,7 +164,37 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
             playbacks: Mutex::default(),
             utterances: broadcast::channel(UTTERANCE_QUEUE).0,
             started: Instant::now(),
+            barge_in_enabled: true,
         })
+    }
+
+    pub fn with_barge_in(mut self, enabled: bool) -> Self {
+        self.barge_in_enabled = enabled;
+        self
+    }
+
+    pub(crate) fn capture_status_receiver(&self) -> watch::Receiver<CaptureControlStatus> {
+        self.capture_status.clone()
+    }
+
+    pub(crate) fn capture_controller(&self) -> SharedCapture {
+        Arc::clone(&self.capture)
+    }
+
+    pub(crate) fn update_microphone(&self, microphone: MicrophoneRoomStatus) -> Result<(), Status> {
+        let mut snapshot = lock(&self.microphones)?;
+        snapshot.observed_at_unix_ms = crate::runtime::unix_ms();
+        snapshot.stale = false;
+        if let Some(current) = snapshot
+            .microphones
+            .iter_mut()
+            .find(|status| status.room_id == microphone.room_id)
+        {
+            *current = microphone;
+        } else {
+            snapshot.microphones.push(microphone);
+        }
+        Ok(())
     }
 
     pub fn update_microphones(&self, microphones: Vec<MicrophoneRoomStatus>) -> Result<(), Status> {
@@ -171,8 +211,8 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
 
     /// Publish only while the capture's original ingress epoch remains open.
     pub fn publish_utterance(&self, utterance: AudioUtterance) -> Result<bool, Status> {
-        let capture = lock(&self.capture)?;
-        if capture.running_epoch() != Some(utterance.capture_epoch) {
+        let capture = self.capture_status.borrow();
+        if running_epoch(&capture) != Some(utterance.capture_epoch) {
             return Ok(false);
         }
         Ok(self.utterances.send(utterance).is_ok())
@@ -186,17 +226,25 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
         epoch: u64,
         frame: &[f32],
     ) -> Result<usize, Status> {
+        if !self.barge_in_enabled {
+            return Ok(0);
+        }
         let rms = frame_rms(frame);
         let duration = frame_duration(frame.len());
-        let capture = lock(&self.capture)?;
-        if capture.running_epoch() != Some(epoch) {
+        let capture = self.capture_status.borrow();
+        if running_epoch(&capture) != Some(epoch) {
             return Ok(0);
         }
 
         let mut active = lock(&self.playbacks)?;
         let mut interrupted = 0;
         for (zone_id, playback) in &mut *active {
-            if self.zones[zone_id].room_id != room_id || playback.stop.borrow().is_some() {
+            if !self
+                .zones
+                .get(zone_id)
+                .is_some_and(|zone| zone.room_id == room_id)
+                || playback.stop.borrow().is_some()
+            {
                 continue;
             }
             if playback.capture_epoch != Some(epoch) {
@@ -310,12 +358,25 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
     for AudioService<A, P>
 {
     async fn get_health(&self, _: Request<Empty>) -> Result<Response<HealthResponse>, Status> {
-        let capture = lock(&self.capture)?.status();
+        let capture = *self.capture_status.borrow();
         let (state, detail) = if !capture.supported {
             (HealthState::Degraded, "capture control is unavailable")
         } else {
             match capture.phase() {
-                CapturePhase::Running => (HealthState::Ok, "ready"),
+                CapturePhase::Running => {
+                    let recovering = lock(&self.microphones)?.microphones.iter().any(|room| {
+                        room.recoveries > 0
+                            && matches!(
+                                room.state(),
+                                MicCaptureState::Waiting | MicCaptureState::Recovering
+                            )
+                    });
+                    if recovering {
+                        (HealthState::Degraded, "room capture recovering")
+                    } else {
+                        (HealthState::Ok, "ready")
+                    }
+                }
                 CapturePhase::Muted if capture.total_mute_confirmed => {
                     (HealthState::Ok, "capture muted")
                 }
@@ -338,7 +399,7 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
         &self,
         _: Request<Empty>,
     ) -> Result<Response<MicrophonesSnapshot>, Status> {
-        let capture = lock(&self.capture)?.status();
+        let capture = *self.capture_status.borrow();
         let mut snapshot = lock(&self.microphones)?.clone();
         if capture.ingress_sealed {
             for microphone in &mut snapshot.microphones {
@@ -387,7 +448,7 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
         &self,
         _: Request<Empty>,
     ) -> Result<Response<CaptureControlStatus>, Status> {
-        Ok(Response::new(lock(&self.capture)?.status()))
+        Ok(Response::new(*self.capture_status.borrow()))
     }
 
     async fn set_capture_mute(
@@ -396,11 +457,13 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
     ) -> Result<Response<CaptureControlStatus>, Status> {
         let request = request.into_inner();
         require_permission(request.actor.as_ref(), Permission::AdminManage)?;
-        let mut control = lock(&self.capture)?;
-        control
-            .set_muted(request.muted, request.expected_revision)
-            .map_err(capture_status)?;
-        Ok(Response::new(control.status()))
+        let status = change_capture(&self.capture, move |control| {
+            control.set_muted(request.muted, request.expected_revision)?;
+            Ok(control.status())
+        })
+        .await
+        .map_err(capture_status)?;
+        Ok(Response::new(status))
     }
 
     async fn forget_carried_owners(
@@ -409,12 +472,13 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
     ) -> Result<Response<ForgetCarriedOwnersResponse>, Status> {
         let request = request.into_inner();
         require_permission(request.actor.as_ref(), Permission::AdminManage)?;
-        let mut control = lock(&self.capture)?;
-        let forgotten = control
-            .forget_carried_owners(request.expected_carried, request.no_capture_running)
-            .map_err(capture_status)?;
-        let status = control.status();
-        drop(control);
+        let (forgotten, status) = change_capture(&self.capture, move |control| {
+            let forgotten = control
+                .forget_carried_owners(request.expected_carried, request.no_capture_running)?;
+            Ok((forgotten, control.status()))
+        })
+        .await
+        .map_err(capture_status)?;
         if forgotten != 0 {
             tracing::warn!(
                 forgotten_capture_owners = forgotten,
@@ -435,19 +499,14 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
         request: Request<SubscribeUtterancesRequest>,
     ) -> Result<Response<Self::SubscribeUtterancesStream>, Status> {
         let include_ambient = request.into_inner().include_ambient;
-        let capture = Arc::clone(&self.capture);
+        let capture = self.capture_status.clone();
         let stream =
             BroadcastStream::new(self.utterances.subscribe()).filter_map(
                 move |result| match result {
-                    Ok(utterance) => {
-                        let control = match lock(&capture) {
-                            Ok(control) => control,
-                            Err(status) => return Some(Err(status)),
-                        };
-                        (control.running_epoch() == Some(utterance.capture_epoch)
-                            && (include_ambient || utterance.kind() != UtteranceKind::Ambient))
-                            .then_some(Ok(utterance))
-                    }
+                    Ok(utterance) => (running_epoch(&capture.borrow())
+                        == Some(utterance.capture_epoch)
+                        && (include_ambient || utterance.kind() != UtteranceKind::Ambient))
+                        .then_some(Ok(utterance)),
                     Err(_) => Some(Err(Status::resource_exhausted(
                         "utterance subscriber fell behind",
                     ))),
@@ -557,6 +616,7 @@ fn capture_status(error: CaptureError) -> Status {
         }
         CaptureError::ConfirmationRequired => Status::invalid_argument(error.to_string()),
         CaptureError::Exhausted => Status::resource_exhausted(error.to_string()),
+        CaptureError::Persistence => Status::unavailable(error.to_string()),
         CaptureError::InvalidState => Status::internal(error.to_string()),
         CaptureError::Busy | CaptureError::Sealed | CaptureError::StaleAcknowledgment => {
             Status::failed_precondition(error.to_string())
@@ -568,6 +628,7 @@ fn audio_status(error: AudioError) -> Status {
     match error {
         AudioError::Rejected => Status::failed_precondition(error.to_string()),
         AudioError::Unavailable | AudioError::Io(_) => Status::unavailable(error.to_string()),
+        AudioError::Adapter(_) => Status::unavailable("audio adapter unavailable"),
     }
 }
 

@@ -14,6 +14,8 @@ pub enum AudioError {
     Unavailable,
     #[error("audio device rejected the command")]
     Rejected,
+    #[error("audio adapter failed: {0}")]
+    Adapter(String),
 }
 
 /// One room's mono f32 capture source at 16 kHz.
@@ -33,11 +35,15 @@ pub trait CaptureSource: Send {
 
 /// Synchronous model inference. Call adapters from a bounded blocking executor.
 pub trait VadEngine: Send {
+    fn reset(&mut self) {}
+
     fn speech_probability(&mut self, samples: &[f32]) -> Result<f32, AudioError>;
 }
 
 /// Keep model context local to the room providing the 16 kHz frames.
 pub trait WakeEngine: Send {
+    fn reset(&mut self) {}
+
     fn wake_score(&mut self, samples: &[f32]) -> Result<f32, AudioError>;
 }
 
