@@ -9,11 +9,27 @@ use tokio::time::timeout;
 
 use crate::{CancellationToken, CloudConsentGate, ThinkTagStripper};
 
+#[derive(Clone)]
+pub struct ApiKey(String);
+
+impl From<String> for ApiKey {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("<redacted>")
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Endpoint {
     pub id: String,
     /// Full OpenAI-compatible completions or chat/completions URL.
     pub url: String,
+    pub api_key: Option<ApiKey>,
     pub model: String,
     pub cloud: bool,
     pub priority: u32,
@@ -30,6 +46,7 @@ impl Endpoint {
                     "{}/completions",
                     config.fast_router_url.trim_end_matches('/')
                 ),
+                api_key: None,
                 model: config.fast_router_model.clone(),
                 cloud: false,
                 priority: 1,
@@ -42,6 +59,7 @@ impl Endpoint {
                     "{}/chat/completions",
                     config.cloud_gateway_url.trim_end_matches('/')
                 ),
+                api_key: None,
                 model: config.cloud_model.clone(),
                 cloud: true,
                 priority: 2,
@@ -147,7 +165,13 @@ impl OpenAiClient {
             } else {
                 body["prompt"] = json!(prompt);
             }
-            let send = self.http.post(&endpoint.url).json(&body).send();
+            let mut post = self.http.post(&endpoint.url).json(&body);
+            if let Some(key) = &endpoint.api_key
+                && !key.0.is_empty()
+            {
+                post = post.bearer_auth(&key.0);
+            }
+            let send = post.send();
             tokio::pin!(send);
             let mut response = std::future::poll_fn(|cx| {
                 let _admission = endpoint.cloud.then(|| self.gate.admit()).transpose()?;

@@ -24,6 +24,18 @@ use tower::ServiceExt;
 use support::{ORIGIN, call, document};
 
 #[test]
+fn opens_migrated_auth_path_in_private_directory() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::tempdir().unwrap();
+    let dir = root.path().join("auth");
+    let store = AuthStore::open_in(root.path()).unwrap();
+    assert!(dir.join("auth.db").is_file());
+    assert_eq!(dir.metadata().unwrap().permissions().mode() & 0o777, 0o700);
+    drop(store);
+    assert!(AuthStore::open_in(root.path()).is_ok());
+}
+
+#[test]
 fn sha256_and_role_matrix_match_authority() {
     use Permission::*;
     assert_eq!(

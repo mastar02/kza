@@ -22,7 +22,7 @@ use std::{
 use nexa_config::LoadedBundle;
 use nexa_ha::{ControlPolicy, ControlService, HaClient};
 use nexa_household::{Clock, HouseholdWorker, reminders::ReminderPolicy};
-use nexa_llm::{CancellationToken, Endpoint, FailoverRouter};
+use nexa_llm::{ApiKey, CancellationToken, CloudConsentGate, Endpoint, FailoverRouter};
 use nexa_nlu::{
     RouterEngine, gate::GateSettings, household::HouseholdIntentSettings,
     router_engine::RouterSettings,
@@ -142,6 +142,17 @@ pub struct Brain {
     active: pipeline::ActiveTurns,
 }
 
+fn api_key(value: String) -> Option<ApiKey> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_owned().into())
+}
+
+fn env_key(names: &[&str]) -> Option<ApiKey> {
+    names
+        .iter()
+        .find_map(|name| std::env::var(name).ok().and_then(api_key))
+}
+
 impl Brain {
     /// Prepare local engines and open the household store exactly once.
     pub async fn open(config: LoadedBundle, deps: Dependencies) -> Result<Arc<Self>, BrainError> {
@@ -162,15 +173,43 @@ impl Brain {
             Ok::<_, io::Error>(lock)
         })
         .await??;
-        let consent_file = data.join("cloud-consent-withdrawn");
-        let withdrawal = match tokio::fs::read_to_string(&consent_file).await {
+        let consent_file = household_dir.join("cloud-consent-withdrawn");
+        let marker = match tokio::fs::read_to_string(&consent_file).await {
+            // Honor withdrawals persisted before the household directory cutover.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                tokio::fs::read_to_string(data.join("cloud-consent-withdrawn")).await
+            }
+            result => result,
+        };
+        let withdrawal = match marker {
             Ok(value) => Some(value.trim().parse::<u64>().unwrap_or_default()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
         };
-        let llm =
-            FailoverRouter::from_config(&config.core.llm, Some(data.join("llm-cooldowns.json")))
-                .await?;
+        let mut endpoints = Endpoint::from_config(&config.core.llm);
+        endpoints[0].api_key = match env_key(&["NEXA_FAST_LLM_API_KEY", "LLAMA_API_KEY"]) {
+            Some(key) => Some(key),
+            None => {
+                match tokio::fs::read_to_string(config.core.paths.secrets_dir.join("llama-api-key"))
+                    .await
+                {
+                    Ok(value) => api_key(value),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        };
+        endpoints[1].api_key = env_key(&[
+            "NEXA_CLOUD_LLM_API_KEY",
+            "LLM_GATEWAY_API_KEY",
+            "LITELLM_API_KEY",
+        ]);
+        let llm = FailoverRouter::new(
+            endpoints.to_vec(),
+            Arc::new(CloudConsentGate::new(config.core.llm.cloud_consent)),
+            Some(household_dir.join("llm-cooldowns.json")),
+        )
+        .await?;
         if withdrawal.is_some() {
             llm.consent().withdraw();
         }
@@ -216,7 +255,7 @@ impl Brain {
             ..RouterSettings::default()
         });
         Ok(Arc::new(Self {
-            endpoints: Endpoint::from_config(&config.core.llm),
+            endpoints,
             config,
             audio: deps.audio,
             ml: deps.ml,

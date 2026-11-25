@@ -532,6 +532,18 @@ fn private_file(path: &Path) -> std::io::Result<File> {
 }
 
 impl AuthStore {
+    /// Open the migrated dashboard authority under the configured data directory.
+    pub fn open_in(data_dir: &Path) -> Result<Self, AuthError> {
+        use std::os::unix::fs::DirBuilderExt;
+        let directory = data_dir.join("auth");
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)
+            .map_err(|_| AuthError::Unavailable)?;
+        Self::open(&directory.join("auth.db"))
+    }
+
     /// Open the single authority writer. The first Rust startup invalidates Python-era cookies.
     pub fn open(path: &Path) -> Result<Self, AuthError> {
         let filename = path

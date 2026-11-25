@@ -152,11 +152,13 @@ async fn simulation_accepts_config_flag_and_stops_on_sigint() {
     write_config(root.path());
     let notify_path = root.path().join("notify");
     let notify = UnixDatagram::bind(&notify_path).unwrap();
-    let socket = root.path().join("runtime/audio.sock");
+    let socket = root.path().join("xdg/nexa/audio.sock");
     let mut child = TestProcess(
         Command::new(env!("CARGO_BIN_EXE_nexa-audiod"))
             .arg("--simulation")
-            .arg("--config-dir")
+            .env_remove("RUNTIME_DIRECTORY")
+            .env("XDG_RUNTIME_DIR", root.path().join("xdg"))
+            .arg("--config")
             .arg(root.path())
             .env("NEXA_CONFIG_DIR", root.path().join("unused"))
             .env("NOTIFY_SOCKET", &notify_path)

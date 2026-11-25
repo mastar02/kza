@@ -63,7 +63,10 @@ fn readiness_watchdog_sigterm_and_socket_cleanup() -> Result<(), Box<dyn Error>>
     let data = tmp.path().join("data");
     let toml = include_str!("../../../config/nexa/nexa.toml")
         .replace("/var/lib/nexa", &data.to_string_lossy())
-        .replace("/run/user/nexa/nexa", &runtime.to_string_lossy())
+        .replace(
+            "/run/user/nexa/nexa",
+            &tmp.path().join("unused").to_string_lossy(),
+        )
         .replace("/etc/nexa/secrets", &secrets.to_string_lossy());
     fs::write(config.join("nexa.toml"), toml)?;
     fs::write(
@@ -76,7 +79,9 @@ fn readiness_watchdog_sigterm_and_socket_cleanup() -> Result<(), Box<dyn Error>>
     let startup_deadline = Instant::now() + Duration::from_secs(45);
     let mut daemon = Daemon(
         Command::new(env!("CARGO_BIN_EXE_nexa-brain"))
-            .args(["--standalone-test", "--config-dir"])
+            .env("RUNTIME_DIRECTORY", &runtime)
+            .env("XDG_RUNTIME_DIR", tmp.path().join("unused-xdg"))
+            .args(["--standalone-test", "--config"])
             .arg(&config)
             .env("NOTIFY_SOCKET", &path)
             .env("WATCHDOG_USEC", "100000")
