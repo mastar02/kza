@@ -547,15 +547,22 @@ def migrate_consents(source: Catalog, db: sqlite3.Connection, privacy: Privacy,
                           "verification_locked"}, "invalid voice consent state")
         at = when(row, "updated_at_unix_ms", "changed_at")
         retired = privacy.is_retired(person)
+        source_granted = state == "active" if state is not None else row.get("granted") == 1
         withdrawn = False
-        if state == "active" and withdrawals:
-            revision = row["revision"]
-            require(type(revision) is int and revision > 0, "invalid consent revision")
-            # Match the legacy restore guard's revision window.
-            withdrawn = any(privacy.ledger.erased("voice_consent_withdrawn", f"{person}#{later}")
-                            is not None for later in range(revision, revision + withdrawals + 1))
+        if source_granted and withdrawals:
+            if state is None:
+                # Native rows have no legacy revision. A hash of person#revision
+                # cannot rule out a withdrawal for this person, and timestamps
+                # on restored rows cannot establish a new opt-in.
+                withdrawn = True
+            else:
+                revision = row["revision"]
+                require(type(revision) is int and revision > 0, "invalid consent revision")
+                # Match the legacy restore guard's revision window.
+                withdrawn = any(privacy.ledger.erased("voice_consent_withdrawn", f"{person}#{later}")
+                                is not None for later in range(revision, revision + withdrawals + 1))
         granted = (
-            (state == "active" if state is not None else row.get("granted") == 1)
+            source_granted
             and profile is not None and prev is not None and link is not None
             and profiles.get(profile) == prev and links.get(profile) == (person, link)
             and not retired and person not in privacy.inactive
