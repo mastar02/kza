@@ -214,16 +214,27 @@ class MlServicer(ml_pb2_grpc.MlServiceServicer):
     ) -> common_pb2.HealthResponse:  # noqa: N802
         """Drain, unload and recreate one slot; failure leaves it ``UNAVAILABLE``.
 
-        Authorization is enforced upstream (control plane over the 0600 socket);
-        the actor is only logged by role for audit, never by subject.
+        Administrative: the verified ``ActorContext`` from the control plane is
+        mandatory (``UNAUTHENTICATED`` if absent or without subject) and must be an
+        ``ROLE_OPERATOR`` holding ``PERMISSION_ADMIN_MANAGE`` (``PERMISSION_DENIED``
+        otherwise). Both checks run before the slot id is resolved or logged; the
+        audit log only records the canonical slot id and role, never the subject.
         """
 
         async def call() -> common_pb2.HealthResponse:
-            logger.info(
-                "ReloadModel %s requested (role=%s)",
-                request.slot_id,
-                common_pb2.Role.Name(request.actor.role),
-            )
+            actor = request.actor if request.HasField("actor") else None
+            if actor is None or not actor.subject:
+                logger.warning("ReloadModel rejected: missing actor context")
+                await context.abort(grpc.StatusCode.UNAUTHENTICATED, "actor context required")
+            if (
+                actor.role != common_pb2.ROLE_OPERATOR
+                or common_pb2.PERMISSION_ADMIN_MANAGE not in actor.permissions
+            ):
+                logger.warning("ReloadModel denied for role %s", common_pb2.Role.Name(actor.role))
+                await context.abort(grpc.StatusCode.PERMISSION_DENIED, "operator with admin.manage required")
+            if request.slot_id not in self._rt.slot_ids:
+                raise InvalidInputError("unknown slot_id")
+            logger.info("ReloadModel %s authorized (role=ROLE_OPERATOR)", request.slot_id)
             snap = await self._rt.reload(request.slot_id)
             return common_pb2.HealthResponse(
                 service=f"{SERVICE_NAME}/{snap.slot_id}",
@@ -234,6 +245,29 @@ class MlServicer(ml_pb2_grpc.MlServiceServicer):
             )
 
         return await _guarded(context, "ReloadModel", call)
+
+
+def socket_identity(path: pathlib.Path) -> tuple[int, int]:
+    """``(st_dev, st_ino)`` of the socket this process just bound."""
+    st = path.lstat()
+    return st.st_dev, st.st_ino
+
+
+def remove_owned_socket(path: pathlib.Path, identity: tuple[int, int] | None) -> bool:
+    """Unlink ``path`` only if it is still the very socket this process created.
+
+    Returns:
+        ``True`` if removed; ``False`` if missing, replaced or not a socket.
+    """
+    try:
+        st = path.lstat()
+    except FileNotFoundError:
+        return False
+    if identity is None or not stat.S_ISSOCK(st.st_mode) or (st.st_dev, st.st_ino) != identity:
+        logger.warning("Socket path no longer holds this worker's socket; leaving it in place")
+        return False
+    path.unlink()
+    return True
 
 
 def prepare_socket_path(path: pathlib.Path) -> None:
@@ -303,6 +337,7 @@ async def serve(
         with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
             loop.add_signal_handler(sig, stop.set)
     server = await start_server(runtime, socket_path)
+    identity = socket_identity(socket_path)
     watchdog = asyncio.create_task(notifier.watchdog_loop())
     loading = asyncio.create_task(runtime.load_all())
     try:
@@ -324,8 +359,7 @@ async def serve(
                 await task
         await server.stop(STOP_GRACE_S)
         runtime.close()
-        with contextlib.suppress(FileNotFoundError):
-            socket_path.unlink()
+        remove_owned_socket(socket_path, identity)
         for sig in (signal.SIGTERM, signal.SIGINT):
             with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
                 loop.remove_signal_handler(sig)
