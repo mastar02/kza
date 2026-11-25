@@ -561,12 +561,19 @@ def test_time_to_reset_weighting_conserves_early_burn_and_prioritizes_expiring_q
     assert early_burn["reset_urgency"] == 0.0
     assert expiring["headroom_pct_per_h"] > early_burn["headroom_pct_per_h"] * 20
 
-    # 2. 5h expiring urgency is suppressed when the 7d bank is strained/over-burning.
+    # 2. 5h expiring urgency is suppressed when the 7d bank is strained OR over-burning (pace < -10%).
     strained_7d = kza_quota.evaluate_window_quota(
         30.0,
         85.0,
         five_hour_resets_at=now + 1800.0,
         seven_day_resets_at=now + 5 * 86400.0,
+        now=now,
+    )
+    overburn_7d = kza_quota.evaluate_window_quota(
+        22.0,
+        38.0,
+        five_hour_resets_at=now + 1800.0,
+        seven_day_resets_at=now + 6.2 * 86400.0,
         now=now,
     )
     healthy_7d = kza_quota.evaluate_window_quota(
@@ -578,6 +585,8 @@ def test_time_to_reset_weighting_conserves_early_burn_and_prioritizes_expiring_q
     )
     assert healthy_7d["reset_urgency"] > 0.40
     assert strained_7d["reset_urgency"] == 0.0
+    assert overburn_7d["pace_delta_pct"] < -20.0
+    assert overburn_7d["reset_urgency"] == 0.0
 
     # 3. Hard exclusions (>=92% 5h / >=95% 7d) are NEVER bypassed even 5 minutes before reset.
     hard_5h = kza_quota.evaluate_window_quota(

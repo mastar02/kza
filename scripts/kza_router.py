@@ -50,6 +50,12 @@ READ_ONLY_ROLES: frozenset[str] = frozenset(
 WRITE_ROLES: frozenset[str] = frozenset({"kza-dev", "kza-ops"})
 ALL_ROLES: frozenset[str] = READ_ONLY_ROLES | WRITE_ROLES
 
+# Default utilization boost for under-used subscriptions (auto-tapers toward 1.0 as usage rises).
+DEFAULT_RUNTIME_MULTIPLIERS: dict[str, float] = {
+    "muse": 1.15,
+}
+RUNTIME_MULTIPLIER_EXCLUDED_ROLES: frozenset[str] = frozenset({"kza-ui"})
+
 
 @dataclass(frozen=True)
 class ModelCandidate:
@@ -679,7 +685,7 @@ Follow strict proportionality to maximize Round-1 quality per quota unit across 
 - Reserve flagship heavyweights (`claude:claude-opus-5-5`, `codex:gpt-6.2-sol`, `muse:muse-wonder-full-1.0`, `agy:gemini-4-neon-high`, `agy:gemini-4-hydrogen-high`, `agy:claude-opus-5-5-high`) for `complexity=high`, multi-module architecture, subtle async/concurrency bugs, privacy/authority gates (`kza-privacy`), deep 4-lens `kza-qa`, or high-rigor specs.
 - Prefer efficient medium-tier specialists (`claude:claude-sonnet-5-5`, `codex:gpt-6.2-astra`, `muse:muse-wonder-1.0`, `agy:gemini-4-carbon-medium`, `agy:claude-sonnet-5-5-medium`) for `kza-pregate`, `kza-ops` tooling, `complexity=low` or cleanly scoped `complexity=medium` tasks, and routine checks—unless the task summary reveals subtle concurrency, security, or privacy risk.
 - For `kza-ui`, evaluate browser/computer-use strength alongside real quota weights: `codex:gpt-6.1-terra` excels at interactive desktop/browser E2E flows, while `agy:gemini-4-neon-high` and `agy:gemini-4-carbon-medium` offer strong multimodal UI inspection, and `claude:claude-opus-5-5` handles multimodal DOM/privacy checks when other families are excluded or depleted.
-- Respect `quota_weight` (already pace- and time-to-reset adjusted), `urg=` (`reset_urgency`), `pace=`, `headroom=`, and reset horizons (`resets_in_h`) seriously: when one pool has a noticeably healthier `quota_weight` (for example `1.00` vs `0.85` or lower), or has healthy remaining quota about to reset soon (`urg > 0`, `resets_in_h <= 12h` on 7d or `<= 1.5h` on 5h, use-before-reset), shift work toward that pool to maximize every subscription before reset and conserve long-horizon banks burning early. Remember `agy:3p` has its own quota separate from `agy:gemini` and from `claude-1`.
+- Respect `quota_weight` (already pace- and time-to-reset adjusted), `urg=` (`reset_urgency`), `pace=`, `headroom=`, `runtime_boost=`, and reset horizons (`resets_in_h`) seriously: when one pool has a noticeably healthier `quota_weight` (for example `1.00` vs `0.85` or lower), carries an active `runtime_boost=` multiplier (such as under-utilized `muse`), or has healthy remaining quota about to reset soon (`urg > 0`, `resets_in_h <= 12h` on 7d or `<= 1.5h` on 5h, use-before-reset), shift work toward that pool to maximize every subscription before reset and conserve long-horizon banks burning early. Remember `agy:3p` has its own quota separate from `agy:gemini` and from `claude-1`.
 - Notice Codex operates on standard tier (`service_tier` default, `/fast` disabled) to preserve weekly quota capacity across `codex` and `codex-2`.
 
 === 4. TASK RIGOR SCORING RUBRIC (`task_rigor`) & ROUND-1 QUALITY SIGNALS ===
@@ -845,6 +851,7 @@ def build_decisions_payload(
     excluded_families: list[str],
     quota_snapshot: dict[str, Any] | None = None,
     candidate_weights: dict[str, float] | None = None,
+    candidate_boosts: dict[str, float] | None = None,
 ) -> dict[str, Any]:
     """Construct the live `POST /v1/decisions` request payload for `gpt-6-luna`.
 
@@ -870,9 +877,11 @@ def build_decisions_payload(
             _, _, pinfo = _candidate_quota_info(c, subs)
             if pinfo:
                 pool_tag = f", {_fmt_pool_metrics(pinfo, ts)}"
+        boost = candidate_boosts.get(c.candidate_id, 1.0) if candidate_boosts else 1.0
+        boost_tag = f", runtime_boost={boost:.2f}x" if boost != 1.0 else ""
         desc = (
             f"runtime={c.runtime}, family={c.family}, effort={c.effort}{fast_tag}, "
-            f"quota_weight={qw:.2f}{pool_tag}, benchmark_prior={suit:.2f}; {c.capability_notes}"
+            f"quota_weight={qw:.2f}{boost_tag}{pool_tag}, benchmark_prior={suit:.2f}; {c.capability_notes}"
         )
         cand_lines.append(f"- {c.candidate_id}: {desc}")
         choice_items.append({"value": c.candidate_id, "description": desc})
@@ -996,8 +1005,9 @@ def _deterministic_scores(
     quota_weights: dict[str, float],
     candidate_weights: dict[str, float] | None = None,
     candidate_urgencies: dict[str, float] | None = None,
+    candidate_boosts: dict[str, float] | None = None,
 ) -> dict[str, float]:
-    """Compute transparent deterministic score per eligible candidate (capability + time-aware quota + reset urgency)."""
+    """Compute transparent deterministic score per eligible candidate (capability + time-aware quota + reset urgency + runtime boost)."""
     effort_bonus = {
         "low": {"low": 0.04, "medium": 0.03, "high": -0.02},
         "medium": {"low": -0.02, "medium": 0.03, "high": 0.02},
@@ -1017,11 +1027,12 @@ def _deterministic_scores(
             if candidate_urgencies
             else 0.0
         )
+        boost = candidate_boosts.get(c.candidate_id, 1.0) if candidate_boosts else 1.0
         bonus = effort_bonus.get(c.effort, 0.0)
         # Blend capability (58%), pace/reset-adjusted quota health (34%), and use-before-reset urgency (8%),
-        # multiplicatively damped by severe scarcity.
+        # multiplicatively damped by severe scarcity and scaled by any active runtime utilization boost.
         effective_health = min(1.0, qw + (0.10 * urg if qw >= 0.35 else 0.0))
-        score = (0.58 * (suit + bonus) + 0.34 * qw + 0.08 * urg) * (0.45 + 0.55 * effective_health)
+        score = (0.58 * (suit + bonus) + 0.34 * qw + 0.08 * urg) * (0.45 + 0.55 * effective_health) * boost
         scores[c.candidate_id] = round(score, 6)
     return scores
 
@@ -1041,6 +1052,81 @@ def _append_jsonl(path: Path, record: dict[str, Any]) -> None:
         os.chmod(path, 0o600)
     except OSError:
         pass
+
+
+def _parse_multiplier_value(rt: str, raw: Any, source: str) -> float:
+    if rt not in kza_quota.RUNTIMES:
+        raise RuntimeError(f"Unknown runtime '{rt}' in {source} runtime_multipliers.")
+    if isinstance(raw, bool):
+        raise RuntimeError(f"Invalid multiplier for '{rt}' in {source}: expected number, got bool.")
+    val = kza_quota._to_float(raw)
+    if val is None or not (0.25 <= val <= 2.0):
+        raise RuntimeError(f"Invalid multiplier {raw!r} for '{rt}' in {source}: expected value in [0.25, 2.0].")
+    return round(val, 4)
+
+
+def load_runtime_multipliers(state_dir: Path | None = None) -> dict[str, float]:
+    """Load default + policy.json + KZA_RUNTIME_MULTIPLIERS utilization boosts."""
+    multipliers: dict[str, float] = dict(DEFAULT_RUNTIME_MULTIPLIERS)
+    policy = _load_policy_dict(state_dir)
+    if "runtime_multipliers" in policy:
+        raw_map = policy["runtime_multipliers"]
+        if not isinstance(raw_map, dict):
+            raise RuntimeError("Invalid 'runtime_multipliers' in policy.json: expected JSON object.")
+        for rt, val in raw_map.items():
+            multipliers[str(rt).strip().lower()] = _parse_multiplier_value(str(rt).strip().lower(), val, "policy.json")
+
+    env_raw = os.environ.get("KZA_RUNTIME_MULTIPLIERS", "").strip()
+    if env_raw:
+        if env_raw.startswith("{"):
+            try:
+                parsed = json.loads(env_raw)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(f"Invalid JSON in KZA_RUNTIME_MULTIPLIERS: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise RuntimeError("Invalid KZA_RUNTIME_MULTIPLIERS: expected JSON object.")
+            for rt, val in parsed.items():
+                multipliers[str(rt).strip().lower()] = _parse_multiplier_value(
+                    str(rt).strip().lower(), val, "KZA_RUNTIME_MULTIPLIERS"
+                )
+        else:
+            for item in env_raw.split(","):
+                part = item.strip()
+                if not part:
+                    continue
+                if "=" not in part:
+                    raise RuntimeError(f"Invalid entry '{part}' in KZA_RUNTIME_MULTIPLIERS: expected runtime=factor.")
+                rt, val = part.split("=", 1)
+                rt_key = rt.strip().lower()
+                multipliers[rt_key] = _parse_multiplier_value(rt_key, val.strip(), "KZA_RUNTIME_MULTIPLIERS")
+    return multipliers
+
+
+def effective_runtime_multiplier(
+    runtime: str,
+    role: str,
+    pool: dict[str, Any],
+    configured: dict[str, float],
+) -> float:
+    """Compute auto-tapering utilization boost for a runtime+role given current pool telemetry."""
+    if role in RUNTIME_MULTIPLIER_EXCLUDED_ROLES:
+        return 1.0
+    raw = configured.get(runtime, 1.0)
+    if raw <= 1.0:
+        return raw
+    if not isinstance(pool, dict) or pool.get("excluded"):
+        return 1.0
+
+    w = float(pool.get("weight") or 0.0)
+    p7 = kza_quota._to_float(pool.get("seven_day_pct"))
+    pace = kza_quota._to_float(pool.get("pace_delta_pct"))
+    if w < 0.65 or (pace is not None and pace < -10.0) or (p7 is not None and p7 >= 80.0):
+        return 1.0
+
+    taper_w = 1.0 if w >= 0.85 else max(0.0, (w - 0.65) / 0.20)
+    taper_7d = 1.0 if (p7 is None or p7 <= 70.0) else max(0.0, (80.0 - p7) / 10.0)
+    taper = min(taper_w, taper_7d)
+    return round(1.0 + (raw - 1.0) * taper, 4)
 
 
 def load_allowed_runtimes(state_dir: Path | None = None) -> set[str] | None:
@@ -1106,15 +1192,18 @@ def route_task(
         raise RuntimeError(f"No candidates remain after excluding families {excluded_fams}.")
 
     now_ts = time.time()
+    runtime_mults = load_runtime_multipliers(sdir)
     eligible: list[ModelCandidate] = []
     cand_weights: dict[str, float] = {}
     cand_urgencies: dict[str, float] = {}
+    cand_boosts: dict[str, float] = {}
     for c in family_filtered:
         cw, c_excl, pinfo = _candidate_quota_info(c, subs)
         if not c_excl and cw > 0.0:
             eligible.append(c)
             cand_weights[c.candidate_id] = cw
             cand_urgencies[c.candidate_id] = _candidate_reset_urgency(pinfo, now_ts)
+            cand_boosts[c.candidate_id] = effective_runtime_multiplier(c.runtime, role, pinfo, runtime_mults)
 
     quota_emergency_used = False
     if not eligible:
@@ -1129,6 +1218,7 @@ def route_task(
             cw, _, pinfo = _candidate_quota_info(c, subs)
             cand_weights[c.candidate_id] = cw
             cand_urgencies[c.candidate_id] = _candidate_reset_urgency(pinfo, now_ts)
+            cand_boosts[c.candidate_id] = 1.0
 
     sanitized = distill_routing_summary(summary)
     det_scores = _deterministic_scores(
@@ -1138,6 +1228,7 @@ def route_task(
         quota_weights,
         candidate_weights=cand_weights,
         candidate_urgencies=cand_urgencies,
+        candidate_boosts=cand_boosts,
     )
 
     source = "fallback-deterministic"
@@ -1164,6 +1255,7 @@ def route_task(
                 excluded_families=excluded_fams,
                 quota_snapshot=qsnap,
                 candidate_weights=cand_weights,
+                candidate_boosts=cand_boosts,
             )
             caller = api_caller or call_decisions_api
             try:
@@ -1174,16 +1266,17 @@ def route_task(
                 task_rigor = rigor
                 eligible_ids = {c.candidate_id for c in eligible}
                 if probs:
-                    # Gentle tie-breaking by time-aware quota health + expiring-quota urgency.
+                    # Gentle tie-breaking by time-aware quota health + expiring-quota urgency + runtime utilization boost.
                     weighted_probs: dict[str, float] = {}
                     for cid, prob in probs.items():
                         if cid not in eligible_ids:
                             continue
                         qw = max(0.05, cand_weights.get(cid, 0.1))
                         urg = cand_urgencies.get(cid, 0.0)
+                        boost = cand_boosts.get(cid, 1.0)
                         base_mult = (0.85 + 0.15 * qw) if qw >= 0.25 else (0.50 + 0.50 * qw)
                         urg_mult = 1.0 + (0.08 * urg if qw >= 0.35 else 0.0)
-                        weighted_probs[cid] = prob * base_mult * urg_mult
+                        weighted_probs[cid] = prob * base_mult * urg_mult * boost
                     if weighted_probs:
                         selected_id = max(weighted_probs.items(), key=lambda kv: kv[1])[0]
                         source = f"openai-decisions:{DECISIONS_MODEL}"
@@ -1249,6 +1342,7 @@ def route_task(
         "cli_command": cli_command,
         "quota_weights": quota_weights,
         "quota_urgencies": cand_urgencies,
+        "runtime_multipliers": {cid: b for cid, b in cand_boosts.items() if b != 1.0},
         "deterministic_scores": det_scores,
         "probabilities": probabilities,
         "task_rigor": task_rigor,

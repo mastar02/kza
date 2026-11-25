@@ -769,3 +769,66 @@ def test_router_time_to_reset_prioritizes_expiring_pool_offline_and_in_decisions
     assert "urg=" in captured["input"]
     assert "pace=" in captured["input"]
     assert "headroom=" in captured["input"]
+
+
+def test_muse_runtime_multiplier_boosts_underused_muse_tapers_on_load_and_skips_kza_ui(tmp_path: Path) -> None:
+    snap_muse_healthy = {
+        "quota_emergency": False,
+        "eligible_runtimes": ["claude", "codex", "muse", "agy"],
+        "subscriptions": {
+            "claude": {"weight": 0.90, "excluded": False, "status": "degraded", "seven_day_pct": 65.0, "pace_delta_pct": 4.0},
+            "codex": {"weight": 0.94, "excluded": False, "status": "degraded", "seven_day_pct": 40.0, "pace_delta_pct": 15.0},
+            "muse": {"weight": 0.95, "excluded": False, "status": "degraded", "seven_day_pct": 30.0, "pace_delta_pct": 10.0},
+            "agy": {"weight": 0.84, "excluded": False, "status": "degraded", "seven_day_pct": 38.0, "pace_delta_pct": -25.0},
+        },
+    }
+
+    # 1. Default 1.15x Muse multiplier makes under-used Muse win kza-dev offline & surfaces runtime_boost in payload.
+    dec_dev = kza_router.route_task(
+        role="kza-dev",
+        summary="Implement nexa-nlu crate",
+        complexity="high",
+        offline=True,
+        state_dir=tmp_path,
+        quota_snapshot=snap_muse_healthy,
+    )
+    assert dec_dev["runtime"] == "muse"
+    assert dec_dev["runtime_multipliers"]["muse:muse-wonder-full-1.0"] == 1.15
+
+    # 2. kza-ui is excluded from runtime_multipliers so computer-use/multimodal specialists still win.
+    dec_ui = kza_router.route_task(
+        role="kza-ui",
+        summary="Verify NEXO browser visual accessibility",
+        complexity="medium",
+        offline=True,
+        state_dir=tmp_path,
+        quota_snapshot=snap_muse_healthy,
+    )
+    assert dec_ui["runtime"] != "muse"
+    assert dec_ui["runtime_multipliers"] == {}
+
+    # 3. Auto-taper: when Muse crosses 75% weekly, boost halves; at >=80% or pace < -10%, boost drops to 1.0.
+    mults = {"muse": 1.15}
+    assert kza_router.effective_runtime_multiplier("muse", "kza-dev", {"weight": 0.95, "seven_day_pct": 30.0, "pace_delta_pct": 10.0}, mults) == 1.15
+    tapered = kza_router.effective_runtime_multiplier("muse", "kza-dev", {"weight": 0.78, "seven_day_pct": 75.0, "pace_delta_pct": 0.0}, mults)
+    assert 1.0 < tapered < 1.15
+    assert kza_router.effective_runtime_multiplier("muse", "kza-dev", {"weight": 0.85, "seven_day_pct": 82.0, "pace_delta_pct": 0.0}, mults) == 1.0
+    assert kza_router.effective_runtime_multiplier("muse", "kza-dev", {"weight": 0.90, "seven_day_pct": 40.0, "pace_delta_pct": -15.0}, mults) == 1.0
+
+    # 4. Cross-model exclusion `--exclude-family meta` is strictly honored even with Muse boost.
+    dec_excl = kza_router.route_task(
+        role="kza-qa",
+        summary="Cross-model QA of Muse PR",
+        exclude_families=["meta"],
+        offline=True,
+        state_dir=tmp_path,
+        quota_snapshot=snap_muse_healthy,
+    )
+    assert dec_excl["family"] != "meta"
+
+    # 5. policy.json override works and rejects invalid values fail-closed.
+    (tmp_path / "policy.json").write_text(json.dumps({"runtime_multipliers": {"muse": 1.25}}), encoding="utf-8")
+    assert kza_router.load_runtime_multipliers(tmp_path)["muse"] == 1.25
+    (tmp_path / "policy.json").write_text(json.dumps({"runtime_multipliers": {"muse": True}}), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Invalid multiplier"):
+        kza_router.load_runtime_multipliers(tmp_path)

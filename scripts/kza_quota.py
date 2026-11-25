@@ -308,10 +308,13 @@ def evaluate_window_quota(
     base_weight = min(m5["base_weight"], m7["base_weight"])
     weight = min(m5["weight"], m7["weight"])
 
-    # Gate 5h expiring urgency by 7d health so we never burn a strained 7d bank just because 5h resets soon.
+    # Gate 5h expiring urgency by 7d health and 7d pace so we never burn an over-burning 7d bank just because 5h resets soon.
     u5 = m5["reset_urgency"]
-    if seven_day_pct is not None and m7["weight"] < 0.80:
-        u5 = round(u5 * max(0.0, (m7["weight"] - 0.50) / 0.30), 4)
+    if seven_day_pct is not None:
+        if m7["pace_delta_pct"] is not None and m7["pace_delta_pct"] < -10.0:
+            u5 = 0.0
+        elif m7["weight"] < 0.80:
+            u5 = round(u5 * max(0.0, (m7["weight"] - 0.50) / 0.30), 4)
     u7 = m7["reset_urgency"]
     if five_hour_pct is not None and m5["weight"] < 0.50:
         u7 = round(u7 * max(0.0, (m5["weight"] - 0.25) / 0.25), 4)
