@@ -173,16 +173,17 @@ async def test_transcriber_keeps_review_ch0_full_stt_span_and_fixed_wake_pcm():
         async def maybe_dispatch(self, room, text, source, speaker, **kwargs):
             seen['wake_text'], seen['wake'] = text, kwargs
 
-    class Native:
-        async def run(self, function, *args):
-            return function(*args)
-
-    tr = object.__new__(AmbientTranscriber)
-    tr._stt, tr._tagger, tr._archiver, tr._quality_fn = adapter, Tagger(), None, None
-    tr._native, tr._store, tr._textual_wake = Native(), Store(), Wake()
-    tr._classifier = SimpleNamespace(classify=lambda **kwargs: 'unknown')
-    tr._last_tv, tr._require_live = {}, lambda source: None
-    tr._direction = lambda audio, source: None
+    tr = AmbientTranscriber(
+        tap=None,
+        segmenter_factory=lambda: None,
+        ambient_stt=adapter,
+        tagger=Tagger(),
+        doa_estimator=SimpleNamespace(estimate=lambda audio: None),
+        classifier=SimpleNamespace(classify=lambda **kwargs: 'unknown'),
+        store=Store(),
+        rooms=['synthetic-room'],
+    )
+    tr.attach_textual_wake(Wake())
     audio = np.zeros((16001, 2), dtype=np.float32)
     audio[:, 0], audio[:, 1] = .25, .5
     segment = RawSegment(1., 1. + len(audio) / 16000, audio,
@@ -196,9 +197,12 @@ async def test_transcriber_keeps_review_ch0_full_stt_span_and_fixed_wake_pcm():
         assert review['transcript_provenance'].selected_channel == 1
         assert review['transcript_span'] == FrameInterval(0, 16001)
         assert review['audio_provenance'].source_ref != review['transcript_provenance'].source_ref
-        assert len(seen['wake_text']) == 8193 and wake['audio'][0] == np.float32(.5)
+        assert engine.selected_first == .5 and adapter.asr_col == 0
+        assert len(seen['wake_text']) == 8193
+        np.testing.assert_array_equal(wake['audio'], audio[:, 1])
+        assert wake['transcript_span'] == review['transcript_span']
         assert wake['audio_provenance'] == wake['transcript_provenance'] == review['transcript_provenance']
         assert wake['transcript_truncated'] is False
     finally:
         seen.clear()
-        await adapter.begin_close()
+        await tr.begin_close()
