@@ -191,22 +191,24 @@ async def test_only_retained_native_close_return_can_publish_closed(tmp_path, mo
         store = store_for(producer, config, stack)
         await owner.register_store(store, producer)
         await store.initialize()
-        entered, release = threading.Event(), threading.Event()
+        loop = asyncio.get_running_loop()
+        entered, release = asyncio.Event(), threading.Event()
         execute = store._db._execute
         closes = []
         async def held_execute(function, *args, **kwargs):
             if getattr(function, "__name__", None) != "close":
                 return await execute(function, *args, **kwargs)
             def held():
-                entered.set()
-                assert release.wait(5)
+                loop.call_soon_threadsafe(entered.set)
+                release.wait()
+                result = function(*args, **kwargs)
                 closes.append(True)
-                return function(*args, **kwargs)
+                return result
             return await execute(held)
         monkeypatch.setattr(store._db, "_execute", held_execute)
         task = asyncio.create_task(store.close())
         try:
-            assert await asyncio.to_thread(entered.wait, 2)
+            await asyncio.wait_for(entered.wait(), 3)
             retained = store._closing
             assert retained is not None and not retained.done()
             if observer == "cancel":
