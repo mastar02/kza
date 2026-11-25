@@ -84,6 +84,7 @@ pub enum GateReason {
     Ok,
     Empty,
     EmptyAfterNormalization,
+    UtteranceTooLong,
     SttVeto,
     NonImmediate(GrammarBlock),
     NoisePhrase(&'static str),
@@ -99,6 +100,7 @@ impl GateReason {
     pub fn code(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::UtteranceTooLong => "utterance_too_long",
             Self::Empty => "empty",
             Self::EmptyAfterNormalization => "empty_after_norm",
             Self::SttVeto => "stt_veto",

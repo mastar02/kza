@@ -22,6 +22,7 @@ fn router_release_latency_budget() {
         acoustic_wake: true,
         ..RouteContext::default()
     };
+    let oversized = "prendé la luz y ".repeat(4096);
     for text in [
         "Prendé la luz del living",
         "Poné el aire del baño a veintidós coma cinco grados",
@@ -33,6 +34,7 @@ fn router_release_latency_budget() {
         "Cuántos kwh consumimos la última semana en toda la casa",
         "Nexa es un asistente de voz para controlar las luces",
         "Esto es un asistente, apagá, subí.",
+        oversized.as_str(),
     ] {
         let mut samples: Vec<_> = (0..1000)
             .map(|_| {
@@ -44,7 +46,12 @@ fn router_release_latency_budget() {
         samples.sort_unstable();
         let p95 = samples[949];
         let p99 = samples[989];
-        eprintln!("{text:?}: p95 {p95:?}, p99 {p99:?}");
-        assert!(p99 < Duration::from_micros(500), "{text:?} p99 {p99:?}");
+        let label = if text == oversized {
+            "oversized compound"
+        } else {
+            text
+        };
+        eprintln!("{label:?}: p95 {p95:?}, p99 {p99:?}");
+        assert!(p99 < Duration::from_micros(500), "{label:?} p99 {p99:?}");
     }
 }

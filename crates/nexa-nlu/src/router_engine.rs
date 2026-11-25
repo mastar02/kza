@@ -3,8 +3,8 @@
 use nexa_proto::v1::PathType;
 
 use crate::gate::{
-    AcceptanceDecision, CommandAcceptanceGate, EarconSettings, Evidence, GateContext, GateSettings,
-    should_play_earcon,
+    AcceptanceDecision, CommandAcceptanceGate, EarconSettings, Evidence, GateContext, GateReason,
+    GateSettings, should_play_earcon,
 };
 use crate::grammar::{self, Domain, GrammarMatch, HomeCommand};
 use crate::household::{
@@ -13,6 +13,8 @@ use crate::household::{
 };
 use crate::normalize::{normalize_utterance, strip_head, words};
 use crate::world::{self, ClockQuery, WeatherHorizon};
+
+const MAX_UTTERANCE_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RouteDecision {
@@ -112,6 +114,27 @@ impl RouterEngine {
 
     /// Classify a full turn. Only the minimum evidence for the selected path is returned.
     pub fn route(&self, text: &str, context: RouteContext<'_>) -> RoutedTurn {
+        if text.len() > MAX_UTTERANCE_BYTES {
+            let reason = GateReason::UtteranceTooLong;
+            return RoutedTurn {
+                decision: RouteDecision {
+                    path: PathType::Rejected,
+                    normalized_text: String::new(),
+                    reason: Some(reason.code().into()),
+                },
+                route: Route::Rejected,
+                acceptance: AcceptanceDecision {
+                    accept: false,
+                    reason,
+                    confidence: context.gate.confidence,
+                    would_reject: Vec::new(),
+                    ring_stop: false,
+                    refusal_only: false,
+                },
+                requires_veto: false,
+                earcon_eligible: false,
+            };
+        }
         let normalized_text = normalize_utterance(text);
         let core = strip_head(&normalized_text, &self.wakes);
         let claim = self.household.classify_in_room(text, context.source_room);
