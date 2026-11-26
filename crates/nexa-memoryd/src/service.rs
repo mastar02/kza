@@ -56,6 +56,22 @@ impl MemoryRpc {
             .map(Response::new)
             .map_err(status)
     }
+
+    #[allow(clippy::result_large_err)]
+    async fn run_observed<T: Send + 'static>(
+        &self,
+        name: &'static str,
+        operation: impl FnOnce(&mut Store) -> Result<T> + Send + 'static,
+    ) -> std::result::Result<Response<T>, Status> {
+        let result = self.run(operation).await;
+        match &result {
+            Ok(_) => tracing::info!(operation = name, "memory operation completed"),
+            Err(status) => {
+                tracing::warn!(operation = name, code = ?status.code(), "memory operation failed");
+            }
+        }
+        result
+    }
 }
 
 struct Actor<'a> {
@@ -66,10 +82,13 @@ struct Actor<'a> {
 impl<'a> Actor<'a> {
     fn validate(context: Option<&'a ActorContext>) -> Result<Self> {
         let context = context.ok_or(Error::Unauthenticated("actor context required"))?;
-        let role = Role::try_from(context.role)
+        let Some(role) = Role::try_from(context.role)
             .ok()
             .filter(|role| *role != Role::Unspecified)
-            .ok_or(Error::Denied("invalid actor role"))?;
+        else {
+            tracing::warn!(reason = "invalid_role", "memory authorization denied");
+            return Err(Error::Denied("invalid actor role"));
+        };
         if id(&context.subject).is_err()
             || (!context.user_id.is_empty() && (role != Role::Home || id(&context.user_id).is_err()))
             || context.permissions.iter().any(|permission| {
@@ -83,6 +102,12 @@ impl<'a> Actor<'a> {
 
     fn require(&self, permission: Permission) -> Result<()> {
         if !self.context.permissions.contains(&(permission as i32)) {
+            tracing::warn!(
+                reason = "missing_permission",
+                required_permission = permission.as_str_name(),
+                actor_role = self.role.as_str_name(),
+                "memory authorization denied"
+            );
             return Err(Error::Denied("required permission missing"));
         }
         Ok(())
@@ -90,16 +115,36 @@ impl<'a> Actor<'a> {
 
     fn operator(&self, permission: Permission) -> Result<()> {
         if self.role != Role::Operator {
+            self.warn_role_mismatch(Role::Operator, permission);
             return Err(Error::Denied("operator actor required"));
         }
         self.require(permission)
     }
 
     fn own(&self, permission: Permission, user: &str) -> Result<()> {
-        if self.role != Role::Home || user.is_empty() || self.context.user_id != user {
+        if self.role != Role::Home {
+            self.warn_role_mismatch(Role::Home, permission);
+            return Err(Error::Denied("personal actor scope mismatch"));
+        }
+        if user.is_empty() || self.context.user_id != user {
+            tracing::warn!(
+                reason = "personal_scope_mismatch",
+                required_permission = permission.as_str_name(),
+                "memory authorization denied"
+            );
             return Err(Error::Denied("personal actor scope mismatch"));
         }
         self.require(permission)
+    }
+
+    fn warn_role_mismatch(&self, required_role: Role, permission: Permission) {
+        tracing::warn!(
+            reason = "role_mismatch",
+            required_role = required_role.as_str_name(),
+            actor_role = self.role.as_str_name(),
+            required_permission = permission.as_str_name(),
+            "memory authorization denied"
+        );
     }
 
     fn store_fact(&self, owner: &str) -> Result<()> {
@@ -212,7 +257,7 @@ impl MemoryService for MemoryRpc {
         Actor::validate(req.actor.as_ref())
             .and_then(|actor| actor.store_fact(&req.owner_user_id))
             .map_err(status)?;
-        self.run(move |store| {
+        self.run_observed("store_fact", move |store| {
             store.store_fact(
                 &req.conversation_id,
                 &req.owner_user_id,
@@ -232,7 +277,7 @@ impl MemoryService for MemoryRpc {
         Actor::validate(req.actor.as_ref())
             .and_then(|actor| actor.query(&req.owner_user_id, req.include_shared))
             .map_err(status)?;
-        self.run(move |store| {
+        self.run_observed("query_memory", move |store| {
             Ok(QueryMemoryResponse {
                 hits: store.query_memory(
                     &req.query_embedding,
@@ -253,8 +298,10 @@ impl MemoryService for MemoryRpc {
         let owner = Actor::validate(req.actor.as_ref())
             .and_then(|actor| actor.delete_scope())
             .map_err(status)?;
-        self.run(move |store| store.delete_fact(&req.fact_id, owner.as_deref()))
-            .await
+        self.run_observed("delete_fact", move |store| {
+            store.delete_fact(&req.fact_id, owner.as_deref())
+        })
+        .await
     }
 
     async fn record_voice_observation(
@@ -266,10 +313,15 @@ impl MemoryService for MemoryRpc {
             .and_then(|actor| actor.operator(Permission::VoicesReview))
             .map_err(status)?;
         if !self.capture_enabled {
+            tracing::warn!(
+                operation = "record_voice_observation",
+                reason = "capture_disabled",
+                "memory operation rejected"
+            );
             return Err(Status::failed_precondition("ambient capture disabled"));
         }
         let req = req.into_inner();
-        self.run(move |store| {
+        self.run_observed("record_voice_observation", move |store| {
             store.record_observation(Observation {
                 utterance: &req.utterance_id,
                 room: &req.room_id,
@@ -336,8 +388,10 @@ impl MemoryService for MemoryRpc {
         Actor::validate(req.actor.as_ref())
             .and_then(|actor| actor.operator(Permission::MemoryReview))
             .map_err(status)?;
-        self.run(move |store| store.erase_conversation(&req.conversation_id))
-            .await
+        self.run_observed("erase_conversation", move |store| {
+            store.erase_conversation(&req.conversation_id)
+        })
+        .await
     }
 
     async fn purge_retired_user(
@@ -348,8 +402,10 @@ impl MemoryService for MemoryRpc {
         Actor::validate(req.actor.as_ref())
             .and_then(|actor| actor.operator(Permission::AdminManage))
             .map_err(status)?;
-        self.run(move |store| store.purge_retired_user(&req.user_id))
-            .await
+        self.run_observed("purge_retired_user", move |store| {
+            store.purge_retired_user(&req.user_id)
+        })
+        .await
     }
 
     async fn get_ambient_control(
@@ -462,6 +518,7 @@ impl MemoryService for MemoryRpc {
                 "confirm_proposal" => store.confirm_proposal(target)?,
                 "reject_proposal" => {
                     let receipt = store.reject_proposal(target)?;
+                    tracing::info!(operation = "reject_proposal", "memory operation completed");
                     json!({"deleted": true, "facts_deleted": receipt.facts_deleted})
                 }
                 "return_fact" => store.return_fact(target, &user)?,
@@ -491,6 +548,10 @@ impl MemoryService for MemoryRpc {
                 }
                 "delete_voice_profile" => {
                     let deleted = store.delete_voice_profile(target, expected)?;
+                    tracing::info!(
+                        operation = "delete_voice_profile",
+                        "memory operation completed"
+                    );
                     json!({"deleted": true, "captures_deleted": deleted})
                 }
                 "correct_voice_group" => store.correct_voice_group(target, &body)?,
@@ -564,6 +625,7 @@ impl MemoryService for MemoryRpc {
         let req = req.into_inner();
         let actor = Actor::validate(req.actor.as_ref()).map_err(status)?;
         if actor.role != Role::Evaluator {
+            actor.warn_role_mismatch(Role::Evaluator, Permission::EvaluationRead);
             return Err(Status::permission_denied("evaluator actor required"));
         }
         actor.require(Permission::EvaluationRead).map_err(status)?;
