@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     sync::{Arc, Mutex, PoisonError},
 };
 
@@ -81,7 +81,7 @@ pub struct ActionReceipt {
 }
 
 /// The mutation entry point for trusted callers with established control authority.
-/// Clones share policy, FIFO lanes, breaker and process-lifetime receipts.
+/// Clones share policy, FIFO lanes, breaker and the most recent completed receipts.
 #[derive(Debug, Clone)]
 pub struct ControlService {
     inner: Arc<ServiceInner>,
@@ -97,9 +97,12 @@ struct ServiceInner {
 
 type ReceiptReceiver = watch::Receiver<Option<Arc<ActionReceipt>>>;
 
+const COMPLETED_RECEIPT_LIMIT: usize = 1024;
+
 #[derive(Debug, Default)]
 struct Ledger {
     requests: HashMap<String, StoredRequest>,
+    completed: VecDeque<String>,
     tails: HashMap<String, oneshot::Receiver<()>>,
 }
 
@@ -111,10 +114,33 @@ struct StoredRequest {
 
 struct Reservation {
     predecessors: Vec<oneshot::Receiver<()>>,
-    _completion: Vec<oneshot::Sender<()>>,
+    completion: Vec<(String, oneshot::Sender<()>)>,
 }
 
 impl Ledger {
+    fn record_completion(&mut self, request_id: String) {
+        self.completed.push_back(request_id);
+        if self.completed.len() > COMPLETED_RECEIPT_LIMIT
+            && let Some(oldest) = self.completed.pop_front()
+        {
+            self.requests.remove(&oldest);
+        }
+    }
+
+    fn release_lanes(&mut self, completion: Vec<(String, oneshot::Sender<()>)>) {
+        for (entity_id, done) in completion {
+            let _ = done.send(());
+            // A successor owns its own unsignalled tail until its worker finishes.
+            if self
+                .tails
+                .get_mut(&entity_id)
+                .is_some_and(|tail| tail.try_recv().is_ok())
+            {
+                self.tails.remove(&entity_id);
+            }
+        }
+    }
+
     fn reserve_lanes(&mut self, plan: &EffectPlan) -> Reservation {
         let entities: BTreeSet<_> = plan
             .references
@@ -123,7 +149,7 @@ impl Ledger {
             .collect();
         let mut reservation = Reservation {
             predecessors: Vec::new(),
-            _completion: Vec::new(),
+            completion: Vec::new(),
         };
         // Reserve all lanes atomically, so overlapping plans cannot wait on each other.
         for entity_id in entities {
@@ -131,7 +157,7 @@ impl Ledger {
             if let Some(previous) = self.tails.insert(entity_id.clone(), tail) {
                 reservation.predecessors.push(previous);
             }
-            reservation._completion.push(done);
+            reservation.completion.push((entity_id.clone(), done));
         }
         reservation
     }
@@ -202,6 +228,9 @@ impl ControlService {
                         receipt: receiver.clone(),
                     },
                 );
+                if worker.is_none() {
+                    ledger.record_completion(request.request_id.clone());
+                }
                 (receiver, worker)
             }
         };
@@ -212,8 +241,14 @@ impl ControlService {
                     let _ = previous.await;
                 }
                 let (status, effects) = service.inner.perform(&plan).await;
+                let mut ledger = service
+                    .inner
+                    .ledger
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
                 sender.send_replace(Some(Arc::new(make_receipt(&request, status, effects))));
-                drop(reservation._completion);
+                ledger.release_lanes(reservation.completion);
+                ledger.record_completion(request.request_id);
             });
         }
         loop {
@@ -407,5 +442,39 @@ fn dispatch_failure(error: &HaError) -> ActionStatus {
             ActionStatus::Rejected(status.as_u16())
         }
         _ => ActionStatus::Uncertain,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completing_overlapping_reservations_reclaims_only_finished_lanes() {
+        let plan = |ids: &[&str]| EffectPlan {
+            references: Default::default(),
+            leaves: ids
+                .iter()
+                .map(|id| EffectIntent {
+                    entity_id: String::from(*id),
+                    operation: Operation::TurnOn,
+                })
+                .collect(),
+        };
+        let mut ledger = Ledger::default();
+        let first = ledger.reserve_lanes(&plan(&["light.a", "light.b"]));
+        let mut second = ledger.reserve_lanes(&plan(&["light.b"]));
+        ledger.release_lanes(first.completion);
+        assert!(!ledger.tails.contains_key("light.a"));
+        assert_eq!(second.predecessors[0].try_recv(), Ok(()));
+        let mut third = ledger.reserve_lanes(&plan(&["light.b"]));
+        assert_eq!(
+            third.predecessors[0].try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        );
+        ledger.release_lanes(second.completion);
+        assert_eq!(third.predecessors[0].try_recv(), Ok(()));
+        ledger.release_lanes(third.completion);
+        assert!(ledger.tails.is_empty());
     }
 }
