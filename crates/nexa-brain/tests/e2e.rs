@@ -415,7 +415,16 @@ async fn household_worker_reminders_routines_timers_and_ambient() -> Result {
     h.utterance("ambient", "una conversación ambiental", Kind::Ambient)
         .await?;
     assert_eq!(receive(&mut h.modes).await?, SttMode::Ambient);
-    let obs = receive(&mut h.observations).await?;
+    let (obs, observation_actor) = receive(&mut h.observations).await?;
+    assert_eq!(
+        observation_actor,
+        v1::ActorContext {
+            subject: "nexa-brain".into(),
+            role: Role::Operator as i32,
+            permissions: vec![P::VoicesReview as i32],
+            ..Default::default()
+        }
+    );
     assert_eq!(obs.embedding.len(), 192);
     assert_eq!(obs.utterance_id, "ambient");
     assert_eq!(obs.room_id, "living");

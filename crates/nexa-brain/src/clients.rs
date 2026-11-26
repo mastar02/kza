@@ -8,9 +8,11 @@ use nexa_proto::v1::{
     self, audio_service_client::AudioServiceClient, memory_service_client::MemoryServiceClient,
     ml_service_client::MlServiceClient,
 };
+use prost::Message;
 use tokio::net::UnixStream;
 use tonic::{
-    Status,
+    Request, Status,
+    metadata::MetadataValue,
     transport::{Channel, Endpoint},
 };
 use tower::service_fn;
@@ -332,6 +334,17 @@ impl MemoryClient for UdsMemory {
         &self,
         request: v1::RecordVoiceObservationRequest,
     ) -> Result<v1::VoiceObservationReceipt, Status> {
+        let actor = v1::ActorContext {
+            subject: "nexa-brain".into(),
+            role: v1::Role::Operator as i32,
+            permissions: vec![v1::Permission::VoicesReview as i32],
+            ..Default::default()
+        };
+        let mut request = Request::new(request);
+        request.metadata_mut().insert_bin(
+            "actor-context-bin",
+            MetadataValue::from_bytes(&actor.encode_to_vec()),
+        );
         self.0
             .clone()
             .record_voice_observation(request)

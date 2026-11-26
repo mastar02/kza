@@ -602,6 +602,15 @@ async fn voice_with_memory(local_fails: bool) -> Result {
         .await?;
     let query = receive(&mut h.queries).await?;
     assert!(query.include_shared && query.owner_user_id.is_empty());
+    assert_eq!(
+        query.actor,
+        Some(v1::ActorContext {
+            subject: "nexa-brain".into(),
+            role: Role::Operator as i32,
+            permissions: vec![P::MemoryRead as i32],
+            ..Default::default()
+        })
+    );
     let spoken = receive(&mut h.spoken).await?;
     assert_eq!(
         spoken,

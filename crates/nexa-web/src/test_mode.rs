@@ -495,11 +495,11 @@ impl Brain for Fixtures {
         Ok(HaActionsSnapshot::default())
     }
 
-    async fn get_llm_endpoints(&self, _: Empty) -> Result<LlmEndpointsSnapshot, Status> {
+    async fn get_llm_endpoints(&self, _: ActorContext) -> Result<LlmEndpointsSnapshot, Status> {
         Ok(LlmEndpointsSnapshot::default())
     }
 
-    async fn get_cloud_consent(&self, _: Empty) -> Result<CloudConsentStatus, Status> {
+    async fn get_cloud_consent(&self, _: ActorContext) -> Result<CloudConsentStatus, Status> {
         Ok(*locked(&self.consent)?)
     }
 
@@ -674,7 +674,7 @@ impl Memory for Fixtures {
         })
     }
 
-    async fn get_ambient_control(&self, _: Empty) -> Result<AmbientControlStatus, Status> {
+    async fn get_ambient_control(&self, _: ActorContext) -> Result<AmbientControlStatus, Status> {
         Ok(*locked(&self.ambient)?)
     }
 
