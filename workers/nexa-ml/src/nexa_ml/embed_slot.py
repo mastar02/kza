@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from nexa_ml.observability import InferenceTiming
 from nexa_ml.offline import assert_offline_effective, reject_remote_source
 from nexa_ml.slot import InvalidInputError, ModelSlot
 
@@ -85,8 +86,11 @@ class EmbedSlot:
         self.slot = slot
         self.max_texts = max_texts
 
-    async def embed(self, texts: list[str]) -> TextEmbeddings:
+    async def embed(self, texts: list[str], *, timing: InferenceTiming | None = None) -> TextEmbeddings:
         """Validate and encode a batch."""
         batch = validate_texts(list(texts), self.max_texts)
         model_id = self.slot.model_name
-        return await self.slot.run(lambda model: encode_blocking(model, batch, model_id))
+        infer = (timing or InferenceTiming()).wrap(
+            self.slot.slot_id, lambda model: encode_blocking(model, batch, model_id)
+        )
+        return await self.slot.run(infer)

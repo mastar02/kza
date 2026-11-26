@@ -116,7 +116,9 @@ async def test_transcribe_invalid_argument(harness: Harness, request_kwargs: dic
     assert fragment in err.value.details()
 
 
-async def test_model_exception_is_internal_without_payload(harness: Harness) -> None:
+async def test_model_exception_is_internal_without_payload(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
     def boom() -> None:
         raise ValueError("decoder exploded on: hola secreta")
 
@@ -126,12 +128,21 @@ async def test_model_exception_is_internal_without_payload(harness: Harness) -> 
     assert err.value.code() == grpc.StatusCode.INTERNAL
     assert err.value.details() == "internal error"
     health = await harness.stub.GetHealth(common_pb2.Empty(), timeout=2)
+    assert "rpc_errors=1" in health.base.detail
+    record = next(r for r in caplog.records if getattr(r, "rpc", None) == "Transcribe")
+    assert (record.slot, record.mode, record.audio_ms) == ("stt-command", "command", 1000)
+    assert (record.status, record.error_kind) == ("INTERNAL", "ValueError")
+    assert record.inference_finished and record.infer_ms >= 0
+    assert "hola secreta" not in caplog.text
+    assert "secreto" not in caplog.text
     cmd = next(m for m in health.models if m.slot_id == "stt-command")
     assert cmd.consecutive_failures == 1
     assert cmd.state == common_pb2.HEALTH_STATE_DEGRADED
 
 
-async def test_cuda_oom_maps_to_resource_exhausted(harness: Harness) -> None:
+async def test_cuda_oom_maps_to_resource_exhausted(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
     def oom() -> None:
         raise RuntimeError("CUDA failed with error out of memory")
 
@@ -139,6 +150,7 @@ async def test_cuda_oom_maps_to_resource_exhausted(harness: Harness) -> None:
     with pytest.raises(grpc.aio.AioRpcError) as err:
         await harness.stub.Transcribe(_tx(ml_pb2.STT_MODE_COMMAND), timeout=10)
     assert err.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+    assert "error_kind=model_oom" in caplog.text
 
 
 # ---------------------------------------------------------------- AMBIENT pool x2
@@ -177,7 +189,9 @@ async def test_ambient_third_request_waits_for_a_free_member(harness: Harness) -
     assert sum(len(f.models[0].calls) for f in harness.fakes.ambient) == 3
 
 
-async def test_command_queue_full_is_resource_exhausted(harness: Harness) -> None:
+async def test_command_queue_full_is_resource_exhausted(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
     release = threading.Event()
     harness.fakes.command.hook = lambda: release.wait(GATE_TIMEOUT_S)
     calls = [
@@ -188,6 +202,7 @@ async def test_command_queue_full_is_resource_exhausted(harness: Harness) -> Non
     with pytest.raises(grpc.aio.AioRpcError) as err:
         await harness.stub.Transcribe(_tx(ml_pb2.STT_MODE_COMMAND), timeout=10)
     assert err.value.code() == grpc.StatusCode.RESOURCE_EXHAUSTED
+    assert "infer_ms=None" in caplog.text and "error_kind=capacity_exhausted" in caplog.text
     release.set()
     await asyncio.gather(*calls)
 
@@ -234,7 +249,14 @@ async def test_tts_cancel_stops_pulling_and_frees_the_slot(
     call.cancel()
     # Server-side cancellation observed (logged after the stream's stop flag is set);
     # the producer thread is still blocked inside Result 2, so the slot is still held.
-    await _wait_until(lambda: "cancelled by client" in caplog.text)
+    await _wait_until(lambda: "status=CANCELLED" in caplog.text)
+    record = next(r for r in caplog.records if getattr(r, "status", None) == "CANCELLED")
+    assert (record.rpc, record.slot, record.voice) == ("SynthesizeStream", "tts", "ef_dora")
+    assert (record.chunks, record.error_kind) == (1, "client_cancelled")
+    assert record.ttfa_ms >= 0 and record.infer_ms >= 0 and not record.inference_finished
+    assert "Texto largo." not in caplog.text
+    health = await harness.stub.GetHealth(common_pb2.Empty(), timeout=2)
+    assert "rpc_cancelled=1" in health.base.detail
     assert harness.runtime.tts.slot.inflight == 1
     gate.set()  # producer now sees the stop flag at the next Result boundary
     assert await asyncio.to_thread(engine.closed.wait, GATE_TIMEOUT_S)
@@ -430,15 +452,52 @@ async def test_cancelled_reload_still_completes_and_slot_recovers(harness: Harne
     assert harness.fakes.command.loads == 3
 
 
-async def test_tts_unknown_voice_is_invalid_argument_not_failure(harness: Harness) -> None:
+async def test_tts_unknown_voice_is_invalid_argument_not_failure(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
     call = harness.stub.SynthesizeStream(ml_pb2.SynthesizeRequest(text="hola", voice="zz_nadie"), timeout=10)
     with pytest.raises(grpc.aio.AioRpcError) as err:
         async for _ in call:
             pass
     assert err.value.code() == grpc.StatusCode.INVALID_ARGUMENT
+    assert "status=INVALID_ARGUMENT" in caplog.text and "zz_nadie" not in caplog.text
     health = await harness.stub.GetHealth(common_pb2.Empty(), timeout=2)
     tts = next(m for m in health.models if m.slot_id == "tts")
     assert tts.state == common_pb2.HEALTH_STATE_OK and tts.consecutive_failures == 0
+
+
+async def test_successful_inference_logs_safe_rpc_fields(
+    harness: Harness, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="nexa_ml.server")
+    marker = "private test phrase"
+    transcribed = await harness.stub.Transcribe(
+        _tx(ml_pb2.STT_MODE_AMBIENT, initial_prompt=marker), timeout=10
+    )
+    chunks = [
+        chunk
+        async for chunk in harness.stub.SynthesizeStream(
+            ml_pb2.SynthesizeRequest(text=marker, voice="em_alex"), timeout=10
+        )
+    ]
+    await harness.stub.EmbedSpeaker(
+        ml_pb2.EmbedSpeakerRequest(pcm_f32le=pcm(), sample_rate=16_000), timeout=10
+    )
+    await harness.stub.EmbedText(ml_pb2.EmbedTextRequest(texts=[marker, marker]), timeout=10)
+    records = {r.rpc: r for r in caplog.records if getattr(r, "status", None) == "OK"}
+    stt = records["Transcribe"]
+    assert (stt.slot, stt.mode, stt.audio_ms) == ("stt-ambient-0", "ambient", 1000)
+    tts = records["SynthesizeStream"]
+    assert (tts.slot, tts.voice, tts.input_count) == ("tts", "em_alex", len(marker))
+    assert tts.chunks == len(chunks) - 1 and tts.ttfa_ms >= 0 and tts.audio_ms > 0
+    speaker = records["EmbedSpeaker"]
+    assert (speaker.slot, speaker.audio_ms) == ("speaker", 1000)
+    embed = records["EmbedText"]
+    assert (embed.slot, embed.input_count) == ("embed", 2)
+    assert all(r.inference_finished and 0 <= r.infer_ms <= r.rpc_ms for r in records.values())
+    assert marker not in caplog.text and transcribed.text not in caplog.text
+    health = await harness.stub.GetHealth(common_pb2.Empty(), timeout=2)
+    assert "rpc_ok=4 rpc_errors=0 rpc_cancelled=0" in health.base.detail
 
 
 # ---------------------------------------------------------------- ReloadModel authz

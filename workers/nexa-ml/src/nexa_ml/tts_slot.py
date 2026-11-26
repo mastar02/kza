@@ -29,6 +29,7 @@ from typing import Any
 import numpy as np
 
 from nexa_ml.config import KOKORO_LANG_CODES, canonical_kokoro_lang
+from nexa_ml.observability import InferenceTiming
 from nexa_ml.offline import assert_offline_effective, reject_remote_source
 from nexa_ml.slot import InvalidInputError, ModelSlot
 
@@ -312,7 +313,9 @@ class TtsSlot:
             default_lang=self.default_lang,
         )
 
-    async def stream(self, opts: SynthesisOptions) -> AsyncIterator[np.ndarray]:
+    async def stream(
+        self, opts: SynthesisOptions, *, timing: InferenceTiming | None = None
+    ) -> AsyncIterator[np.ndarray]:
         """Yield one PCM array per ``KPipeline`` ``Result`` as soon as it exists.
 
         Raises:
@@ -322,6 +325,7 @@ class TtsSlot:
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue[Any] = asyncio.Queue()
         stop = threading.Event()
+        timing = timing or InferenceTiming()
 
         def emit(item: Any) -> bool:
             try:
@@ -339,6 +343,7 @@ class TtsSlot:
                     return produced
                 pipe = engine.pipeline(opts.lang_code)
                 voice = engine.prepare_voice(pipe, opts.voice)
+                timing.voice = opts.voice  # Log only a voice pack the model could load.
                 source = iter(pipe(opts.text, voice=voice, speed=opts.speed))
                 while not stop.is_set():
                     try:
@@ -359,7 +364,7 @@ class TtsSlot:
                 finally:
                     emit(_END)  # always: a failing close() must never leave the RPC waiting
 
-        future = self.slot.submit(produce)
+        future = self.slot.submit(timing.wrap(self.slot.slot_id, produce))
         finished = False
         try:
             while True:

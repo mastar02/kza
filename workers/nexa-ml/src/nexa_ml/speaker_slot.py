@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 
+from nexa_ml.observability import InferenceTiming
 from nexa_ml.offline import OfflineViolationError, assert_offline_effective, reject_remote_source
 from nexa_ml.slot import ModelSlot
 
@@ -182,7 +183,10 @@ class SpeakerSlot:
     def __init__(self, slot: ModelSlot) -> None:
         self.slot = slot
 
-    async def embed(self, audio: np.ndarray) -> SpeakerEmbedding:
+    async def embed(self, audio: np.ndarray, *, timing: InferenceTiming | None = None) -> SpeakerEmbedding:
         """Encode on the slot executor."""
         key = self.slot.model_name
-        return await self.slot.run(lambda encoder: embed_blocking(encoder, audio, key))
+        infer = (timing or InferenceTiming()).wrap(
+            self.slot.slot_id, lambda encoder: embed_blocking(encoder, audio, key)
+        )
+        return await self.slot.run(infer)
