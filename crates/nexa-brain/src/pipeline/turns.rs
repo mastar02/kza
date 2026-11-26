@@ -19,6 +19,8 @@ use tonic::{Request, Status, metadata::MetadataValue, transport::Channel};
 use crate::Brain;
 
 const AMBIENT_CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
+const COMMAND_STT_HOTWORDS: &str =
+    "Nexa prendé apagá subí bajá poné escritorio living cocina baño hall";
 
 async fn ambient_control(
     client: &mut MemoryServiceClient<Channel>,
@@ -274,6 +276,11 @@ impl Brain {
         utterance: &AudioUtterance,
         mode: SttMode,
     ) -> Result<TranscribeResponse, Status> {
+        let hotwords = if mode == SttMode::Command {
+            COMMAND_STT_HOTWORDS.to_owned()
+        } else {
+            String::new()
+        };
         let response = self
             .ml
             .transcribe(TranscribeRequest {
@@ -281,6 +288,7 @@ impl Brain {
                 sample_rate: utterance.sample_rate,
                 language: self.config.core.nlu.language.clone(),
                 mode: mode.into(),
+                hotwords,
                 ..TranscribeRequest::default()
             })
             .await?;
@@ -433,6 +441,88 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert!(active.lease.cancel.is_cancelled());
         jobs.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn whisper_confidence_runs_in_shadow_while_compression_ratio_enforces()
+    -> Result<(), BrainError> {
+        use nexa_nlu::{
+            gate::{GateContext, GateReason, SttConfidence},
+            router_engine::{Route, RouteContext},
+        };
+
+        let dir = tempfile::tempdir_in("/tmp")?;
+        let mut core =
+            NexaConfig::from_toml_str(include_str!("../../../../config/nexa/nexa.toml"))?;
+        core.paths.data_dir = dir.path().join("data");
+        let config = LoadedBundle {
+            core,
+            rooms: RoomsConfig::load_file(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../config/nexa/rooms.example.toml"
+            ))?,
+            ha_controls: Default::default(),
+        };
+        let channel = channel(&dir.path().join("unused.sock"));
+        let brain = Brain::open(
+            config,
+            Dependencies {
+                audio: Arc::new(UdsAudio(AudioServiceClient::new(channel.clone()))),
+                ml: Arc::new(UdsMl(MlServiceClient::new(channel))),
+                memory: None,
+                home: None,
+                clock: Arc::new(SystemClock::default()),
+            },
+        )
+        .await?;
+
+        let low_conf = brain.router.route(
+            "Nexa, prendé la luz",
+            RouteContext {
+                gate: GateContext {
+                    confidence: SttConfidence {
+                        no_speech_prob: Some(0.85),
+                        avg_logprob: Some(-1.8),
+                        compression_ratio: Some(1.1),
+                    },
+                    ..GateContext::default()
+                },
+                acoustic_wake: true,
+                source_room: Some("escritorio"),
+                wake_score: 0.54,
+                rms: 0.012,
+                ..RouteContext::default()
+            },
+        );
+        assert!(low_conf.acceptance.accept);
+        assert!(matches!(low_conf.route, Route::Domotics(_)));
+        assert_eq!(
+            low_conf.acceptance.would_reject,
+            vec![GateReason::LowConfidence]
+        );
+
+        let high_comp = brain.router.route(
+            "Nexa, prendé la luz",
+            RouteContext {
+                gate: GateContext {
+                    confidence: SttConfidence {
+                        no_speech_prob: Some(0.0),
+                        avg_logprob: Some(-0.2),
+                        compression_ratio: Some(2.5),
+                    },
+                    ..GateContext::default()
+                },
+                acoustic_wake: true,
+                source_room: Some("escritorio"),
+                wake_score: 0.54,
+                rms: 0.012,
+                ..RouteContext::default()
+            },
+        );
+        assert!(!high_comp.acceptance.accept);
+        assert_eq!(high_comp.acceptance.reason, GateReason::HighCompression);
+        assert!(matches!(high_comp.route, Route::Rejected));
         Ok(())
     }
 }

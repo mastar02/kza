@@ -50,6 +50,9 @@ impl Brain {
             utterance_id = %conversation,
             latency_ms = stt_started.elapsed().as_millis(),
             word_count = stt.text.split_whitespace().count(),
+            no_speech_prob = stt.no_speech_prob,
+            avg_logprob = stt.avg_logprob,
+            compression_ratio = stt.compression_ratio,
             vetoed = !valid_confidence,
             "STT ready"
         );

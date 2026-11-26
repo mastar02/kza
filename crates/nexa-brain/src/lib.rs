@@ -267,7 +267,10 @@ impl Brain {
         let nlu = &config.core.nlu;
         let router = RouterEngine::new(RouterSettings {
             gate: GateSettings {
-                enforce_confidence: true,
+                // Keep Whisper confidence checks in shadow mode: on whisper-v3-turbo over XVF3800
+                // audio, avg_logprob/no_speech_prob reject real commands while compression_ratio
+                // reliably isolates repetitive hallucinations (see legacy settings.yaml).
+                enforce_confidence: false,
                 enforce_compression_ratio: nlu.enforce_compression_ratio,
                 max_compression_ratio: nlu.max_compression_ratio,
                 ..GateSettings::default()
@@ -278,6 +281,7 @@ impl Brain {
                 compound_execute: nlu.compound_execute,
                 ..HouseholdIntentSettings::default()
             },
+            wake_words: vec!["neska".into(), "nexca".into()],
             indoor_rooms: config
                 .rooms
                 .rooms
