@@ -114,6 +114,8 @@ def transcribe_blocking(
         "temperature": 0.0,
         "compression_ratio_threshold": 2.0,
         "log_prob_threshold": -3.0,
+        "repetition_penalty": 1.05,
+        "no_repeat_ngram_size": 4,
         "initial_prompt": opts.initial_prompt,
         "condition_on_previous_text": False,
         "vad_filter": opts.vad_filter,

@@ -40,7 +40,10 @@ use home::Home;
 pub type BrainError = Box<dyn std::error::Error + Send + Sync>;
 type Worker = HouseholdWorker<Arc<dyn BrainClock>>;
 
-pub(crate) const COMMAND_STT_INITIAL_PROMPT: &str = "Comandos de casa inteligente para Nexa en español rioplatense: luces, aire acondicionado, persianas y escenas en escritorio, living, cocina, baño y escalera. Voseo: prendé, apagá, subí, bajá, poné.";
+// Keep initial_prompt empty on whisper-v3-turbo: non-empty domain prompts inject decoder history
+// that triggers prompt echoes ("Voseo, prendé, apagá.") and high-compression repetition loops on
+// real speech. Domain vocabulary boosting is handled cleanly by COMMAND_STT_HOTWORDS instead.
+pub(crate) const COMMAND_STT_INITIAL_PROMPT: &str = "";
 pub(crate) const COMMAND_STT_HOTWORDS: &str = "Nexa prendé apagá prendelo apagalo prendela apagala subí bajá poné escritorio living cocina baño escalera luz luces aire";
 pub(crate) const COMMAND_STT_BEAM_SIZE: u32 = 5;
 
@@ -274,7 +277,8 @@ impl Brain {
                 // Keep Whisper confidence checks in shadow mode: on whisper-v3-turbo over XVF3800
                 // audio, avg_logprob/no_speech_prob reject real commands while compression_ratio
                 // reliably isolates repetitive hallucinations (see legacy settings.yaml).
-                initial_prompt: Some(COMMAND_STT_INITIAL_PROMPT.to_owned()),
+                initial_prompt: (!COMMAND_STT_INITIAL_PROMPT.is_empty())
+                    .then(|| COMMAND_STT_INITIAL_PROMPT.to_owned()),
                 enforce_confidence: false,
                 enforce_compression_ratio: nlu.enforce_compression_ratio,
                 max_compression_ratio: nlu.max_compression_ratio,

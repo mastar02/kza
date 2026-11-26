@@ -22,20 +22,29 @@ pub(crate) fn parse_core(core: &str, source_room: Option<&str>) -> GrammarMatch 
         core.trim_start_matches(['¡', '¿', '?'])
             .trim_end_matches(['!', '.', ',', '?', '¿']),
     );
-    let polite = ["podes ", "puedes ", "podrias ", "podria "]
+    let after_greeting = ["buenos dias", "buen dia", "buenas tardes", "buenas noches"]
         .iter()
-        .find_map(|lead| folded.strip_prefix(lead));
+        .find_map(|greeting| {
+            let tail = folded.strip_prefix(greeting)?;
+            let rest = tail.trim_start_matches([',', '.', ':', ';', ' ']);
+            (!rest.is_empty() && tail.len() != rest.len()).then_some(rest)
+        })
+        .unwrap_or(folded.as_str());
+    let polite = ["podes ", "puedes ", "podrias ", "podria ", "podre "]
+        .iter()
+        .find_map(|lead| after_greeting.strip_prefix(lead));
     let direct_question = core.starts_with(['¿', '?']) || core.ends_with(['?', '¿']);
-    if (direct_question && polite.is_none()) || folded.contains([';', '?', '¿']) {
+    if (direct_question && polite.is_none()) || after_greeting.contains([';', '?', '¿']) {
         return GrammarMatch::Unclaimed;
     }
-    let core = polite.unwrap_or(&folded);
+    let core = polite.unwrap_or(after_greeting);
     let core = core.strip_suffix(" ahora").unwrap_or(core);
     let core = core
         .strip_prefix("a ")
         .filter(|tail| tail.starts_with("aprender ") || tail.starts_with("aprende "))
         .unwrap_or(core);
-    let (head, rest) = core.split_once(' ').unwrap_or((core, ""));
+    let (raw_head, rest) = core.split_once(' ').unwrap_or((core, ""));
+    let head = raw_head.trim_end_matches(',');
     let verb = action(head);
     // Whisper frequently elides "Nexa, prendé <room/light>" into "aprende/aprender [a] <room/light>".
     let stt_prende_elision = matches!(head, "aprende" | "aprender");
@@ -63,6 +72,17 @@ pub(crate) fn parse_core(core: &str, source_room: Option<&str>) -> GrammarMatch 
             | "apagarla"
             | "apagarlo"
     );
+    // If the user repeated the exact same clitic command ("Nexa, apagalo, nexa, apagalo"),
+    // collapse the repeated wake+clitic tail so fast domotics executes immediately.
+    let repeated_clitic = clitic_on_off
+        && !rest.is_empty()
+        && crate::normalize::words(rest)
+            .split_whitespace()
+            .all(|word| {
+                word == head
+                    || crate::normalize::WAKE_WORDS.contains(&word)
+                    || matches!(word, "neska" | "nexca")
+            });
     let clitic_level = matches!(
         head,
         "ponela" | "ponelo" | "subila" | "subilo" | "bajala" | "bajalo"
@@ -85,7 +105,7 @@ pub(crate) fn parse_core(core: &str, source_room: Option<&str>) -> GrammarMatch 
         Some(Domain::Light) if stt_prende_elision => (Some(Verb::On), Domain::Light, tail),
         Some(domain) => (verb, domain, tail),
         None if (clitic_on_off || clitic_level) && core.split_whitespace().count() <= 6 => {
-            (verb, Domain::Light, rest)
+            (verb, Domain::Light, if repeated_clitic { "" } else { rest })
         }
         None if (matches!(verb, Some(Verb::On | Verb::Off)) || stt_prende_elision)
             && super::canonical_room(noun).is_some() =>

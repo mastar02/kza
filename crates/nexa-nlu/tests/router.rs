@@ -782,6 +782,21 @@ fn parses_room_as_light_shorthand_and_trailing_wake_word() {
         ("prenderlo", Operation::On, "escritorio"),
         ("prendeme el escritorio", Operation::On, "escritorio"),
         ("apagame el escritorio", Operation::Off, "escritorio"),
+        (
+            "Nexa, apagalo, nexa, apagalo.",
+            Operation::Off,
+            "escritorio",
+        ),
+        (
+            "Nexa, buenos días, podré prender la luz.",
+            Operation::On,
+            "escritorio",
+        ),
+        (
+            "Nexa, buen día, podés apagar el escritorio",
+            Operation::Off,
+            "escritorio",
+        ),
     ] {
         let turn = router.route(phrase, clear_wake());
         let Route::Domotics(command) = turn.route else {
@@ -805,6 +820,7 @@ fn parses_room_as_light_shorthand_and_trailing_wake_word() {
         "aprende a tocar guitarra",
         "aprender a cocinar",
         "aprender ingles",
+        "Nexa, buenos días",
         "bajalo",
         "apagara la luz",
     ] {
