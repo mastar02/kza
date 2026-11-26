@@ -407,7 +407,8 @@ impl Brain {
             });
         let target = words(&command.target);
         let target_id = format!("{prefix}.{}", target.replace(' ', "_"));
-        let room_id = format!("{prefix}.{}", words(room).replace(' ', "_"));
+        let slug = words(room).replace(' ', "_");
+        let room_id = format!("{prefix}.{slug}");
         let room_target = target.is_empty()
             || [
                 "de la ", "de el ", "del ", "de ", "en la ", "en el ", "en ", "a la ", "al ",
@@ -418,8 +419,24 @@ impl Brain {
             .is_some_and(|name| grammar::canonical_room(name) == Some(room) || name == words(room));
         let entity_id = if command.domain == D::Scene || !room_target {
             target_id
+        } else if let Some(configured) = entity {
+            configured.clone()
+        } else if command.domain == D::Light {
+            let group_id = format!("light.grupo_{slug}");
+            if self.config.ha_controls.entities.contains_key(&group_id) {
+                group_id
+            } else {
+                room_id
+            }
+        } else if command.domain == D::Climate {
+            let climate_id = format!("climate.aire_{slug}");
+            if self.config.ha_controls.entities.contains_key(&climate_id) {
+                climate_id
+            } else {
+                room_id
+            }
         } else {
-            entity.cloned().unwrap_or(room_id)
+            room_id
         };
         Some(EffectIntent {
             entity_id,

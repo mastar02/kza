@@ -44,7 +44,7 @@ type Worker = HouseholdWorker<Arc<dyn BrainClock>>;
 // that triggers prompt echoes ("Voseo, prendé, apagá.") and high-compression repetition loops on
 // real speech. Domain vocabulary boosting is handled cleanly by COMMAND_STT_HOTWORDS instead.
 pub(crate) const COMMAND_STT_INITIAL_PROMPT: &str = "";
-pub(crate) const COMMAND_STT_HOTWORDS: &str = "Nexa prendé apagá prendelo apagalo prendela apagala subí bajá poné escritorio living cocina baño escalera luz luces aire";
+pub(crate) const COMMAND_STT_HOTWORDS: &str = "Nexa prendé apagá prendelo apagalo prendela apagala subí bajá poné escritorio living cocina baño cuarto balcón escalera luz luces aire";
 pub(crate) const COMMAND_STT_BEAM_SIZE: u32 = 5;
 
 #[derive(Debug)]

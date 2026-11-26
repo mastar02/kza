@@ -17,6 +17,7 @@ pub(super) const ROOMS: &[(&str, &str)] = &[
     ("hall", "hall"),
     ("pasillo", "hall"),
     ("entrada", "hall"),
+    ("escalera", "hall"),
     ("cocina", "cocina"),
     ("kitchen", "cocina"),
     ("bano", "bano"),
@@ -25,6 +26,8 @@ pub(super) const ROOMS: &[(&str, &str)] = &[
     ("cuarto", "cuarto"),
     ("dormitorio", "cuarto"),
     ("habitacion", "cuarto"),
+    ("pieza", "cuarto"),
+    ("balcon", "balcon"),
 ];
 pub(crate) const ROOM_PREPS: &[&str] = &[
     "de la", "de el", "en el", "en la", "a la", "del", "al", "de", "en",

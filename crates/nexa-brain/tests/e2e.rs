@@ -717,3 +717,60 @@ async fn local_llm_home_router_executes_allowlisted_action_and_denies_security_d
 
     h.stop().await
 }
+
+#[tokio::test]
+async fn cross_room_light_without_mic_resolves_to_allowlisted_group_entity() -> Result {
+    let ha = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/states/light.grupo_bano"))
+        .and(header("authorization", "Bearer ha-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "entity_id": "light.grupo_bano",
+            "state": "off",
+            "attributes": {"entity_id": ["light.bano_2"]},
+        })))
+        .mount(&ha)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/states/light.bano_2"))
+        .and(header("authorization", "Bearer ha-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "entity_id": "light.bano_2",
+            "state": "off",
+            "attributes": {},
+        })))
+        .mount(&ha)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/services/light/turn_on"))
+        .and(header("authorization", "Bearer ha-test-token"))
+        .and(body_json(json!({"entity_id": "light.bano_2"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&ha)
+        .await;
+
+    let mut h = Harness::start(
+        |cfg| {
+            cfg.core.home_assistant.url = ha.uri();
+            cfg.ha_controls
+                .entities
+                .insert("light.grupo_bano".into(), vec!["turn_on".into()]);
+            cfg.ha_controls
+                .entities
+                .insert("light.bano_2".into(), vec!["turn_on".into()]);
+            cfg.ha_controls
+                .groups
+                .insert("light.grupo_bano".into(), vec!["light.bano_2".into()]);
+        },
+        true,
+    )
+    .await?;
+
+    // Utterance comes from "living" mic while requesting "bano" (a room with no mic in rooms.toml).
+    h.utterance("cross-bano", "Nexa, prendé la luz del baño", Kind::Command)
+        .await?;
+    assert_eq!(receive(&mut h.spoken).await?, "Mandé la orden.");
+    let _ = h.playback().await?;
+    h.stop().await
+}
