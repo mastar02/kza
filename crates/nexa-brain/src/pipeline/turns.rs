@@ -1,20 +1,44 @@
 use std::{
     collections::{HashMap, HashSet},
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use futures_util::StreamExt;
 use nexa_llm::CancellationToken;
 use nexa_proto::v1::{
     self, AudioUtterance, LiveEventKind, SttMode, TranscribeRequest, TranscribeResponse,
-    UtteranceKind,
+    UtteranceKind, memory_service_client::MemoryServiceClient,
 };
+use prost::Message;
 use serde_json::json;
 use tokio::{sync::OnceCell, task::JoinSet};
-use tonic::Status;
+use tonic::{Request, Status, metadata::MetadataValue, transport::Channel};
 
 use crate::Brain;
+
+const AMBIENT_CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
+
+async fn ambient_control(
+    client: &mut MemoryServiceClient<Channel>,
+) -> Result<v1::AmbientControlStatus, Status> {
+    let actor = v1::ActorContext {
+        subject: "nexa-brain".into(),
+        role: v1::Role::Operator.into(),
+        permissions: vec![v1::Permission::AmbientControl.into()],
+        ..Default::default()
+    };
+    let mut request = Request::new(v1::Empty {});
+    request.metadata_mut().insert_bin(
+        "actor-context-bin",
+        MetadataValue::from_bytes(&actor.encode_to_vec()),
+    );
+    tokio::time::timeout(AMBIENT_CONTROL_TIMEOUT, client.get_ambient_control(request))
+        .await
+        .map_err(|_| Status::deadline_exceeded("ambient control lookup timed out"))?
+        .map(tonic::Response::into_inner)
+}
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ActiveTurns {
@@ -125,11 +149,23 @@ impl Brain {
     pub async fn run_voice(self: Arc<Self>) {
         let mut jobs = JoinSet::new();
         let mut ambient_jobs = HashSet::new();
+        let ambient_control = (self.config.core.memory.ambient_enabled && self.memory.is_some())
+            .then(|| {
+                // Match the daemon's runtime directory resolution for the private memory socket.
+                let runtime = std::env::var_os("RUNTIME_DIRECTORY")
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("XDG_RUNTIME_DIR").map(|dir| Path::new(&dir).join("nexa"))
+                    })
+                    .unwrap_or_else(|| self.config.core.paths.runtime_dir.clone());
+                MemoryServiceClient::new(crate::clients::channel(
+                    &runtime.join(nexa_proto::sockets::MEMORY),
+                ))
+            });
         while !self.shutdown.is_cancelled() {
-            let ambient = self.config.core.memory.ambient_enabled && self.memory.is_some();
             let result = tokio::select! {
                 _ = self.shutdown.cancelled() => break,
-                result = self.audio.subscribe(ambient) => result,
+                result = self.audio.subscribe(ambient_control.is_some()) => result,
             };
             if let Ok(mut stream) = result {
                 loop {
@@ -141,7 +177,7 @@ impl Brain {
                         }
                         item = stream.next() => {
                             match item {
-                                Some(Ok(utterance)) => self.accept(utterance, &mut jobs, &mut ambient_jobs),
+                                Some(Ok(utterance)) => self.accept(utterance, &mut jobs, &mut ambient_jobs, ambient_control.as_ref()),
                                 _ => break,
                             }
                         }
@@ -167,6 +203,7 @@ impl Brain {
         utterance: AudioUtterance,
         jobs: &mut JoinSet<Option<String>>,
         ambient_jobs: &mut HashSet<String>,
+        ambient_control: Option<&MemoryServiceClient<Channel>>,
     ) {
         if !self.zone(&utterance.room_id)
             || utterance.utterance_id.is_empty()
@@ -180,20 +217,26 @@ impl Brain {
         }
         let brain = Arc::clone(self);
         if utterance.kind() == UtteranceKind::Ambient {
-            if self.config.core.memory.ambient_enabled
-                && self.memory.is_some()
-                && ambient_jobs.insert(utterance.room_id.clone())
-            {
+            let Some(control) = ambient_control.cloned() else {
+                return;
+            };
+            if ambient_jobs.insert(utterance.room_id.clone()) {
                 jobs.spawn(async move {
-                    tokio::select! {
-                        _ = brain.shutdown.cancelled() => {}
-                        result = tokio::time::timeout(Duration::from_secs(15), brain.ambient(&utterance)) => {
-                            match result {
-                                Ok(Ok(())) => {}
-                                Ok(Err(error)) => tracing::warn!(code = ?error.code(), "Ambient observation failed"),
-                                Err(_) => tracing::warn!(code = ?tonic::Code::DeadlineExceeded, "Ambient observation timed out"),
-                            }
-                        }
+                    let started = Instant::now();
+                    let result = tokio::select! {
+                        biased;
+                        _ = brain.shutdown.cancelled() => Ok(Ok("cancelled")),
+                        result = tokio::time::timeout(Duration::from_secs(15), brain.ambient(&utterance, control)) => result,
+                    };
+                    let room_id = &utterance.room_id;
+                    let utterance_id = &utterance.utterance_id;
+                    let latency_ms = started.elapsed().as_millis();
+                    match result {
+                        Ok(Ok(status)) => tracing::info!(%room_id, %utterance_id, latency_ms, status, "Ambient observation"),
+                        Ok(Err(error)) => tracing::warn!(%room_id, %utterance_id, latency_ms,
+                            status = "failed_closed", code = ?error.code(), "Ambient observation"),
+                        Err(_) => tracing::warn!(%room_id, %utterance_id, latency_ms,
+                            status = "timed_out", code = ?tonic::Code::DeadlineExceeded, "Ambient observation"),
                     }
                     Some(utterance.room_id)
                 });
@@ -202,6 +245,15 @@ impl Brain {
             utterance.kind(),
             UtteranceKind::Command | UtteranceKind::FollowUp
         ) {
+            if utterance.kind() == UtteranceKind::FollowUp
+                && !self.active.can_follow_up(
+                    &utterance.room_id,
+                    utterance.capture_epoch,
+                    self.clock.monotonic(),
+                )
+            {
+                return;
+            }
             if jobs.len() >= self.config.rooms.rooms.len().saturating_mul(4) {
                 return;
             }
@@ -238,10 +290,18 @@ impl Brain {
         Ok(response)
     }
 
-    async fn ambient(&self, utterance: &AudioUtterance) -> Result<(), Status> {
+    async fn ambient(
+        &self,
+        utterance: &AudioUtterance,
+        mut control: MemoryServiceClient<Channel>,
+    ) -> Result<&'static str, Status> {
         let Some(memory) = &self.memory else {
-            return Ok(());
+            return Ok("memory_disabled");
         };
+        let before = ambient_control(&mut control).await?;
+        if before.paused {
+            return Ok("paused");
+        }
         let transcript = self.transcribe(utterance, SttMode::Ambient);
         let embedding = self.ml.embed_speaker(v1::EmbedSpeakerRequest {
             pcm_f32le: utterance.pcm_f32le.clone(),
@@ -254,6 +314,10 @@ impl Brain {
         {
             return Err(Status::data_loss("invalid speaker embedding"));
         }
+        let after = ambient_control(&mut control).await?;
+        if after.paused || after.revision != before.revision {
+            return Ok("control_changed");
+        }
         // The observation receipt is acoustic metadata. It does not enter command admission.
         memory
             .observe_voice(v1::RecordVoiceObservationRequest {
@@ -265,7 +329,7 @@ impl Brain {
                 captured_at_unix_ms: utterance.captured_at_unix_ms,
             })
             .await?;
-        Ok(())
+        Ok("observed")
     }
 
     async fn command(&self, utterance: AudioUtterance, turn: Turn, previous: Option<Lease>) {
@@ -359,13 +423,13 @@ mod tests {
         for _ in 0..capacity {
             jobs.spawn(std::future::pending());
         }
-        brain.accept(utterance.clone(), &mut jobs, &mut ambient_jobs);
+        brain.accept(utterance.clone(), &mut jobs, &mut ambient_jobs, None);
         assert_eq!(jobs.len(), capacity);
         assert!(!active.lease.cancel.is_cancelled());
         assert!(brain.active.busy(&utterance.room_id));
 
         jobs.shutdown().await;
-        brain.accept(utterance, &mut jobs, &mut ambient_jobs);
+        brain.accept(utterance, &mut jobs, &mut ambient_jobs, None);
         assert_eq!(jobs.len(), 1);
         assert!(active.lease.cancel.is_cancelled());
         jobs.shutdown().await;

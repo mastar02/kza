@@ -10,6 +10,19 @@ The capture policy is stored in `paths.data_dir/audiod/capture_seal.json`. Owner
 an unclean exit carry forward. The operator must confirm the exact carried count through
 `ForgetCarriedOwners` before resuming.
 
+## Utterance capture
+
+With an `include_ambient` subscriber, each room segments speech using the existing VAD
+and its room noise floor. An ambient clip needs at least 800 ms of voiced audio. It ends
+after 640 ms of quiet or 12 s of capture, with a 3 s cooldown between clips. Ambient
+audio goes directly to subscribers and carries no Parakeet transcript.
+
+A completed wake command enables one follow-up candidate for up to 12 s in the same
+room and capture session. Follow-ups use Parakeet. Brain independently checks its
+room and capture-epoch window and requires transcript corroboration before routing.
+A new wake interrupts ambient or follow-up segmentation. Sealing or recovering
+capture discards any unfinished clips.
+
 ## Linux hardware build
 
 Build with `cargo build -p nexa-audiod --features hardware`. The native build uses the ALSA

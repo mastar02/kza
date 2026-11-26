@@ -1,17 +1,19 @@
 #![allow(clippy::unwrap_used)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use nexa_audiod::capture_seal::{CaptureControl, CapturePhase, CaptureState};
+use nexa_audiod::dsp::FRAME_SAMPLES;
 use nexa_audiod::grpc::AudioService;
 use nexa_audiod::hw::{amp::Ma1260, simulation::Simulation};
 use nexa_audiod::runtime::{RoomPipeline, SharedShadow, run_capture_control};
 use nexa_audiod::traits::{AudioError, CaptureSource, ShadowStt, VadEngine, WakeEngine};
 use nexa_config::{Ma1260Connection, RoomDefinition, XvfTuning};
 use nexa_proto::v1::audio_service_server::AudioService as AudioRpc;
-use nexa_proto::v1::{Empty, SubscribeUtterancesRequest};
-use tokio::sync::{Notify, watch};
+use nexa_proto::v1::{Empty, SubscribeUtterancesRequest, UtteranceKind};
+use tokio::sync::{Notify, mpsc, watch};
 use tokio_stream::StreamExt;
 use tonic::Request;
 
@@ -114,6 +116,315 @@ fn services() -> (
     )
     .unwrap();
     (capture, Arc::new(service))
+}
+
+struct FrameSource(mpsc::Receiver<Result<f32, AudioError>>);
+
+struct CountShadow(Arc<AtomicUsize>);
+
+impl ShadowStt for CountShadow {
+    fn transcribe(&mut self, _: &[f32]) -> Result<String, AudioError> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok("shadow transcript".into())
+    }
+}
+
+impl CaptureSource for FrameSource {
+    async fn start(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
+        samples.fill(self.0.recv().await.ok_or(AudioError::Unavailable)??);
+        Ok(samples.len())
+    }
+
+    async fn stop(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+}
+
+async fn frames(sender: &mpsc::Sender<Result<f32, AudioError>>, count: usize, level: f32) {
+    for _ in 0..count {
+        sender.send(Ok(level)).await.unwrap();
+    }
+}
+
+async fn wait_for_frames(service: &AudioService<Ma1260, Simulation>, count: u64) {
+    loop {
+        let snapshot = service
+            .get_microphones(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner();
+        if snapshot
+            .microphones
+            .iter()
+            .any(|room| room.frames_captured >= count)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+async fn assert_quiet(
+    stream: &mut <AudioService<Ma1260, Simulation> as AudioRpc>::SubscribeUtterancesStream,
+) {
+    assert!(
+        tokio::time::timeout(Duration::from_millis(40), stream.next())
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test]
+async fn ambient_requires_opt_in_and_never_runs_shadow_stt() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (_, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let (sender, receiver) = mpsc::channel(32);
+        let shadow_calls = Arc::new(AtomicUsize::new(0));
+        let mut commands = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest::default()))
+            .await
+            .unwrap()
+            .into_inner();
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                FrameSource(receiver),
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(
+                service.clone(),
+                Arc::new(SharedShadow::new(CountShadow(shadow_calls.clone()))),
+                shutdown,
+            ),
+        );
+
+        // A full segment without ambient demand must not even attempt publication.
+        frames(&sender, 12, 0.2).await;
+        frames(&sender, 9, 0.0).await;
+        wait_for_frames(&service, 21).await;
+        assert_quiet(&mut commands).await;
+        let health = service
+            .get_health(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            health
+                .detail
+                .contains("utterances_published=0; utterances_dropped=0;")
+        );
+
+        let mut ambient = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest {
+                include_ambient: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        // Switching opt-in streams must discard the departing audience's partial segment.
+        frames(&sender, 9, 0.2).await;
+        wait_for_frames(&service, 30).await;
+        drop(ambient);
+        ambient = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest {
+                include_ambient: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        frames(&sender, 1, 0.2).await;
+        frames(&sender, 8, 0.0).await;
+        wait_for_frames(&service, 39).await;
+        assert_quiet(&mut ambient).await;
+
+        frames(&sender, 10, 0.3).await;
+        frames(&sender, 8, 0.0).await;
+        let utterance = ambient.next().await.unwrap().unwrap();
+        assert_eq!(utterance.kind(), UtteranceKind::Ambient);
+        assert_eq!(utterance.room_id, "living");
+        assert_eq!(utterance.capture_epoch, 0);
+        assert_eq!(
+            utterance.pcm_f32le,
+            0.3_f32.to_le_bytes().repeat(10 * FRAME_SAMPLES)
+        );
+        assert!(utterance.parakeet_shadow_text.is_empty());
+        assert_eq!(utterance.parakeet_latency_ms, 0);
+
+        frames(&sender, 12, 0.2).await;
+        frames(&sender, 8, 0.0).await;
+        wait_for_frames(&service, 77).await;
+        assert_quiet(&mut ambient).await; // Cooldown suppresses a second segment.
+        assert_quiet(&mut commands).await;
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+        assert_eq!(shadow_calls.load(Ordering::Relaxed), 0);
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn wake_discards_pending_ambient_and_arms_one_same_epoch_follow_up() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (_, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let (sender, receiver) = mpsc::channel(32);
+        let mut stream = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest {
+                include_ambient: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                FrameSource(receiver),
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(service, Arc::new(SharedShadow::new(Shadow)), shutdown),
+        );
+        frames(&sender, 11, 0.03).await;
+        frames(&sender, 1, 0.8).await;
+        frames(&sender, 4, 0.2).await;
+        frames(&sender, 9, 0.0).await;
+        let command = stream.next().await.unwrap().unwrap();
+        assert_eq!(command.kind(), UtteranceKind::Command);
+        assert_eq!(command.parakeet_shadow_text, "living");
+        assert_eq!(command.pcm_f32le[..4], 0.2_f32.to_le_bytes());
+
+        frames(&sender, 3, 0.05).await;
+        frames(&sender, 8, 0.0).await;
+        let follow_up = stream.next().await.unwrap().unwrap();
+        assert_eq!(follow_up.kind(), UtteranceKind::FollowUp);
+        assert_eq!(follow_up.capture_epoch, command.capture_epoch);
+        assert_eq!(follow_up.parakeet_shadow_text, "hall");
+        assert_eq!(follow_up.pcm_f32le, 0.05_f32.to_le_bytes().repeat(3 * 1280));
+
+        frames(&sender, 10, 0.2).await;
+        frames(&sender, 8, 0.0).await;
+        assert_eq!(
+            stream.next().await.unwrap().unwrap().kind(),
+            UtteranceKind::Ambient
+        );
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn capture_seal_drops_partial_ambient_before_muting_and_resuming() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (capture, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let (sender, receiver) = mpsc::channel(32);
+        let mut ambient = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest {
+                include_ambient: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                FrameSource(receiver),
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(
+                service.clone(),
+                Arc::new(SharedShadow::new(FailedShadow)),
+                shutdown.clone(),
+            ),
+        );
+        let coordinator = tokio::spawn(run_capture_control(capture.clone(), shutdown));
+        frames(&sender, 11, 0.2).await;
+        wait_for_frames(&service, 11).await;
+        capture.lock().unwrap().set_muted(true, 0).unwrap();
+        while !capture.lock().unwrap().status().total_mute_confirmed {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert_eq!(capture.lock().unwrap().status().live_capture_owners, 0);
+        assert_quiet(&mut ambient).await;
+        capture.lock().unwrap().set_muted(false, 1).unwrap();
+
+        frames(&sender, 9, 0.0).await;
+        wait_for_frames(&service, 20).await;
+        assert_quiet(&mut ambient).await;
+        frames(&sender, 10, 0.4).await;
+        frames(&sender, 8, 0.0).await;
+        let resumed = ambient.next().await.unwrap().unwrap();
+        assert_eq!(resumed.kind(), UtteranceKind::Ambient);
+        assert_eq!(resumed.capture_epoch, 2);
+        assert_eq!(resumed.pcm_f32le, 0.4_f32.to_le_bytes().repeat(10 * 1280));
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+        coordinator.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn ambient_recovery_discards_partial_pcm_and_caps_continuous_speech() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (_, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let (sender, receiver) = mpsc::channel(32);
+        let mut ambient = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest {
+                include_ambient: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                FrameSource(receiver),
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(
+                service.clone(),
+                Arc::new(SharedShadow::new(FailedShadow)),
+                shutdown,
+            ),
+        );
+        frames(&sender, 11, 0.2).await;
+        wait_for_frames(&service, 11).await;
+        sender.send(Err(AudioError::Unavailable)).await.unwrap();
+        frames(&sender, 9, 0.0).await;
+        wait_for_frames(&service, 20).await;
+        assert_quiet(&mut ambient).await;
+
+        frames(&sender, 150, 0.3).await;
+        let capped = ambient.next().await.unwrap().unwrap();
+        assert_eq!(capped.kind(), UtteranceKind::Ambient);
+        assert_eq!(capped.capture_epoch, 0);
+        assert_eq!(
+            capped.pcm_f32le,
+            0.3_f32.to_le_bytes().repeat(150 * FRAME_SAMPLES)
+        );
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

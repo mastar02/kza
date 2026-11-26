@@ -25,6 +25,13 @@ const FIRST_RETRY: Duration = Duration::from_millis(100);
 const MAX_RETRY: Duration = Duration::from_secs(5);
 const STABLE_CAPTURE: Duration = Duration::from_secs(5);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(2);
+const AMBIENT_MIN_VOICE_FRAMES: usize = 10; // 800 ms of voiced frames.
+const AMBIENT_MAX_FRAMES: usize = 150; // 12 s, including pauses.
+const NON_WAKE_END_SILENCE_FRAMES: usize = 8; // 640 ms at the capture frame size.
+const AMBIENT_COOLDOWN: Duration = Duration::from_secs(3);
+const FOLLOW_UP_WINDOW: Duration = Duration::from_secs(12);
+const FOLLOW_UP_MIN_VOICE_FRAMES: usize = 3;
+const FOLLOW_UP_MAX_FRAMES: usize = 62; // Just under the 5 s command cap.
 
 pub fn zone_id(room_id: &str) -> String {
     format!("zone_{room_id}")
@@ -104,11 +111,12 @@ struct CaptureGate {
     control: SharedCapture,
     status: watch::Receiver<CaptureControlStatus>,
     shutdown: watch::Receiver<bool>,
+    room_closed: watch::Receiver<bool>,
 }
 
 impl CaptureGate {
     fn epoch(&self) -> Option<u64> {
-        if *self.shutdown.borrow() {
+        if *self.shutdown.borrow() || *self.room_closed.borrow() {
             return None;
         }
         running_epoch(&self.status.borrow())
@@ -116,6 +124,7 @@ impl CaptureGate {
 
     async fn changed(&mut self) -> bool {
         tokio::select! {
+            _ = self.room_closed.wait_for(|closed| *closed) => false,
             result = self.shutdown.wait_for(|stopping| *stopping) => {
                 if let Err(error) = result {
                     tracing::warn!(%error, "room shutdown channel closed");
@@ -188,6 +197,9 @@ impl<S: ShadowStt + 'static> SharedShadow<S> {
             let mut model = model
                 .lock()
                 .map_err(|error| unavailable("lock Parakeet model", error))?;
+            if gate.epoch() != Some(epoch) {
+                return Ok(None);
+            }
             let started = Instant::now();
             let text = model.transcribe(&recording.samples);
             let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
@@ -244,10 +256,12 @@ where
         shadow: Arc<SharedShadow<S>>,
         shutdown: watch::Receiver<bool>,
     ) -> Result<(), CaptureError> {
+        let (_room_open, room_closed) = watch::channel(false);
         let mut gate = CaptureGate {
             control: service.capture_controller(),
             status: service.capture_status_receiver(),
             shutdown,
+            room_closed,
         };
         let mut retry = FIRST_RETRY;
         let mut attempt = 0_u32;
@@ -282,6 +296,11 @@ where
             update_microphone(&service, &self.processor.room);
 
             let room_id = self.processor.room.room_id.clone();
+            let (close_room, room_closed) = watch::channel(false);
+            let room_gate = CaptureGate {
+                room_closed,
+                ..gate.clone()
+            };
             let capture = async {
                 let mut device = None;
                 let result = async {
@@ -304,9 +323,11 @@ where
                     })
                     .await
                     .map_err(|error| unavailable("acknowledge capture start", error))?;
-                    pump_frames(&mut self.source, producer, gate.clone(), epoch).await
+                    pump_frames(&mut self.source, producer, room_gate.clone(), epoch).await
                 }
                 .await;
+                // Do not drain buffered PCM once the device has failed or stopped.
+                close_room.send_replace(true);
                 // Even a failed start can have performed partial hardware I/O.
                 let mut delay = FIRST_RETRY;
                 while let Err(error) = self.source.stop().await {
@@ -319,16 +340,29 @@ where
                 }
                 result
             };
-            let processing = process_frames(
-                &mut self.processor,
+            let processing = async {
+                let result = process_frames(
+                    &mut self.processor,
+                    &service,
+                    consumer,
+                    utterances,
+                    room_gate.clone(),
+                    epoch,
+                )
+                .await;
+                if result.is_err() {
+                    close_room.send_replace(true);
+                }
+                result
+            };
+            let publish = publish_utterances(
                 &service,
-                consumer,
-                utterances,
-                gate.clone(),
+                &shadow,
+                pending,
+                room_gate.clone(),
                 epoch,
+                &room_id,
             );
-            let publish =
-                publish_utterances(&service, &shadow, pending, gate.clone(), epoch, &room_id);
             let (capture, processing, ()) = tokio::join!(capture, processing, publish);
             let retired = change_capture(&gate.control, move |control| {
                 control.acknowledge_stopped(owner)
@@ -385,13 +419,49 @@ async fn pump_frames(
 #[derive(Debug)]
 struct Recording {
     id: uuid::Uuid,
-    endpoint: PostWakeEndpoint,
+    kind: UtteranceKind,
     samples: Vec<f32>,
     score: f32,
     time: u64,
 }
 
 impl Recording {
+    fn new(kind: UtteranceKind, score: f32) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4(),
+            kind,
+            samples: Vec::new(),
+            score,
+            time: unix_ms(),
+        }
+    }
+
+    fn into_utterance(
+        self,
+        room_id: &str,
+        epoch: u64,
+        text: String,
+        latency_ms: u32,
+    ) -> AudioUtterance {
+        AudioUtterance {
+            utterance_id: self.id.to_string(),
+            room_id: room_id.to_owned(),
+            kind: self.kind as i32,
+            sample_rate: SAMPLE_RATE,
+            rms: frame_rms(&self.samples),
+            pcm_f32le: self
+                .samples
+                .into_iter()
+                .flat_map(f32::to_le_bytes)
+                .collect(),
+            wake_score: self.score,
+            parakeet_shadow_text: text,
+            parakeet_latency_ms: latency_ms,
+            captured_at_unix_ms: self.time,
+            capture_epoch: epoch,
+        }
+    }
+
     fn log_endpoint(
         &self,
         room_id: &str,
@@ -400,11 +470,57 @@ impl Recording {
         parakeet_ok: bool,
     ) {
         tracing::info!(
-            room_id, utterance_id = %self.id, kind = UtteranceKind::Command.as_str_name(),
+            room_id, utterance_id = %self.id, kind = self.kind.as_str_name(),
             ?decision, duration_ms = frame_duration(self.samples.len()).as_millis() as u64,
             rms = frame_rms(&self.samples), parakeet_ms, parakeet_ok,
             "utterance endpoint"
         );
+    }
+}
+
+struct NonWakeSegment {
+    recording: Recording,
+    voiced: usize,
+    quiet: usize,
+    started: Instant,
+}
+
+impl NonWakeSegment {
+    fn new(kind: UtteranceKind, started: Instant) -> Self {
+        Self {
+            recording: Recording::new(kind, 0.0),
+            voiced: 0,
+            quiet: 0,
+            started,
+        }
+    }
+
+    fn observe(&mut self, frame: &[f32; FRAME_SAMPLES], speaking: bool) -> bool {
+        self.recording.samples.extend_from_slice(frame);
+        if speaking {
+            self.voiced += 1;
+            self.quiet = 0;
+        } else {
+            self.quiet += 1;
+        }
+        let cap = match self.recording.kind {
+            UtteranceKind::FollowUp => FOLLOW_UP_MAX_FRAMES,
+            _ => AMBIENT_MAX_FRAMES,
+        };
+        self.quiet >= NON_WAKE_END_SILENCE_FRAMES
+            || self.recording.samples.len() >= cap * FRAME_SAMPLES
+    }
+
+    fn finish(mut self) -> Option<Recording> {
+        let minimum = match self.recording.kind {
+            // Preserve the command rule that an incomplete, capped clip is not actionable.
+            UtteranceKind::FollowUp if self.quiet < NON_WAKE_END_SILENCE_FRAMES => return None,
+            UtteranceKind::FollowUp => FOLLOW_UP_MIN_VOICE_FRAMES,
+            _ => AMBIENT_MIN_VOICE_FRAMES,
+        };
+        let samples = &mut self.recording.samples;
+        samples.truncate(samples.len() - self.quiet * FRAME_SAMPLES);
+        (self.voiced >= minimum).then_some(self.recording)
     }
 }
 
@@ -435,13 +551,27 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
 
     let mut noise = NoiseFloorTracker::default();
     let mut guard = AmbientGuard::default();
-    let mut current: Option<Recording> = None;
+    let mut current: Option<(PostWakeEndpoint, Recording)> = None;
+    let mut non_wake = None::<NonWakeSegment>;
+    let mut ambient_demand = service.ambient_demand();
+    let mut generation = ambient_demand.borrow_and_update().generation();
+    let mut ambient_after = Instant::now();
+    let mut follow_up_until = None;
+    let zone = zone_id(&room.room_id);
     let mut frame = [0.0; FRAME_SAMPLES];
     let mut filled = 0;
     loop {
         let count = tokio::select! {
             biased;
             _ = gate.closed(epoch) => return Ok(()),
+            Ok(()) = ambient_demand.changed() => {
+                let next = ambient_demand.borrow_and_update().generation();
+                if next != generation {
+                    non_wake.take_if(|segment| segment.recording.kind == UtteranceKind::Ambient);
+                    generation = next;
+                }
+                continue;
+            }
             count = consumer.read(&mut frame[filled..]) => count,
         };
         if count == 0 {
@@ -468,7 +598,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
 
         // Await an in-flight model call on seal before retiring the capture owner.
         let models = Arc::clone(inference);
-        let (speech, score) = tokio::task::spawn_blocking(move || {
+        let mut inference_job = tokio::task::spawn_blocking(move || {
             let mut engines = models
                 .lock()
                 .map_err(|error| unavailable("lock room models for inference", error))?;
@@ -476,22 +606,28 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 engines.0.speech_probability(&frame)?,
                 engines.1.wake_score(&frame)?,
             ))
-        })
-        .await
+        });
+        let (speech, score) = tokio::select! {
+            biased;
+            _ = gate.closed(epoch) => {
+                drop((current, non_wake));
+                inference_job.await.map_err(|error| unavailable("join room inference worker", error))??;
+                return Ok(());
+            }
+            result = &mut inference_job => result,
+        }
         .map_err(|error| unavailable("join room inference worker", error))??;
         let now = Instant::now();
-        if let Some(mut recording) = current.take() {
-            let remaining =
-                recording.endpoint.remaining().as_millis() as usize * SAMPLE_RATE as usize / 1000;
+        if let Some((mut endpoint, mut recording)) = current.take() {
+            let remaining = endpoint.remaining().as_millis() as usize * SAMPLE_RATE as usize / 1000;
             let used = remaining.min(frame.len());
             recording.samples.extend_from_slice(&frame[..used]);
-            let decision = recording
-                .endpoint
-                .observe(rms, Some(speech), frame_duration(used));
+            let decision = endpoint.observe(rms, Some(speech), frame_duration(used));
             if decision == EndpointDecision::Listening {
-                current = Some(recording);
+                current = Some((endpoint, recording));
             } else if decision.dispatches() {
                 guard.record(now, CaptureOutcome::Accepted);
+                follow_up_until = Some(now + FOLLOW_UP_WINDOW);
                 tokio::select! {
                     biased;
                     _ = gate.closed(epoch) => return Ok(()),
@@ -501,19 +637,81 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 recording.log_endpoint(&room.room_id, decision, 0, false);
                 guard.record(now, CaptureOutcome::Rejected);
             }
+            continue;
+        }
+
+        if speech < 0.5 {
+            noise.observe(rms);
+        }
+        if score >= *wake_threshold && guard.allow_wake(now, score) {
+            tracing::info!(room_id = %room.room_id, score, threshold = *wake_threshold, "wake word detected");
+            non_wake = None;
+            follow_up_until = None;
+            current = Some((
+                PostWakeEndpoint::new(noise.floor()),
+                Recording::new(UtteranceKind::Command, score),
+            ));
+            continue;
+        }
+
+        let follow_up =
+            follow_up_until.is_some_and(|expires| now < expires) && guard.allow_follow_up(now);
+        let ambient = generation.is_some()
+            && generation == ambient_demand.borrow().generation()
+            && now >= ambient_after;
+        // Barge-in may stop playback, but the turn's own output must not become a new clip.
+        let kind = if service.speaking(&zone).unwrap_or(true) {
+            None
+        } else if follow_up {
+            Some(UtteranceKind::FollowUp)
+        } else if ambient {
+            Some(UtteranceKind::Ambient)
         } else {
-            if speech < 0.5 {
-                noise.observe(rms);
+            None
+        };
+        if non_wake.as_ref().map(|segment| segment.recording.kind) != kind {
+            non_wake = None;
+        }
+        let Some(kind) = kind else { continue };
+        let voiced = (0.5..=1.0).contains(&speech) && rms >= noise.floor() * 1.8;
+        if non_wake.is_none() && !voiced {
+            continue;
+        }
+        let mut segment = non_wake
+            .take()
+            .unwrap_or_else(|| NonWakeSegment::new(kind, now));
+        if !segment.observe(&frame, voiced) {
+            non_wake = Some(segment);
+            continue;
+        }
+        let latency_ms = segment.started.elapsed().as_millis();
+        let Some(recording) = segment.finish() else {
+            continue;
+        };
+        if kind == UtteranceKind::FollowUp {
+            follow_up_until = None; // One candidate per completed wake command.
+            tokio::select! {
+                biased;
+                _ = gate.closed(epoch) => return Ok(()),
+                result = utterances.send(recording) => result.map_err(|error| unavailable("enqueue follow-up", error))?,
             }
-            if score >= *wake_threshold && guard.allow_wake(now, score) {
-                tracing::info!(room_id = %room.room_id, score, threshold = *wake_threshold, "wake word detected");
-                current = Some(Recording {
-                    id: uuid::Uuid::new_v4(),
-                    endpoint: PostWakeEndpoint::new(noise.floor()),
-                    samples: Vec::with_capacity(FRAME_SAMPLES * 63),
-                    score,
-                    time: unix_ms(),
-                });
+        } else if let Some(generation) = generation {
+            let utterance_id = recording.id;
+            let duration_ms = frame_duration(recording.samples.len()).as_millis();
+            let utterance = recording.into_utterance(&room.room_id, epoch, String::new(), 0);
+            let room_closed = gate.room_closed.borrow();
+            if *room_closed || *gate.shutdown.borrow() {
+                return Ok(());
+            }
+            match service.publish_ambient(generation, utterance) {
+                Ok(true) => {
+                    ambient_after = now + AMBIENT_COOLDOWN;
+                    tracing::info!(room_id = %room.room_id, %utterance_id, duration_ms, latency_ms,
+                        status = "published", "Ambient segment");
+                }
+                Ok(false) => (),
+                Err(error) => tracing::warn!(room_id = %room.room_id, %utterance_id, latency_ms,
+                    status = "publication_failed", code = ?error.code(), "Ambient segment"),
             }
         }
     }
@@ -563,25 +761,12 @@ async fn publish_utterances<A: AmpTransport, P: PlaybackOutput, S: ShadowStt + '
                 String::new()
             }
         };
+        let utterance = recording.into_utterance(room_id, epoch, text, latency_ms);
+        let room_closed = gate.room_closed.borrow();
         // The service checks the epoch and sends under the committed ingress gate.
-        if gate.epoch() == Some(epoch)
-            && let Err(error) = service.publish_utterance(AudioUtterance {
-                utterance_id: utterance_id.to_string(),
-                room_id: room_id.to_owned(),
-                kind: UtteranceKind::Command as i32,
-                sample_rate: SAMPLE_RATE,
-                pcm_f32le: recording
-                    .samples
-                    .iter()
-                    .flat_map(|sample| sample.to_le_bytes())
-                    .collect(),
-                wake_score: recording.score,
-                rms: frame_rms(&recording.samples),
-                parakeet_shadow_text: text,
-                parakeet_latency_ms: latency_ms,
-                captured_at_unix_ms: recording.time,
-                capture_epoch: epoch,
-            })
+        if !*room_closed
+            && !*gate.shutdown.borrow()
+            && let Err(error) = service.publish_utterance(utterance)
         {
             tracing::warn!(room_id, %utterance_id, %error, "utterance publication failed");
         }
