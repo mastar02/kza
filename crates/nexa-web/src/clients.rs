@@ -74,6 +74,8 @@ daemon! {
     withdraw_cloud_consent(WithdrawCloudConsentRequest) -> CloudConsentStatus;
     subscribe_live_events(SubscribeLiveEventsRequest) -> LiveEvents
         => |response| -> LiveEvents { Box::pin(response) };
+    list_routine_runs(ListRoutineRunsRequest) -> RoutineRunsSnapshot;
+    get_routine_run(GetRoutineRunRequest) -> RoutineRunRecord;
     list_routines(ListRoutinesRequest) -> RoutinesSnapshot;
     get_routine(GetRoutineRequest) -> RoutineRecord;
     preview_routine(PreviewRoutineRequest) -> RoutinePreviewResponse;

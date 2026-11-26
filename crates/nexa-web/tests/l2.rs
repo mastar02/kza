@@ -71,6 +71,23 @@ impl Daemons {
     }
 }
 
+fn assert_receipt_reader(actor: ActorContext) {
+    assert_eq!(actor.user_id, HOME_ID);
+    assert!(actor.permissions.contains(&(Permission::HomeRead as i32)));
+    assert!(!actor.lease_id.is_empty());
+}
+
+fn wire_run() -> RoutineRunRecord {
+    RoutineRunRecord {
+        routine_id: "42".into(),
+        run_id: "7".into(),
+        status: "succeeded".into(),
+        source: "manual".into(),
+        started_at_unix_ms: 100,
+        finished_at_unix_ms: Some(125),
+    }
+}
+
 macro_rules! service {
     (impl $service:ident {
         [$($stream:ident = $element:ty),*]
@@ -140,6 +157,21 @@ service! {
                 schedule_json:r#"{"at":"09:00"}"#.into(), updated_at_unix_ms:1_700_000_000_000,
                 ..Default::default()
             }]}))
+        }
+        list_routine_runs(request: ListRoutineRunsRequest) -> RoutineRunsSnapshot => |_server| {
+            let input = request.into_inner();
+            assert_receipt_reader(input.actor.unwrap());
+            assert_eq!(input.routine_id, "42");
+            assert_eq!(input.limit, 2);
+            Ok(Response::new(RoutineRunsSnapshot { routine_id: input.routine_id, runs: vec![wire_run()] }))
+        }
+        get_routine_run(request: GetRoutineRunRequest) -> RoutineRunRecord => |_server| {
+            let input = request.into_inner();
+            assert_receipt_reader(input.actor.unwrap());
+            if (input.routine_id.as_str(), input.run_id.as_str()) != ("42", "7") {
+                return Err(Status::not_found("routine run not found"));
+            }
+            Ok(Response::new(wire_run()))
         }
         get_llm_endpoints(request: Empty) -> LlmEndpointsSnapshot => |server| {
             server.record_metadata_actor(&request, "x-nexa-actor-bin")?;
@@ -395,6 +427,39 @@ async fn tonic_uds_contracts_and_failed_purge_retry() {
     assert_eq!(routines[0]["schedule"]["at"], "09:00");
     assert_eq!(routines[0]["updated_at_unix_ms"], 1_700_000_000_000_u64);
 
+    let receipt = json!({"routine_id":"42","run_id":"7","status":"succeeded","source":"manual",
+                          "started_at_unix_ms":100,"finished_at_unix_ms":125});
+    for (path, expected) in [
+        (
+            "/api/routines/42/attempts?limit=2",
+            json!({"routine_id":"42","runs":[receipt]}),
+        ),
+        ("/api/routines/42/runs/7", json!({"run":receipt})),
+    ] {
+        let response = call(&app, "GET", path, Some(HOME_TOKEN), None, Body::empty()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(document(response).await, expected);
+        let denied = call(
+            &app,
+            "GET",
+            path,
+            Some(EVALUATOR_TOKEN),
+            None,
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(denied.status(), StatusCode::FORBIDDEN);
+    }
+    let missing = call(
+        &app,
+        "GET",
+        "/api/routines/43/runs/7",
+        Some(HOME_TOKEN),
+        None,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     for (method, path, token, expected) in [
         (
             "POST",

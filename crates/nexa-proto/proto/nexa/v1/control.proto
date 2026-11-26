@@ -27,6 +27,8 @@ service BrainControlService {
   // Household routines, lists, reminders & alerts (owned by nexa-brain / household.db)
   rpc ListRoutines(ListRoutinesRequest) returns (RoutinesSnapshot);
   rpc GetRoutine(GetRoutineRequest) returns (RoutineRecord);
+  rpc GetRoutineRun(GetRoutineRunRequest) returns (RoutineRunRecord);
+  rpc ListRoutineRuns(ListRoutineRunsRequest) returns (RoutineRunsSnapshot);
   rpc PreviewRoutine(PreviewRoutineRequest) returns (RoutinePreviewResponse);
   rpc UpsertRoutine(UpsertRoutineRequest) returns (RoutineRecord);
   rpc DeleteRoutine(DeleteRoutineRequest) returns (Empty);
@@ -221,6 +223,32 @@ message RoutineExecutionReceipt {
   string routine_id = 2;
   string status = 3;
   uint64 accepted_at_unix_ms = 4;
+}
+
+message GetRoutineRunRequest {
+  string routine_id = 1;
+  string run_id = 2;
+  ActorContext actor = 3;
+}
+
+message ListRoutineRunsRequest {
+  string routine_id = 1;
+  uint32 limit = 2; // zero selects the default
+  ActorContext actor = 3;
+}
+
+message RoutineRunRecord {
+  string run_id = 1;
+  string routine_id = 2;
+  string status = 3; // same vocabulary as RoutineExecutionReceipt
+  string source = 4; // manual, scheduled, or voice
+  uint64 started_at_unix_ms = 5;
+  optional uint64 finished_at_unix_ms = 6;
+}
+
+message RoutineRunsSnapshot {
+  string routine_id = 1;
+  repeated RoutineRunRecord runs = 2;
 }
 
 message HouseholdListRecord {

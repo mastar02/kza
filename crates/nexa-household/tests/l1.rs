@@ -1037,6 +1037,30 @@ fn daily_schedule_handles_dst_and_coalesces_overdue_slots()
 }
 
 #[test]
+fn routine_history_is_scoped_ordered_and_limited() -> nexa_household::Result<()> {
+    let (mut household, clock) = household();
+    let routine = household.create_routine(&routine_spec())?;
+    let other = household.create_routine(&RoutineSpec {
+        name: "otra".into(),
+        ..routine_spec()
+    })?;
+    let first = created(household.claim_routine(routine.id, Occurrence::Manual("first"), None)?);
+    household.claim_routine(other.id, Occurrence::Manual("other"), None)?;
+    let second = created(household.claim_routine(routine.id, Occurrence::Scheduled(0), None)?);
+    clock.advance(100);
+    let latest = created(household.claim_routine(routine.id, Occurrence::Scheduled(100), None)?);
+    assert_eq!(
+        household.list_routine_runs(routine.id, 1)?,
+        vec![latest.clone()]
+    );
+    assert_eq!(
+        household.list_routine_runs(routine.id, 10)?,
+        vec![latest, second, first]
+    );
+    Ok(())
+}
+
+#[test]
 fn routine_keeps_revisioned_snapshot_and_voice_brake_stops_the_next_step()
 -> nexa_household::Result<()> {
     let (mut household, clock) = household();
