@@ -32,6 +32,26 @@ use crate::traits::{AmpTransport, AudioError, PlaybackOutput, PlaybackSession, P
 const PLAYBACK_SAMPLE_RATE: u32 = 24_000;
 const UTTERANCE_QUEUE: usize = 16;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct AmbientDemand {
+    subscribers: usize,
+    generation: u64,
+}
+
+impl AmbientDemand {
+    pub(crate) fn generation(self) -> Option<u64> {
+        (self.subscribers != 0).then_some(self.generation)
+    }
+}
+
+struct AmbientSubscription(watch::Sender<AmbientDemand>);
+
+impl Drop for AmbientSubscription {
+    fn drop(&mut self) {
+        self.0.send_modify(|demand| demand.subscribers -= 1);
+    }
+}
+
 #[derive(Debug)]
 struct Zone {
     room_id: String,
@@ -178,6 +198,8 @@ pub struct AudioService<A, P> {
     microphones: Mutex<MicrophonesSnapshot>,
     playbacks: PlaybackRegistry,
     utterances: broadcast::Sender<AudioUtterance>,
+    ambient_utterances: broadcast::Sender<AudioUtterance>,
+    ambient_demand: watch::Sender<AmbientDemand>,
     diagnostics: Arc<AudioDiagnostics>,
     started: Instant,
     barge_in_enabled: bool,
@@ -240,6 +262,8 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
             }),
             playbacks: Mutex::default(),
             utterances: broadcast::channel(UTTERANCE_QUEUE).0,
+            ambient_utterances: broadcast::channel(UTTERANCE_QUEUE).0,
+            ambient_demand: watch::Sender::default(),
             diagnostics: Arc::default(),
             started: Instant::now(),
             barge_in_enabled: true,
@@ -257,6 +281,22 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
 
     pub(crate) fn capture_controller(&self) -> SharedCapture {
         Arc::clone(&self.capture)
+    }
+
+    pub(crate) fn ambient_demand(&self) -> watch::Receiver<AmbientDemand> {
+        self.ambient_demand.subscribe()
+    }
+
+    pub(crate) fn publish_ambient(
+        &self,
+        generation: u64,
+        utterance: AudioUtterance,
+    ) -> Result<bool, Status> {
+        let demand = self.ambient_demand.borrow();
+        if demand.generation() != Some(generation) {
+            return Ok(false);
+        }
+        self.publish_utterance(utterance)
     }
 
     pub(crate) fn update_microphone(&self, microphone: MicrophoneRoomStatus) -> Result<(), Status> {
@@ -299,7 +339,12 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
             tracing::warn!(%room_id, %utterance_id, kind, reason = "capture_epoch_closed", "utterance publication skipped");
             return Ok(false);
         }
-        let sent = self.utterances.send(utterance);
+        let channel = if utterance.kind() == UtteranceKind::Ambient {
+            &self.ambient_utterances
+        } else {
+            &self.utterances
+        };
+        let sent = channel.send(utterance);
         drop(capture);
         match sent {
             Ok(subscribers) => {
@@ -365,7 +410,7 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
             .ok_or_else(|| Status::not_found("unknown audio zone"))
     }
 
-    fn speaking(&self, zone_id: &str) -> Result<bool, Status> {
+    pub(crate) fn speaking(&self, zone_id: &str) -> Result<bool, Status> {
         Ok(lock(&self.playbacks)?
             .get(zone_id)
             .is_some_and(|playback| playback.speaking && playback.stop.borrow().is_none()))
@@ -629,25 +674,37 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
         &self,
         request: Request<SubscribeUtterancesRequest>,
     ) -> Result<Response<Self::SubscribeUtterancesStream>, Status> {
-        let include_ambient = request.into_inner().include_ambient;
+        let commands = BroadcastStream::new(self.utterances.subscribe());
+        let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if request.into_inner().include_ambient
+        {
+            let ambient = BroadcastStream::new(self.ambient_utterances.subscribe());
+            self.ambient_demand.send_modify(|demand| {
+                if demand.subscribers == 0 {
+                    demand.generation = demand.generation.wrapping_add(1);
+                }
+                demand.subscribers += 1;
+            });
+            let subscription = AmbientSubscription(self.ambient_demand.clone());
+            Box::pin(commands.merge(ambient).map(move |item| {
+                let _ = &subscription;
+                item
+            }))
+        } else {
+            Box::pin(commands)
+        };
         let capture = self.capture_status.clone();
         let diagnostics = Arc::clone(&self.diagnostics);
-        let stream =
-            BroadcastStream::new(self.utterances.subscribe()).filter_map(
-                move |result| match result {
-                    Ok(utterance) => (running_epoch(&capture.borrow())
-                        == Some(utterance.capture_epoch)
-                        && (include_ambient || utterance.kind() != UtteranceKind::Ambient))
-                        .then_some(Ok(utterance)),
-                    Err(BroadcastStreamRecvError::Lagged(missed)) => {
-                        diagnostics.utterances_lagged.fetch_add(missed, Relaxed);
-                        tracing::warn!(missed, "utterance subscriber fell behind");
-                        Some(Err(Status::resource_exhausted(
-                            "utterance subscriber fell behind",
-                        )))
-                    }
-                },
-            );
+        let stream = stream.filter_map(move |result| match result {
+            Ok(utterance) => (running_epoch(&capture.borrow()) == Some(utterance.capture_epoch))
+                .then_some(Ok(utterance)),
+            Err(BroadcastStreamRecvError::Lagged(missed)) => {
+                diagnostics.utterances_lagged.fetch_add(missed, Relaxed);
+                tracing::warn!(missed, "utterance subscriber fell behind");
+                Some(Err(Status::resource_exhausted(
+                    "utterance subscriber fell behind",
+                )))
+            }
+        });
         Ok(Response::new(Box::pin(stream)))
     }
 

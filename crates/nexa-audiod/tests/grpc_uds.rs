@@ -628,11 +628,30 @@ async fn utterance_subscription_applies_kind_and_capture_epoch_over_uds() {
         ..AudioUtterance::default()
     };
     assert!(
+        !harness
+            .service
+            .publish_utterance(event(0, UtteranceKind::Ambient))
+            .unwrap()
+    );
+    let mut ambient = client
+        .subscribe_utterances(SubscribeUtterancesRequest {
+            include_ambient: true,
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
         harness
             .service
             .publish_utterance(event(0, UtteranceKind::Ambient))
             .unwrap()
     );
+    let first_ambient = timeout(TIMEOUT, ambient.message())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_ambient.kind(), UtteranceKind::Ambient);
     assert!(
         harness
             .service
@@ -646,6 +665,12 @@ async fn utterance_subscription_applies_kind_and_capture_epoch_over_uds() {
         .unwrap();
     assert_eq!(first.kind(), UtteranceKind::Command);
     client.set_capture_mute(mute(0)).await.unwrap();
+    assert!(
+        !harness
+            .service
+            .publish_utterance(event(0, UtteranceKind::Ambient))
+            .unwrap()
+    );
     assert!(
         !harness
             .service
@@ -691,5 +716,6 @@ async fn utterance_subscription_applies_kind_and_capture_epoch_over_uds() {
         .unwrap();
     assert_eq!(resumed.capture_epoch, 2);
     drop(utterances);
+    drop(ambient);
     harness.shutdown().await;
 }
