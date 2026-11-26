@@ -35,7 +35,7 @@ const CONTROLS: &str = r#"
     ]
 "#;
 
-fn bundle(controls: &str) -> LoadedBundle {
+fn load_bundle(controls: &str) -> Result<LoadedBundle, ConfigError> {
     let dir = tempfile::tempdir().expect("config directory");
     for (name, contents) in [
         ("nexa.toml", include_str!("../../../config/nexa/nexa.toml")),
@@ -47,7 +47,7 @@ fn bundle(controls: &str) -> LoadedBundle {
     ] {
         std::fs::write(dir.path().join(name), contents).expect("write test config");
     }
-    LoadedBundle::load_from_dir(dir.path()).expect("load test config")
+    LoadedBundle::load_from_dir(dir.path())
 }
 
 async fn mount_state(server: &MockServer, id: &str, state: &str, attrs: Value) {
@@ -64,7 +64,7 @@ async fn mount_state(server: &MockServer, id: &str, state: &str, attrs: Value) {
 #[tokio::test]
 async fn reviewed_controls_dispatch_only_to_leaves_after_live_membership_checks() {
     let server = MockServer::start().await;
-    let mut config = bundle(CONTROLS);
+    let mut config = load_bundle(CONTROLS).expect("valid controls");
     config.core.home_assistant.url = server.uri();
     let home = HomeDependencies::new(&config, TOKEN).expect("home dependencies");
 
@@ -171,14 +171,26 @@ fn invalid_scene_operations_fail_home_dependencies_at_boot() {
         r#"operation = "color_temp_kelvin", color_temp_kelvin = 0"#,
         r#"operation = "color_temp_kelvin", color_temp_kelvin = 3000, brightness = 0"#,
     ] {
-        let config = bundle(&format!(
+        let error = load_bundle(&format!(
             r#"[scenes]
             "scene.test" = [{{ entity_id = "light.leaf", {effect} }}]"#,
-        ));
-        let error = HomeDependencies::new(&config, TOKEN).expect_err(effect);
-        assert!(matches!(
-            error.downcast_ref::<ConfigError>(),
-            Some(ConfigError::Validation(message)) if message.contains("scene.test")
-        ));
+        ))
+        .expect_err(effect);
+        assert!(
+            matches!(error, ConfigError::Validation(message) if message.contains("scene.test"))
+        );
     }
+
+    let mut config = load_bundle(CONTROLS).expect("valid controls");
+    let effects = config
+        .ha_controls
+        .scenes
+        .get_mut("scene.reading")
+        .expect("reviewed scene");
+    effects[0].operation = "activate_scene".into();
+    let error = HomeDependencies::new(&config, TOKEN).expect_err("invalid in-memory scene");
+    assert!(matches!(
+        error.downcast_ref::<ConfigError>(),
+        Some(ConfigError::Validation(message)) if message.contains("scene.reading")
+    ));
 }

@@ -473,13 +473,45 @@ async fn receipts_survive_cancellation_and_fifo_is_per_entity() {
         assert_eq!(conflict, ControlError::IdempotencyConflict);
         assert_eq!(conflict.http_status_code(), 409);
         let mut second = Box::pin(service.execute(req("next", "light.same", Operation::TurnOff)));
-        let mut replay = Box::pin(service.execute(request.clone()));
         assert!(poll!(&mut second).is_pending());
+        // Fill the completed FIFO while the first POST and its same-lane successor are pending.
+        for index in 0..1025 {
+            assert_eq!(
+                status(
+                    &service,
+                    &format!("denied-{index}"),
+                    "switch.denied",
+                    Operation::TurnOn
+                )
+                .await,
+                ActionStatus::NotSent(NotSentReason::Policy(PlanError::Denied))
+            );
+        }
+        assert!(service.get_receipt("denied-0").is_none());
+        assert!(service.get_receipt("denied-1").is_some());
+        let recent = req("denied-1024", "switch.denied", Operation::TurnOn);
+        assert!(Arc::ptr_eq(
+            &service
+                .get_receipt(&recent.request_id)
+                .expect("recent receipt"),
+            &service.execute(recent).await.expect("recent replay")
+        ));
+        for id in ["next", "idempotent"] {
+            assert_eq!(
+                service
+                    .execute(req(id, "switch.denied", Operation::TurnOn))
+                    .await
+                    .unwrap_err(),
+                ControlError::IdempotencyConflict
+            );
+        }
+        let mut replay = Box::pin(service.execute(request.clone()));
         assert!(poll!(&mut replay).is_pending());
         assert_eq!(
             status(&service, "other", "light.other", Operation::TurnOn).await,
             ActionStatus::Accepted
         );
+        assert!(service.get_receipt("denied-1").is_none());
         let requests = origin.http.received_requests().await.expect("request log");
         assert!(
             !requests

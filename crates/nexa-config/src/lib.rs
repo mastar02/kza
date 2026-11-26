@@ -221,6 +221,65 @@ pub struct SceneEffectConfig {
     pub color_temp_kelvin: Option<u32>,
 }
 
+/// Reviewed scene effects support only light and switch operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneOperation {
+    TurnOn,
+    TurnOff,
+    Brightness(SceneBrightness),
+    ColorTempKelvin {
+        color_temp_kelvin: u32,
+        brightness: Option<SceneBrightness>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SceneBrightness {
+    Percent(u8),
+    Raw(u8),
+}
+
+impl SceneEffectConfig {
+    pub fn scene_operation(&self, scene: &str) -> Result<SceneOperation, ConfigError> {
+        let invalid = || {
+            ConfigError::Validation(format!(
+                "scene '{scene}' has an unsupported operation or invalid parameters for '{}' on '{}'",
+                self.operation, self.entity_id
+            ))
+        };
+        let brightness = match (self.brightness_pct, self.brightness) {
+            (Some(pct @ 0..=100), None) => Some(SceneBrightness::Percent(pct)),
+            (None, Some(raw)) => Some(SceneBrightness::Raw(raw)),
+            (None, None) => None,
+            _ => return Err(invalid()),
+        };
+        match (
+            ha_entity_domain(&self.entity_id),
+            self.operation.as_str(),
+            brightness,
+            self.color_temp_kelvin,
+        ) {
+            (Some("light" | "switch"), "turn_on", None, None) => Ok(SceneOperation::TurnOn),
+            (Some("light" | "switch"), "turn_off", None, None) => Ok(SceneOperation::TurnOff),
+            (Some("light"), "brightness", Some(value), None) => {
+                Ok(SceneOperation::Brightness(value))
+            }
+            (Some("light"), "color_temp_kelvin", brightness, Some(kelvin @ 1..))
+                if !matches!(
+                    brightness,
+                    Some(SceneBrightness::Percent(0) | SceneBrightness::Raw(0))
+                ) =>
+            {
+                Ok(SceneOperation::ColorTempKelvin {
+                    color_temp_kelvin: kelvin,
+                    brightness,
+                })
+            }
+            _ => Err(invalid()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LoadedBundle {
     pub core: NexaConfig,
@@ -300,11 +359,18 @@ impl NexaConfig {
             ));
         }
         if self.home_assistant.timeout_ms == 0
-            || self.home_assistant.cache_max_staleness_s == 0
+            || self.home_assistant.state_confirmation_timeout_ms == 0
             || self.home_assistant.full_refresh_interval_s == 0
         {
             return Err(ConfigError::Validation(
                 "home_assistant timeouts and refresh intervals must be > 0".into(),
+            ));
+        }
+        if self.home_assistant.full_refresh_interval_s >= self.home_assistant.cache_max_staleness_s
+        {
+            return Err(ConfigError::Validation(
+                "home_assistant.full_refresh_interval_s must be less than cache_max_staleness_s"
+                    .into(),
             ));
         }
         if self.llm.fast_router_timeout_ms == 0 || self.llm.cloud_timeout_ms == 0 {
@@ -433,7 +499,7 @@ impl HaControlPolicyConfig {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         for (entity_id, ops) in &self.entities {
-            if !entity_id.contains('.') || entity_id.starts_with('.') || entity_id.ends_with('.') {
+            if ha_entity_domain(entity_id).is_none() {
                 return Err(ConfigError::Validation(format!(
                     "invalid HA entity_id '{entity_id}'"
                 )));
@@ -443,10 +509,9 @@ impl HaControlPolicyConfig {
                     "entity '{entity_id}' in ha-controls must specify at least one allowed operation"
                 )));
             }
-            // Security invariant: locks and alarm control panels are never granted mutable control.
-            if entity_id.starts_with("lock.") || entity_id.starts_with("alarm_control_panel.") {
+            if let Some(op) = ops.iter().find(|op| !supports_ha_operation(entity_id, op)) {
                 return Err(ConfigError::Validation(format!(
-                    "entity '{entity_id}' is a restricted security domain and cannot be granted control"
+                    "unsupported HA operation '{op}' for '{entity_id}'"
                 )));
             }
         }
@@ -461,31 +526,28 @@ impl HaControlPolicyConfig {
                     "group '{entity_id}' in ha-controls must be a light with at least one light member"
                 )));
             }
+            if members.iter().collect::<HashSet<_>>().len() != members.len() {
+                return Err(ConfigError::Validation(format!(
+                    "duplicate member in group '{entity_id}'"
+                )));
+            }
         }
+        validate_group_graph(&self.groups)?;
         for (entity_id, effects) in &self.scenes {
             if ha_entity_domain(entity_id) != Some("scene") || effects.is_empty() {
                 return Err(ConfigError::Validation(format!(
                     "scene '{entity_id}' in ha-controls must be a scene with at least one effect"
                 )));
             }
+            let mut targets = HashSet::new();
             for effect in effects {
-                if matches!(
-                    ha_entity_domain(&effect.entity_id),
-                    None | Some("lock" | "alarm_control_panel")
-                ) {
+                if !targets.insert(&effect.entity_id) {
                     return Err(ConfigError::Validation(format!(
-                        "scene '{entity_id}' has an invalid or restricted effect target '{}'",
+                        "scene '{entity_id}' repeats target '{}'",
                         effect.entity_id
                     )));
                 }
-                if effect.brightness_pct.is_some_and(|pct| pct > 100)
-                    || (effect.brightness_pct.is_some() && effect.brightness.is_some())
-                {
-                    return Err(ConfigError::Validation(format!(
-                        "scene '{entity_id}' effect on '{}' requires at most one brightness field and brightness_pct within 0..=100",
-                        effect.entity_id
-                    )));
-                }
+                effect.scene_operation(entity_id)?;
             }
         }
         Ok(())
@@ -515,6 +577,55 @@ impl LoadedBundle {
             rooms,
             ha_controls,
         })
+    }
+}
+
+// Count incoming group edges and remove roots iteratively, including disconnected components.
+fn validate_group_graph(groups: &HashMap<String, Vec<String>>) -> Result<(), ConfigError> {
+    let mut incoming: HashMap<_, usize> = groups.keys().map(|id| (id, 0)).collect();
+    for member in groups.values().flatten() {
+        if let Some(count) = incoming.get_mut(member) {
+            *count += 1;
+        }
+    }
+    let mut roots: Vec<_> = incoming
+        .iter()
+        .filter_map(|(&id, &count)| (count == 0).then_some(id))
+        .collect();
+    let mut visited = 0;
+    while let Some(root) = roots.pop() {
+        visited += 1;
+        for member in &groups[root] {
+            if let Some(count) = incoming.get_mut(member) {
+                *count -= 1;
+                if *count == 0 {
+                    roots.push(member);
+                }
+            }
+        }
+    }
+    if visited != groups.len() {
+        return Err(ConfigError::Validation(
+            "cycle in ha-controls groups".into(),
+        ));
+    }
+    Ok(())
+}
+
+pub fn supports_ha_operation(entity_id: &str, operation: &str) -> bool {
+    match ha_entity_domain(entity_id) {
+        Some("light") => matches!(
+            operation,
+            "turn_on" | "turn_off" | "brightness" | "color_temp_kelvin"
+        ),
+        Some("switch") => matches!(operation, "turn_on" | "turn_off"),
+        Some("climate") => matches!(operation, "set_temperature" | "set_hvac_mode"),
+        Some("cover") => matches!(
+            operation,
+            "open_cover" | "close_cover" | "stop_cover" | "set_cover_position"
+        ),
+        Some("scene") => operation == "activate_scene",
+        _ => false,
     }
 }
 
@@ -653,6 +764,99 @@ mod tests {
             let policy: HaControlPolicyConfig =
                 toml::from_str(definition).expect("definitions parse before validation");
             assert!(policy.validate().is_err(), "accepted {definition}");
+        }
+    }
+
+    #[test]
+    fn ha_timing_boundaries() {
+        let mut cfg = NexaConfig::from_toml_str(sample_nexa_toml()).expect("template");
+        cfg.home_assistant.full_refresh_interval_s = 2;
+        cfg.home_assistant.cache_max_staleness_s = 3;
+        cfg.home_assistant.state_confirmation_timeout_ms = 1;
+        assert!(cfg.validate().is_ok());
+        cfg.home_assistant.state_confirmation_timeout_ms = 0;
+        assert!(cfg.validate().is_err());
+        cfg.home_assistant.state_confirmation_timeout_ms = 1;
+        for staleness in [1, 2] {
+            cfg.home_assistant.cache_max_staleness_s = staleness;
+            assert!(cfg.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn validates_grant_operation_against_entity_domain() {
+        for (id, ops) in [
+            ("light.a.b", vec!["turn_on"]),
+            ("Light.a", vec!["turn_on"]),
+            ("light.a-b", vec!["turn_on"]),
+            ("sensor.a", vec!["turn_on"]),
+            ("light.a", vec![]),
+            ("light.a", vec!["turn_on", ""]),
+            ("switch.a", vec!["brightness"]),
+            ("cover.a", vec!["turn_off"]),
+            ("scene.a", vec!["turn_on"]),
+            ("climate.a", vec!["activate_scene"]),
+        ] {
+            let policy = HaControlPolicyConfig {
+                entities: HashMap::from([(id.into(), ops.into_iter().map(String::from).collect())]),
+                ..Default::default()
+            };
+            assert!(policy.validate().is_err(), "accepted {id}");
+        }
+    }
+
+    #[test]
+    fn rejects_repeated_members_and_cycles_but_accepts_shared_subgroups() {
+        for (members, valid) in [
+            (vec!["light.leaf", "light.leaf"], false),
+            (vec!["light.c"], false),
+            (vec!["light.a"], false),
+            (vec!["light.leaf"], true),
+        ] {
+            let mut policy = HaControlPolicyConfig::default();
+            for (group, children) in [
+                ("light.a", vec!["light.b", "light.c"]),
+                ("light.b", vec!["light.c"]),
+                ("light.c", members),
+            ] {
+                policy.groups.insert(
+                    group.into(),
+                    children.into_iter().map(String::from).collect(),
+                );
+            }
+            assert_eq!(policy.validate().is_ok(), valid);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_scene_operation_shapes_and_repeated_targets() {
+        for fields in [
+            r#"operation = "toggle""#,
+            r#"operation = "brightness""#,
+            r#"operation = "turn_off", brightness = 1"#,
+            r#"operation = "color_temp_kelvin""#,
+            r#"operation = "color_temp_kelvin", color_temp_kelvin = 0"#,
+            r#"operation = "color_temp_kelvin", color_temp_kelvin = 1, brightness = 0"#,
+            r#"operation = "color_temp_kelvin", color_temp_kelvin = 1, brightness_pct = 0"#,
+            r#"operation = "brightness", brightness = 1, color_temp_kelvin = 1"#,
+        ] {
+            let definition = format!(
+                r#"[scenes]
+            "scene.test" = [{{entity_id = "light.test", {fields}}}]"#
+            );
+            let policy: HaControlPolicyConfig = toml::from_str(&definition).expect("scene");
+            assert!(policy.validate().is_err(), "accepted {fields}");
+        }
+        for effects in [
+            r#"{entity_id = "switch.test", operation = "brightness", brightness_pct = 1}"#,
+            r#"{entity_id = "light.test", operation = "turn_on"}, {entity_id = "light.test", operation = "turn_off"}"#,
+        ] {
+            let definition = format!(
+                r#"[scenes]
+            "scene.test" = [{effects}]"#
+            );
+            let policy: HaControlPolicyConfig = toml::from_str(&definition).expect("scene");
+            assert!(policy.validate().is_err(), "accepted {effects}");
         }
     }
 

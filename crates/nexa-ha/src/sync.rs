@@ -58,6 +58,10 @@ impl HaClient {
             .sync_slot
             .try_acquire()
             .map_err(|_| HaError::AlreadySyncing)?;
+        tracing::info!(
+            refresh_interval_s = self.inner.refresh_interval.as_secs(),
+            "HA state sync started"
+        );
         let (events, receiver) = mpsc::channel(128);
         tokio::join!(self.websocket_loop(events), self.publish_loop(receiver));
         Ok(())
@@ -109,9 +113,11 @@ impl HaClient {
                     for delta in changes.into_values() {
                         delta.apply(&mut frame);
                     }
+                    let entity_count = frame.entries.len();
                     self.inner.frame.store(Arc::new(frame));
+                    tracing::info!(entity_count, "HA full state refresh published");
                 }
-                Err(error) => tracing::debug!(%error, "HA state snapshot failed"),
+                Err(error) => tracing::warn!(%error, "HA state snapshot failed"),
             }
         }
     }
@@ -130,21 +136,29 @@ impl HaClient {
         loop {
             match time::timeout(self.inner.timeout, self.subscribe()).await {
                 Ok(Ok(mut socket)) => {
+                    tracing::info!(event = "subscribed", "HA event stream connected");
                     if updates.send(Update::Reconcile).await.is_err() {
                         return;
                     }
                     backoff = INITIAL_BACKOFF;
                     if let Err(error) = read_events(&mut socket, &updates, self.inner.timeout).await
                     {
-                        tracing::debug!(%error, "HA event stream disconnected");
+                        tracing::warn!(%error, "HA event stream disconnected");
                     }
                     if updates.send(Update::Reconcile).await.is_err() {
                         return;
                     }
                 }
-                Ok(Err(error)) => tracing::debug!(%error, "HA WebSocket subscription failed"),
-                Err(_) => tracing::debug!("HA WebSocket subscription timed out"),
+                Ok(Err(error)) => tracing::warn!(%error, "HA WebSocket subscription failed"),
+                Err(_) => tracing::warn!(
+                    timeout_ms = self.inner.timeout.as_millis(),
+                    "HA WebSocket subscription timed out"
+                ),
             }
+            tracing::info!(
+                retry_delay_ms = backoff.as_millis(),
+                "HA WebSocket reconnect scheduled"
+            );
             time::sleep(backoff).await;
             backoff = (backoff * 2).min(MAX_BACKOFF);
         }
