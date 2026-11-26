@@ -53,6 +53,8 @@ def test_service_units():
         assert all(key not in section for section in unit.values()
                    for key in ("IPAddressDeny", "IPAddressAllow"))
         families = {"AF_UNIX"}
+        if path.stem == "nexa-audiod":
+            families.add("AF_NETLINK")
         if path.stem in {"nexa-brain", "nexa-web", "nexa-llm-fast", "nexa-dashboard-proxy"}:
             families.update(("AF_INET", "AF_INET6"))
         assert set(s["RestrictAddressFamilies"].split()) == families
