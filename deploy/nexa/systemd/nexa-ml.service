@@ -10,6 +10,7 @@ Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=/opt/nexa/cu
 ReadWritePaths=/var/lib/nexa/.cache
 RuntimeDirectory=nexa
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

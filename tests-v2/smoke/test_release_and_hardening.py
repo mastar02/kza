@@ -50,7 +50,11 @@ def test_service_units():
         assert s["TimeoutStopSec"] == "10s"
         if path.stem in (*BINARIES, "nexa-ml"):
             assert s["Type"] == "notify"
-            assert s["RuntimeDirectory"] == "nexa" and s["RuntimeDirectoryMode"] == "0700"
+            assert (
+                s["RuntimeDirectory"] == "nexa"
+                and s["RuntimeDirectoryMode"] == "0700"
+                and s["RuntimeDirectoryPreserve"] == "yes"
+            )
             assert "/etc/nexa" in s["ExecStart"]
         if path.stem in BINARIES:
             assert s["ExecStart"].split()[0] == "/opt/nexa/current/bin/" + path.stem

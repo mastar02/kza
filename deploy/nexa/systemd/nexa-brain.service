@@ -10,6 +10,7 @@ ExecStart=/opt/nexa/current/bin/nexa-brain --config-dir /etc/nexa
 EnvironmentFile=/etc/nexa/secrets/brain.env
 RuntimeDirectory=nexa
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

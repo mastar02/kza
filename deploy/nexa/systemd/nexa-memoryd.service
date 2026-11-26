@@ -7,6 +7,7 @@ Type=notify
 ExecStart=/opt/nexa/current/bin/nexa-memoryd --config /etc/nexa
 RuntimeDirectory=nexa
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

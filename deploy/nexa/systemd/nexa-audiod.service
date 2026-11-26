@@ -9,6 +9,7 @@ Environment=ORT_DYLIB_PATH=/opt/nexa/lib/libonnxruntime.so
 ExecStart=/opt/nexa/current/bin/nexa-audiod --config-dir /etc/nexa
 RuntimeDirectory=nexa
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes

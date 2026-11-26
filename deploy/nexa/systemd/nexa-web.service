@@ -10,6 +10,7 @@ ExecStart=/opt/nexa/current/bin/nexa-web --config /etc/nexa --static-dir /opt/ne
 EnvironmentFile=/etc/nexa/secrets/web.env
 RuntimeDirectory=nexa
 RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
