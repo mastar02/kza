@@ -103,9 +103,16 @@ def transcribe_blocking(
     text is empty and ``no_speech_prob`` is 1.0.
     """
     start = time.perf_counter()
+    # Deterministic T=0.0 decoding matching legacy whisper_fast (temperature_fallback=False):
+    # faster-whisper otherwise defaults to temperature=[0.0..1.0] with log_prob_threshold=-1.0,
+    # which triggers high-temperature gibberish on whisper-v3-turbo over XVF3800 audio.
     kwargs: dict[str, Any] = {
         "language": opts.language,
         "beam_size": opts.beam_size,
+        "best_of": 1,
+        "temperature": 0.0,
+        "compression_ratio_threshold": 2.0,
+        "log_prob_threshold": -3.0,
         "initial_prompt": opts.initial_prompt,
         "condition_on_previous_text": False,
         "vad_filter": opts.vad_filter,

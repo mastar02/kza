@@ -40,6 +40,11 @@ use home::Home;
 pub type BrainError = Box<dyn std::error::Error + Send + Sync>;
 type Worker = HouseholdWorker<Arc<dyn BrainClock>>;
 
+pub(crate) const COMMAND_STT_INITIAL_PROMPT: &str = "Esto es un asistente de voz llamado Nexa que controla luces, aire acondicionado, persianas y música en el escritorio, el living, la cocina, el baño y el hall. Habla rioplatense con voseo: prendé, apagá, subí, bajá, poné, dale.";
+pub(crate) const COMMAND_STT_HOTWORDS: &str =
+    "Nexa prendé apagá subí bajá poné escritorio living cocina baño hall";
+pub(crate) const COMMAND_STT_BEAM_SIZE: u32 = 5;
+
 #[derive(Debug)]
 pub struct Dependencies {
     pub audio: Arc<dyn AudioClient>,
@@ -270,6 +275,7 @@ impl Brain {
                 // Keep Whisper confidence checks in shadow mode: on whisper-v3-turbo over XVF3800
                 // audio, avg_logprob/no_speech_prob reject real commands while compression_ratio
                 // reliably isolates repetitive hallucinations (see legacy settings.yaml).
+                initial_prompt: Some(COMMAND_STT_INITIAL_PROMPT.to_owned()),
                 enforce_confidence: false,
                 enforce_compression_ratio: nlu.enforce_compression_ratio,
                 max_compression_ratio: nlu.max_compression_ratio,

@@ -15,7 +15,8 @@ const NOISE_RATIO: f32 = 1.8;
 const VAD_THRESHOLD: f32 = 0.5;
 const AGC_RELEASE_RATIO: f32 = 0.30;
 const AGC_RELEASE_CAP: f32 = NOISE_FLOOR_DEFAULT * NOISE_RATIO;
-const VAD_DROP_RATIO: f32 = 0.60;
+const VAD_AGC_MIN_PEAK_RMS: f32 = 0.008;
+const VAD_DROP_RATIO: f32 = 0.45;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct EndpointTelemetry {
@@ -162,6 +163,7 @@ impl PostWakeEndpoint {
         // keep post-speech room tone above a squelched pre-wake floor even after Silero confirms
         // silence and RMS has dropped significantly below the speaker's peak.
         let vad_agc_quiet = self.vad_voice >= MIN_VOICE
+            && self.peak_voice_rms >= VAD_AGC_MIN_PEAK_RMS
             && self.elapsed - self.last_vad_voice >= VAD_END_SILENCE
             && self.elapsed - self.last_strong_level_voice >= LEVEL_END_SILENCE;
         let quiet = level_quiet || vad_agc_quiet;

@@ -19,8 +19,6 @@ use tonic::{Request, Status, metadata::MetadataValue, transport::Channel};
 use crate::Brain;
 
 const AMBIENT_CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
-const COMMAND_STT_HOTWORDS: &str =
-    "Nexa prendé apagá subí bajá poné escritorio living cocina baño hall";
 
 async fn ambient_control(
     client: &mut MemoryServiceClient<Channel>,
@@ -276,10 +274,14 @@ impl Brain {
         utterance: &AudioUtterance,
         mode: SttMode,
     ) -> Result<TranscribeResponse, Status> {
-        let hotwords = if mode == SttMode::Command {
-            COMMAND_STT_HOTWORDS.to_owned()
+        let (beam_size, initial_prompt, hotwords) = if mode == SttMode::Command {
+            (
+                crate::COMMAND_STT_BEAM_SIZE,
+                crate::COMMAND_STT_INITIAL_PROMPT.to_owned(),
+                crate::COMMAND_STT_HOTWORDS.to_owned(),
+            )
         } else {
-            String::new()
+            (0, String::new(), String::new())
         };
         let response = self
             .ml
@@ -287,9 +289,10 @@ impl Brain {
                 pcm_f32le: utterance.pcm_f32le.clone(),
                 sample_rate: utterance.sample_rate,
                 language: self.config.core.nlu.language.clone(),
-                mode: mode.into(),
+                beam_size,
+                initial_prompt,
                 hotwords,
-                ..TranscribeRequest::default()
+                mode: mode.into(),
             })
             .await?;
         if response.text.len() > 4096 {

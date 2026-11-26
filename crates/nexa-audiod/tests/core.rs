@@ -228,6 +228,17 @@ fn endpoint_completes_after_attns_squelched_floor_with_open_agc_room_tone() {
         agc_mid_tail.observe(0.0045, Some(0.05), ms(80)),
         EndpointDecision::Complete
     );
+
+    // Regression: quiet speech (peak ~0.0051, tail ~0.0030) must NOT close early via vad_agc_quiet.
+    let mut quiet_speech = PostWakeEndpoint::new(NOISE_FLOOR_MIN);
+    assert_eq!(
+        quiet_speech.observe(0.0051, Some(0.90), ms(240)),
+        EndpointDecision::Listening
+    );
+    assert_eq!(
+        quiet_speech.observe(0.0030, Some(0.10), ms(800)),
+        EndpointDecision::Listening
+    );
 }
 
 #[test]

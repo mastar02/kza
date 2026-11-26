@@ -64,6 +64,10 @@ async def test_command_routes_to_turbo_without_vad(harness: Harness) -> None:
     call = harness.fakes.command.models[0].calls[-1]
     assert call["vad_filter"] is False
     assert call["beam_size"] == 1
+    assert call["best_of"] == 1
+    assert call["temperature"] == 0.0
+    assert call["compression_ratio_threshold"] == 2.0
+    assert call["log_prob_threshold"] == -3.0
     assert call["language"] == "es"
     assert call["condition_on_previous_text"] is False
     assert "hotwords" not in call
