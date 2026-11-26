@@ -6,4 +6,17 @@
 [entities]
 # "light.escritorio" = ["turn_on", "turn_off", "brightness", "color_temp_kelvin"]
 # "light.grupo_living" = ["turn_on", "turn_off", "brightness"]
+# "light.living" = ["brightness"]
+# "scene.lectura" = ["activate_scene"]
 # "climate.living" = ["set_temperature", "set_hvac_mode"]
+
+# Reviewed definitions require exact membership in HA's entity_id attribute.
+# The scene, group and each leaf require their own grants in [entities].
+#
+# [groups]
+# "light.grupo_living" = ["light.living"]
+#
+# [scenes]
+# "scene.lectura" = [
+#     { entity_id = "light.grupo_living", operation = "brightness", brightness_pct = 40 },
+# ]

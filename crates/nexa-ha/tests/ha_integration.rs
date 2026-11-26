@@ -43,6 +43,7 @@ fn grants(entries: &[(&str, &[&str])]) -> HaControlPolicyConfig {
             .iter()
             .map(|(id, ops)| ((*id).into(), ops.iter().map(|op| (*op).into()).collect()))
             .collect(),
+        ..HaControlPolicyConfig::default()
     }
 }
 
