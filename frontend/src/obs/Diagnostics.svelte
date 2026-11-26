@@ -65,6 +65,7 @@
   const severityLabel: Record<string, string> = {
     critical: 'Crítica', high: 'Alta', warning: 'Advertencia', medium: 'Media', low: 'Baja', info: 'Informativa',
   }
+  const nonRestartableServices = new Set(['nexa-web', 'nexa-dashboard-proxy'])
   let selected = $state<string | null>(null)
   const visible = $derived(collections.filter(config => config.group === group))
   const active = $derived(visible.find(config => config.path === selected) ?? visible[0])
@@ -140,7 +141,7 @@
             <div><dt>{field.label}</dt><dd>{label(field.value)}</dd></div>
           {/each}
         </dl>
-        {#if active?.path === '/api/system/services' && session.can('admin:manage')}
+        {#if active?.path === '/api/system/services' && session.can('admin:manage') && typeof item.name === 'string' && !nonRestartableServices.has(item.name)}
           <button disabled={write.busy || list?.busy} onclick={() => restart(item.name, item.name)}>Reiniciar</button>
         {/if}
         {#if item.cooldown && session.can('admin:manage')}

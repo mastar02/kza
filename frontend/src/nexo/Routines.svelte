@@ -22,11 +22,11 @@
   const field = $derived(device && operation && controlFor(device, operation))
   let draftError = $state('')
   let historyId = $state('')
-  const canHistory = $derived(session.can('routines:execute'))
+  const canHistory = $derived(session.can('home:read'))
   const history = new Resource(ownerSession, async signal => {
     try {
       const value = await session.request('/api/routines/' + encodeURIComponent(historyId) + '/attempts',
-        { permissions: ['routines:execute'], signal })
+        { permissions: ['home:read'], signal })
       const source = Array.isArray(value) ? value : record(value)?.runs ?? record(value)?.attempts
       return rows(source).map(describeAttempt)
     } catch (error) {
@@ -39,6 +39,9 @@
     partial: 'Parcial', late: 'Tardía', running: 'En curso', uncertain: 'Sin confirmar',
     skipped: 'Omitida', interrupted: 'Interrumpida',
   }
+  const attemptSource: Record<string, string> = {
+    manual: 'Manual', scheduled: 'Programada', voice: 'Por voz',
+  }
   const attemptSummary: Record<string, string> = {
     Aceptada: 'La ejecución fue aceptada.', Fallida: 'La ejecución no se pudo completar.',
     Parcial: 'Solo parte de las acciones se completó.', 'Tardía': 'La ejecución llegó fuera de horario.',
@@ -48,13 +51,16 @@
 
   function describeAttempt(item: Record<string, unknown>) {
     const label = attemptStatus[text(item.status, '')] ?? 'Sin confirmar'
-    const raw = item.started_at ?? item.at ?? item.created_at ?? item.requested_at ?? item.finished_at
-    const when = typeof raw === 'number' ? new Date(raw < 1e12 ? raw * 1000 : raw)
+    const raw = item.started_at_unix_ms ?? item.started_at ?? item.at ?? item.created_at
+      ?? item.requested_at ?? item.finished_at_unix_ms ?? item.finished_at
+    const when = typeof raw === 'number' && raw > 0 ? new Date(raw < 1e12 ? raw * 1000 : raw)
       : typeof raw === 'string' ? new Date(raw) : null
+    const origin = attemptSource[text(item.source, '')]
+    const fallback = origin ? origin + ' · ' + attemptSummary[label] : attemptSummary[label]
     return {
       when: when && Number.isFinite(when.getTime()) ? when.toLocaleString('es-UY') : 'Sin fecha',
       label,
-      summary: text(item.summary ?? item.message ?? item.detail, attemptSummary[label]),
+      summary: text(item.summary ?? item.message ?? item.detail, fallback),
     }
   }
 
