@@ -31,11 +31,27 @@ pub fn zone_id(room_id: &str) -> String {
 }
 
 pub(crate) fn unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| duration.as_millis().try_into().ok())
-        .unwrap_or_default()
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis().try_into().unwrap_or(u64::MAX),
+        Err(error) => {
+            tracing::warn!(%error, "system clock precedes the Unix epoch");
+            0
+        }
+    }
+}
+
+fn unavailable(operation: &'static str, error: impl std::fmt::Display) -> AudioError {
+    tracing::warn!(operation, %error, "audio operation failed");
+    AudioError::Unavailable
+}
+
+fn update_microphone<A: AmpTransport, P: PlaybackOutput>(
+    service: &AudioService<A, P>,
+    room: &MicrophoneRoomStatus,
+) {
+    if let Err(error) = service.update_microphone(room.clone()) {
+        tracing::warn!(room_id = %room.room_id, %error, "microphone diagnostics update failed");
+    }
 }
 
 /// Acknowledge sealed admission and resume policy. Live room owners are retired
@@ -58,15 +74,27 @@ pub async fn run_capture_control(
             })
             .await;
             match result {
-                Ok(())
-                | Err(CaptureError::RevisionConflict { .. } | CaptureError::StaleAcknowledgment) => {
+                Ok(()) => {}
+                Err(
+                    error @ (CaptureError::RevisionConflict { .. }
+                    | CaptureError::StaleAcknowledgment),
+                ) => {
+                    tracing::warn!(%error, "capture transition was superseded");
                 }
                 Err(error) => return Err(error),
             }
         }
         tokio::select! {
-            _ = shutdown.wait_for(|stopping| *stopping) => return Ok(()),
-            result = transitions.changed() => if result.is_err() { return Ok(()); },
+            result = shutdown.wait_for(|stopping| *stopping) => {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "capture shutdown channel closed");
+                }
+                return Ok(());
+            }
+            result = transitions.changed() => if let Err(error) = result {
+                tracing::warn!(%error, "capture transition channel closed");
+                return Ok(());
+            },
         }
     }
 }
@@ -86,25 +114,37 @@ impl CaptureGate {
         running_epoch(&self.status.borrow())
     }
 
+    async fn changed(&mut self) -> bool {
+        tokio::select! {
+            result = self.shutdown.wait_for(|stopping| *stopping) => {
+                if let Err(error) = result {
+                    tracing::warn!(%error, "room shutdown channel closed");
+                }
+                false
+            }
+            change = self.status.changed() => {
+                if let Err(error) = change {
+                    tracing::warn!(%error, "capture status channel closed");
+                    return false;
+                }
+                true
+            }
+        }
+    }
+
     async fn wait_for_epoch(&mut self) -> Option<u64> {
         loop {
             if let Some(epoch) = self.epoch() {
                 return Some(epoch);
             }
-            tokio::select! {
-                _ = self.shutdown.wait_for(|stopping| *stopping) => return None,
-                change = self.status.changed() => if change.is_err() { return None; },
+            if !self.changed().await {
+                return None;
             }
         }
     }
 
     async fn closed(&mut self, epoch: u64) {
-        while self.epoch() == Some(epoch) {
-            tokio::select! {
-                _ = self.shutdown.wait_for(|stopping| *stopping) => return,
-                change = self.status.changed() => if change.is_err() { return; },
-            }
-        }
+        while self.epoch() == Some(epoch) && self.changed().await {}
     }
 }
 
@@ -114,6 +154,12 @@ impl CaptureGate {
 pub struct SharedShadow<S> {
     model: Arc<Mutex<S>>,
     permit: Arc<Semaphore>,
+}
+
+struct ShadowResult {
+    recording: Recording,
+    text: Result<String, AudioError>,
+    latency_ms: u32,
 }
 
 impl<S: ShadowStt + 'static> SharedShadow<S> {
@@ -128,31 +174,31 @@ impl<S: ShadowStt + 'static> SharedShadow<S> {
         &self,
         mut gate: CaptureGate,
         epoch: u64,
-        samples: Vec<f32>,
-    ) -> Result<(Vec<f32>, String, u32), AudioError> {
+        recording: Recording,
+    ) -> Result<Option<ShadowResult>, AudioError> {
         let permit = tokio::select! {
             biased;
-            _ = gate.closed(epoch) => return Err(AudioError::Unavailable),
+            _ = gate.closed(epoch) => return Ok(None),
             permit = Arc::clone(&self.permit).acquire_owned() =>
-                permit.map_err(|_| AudioError::Unavailable)?,
+                permit.map_err(|error| unavailable("acquire Parakeet permit", error))?,
         };
         let model = Arc::clone(&self.model);
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let started = Instant::now();
-            let text = model
+            let mut model = model
                 .lock()
-                .map_err(|_| AudioError::Unavailable)?
-                .transcribe(&samples);
-            let latency = started.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
-            let text = text.unwrap_or_else(|error| {
-                tracing::warn!(%error, "shadow recognition failed");
-                String::new()
-            });
-            Ok((samples, text, latency))
+                .map_err(|error| unavailable("lock Parakeet model", error))?;
+            let started = Instant::now();
+            let text = model.transcribe(&recording.samples);
+            let latency_ms = started.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+            Ok(Some(ShadowResult {
+                recording,
+                text,
+                latency_ms,
+            }))
         })
         .await
-        .map_err(|_| AudioError::Unavailable)?
+        .map_err(|error| unavailable("join Parakeet worker", error))?
     }
 }
 
@@ -204,12 +250,14 @@ where
             shutdown,
         };
         let mut retry = FIRST_RETRY;
+        let mut attempt = 0_u32;
         loop {
             if gate.epoch().is_none() {
                 self.processor.room.state = MicCaptureState::Muted as i32;
                 self.processor.room.last_rms = 0.0;
-                let _ = service.update_microphone(self.processor.room.clone());
+                update_microphone(&service, &self.processor.room);
                 retry = FIRST_RETRY;
+                attempt = 0;
             }
             let Some(epoch) = gate.wait_for_epoch().await else {
                 return Ok(());
@@ -231,29 +279,43 @@ where
             let (producer, consumer) = capture_ring();
             let (utterances, pending) = mpsc::channel(1);
             self.processor.room.state = MicCaptureState::Waiting as i32;
-            let _ = service.update_microphone(self.processor.room.clone());
+            update_microphone(&service, &self.processor.room);
 
             let room_id = self.processor.room.room_id.clone();
             let capture = async {
+                let mut device = None;
                 let result = async {
                     if gate.epoch() != Some(epoch) {
                         return Ok(());
                     }
-                    self.source.start().await?;
+                    let result = self.source.start().await;
+                    if attempt > 0 {
+                        match &result {
+                            Ok(()) => tracing::info!(%room_id, attempt, result = "ok", "XVF3800 capture reopen"),
+                            Err(error) => tracing::warn!(%room_id, attempt, result = "error", error = %error.cause(), "XVF3800 capture reopen"),
+                        }
+                    }
+                    result?;
+                    let (card, channels) = self.source.device();
+                    tracing::info!(%room_id, card, channels, "room capture opened");
+                    device = Some((card.to_owned(), channels));
                     change_capture(&gate.control, move |control| {
                         control.acknowledge_started(owner)
                     })
                     .await
-                    .map_err(|_| AudioError::Unavailable)?;
+                    .map_err(|error| unavailable("acknowledge capture start", error))?;
                     pump_frames(&mut self.source, producer, gate.clone(), epoch).await
                 }
                 .await;
                 // Even a failed start can have performed partial hardware I/O.
                 let mut delay = FIRST_RETRY;
                 while let Err(error) = self.source.stop().await {
-                    tracing::warn!(%room_id, %error, "capture stop failed; ownership retained");
+                    tracing::warn!(%room_id, error = %error.cause(), "capture stop failed; ownership retained");
                     tokio::time::sleep(delay).await;
                     delay = (delay * 2).min(MAX_RETRY);
+                }
+                if let Some((card, channels)) = device {
+                    tracing::info!(%room_id, %card, channels, "room capture closed");
                 }
                 result
             };
@@ -268,22 +330,27 @@ where
             let publish =
                 publish_utterances(&service, &shadow, pending, gate.clone(), epoch, &room_id);
             let (capture, processing, ()) = tokio::join!(capture, processing, publish);
-            change_capture(&gate.control, move |control| {
+            let retired = change_capture(&gate.control, move |control| {
                 control.acknowledge_stopped(owner)
             })
-            .await?;
-
-            if gate.epoch() == Some(epoch) {
-                if let Err(error) = capture.and(processing) {
-                    tracing::warn!(room_id = %self.processor.room.room_id, %error, ?retry, "recovering room capture");
+            .await;
+            for (operation, result) in [("capture", capture), ("processing", processing)] {
+                if let Err(error) = result {
+                    tracing::warn!(%room_id, operation, error = %error.cause(), "room audio failed");
                 }
+            }
+            retired?;
+            if gate.epoch() == Some(epoch) {
                 self.processor.room.state = MicCaptureState::Recovering as i32;
                 self.processor.room.last_rms = 0.0;
                 self.processor.room.recoveries = self.processor.room.recoveries.saturating_add(1);
-                let _ = service.update_microphone(self.processor.room.clone());
+                update_microphone(&service, &self.processor.room);
                 if started.elapsed() >= STABLE_CAPTURE {
                     retry = FIRST_RETRY;
+                    attempt = 0;
                 }
+                attempt = attempt.saturating_add(1);
+                tracing::info!(%room_id, attempt, retry_ms = retry.as_millis() as u64, "room capture recovery scheduled");
                 tokio::select! {
                     _ = gate.closed(epoch) => (),
                     _ = tokio::time::sleep(retry) => retry = (retry * 2).min(MAX_RETRY),
@@ -306,10 +373,10 @@ async fn pump_frames(
             _ = gate.closed(epoch) => return Ok(()),
             result = async {
                 let count = tokio::time::timeout(FRAME_TIMEOUT, source.read(&mut samples))
-                    .await.map_err(|_| AudioError::Unavailable)??;
+                    .await.map_err(|error| unavailable("read capture frame", error))??;
                 let samples = samples.get(..count).filter(|frame| !frame.is_empty())
-                    .ok_or(AudioError::Unavailable)?;
-                producer.push(samples).await.map_err(|_| AudioError::Unavailable)
+                    .ok_or_else(|| unavailable("read capture frame", "empty or oversized frame"))?;
+                producer.push(samples).await.map_err(|error| unavailable("enqueue capture frame", error))
             } => result?,
         }
     }
@@ -317,10 +384,28 @@ async fn pump_frames(
 
 #[derive(Debug)]
 struct Recording {
+    id: uuid::Uuid,
     endpoint: PostWakeEndpoint,
     samples: Vec<f32>,
     score: f32,
     time: u64,
+}
+
+impl Recording {
+    fn log_endpoint(
+        &self,
+        room_id: &str,
+        decision: EndpointDecision,
+        parakeet_ms: u32,
+        parakeet_ok: bool,
+    ) {
+        tracing::info!(
+            room_id, utterance_id = %self.id, kind = UtteranceKind::Command.as_str_name(),
+            ?decision, duration_ms = frame_duration(self.samples.len()).as_millis() as u64,
+            rms = frame_rms(&self.samples), parakeet_ms, parakeet_ok,
+            "utterance endpoint"
+        );
+    }
 }
 
 async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
@@ -338,13 +423,15 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
     } = processor;
     let reset = Arc::clone(inference);
     tokio::task::spawn_blocking(move || {
-        let mut engines = reset.lock().map_err(|_| AudioError::Unavailable)?;
+        let mut engines = reset
+            .lock()
+            .map_err(|error| unavailable("lock room models for reset", error))?;
         engines.0.reset();
         engines.1.reset();
         Ok::<_, AudioError>(())
     })
     .await
-    .map_err(|_| AudioError::Unavailable)??;
+    .map_err(|error| unavailable("join room model reset", error))??;
 
     let mut noise = NoiseFloorTracker::default();
     let mut guard = AmbientGuard::default();
@@ -370,24 +457,28 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
         if !rms.is_finite() {
             return Err(AudioError::Rejected);
         }
-        let _ = service.observe_capture_frame(&room.room_id, epoch, &frame);
+        if let Err(error) = service.observe_capture_frame(&room.room_id, epoch, &frame) {
+            tracing::warn!(room_id = %room.room_id, %error, "barge-in observation failed");
+        }
         room.state = MicCaptureState::Receiving as i32;
         room.last_rms = rms;
         room.frames_captured = room.frames_captured.saturating_add(1);
         room.last_frame_unix_ms = unix_ms();
-        let _ = service.update_microphone(room.clone());
+        update_microphone(service, room);
 
         // Await an in-flight model call on seal before retiring the capture owner.
         let models = Arc::clone(inference);
         let (speech, score) = tokio::task::spawn_blocking(move || {
-            let mut engines = models.lock().map_err(|_| AudioError::Unavailable)?;
+            let mut engines = models
+                .lock()
+                .map_err(|error| unavailable("lock room models for inference", error))?;
             Ok::<_, AudioError>((
                 engines.0.speech_probability(&frame)?,
                 engines.1.wake_score(&frame)?,
             ))
         })
         .await
-        .map_err(|_| AudioError::Unavailable)??;
+        .map_err(|error| unavailable("join room inference worker", error))??;
         let now = Instant::now();
         if let Some(mut recording) = current.take() {
             let remaining =
@@ -404,9 +495,10 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 tokio::select! {
                     biased;
                     _ = gate.closed(epoch) => return Ok(()),
-                    result = utterances.send(recording) => result.map_err(|_| AudioError::Unavailable)?,
+                    result = utterances.send(recording) => result.map_err(|error| unavailable("enqueue utterance", error))?,
                 }
             } else {
+                recording.log_endpoint(&room.room_id, decision, 0, false);
                 guard.record(now, CaptureOutcome::Rejected);
             }
         } else {
@@ -414,7 +506,9 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 noise.observe(rms);
             }
             if score >= *wake_threshold && guard.allow_wake(now, score) {
+                tracing::info!(room_id = %room.room_id, score, threshold = *wake_threshold, "wake word detected");
                 current = Some(Recording {
+                    id: uuid::Uuid::new_v4(),
                     endpoint: PostWakeEndpoint::new(noise.floor()),
                     samples: Vec::with_capacity(FRAME_SAMPLES * 63),
                     score,
@@ -440,33 +534,56 @@ async fn publish_utterances<A: AmpTransport, P: PlaybackOutput, S: ShadowStt + '
             recording = pending.recv() => recording,
         };
         let Some(recording) = recording else { return };
-        let Ok((samples, text, latency)) = shadow
-            .transcribe(gate.clone(), epoch, recording.samples)
-            .await
-        else {
-            if gate.epoch() != Some(epoch) {
-                return;
+        let utterance_id = recording.id;
+        let ShadowResult {
+            recording,
+            text,
+            latency_ms,
+        } = match shadow.transcribe(gate.clone(), epoch, recording).await {
+            Ok(Some(result)) => result,
+            Ok(None) => return,
+            Err(error) => {
+                tracing::warn!(room_id, %utterance_id, error = %error.cause(), "Parakeet worker unavailable");
+                continue;
             }
-            continue;
+        };
+        recording.log_endpoint(
+            room_id,
+            EndpointDecision::Complete,
+            latency_ms,
+            text.is_ok(),
+        );
+        let text = match text {
+            Ok(text) => text,
+            Err(error) => {
+                tracing::warn!(
+                    room_id, %utterance_id, parakeet_ms = latency_ms,
+                    error = %error.cause(), "Parakeet inference failed"
+                );
+                String::new()
+            }
         };
         // The service checks the epoch and sends under the committed ingress gate.
-        if gate.epoch() == Some(epoch) {
-            let _ = service.publish_utterance(AudioUtterance {
-                utterance_id: uuid::Uuid::new_v4().to_string(),
+        if gate.epoch() == Some(epoch)
+            && let Err(error) = service.publish_utterance(AudioUtterance {
+                utterance_id: utterance_id.to_string(),
                 room_id: room_id.to_owned(),
                 kind: UtteranceKind::Command as i32,
                 sample_rate: SAMPLE_RATE,
-                pcm_f32le: samples
+                pcm_f32le: recording
+                    .samples
                     .iter()
                     .flat_map(|sample| sample.to_le_bytes())
                     .collect(),
                 wake_score: recording.score,
-                rms: frame_rms(&samples),
+                rms: frame_rms(&recording.samples),
                 parakeet_shadow_text: text,
-                parakeet_latency_ms: latency,
+                parakeet_latency_ms: latency_ms,
                 captured_at_unix_ms: recording.time,
                 capture_epoch: epoch,
-            });
+            })
+        {
+            tracing::warn!(room_id, %utterance_id, %error, "utterance publication failed");
         }
     }
 }

@@ -18,8 +18,22 @@ pub enum AudioError {
     Adapter(String),
 }
 
+impl AudioError {
+    pub(crate) fn cause(&self) -> &dyn std::fmt::Display {
+        match self {
+            Self::Io(error) => error,
+            _ => self,
+        }
+    }
+}
+
 /// One room's mono f32 capture source at 16 kHz.
 pub trait CaptureSource: Send {
+    /// Device metadata for an open capture session.
+    fn device(&self) -> (&str, u32) {
+        ("unknown", 1)
+    }
+
     /// Open capture I/O after the runtime has reserved an owner.
     fn start(&mut self) -> impl Future<Output = Result<(), AudioError>> + Send;
 
@@ -53,6 +67,11 @@ pub trait ShadowStt: Send {
 }
 
 pub trait AmpTransport: Send + Sync {
+    /// Transport mode exposed in diagnostics.
+    fn mode(&self) -> &'static str {
+        "unknown"
+    }
+
     /// Resolve successfully only after the adapter accepts the command explicitly.
     fn send(&self, command: CommandFrame) -> impl Future<Output = Result<(), AudioError>> + Send;
 }
@@ -89,6 +108,11 @@ pub trait PlaybackOutput: Send + Sync {
 /// A live playback. Dropping it before a successful finish must cancel queued output.
 /// Write and finish futures can be dropped when a stream is cancelled.
 pub trait PlaybackSession: Send {
+    /// Identifier of the output device.
+    fn card(&self) -> &str {
+        "unknown"
+    }
+
     fn write(&mut self, samples: &[f32]) -> impl Future<Output = Result<(), AudioError>> + Send;
 
     fn finish(&mut self) -> impl Future<Output = Result<(), AudioError>> + Send;

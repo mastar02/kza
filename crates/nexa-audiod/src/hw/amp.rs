@@ -1,7 +1,7 @@
 //! Serialized MA1260 command/ACK transport over TCP or RS-232.
 
-use std::fmt;
 use std::time::Duration;
+use std::{fmt, io};
 
 use nexa_config::Ma1260Connection;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -57,6 +57,14 @@ impl Ma1260 {
 }
 
 impl AmpTransport for Ma1260 {
+    fn mode(&self) -> &'static str {
+        match &self.connection {
+            Ma1260Connection::Simulation => "simulation",
+            Ma1260Connection::Tcp { .. } => "tcp",
+            Ma1260Connection::Serial { .. } => "serial",
+        }
+    }
+
     async fn send(&self, command: CommandFrame) -> Result<(), AudioError> {
         if self.connection == Ma1260Connection::Simulation {
             return Ok(());
@@ -79,19 +87,29 @@ impl AmpTransport for Ma1260 {
         };
 
         // Taking the cached stream also makes cancellation discard a partial transaction.
-        match tokio::time::timeout(IO_TIMEOUT, exchange(previous)).await {
-            Ok(Ok(stream)) => *cached = Some(stream),
-            // The codec uses absolute setters and a query, so reconnect/retry is idempotent.
-            Ok(Err(AudioError::Io(_))) | Err(_) if reused => {
-                *cached = Some(
-                    tokio::time::timeout(IO_TIMEOUT, exchange(None))
-                        .await
-                        .map_err(|_| AudioError::Unavailable)??,
-                );
+        let stream = match tokio::time::timeout(IO_TIMEOUT, exchange(previous)).await {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(error @ AudioError::Io(_))) if reused => {
+                tracing::warn!(amp_mode = self.mode(), error = %error.cause(), "MA1260 reconnecting");
+                retry_exchange(exchange(None)).await?
+            }
+            Err(error) if reused => {
+                tracing::warn!(amp_mode = self.mode(), %error, "MA1260 reconnecting");
+                retry_exchange(exchange(None)).await?
             }
             Ok(Err(error)) => return Err(error),
-            Err(_) => return Err(AudioError::Unavailable),
-        }
+            Err(error) => return Err(io::Error::new(io::ErrorKind::TimedOut, error).into()),
+        };
+        *cached = Some(stream);
         Ok(())
     }
+}
+
+// The codec uses absolute setters and a query, so reconnect/retry is idempotent.
+async fn retry_exchange(
+    exchange: impl Future<Output = Result<Box<dyn AmpStream>, AudioError>>,
+) -> Result<Box<dyn AmpStream>, AudioError> {
+    tokio::time::timeout(IO_TIMEOUT, exchange)
+        .await
+        .map_err(|error| io::Error::new(io::ErrorKind::TimedOut, error))?
 }

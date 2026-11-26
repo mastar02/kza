@@ -18,6 +18,7 @@ from typing import Any
 import numpy as np
 
 from nexa_ml.audio import parse_device
+from nexa_ml.observability import InferenceTiming
 from nexa_ml.offline import assert_offline_effective, reject_remote_source
 from nexa_ml.slot import (
     InvalidInputError,
@@ -189,10 +190,15 @@ class WhisperSlot:
             default_beam=self.default_beam,
         )
 
-    async def transcribe(self, audio: np.ndarray, opts: TranscribeOptions) -> Transcription:
+    async def transcribe(
+        self, audio: np.ndarray, opts: TranscribeOptions, *, timing: InferenceTiming | None = None
+    ) -> Transcription:
         """Transcribe on this slot's executor."""
         name = self.slot.model_name
-        return await self.slot.run(lambda model: transcribe_blocking(model, audio, opts, name))
+        infer = (timing or InferenceTiming()).wrap(
+            self.slot.slot_id, lambda model: transcribe_blocking(model, audio, opts, name)
+        )
+        return await self.slot.run(infer)
 
 
 class WhisperPool:
@@ -244,7 +250,9 @@ class WhisperPool:
                 return member
         return None
 
-    async def transcribe(self, audio: np.ndarray, opts: TranscribeOptions) -> Transcription:
+    async def transcribe(
+        self, audio: np.ndarray, opts: TranscribeOptions, *, timing: InferenceTiming | None = None
+    ) -> Transcription:
         """Wait for an idle READY member and transcribe on it.
 
         Raises:
@@ -267,5 +275,8 @@ class WhisperPool:
             if member is None:
                 raise SlotUnavailableError("ambient pool has no ready member")
             name = member.slot.model_name
-            future = member.slot.submit(lambda model: transcribe_blocking(model, audio, opts, name))
+            infer = (timing or InferenceTiming()).wrap(
+                member.slot.slot_id, lambda model: transcribe_blocking(model, audio, opts, name)
+            )
+            future = member.slot.submit(infer)
         return await member.slot.track(future)

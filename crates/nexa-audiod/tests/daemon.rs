@@ -124,6 +124,7 @@ async fn simulation_daemon_notifies_serves_private_uds_and_stops_on_sigterm() {
     let health = client.get_health(Empty {}).await.unwrap().into_inner();
     assert_eq!(health.service, "nexa-audiod");
     assert_eq!(health.state(), HealthState::Ok);
+    assert!(health.detail.contains("amp_mode=simulation"));
     let capture = client
         .get_capture_control(Empty {})
         .await

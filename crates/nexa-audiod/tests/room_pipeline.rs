@@ -208,6 +208,57 @@ async fn room_retries_do_not_interrupt_another_rooms_utterances() {
     .unwrap();
 }
 
+struct FailedShadow;
+
+impl ShadowStt for FailedShadow {
+    fn transcribe(&mut self, _: &[f32]) -> Result<String, AudioError> {
+        std::thread::sleep(Duration::from_millis(5));
+        Err(AudioError::Adapter(
+            "injected Parakeet inference failure".into(),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn shadow_inference_error_preserves_the_command_and_reports_model_latency() {
+    let (_, service) = services();
+    let (stop, shutdown) = watch::channel(false);
+    let mut stream = service
+        .subscribe_utterances(Request::new(SubscribeUtterancesRequest::default()))
+        .await
+        .unwrap()
+        .into_inner();
+    let room = RoomPipeline::new(
+        &room("living"),
+        Script {
+            attempts: Arc::default(),
+            failures: 0,
+            utterances: 1,
+            sample: 0.2,
+            frame: 0,
+            broken: false,
+        },
+        Detector,
+        Detector,
+        0.4,
+    );
+    let worker =
+        tokio::spawn(room.run(service, Arc::new(SharedShadow::new(FailedShadow)), shutdown));
+
+    let utterance = tokio::time::timeout(Duration::from_secs(2), stream.next())
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(utterance.room_id, "living");
+    assert!(utterance.parakeet_shadow_text.is_empty());
+    assert!(utterance.parakeet_latency_ms >= 5);
+    assert!(!utterance.pcm_f32le.is_empty());
+
+    stop.send_replace(true);
+    worker.await.unwrap().unwrap();
+}
+
 struct BlockingShadow {
     entered: Arc<Notify>,
     release: std::sync::mpsc::Receiver<()>,
