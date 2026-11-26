@@ -34,10 +34,11 @@ const AMBIENT_COOLDOWN: Duration = Duration::from_secs(3);
 const FOLLOW_UP_WINDOW: Duration = Duration::from_secs(12);
 const FOLLOW_UP_MIN_VOICE_FRAMES: usize = 3;
 const FOLLOW_UP_MAX_FRAMES: usize = 62; // Just under the 5 s command cap.
+const FOLLOW_UP_PREROLL_FRAMES: usize = 4; // 320 ms onset pre-roll (parity with legacy follow_up_preroll_s).
+const AMBIENT_PREROLL_FRAMES: usize = 6; // 480 ms onset pre-roll (parity with legacy ambient preroll_ms).
 const WAKE_PREROLL_FRAMES: usize = 15; // 1.2 s pre-roll so continuous commands finishing as wake fires are preserved.
 const PREROLL_MIN_VOICED_FRAMES: usize = 3; // 240 ms of speech inside pre-roll.
 const PREROLL_VAD_THRESHOLD: f32 = 0.35;
-const PREROLL_RMS_RATIO: f32 = 1.5;
 const NEAR_WAKE_LOG_MIN: f32 = 0.15;
 const NEAR_WAKE_LOG_INTERVAL: Duration = Duration::from_secs(3);
 
@@ -509,6 +510,7 @@ impl Recording {
             level_threshold = stats.level_threshold,
             effective_level_threshold = stats.effective_level_threshold,
             peak_voice_rms = stats.peak_voice_rms,
+            peak_vad = stats.peak_vad,
             tail_rms = stats.last_rms,
             voice_ms = stats.voice_ms,
             vad_voice_ms = stats.vad_voice_ms,
@@ -526,9 +528,17 @@ struct NonWakeSegment {
 }
 
 impl NonWakeSegment {
-    fn new(kind: UtteranceKind, started: Instant) -> Self {
+    fn with_preroll<'a>(
+        kind: UtteranceKind,
+        started: Instant,
+        preroll: impl IntoIterator<Item = &'a [f32; FRAME_SAMPLES]>,
+    ) -> Self {
+        let mut recording = Recording::new(kind, 0.0);
+        for frame in preroll {
+            recording.samples.extend_from_slice(frame);
+        }
         Self {
-            recording: Recording::new(kind, 0.0),
+            recording,
             voiced: 0,
             quiet: 0,
             started,
@@ -756,8 +766,9 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             if preroll.len() == WAKE_PREROLL_FRAMES {
                 preroll.pop_front();
             }
-            let frame_voiced =
-                speech >= PREROLL_VAD_THRESHOLD || rms >= noise.floor() * PREROLL_RMS_RATIO;
+            // Require real Silero VAD speech for pre-roll voicing so non-speech clatter
+            // (e.g. dishes/water in cocina) never sets preroll_voiced=true.
+            let frame_voiced = (PREROLL_VAD_THRESHOLD..=1.0).contains(&speech);
             preroll.push_back((frame, frame_voiced));
         }
 
@@ -784,9 +795,16 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
         if non_wake.is_none() && !voiced {
             continue;
         }
-        let mut segment = non_wake
-            .take()
-            .unwrap_or_else(|| NonWakeSegment::new(kind, now));
+        let mut segment = non_wake.take().unwrap_or_else(|| {
+            let want = match kind {
+                UtteranceKind::FollowUp => FOLLOW_UP_PREROLL_FRAMES,
+                _ => AMBIENT_PREROLL_FRAMES,
+            };
+            let available = preroll.len().saturating_sub(1);
+            let start = available.saturating_sub(want);
+            let prefix = preroll.range(start..available).map(|(samples, _)| samples);
+            NonWakeSegment::with_preroll(kind, now, prefix)
+        });
         if !segment.observe(&frame, voiced) {
             non_wake = Some(segment);
             continue;

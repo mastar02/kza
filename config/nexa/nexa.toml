@@ -27,7 +27,7 @@ kind = "simulation"
 # BAAI/bge-m3 runs on CPU.
 command_stt_model = "whisper-v3-turbo"
 command_stt_device = "cuda:0"
-command_stt_compute_type = "int8_float16"
+command_stt_compute_type = "float16"
 ambient_stt_model = "whisper-v3-turbo"
 ambient_stt_device = "cuda:0"
 ambient_stt_workers = 1

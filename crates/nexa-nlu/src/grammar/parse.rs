@@ -31,15 +31,22 @@ pub(crate) fn parse_core(core: &str, source_room: Option<&str>) -> GrammarMatch 
     }
     let core = polite.unwrap_or(&folded);
     let core = core.strip_suffix(" ahora").unwrap_or(core);
+    let core = core
+        .strip_prefix("a ")
+        .filter(|tail| tail.starts_with("aprender ") || tail.starts_with("aprende "))
+        .unwrap_or(core);
     let (head, rest) = core.split_once(' ').unwrap_or((core, ""));
     let verb = action(head);
-    // Whisper frequently elides "Nexa, prendé <room/light>" into "aprende <room/light>".
-    let stt_prende_elision = head == "aprende";
-    let rest = trim_article(if verb.is_some() || stt_prende_elision {
+    // Whisper frequently elides "Nexa, prendé <room/light>" into "aprende/aprender [a] <room/light>".
+    let stt_prende_elision = matches!(head, "aprende" | "aprender");
+    let raw_rest = if stt_prende_elision {
+        rest.strip_prefix("a ").unwrap_or(rest)
+    } else if verb.is_some() {
         rest
     } else {
         core
-    });
+    };
+    let rest = trim_article(raw_rest);
     let (noun, tail) = rest.split_once(' ').unwrap_or((rest, ""));
     let clitic_on_off = matches!(
         head,

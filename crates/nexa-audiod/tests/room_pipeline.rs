@@ -251,10 +251,9 @@ async fn ambient_requires_opt_in_and_never_runs_shadow_stt() {
         assert_eq!(utterance.kind(), UtteranceKind::Ambient);
         assert_eq!(utterance.room_id, "living");
         assert_eq!(utterance.capture_epoch, 0);
-        assert_eq!(
-            utterance.pcm_f32le,
-            0.3_f32.to_le_bytes().repeat(10 * FRAME_SAMPLES)
-        );
+        let mut expected = 0.0_f32.to_le_bytes().repeat(6 * FRAME_SAMPLES);
+        expected.extend(0.3_f32.to_le_bytes().repeat(10 * FRAME_SAMPLES));
+        assert_eq!(utterance.pcm_f32le, expected);
         assert!(utterance.parakeet_shadow_text.is_empty());
         assert_eq!(utterance.parakeet_latency_ms, 0);
 
@@ -387,7 +386,9 @@ async fn capture_seal_drops_partial_ambient_before_muting_and_resuming() {
         let resumed = ambient.next().await.unwrap().unwrap();
         assert_eq!(resumed.kind(), UtteranceKind::Ambient);
         assert_eq!(resumed.capture_epoch, 2);
-        assert_eq!(resumed.pcm_f32le, 0.4_f32.to_le_bytes().repeat(10 * 1280));
+        let mut expected = 0.0_f32.to_le_bytes().repeat(6 * FRAME_SAMPLES);
+        expected.extend(0.4_f32.to_le_bytes().repeat(10 * FRAME_SAMPLES));
+        assert_eq!(resumed.pcm_f32le, expected);
         stop.send_replace(true);
         worker.await.unwrap().unwrap();
         coordinator.await.unwrap().unwrap();
@@ -434,10 +435,9 @@ async fn ambient_recovery_discards_partial_pcm_and_caps_continuous_speech() {
         let capped = ambient.next().await.unwrap().unwrap();
         assert_eq!(capped.kind(), UtteranceKind::Ambient);
         assert_eq!(capped.capture_epoch, 0);
-        assert_eq!(
-            capped.pcm_f32le,
-            0.3_f32.to_le_bytes().repeat(150 * FRAME_SAMPLES)
-        );
+        let mut expected = 0.0_f32.to_le_bytes().repeat(6 * FRAME_SAMPLES);
+        expected.extend(0.3_f32.to_le_bytes().repeat(144 * FRAME_SAMPLES));
+        assert_eq!(capped.pcm_f32le, expected);
         stop.send_replace(true);
         worker.await.unwrap().unwrap();
     })

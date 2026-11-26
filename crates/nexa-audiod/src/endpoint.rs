@@ -20,6 +20,7 @@ const AGC_RELEASE_RATIO: f32 = 0.30;
 const AGC_RELEASE_CAP: f32 = NOISE_FLOOR_DEFAULT * NOISE_RATIO;
 const VAD_AGC_MIN_PEAK_RMS: f32 = 0.008;
 const VAD_DROP_RATIO: f32 = 0.45;
+const VAD_MIN_SPEECH_EVIDENCE: f32 = 0.20;
 const AGC_DOWNWARD_MIN_FRAMES: usize = 3;
 const AGC_DOWNWARD_DROP_RATIO: f32 = 0.85;
 
@@ -35,6 +36,7 @@ pub struct EndpointTelemetry {
     pub level_threshold: f32,
     pub effective_level_threshold: f32,
     pub peak_voice_rms: f32,
+    pub peak_vad: f32,
     pub last_rms: f32,
     pub voice_ms: u64,
     pub vad_voice_ms: u64,
@@ -65,6 +67,8 @@ pub struct PostWakeEndpoint {
     level_threshold: f32,
     preroll_voiced: bool,
     peak_voice_rms: f32,
+    peak_vad: f32,
+    saw_vad: bool,
     last_rms: f32,
     elapsed: Duration,
     voice: Duration,
@@ -100,6 +104,8 @@ impl PostWakeEndpoint {
             level_threshold: floor * NOISE_RATIO,
             preroll_voiced,
             peak_voice_rms: 0.0,
+            peak_vad: 0.0,
+            saw_vad: false,
             last_rms: 0.0,
             elapsed: Duration::ZERO,
             voice: Duration::ZERO,
@@ -132,6 +138,7 @@ impl PostWakeEndpoint {
             level_threshold: self.level_threshold,
             effective_level_threshold: self.effective_level_threshold(),
             peak_voice_rms: self.peak_voice_rms,
+            peak_vad: self.peak_vad,
             last_rms: self.last_rms,
             voice_ms: self.voice.as_millis() as u64,
             vad_voice_ms: self.vad_voice.as_millis() as u64,
@@ -208,7 +215,10 @@ impl PostWakeEndpoint {
             && self.elapsed - self.last_strong_level_voice >= LEVEL_END_SILENCE;
         let quiet = level_quiet || vad_agc_quiet;
 
-        if self.voice >= min_voice && self.elapsed >= MIN_LISTEN && quiet {
+        let has_speech_evidence =
+            self.preroll_voiced || !self.saw_vad || self.peak_vad >= VAD_MIN_SPEECH_EVIDENCE;
+
+        if self.voice >= min_voice && self.elapsed >= MIN_LISTEN && quiet && has_speech_evidence {
             self.decision = EndpointDecision::Complete;
         } else if self.preroll_voiced
             && self.voice < PREROLL_MIN_POST_VOICE
@@ -219,8 +229,7 @@ impl PostWakeEndpoint {
             self.decision = EndpointDecision::Complete;
         } else if self.elapsed >= MAX_CAPTURE {
             self.close_at_max();
-        } else if self.voice < MIN_VOICE
-            && !self.preroll_voiced
+        } else if (!has_speech_evidence || (self.voice < MIN_VOICE && !self.preroll_voiced))
             && self.elapsed >= NO_SPEECH_TIMEOUT
         {
             self.decision = EndpointDecision::NoSpeech;
@@ -242,6 +251,12 @@ impl PostWakeEndpoint {
         let finite_rms = frame.rms.is_finite() && frame.rms >= 0.0;
         if finite_rms {
             self.last_rms = frame.rms;
+        }
+        if let Some(p) = frame.vad_probability
+            && (0.0..=1.0).contains(&p)
+        {
+            self.saw_vad = true;
+            self.peak_vad = self.peak_vad.max(p);
         }
         let by_level = finite_rms && frame.rms >= self.effective_level_threshold();
         let by_vad = frame
@@ -272,6 +287,8 @@ impl PostWakeEndpoint {
 
     fn replay_frames(&mut self) {
         self.peak_voice_rms = 0.0;
+        self.peak_vad = 0.0;
+        self.saw_vad = false;
         self.last_rms = 0.0;
         self.elapsed = Duration::ZERO;
         self.voice = Duration::ZERO;
@@ -288,7 +305,9 @@ impl PostWakeEndpoint {
     }
 
     fn close_at_max(&mut self) {
-        self.decision = if self.voice >= MIN_VOICE {
+        let has_speech_evidence =
+            self.preroll_voiced || !self.saw_vad || self.peak_vad >= VAD_MIN_SPEECH_EVIDENCE;
+        self.decision = if self.voice >= MIN_VOICE && has_speech_evidence {
             EndpointDecision::IncompleteAtMax
         } else {
             EndpointDecision::NoSpeech
@@ -299,6 +318,27 @@ impl PostWakeEndpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_rms_clatter_without_vad_speech_as_no_speech() {
+        // Reproduces live cocina false wakes where non-speech clatter spikes RMS above floor*1.8
+        // while Silero VAD remains near zero across the entire capture.
+        let mut endpoint = PostWakeEndpoint::new(0.0029);
+        let frame = Duration::from_millis(80);
+        let mut decision = EndpointDecision::Listening;
+        for _ in 0..10 {
+            decision = endpoint.observe(0.015, Some(0.001), frame);
+            assert_eq!(decision, EndpointDecision::Listening);
+        }
+        for _ in 0..30 {
+            decision = endpoint.observe(0.003, Some(0.001), frame);
+            if decision != EndpointDecision::Listening {
+                break;
+            }
+        }
+        assert_eq!(decision, EndpointDecision::NoSpeech);
+        assert!(endpoint.telemetry().peak_vad < VAD_MIN_SPEECH_EVIDENCE);
+    }
 
     #[test]
     fn adapts_downward_when_hardware_agc_ducks_post_wake_room_floor() {

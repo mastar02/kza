@@ -767,6 +767,10 @@ fn parses_room_as_light_shorthand_and_trailing_wake_word() {
         ("apagá el escritorio", Operation::Off, "escritorio"),
         ("aprendé el escritorio", Operation::On, "escritorio"),
         ("aprende la luz", Operation::On, "escritorio"),
+        ("aprender el escritorio", Operation::On, "escritorio"),
+        ("a aprender el escritorio", Operation::On, "escritorio"),
+        ("aprender la luz", Operation::On, "escritorio"),
+        ("aprender a luz", Operation::On, "escritorio"),
         ("Nexa, prendé la cocina, Nexa", Operation::On, "cocina"),
         ("apagá el living", Operation::Off, "living"),
         ("prendé el escritorio al 50%", Operation::On, "escritorio"),
@@ -799,6 +803,8 @@ fn parses_room_as_light_shorthand_and_trailing_wake_word() {
     for phrase in [
         "prendé la tele",
         "aprende a tocar guitarra",
+        "aprender a cocinar",
+        "aprender ingles",
         "bajalo",
         "apagara la luz",
     ] {

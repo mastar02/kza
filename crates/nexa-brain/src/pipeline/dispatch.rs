@@ -16,6 +16,23 @@ use crate::Brain;
 
 use super::Turn;
 
+/// Minimum Whisper avg_logprob for uncorroborated SlowLlm transcripts lacking a wake word.
+/// Live captures showed real commands at [-0.69, -0.34] and non-speech hallucinations at <= -1.20.
+const MIN_UNCORROBORATED_LLM_LOGPROB: f32 = -1.10;
+
+fn contains_wake_word(text: &str) -> bool {
+    words(text).split_whitespace().any(|word| {
+        nexa_nlu::normalize::WAKE_WORDS.contains(&word) || matches!(word, "neska" | "nexca")
+    })
+}
+
+fn should_drop_low_confidence_llm(route: &Route, avg_logprob: f32, stt_text: &str) -> bool {
+    matches!(route, Route::SlowLlm)
+        && avg_logprob.is_finite()
+        && avg_logprob < MIN_UNCORROBORATED_LLM_LOGPROB
+        && !contains_wake_word(stt_text)
+}
+
 /// Opt-in operator diagnostics flag (off by default) to log voice transcripts and LLM decisions.
 pub(super) fn debug_voice_transcripts() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -104,13 +121,21 @@ impl Brain {
         let admitted = (wake || (follow_up && shadow_veto_ok) || routed.acceptance.ring_stop)
             && (!routed.requires_veto || shadow_veto_ok);
         let path = routed.decision.path.as_str_name();
-        let admitted_route = admitted && !matches!(routed.route, Route::Rejected);
+        let low_confidence_llm =
+            should_drop_low_confidence_llm(&routed.route, stt.avg_logprob, &stt.text);
+        let admitted_route =
+            admitted && !matches!(routed.route, Route::Rejected) && !low_confidence_llm;
+        let reason = if low_confidence_llm {
+            "low_confidence_llm"
+        } else {
+            routed.decision.reason.as_deref().unwrap_or("none")
+        };
         tracing::info!(
             room_id = %room,
             utterance_id = %conversation,
             path,
             admitted = admitted_route,
-            reason = routed.decision.reason.as_deref().unwrap_or("none"),
+            reason,
             corroborated,
             "NLU route resolved"
         );
@@ -125,7 +150,7 @@ impl Brain {
                 normalized = %routed.decision.normalized_text,
                 path,
                 admitted = admitted_route,
-                reason = routed.decision.reason.as_deref().unwrap_or("none"),
+                reason,
                 "Voice transcript trace"
             );
         }
@@ -140,10 +165,13 @@ impl Brain {
                 "avg_logprob": stt.avg_logprob,
                 "compression_ratio": stt.compression_ratio,
                 "path": path,
-                "reason": routed.decision.reason,
+                "reason": if low_confidence_llm { Some("low_confidence_llm") } else { routed.decision.reason.as_deref() },
                 "admitted": admitted_route,
             }),
         );
+        if low_confidence_llm {
+            return Ok(());
+        }
         if !admitted {
             if !wake && !follow_up {
                 return Ok(());
@@ -282,5 +310,47 @@ impl Brain {
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexa_nlu::grammar::{Domain, HomeCommand, Operation, Slots};
+
+    #[test]
+    fn drops_low_confidence_uncorroborated_llm_hallucinations_only() {
+        assert!(should_drop_low_confidence_llm(
+            &Route::SlowLlm,
+            -1.205,
+            "Cuidado."
+        ));
+        assert!(should_drop_low_confidence_llm(
+            &Route::SlowLlm,
+            -1.358,
+            "Cuidado por la noche Cuidado por la noche"
+        ));
+        assert!(!should_drop_low_confidence_llm(
+            &Route::SlowLlm,
+            -0.494,
+            "Nexa apagá levítorio."
+        ));
+        assert!(!should_drop_low_confidence_llm(
+            &Route::SlowLlm,
+            -1.25,
+            "Nexa tengo poca luz acá"
+        ));
+        let domotics = Route::Domotics(HomeCommand {
+            domain: Domain::Light,
+            operation: Operation::On,
+            target: String::new(),
+            room: Some("escritorio".into()),
+            slots: Slots::default(),
+        });
+        assert!(!should_drop_low_confidence_llm(
+            &domotics,
+            -1.30,
+            "prendé la luz"
+        ));
     }
 }
