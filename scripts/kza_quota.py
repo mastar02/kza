@@ -33,6 +33,9 @@ KNOWN_CLAUDE_ACCOUNTS: frozenset[str] = frozenset({"claude-1", "claude-2"})
 PENALTY_START_PCT = 70.0
 HARD_EXCLUDE_5H_PCT = 92.0
 HARD_EXCLUDE_7D_PCT = 95.0
+CODEX2_MIN_REMAINING_PCT = 30.0
+CODEX2_HARD_EXCLUDE_5H_PCT = 100.0 - CODEX2_MIN_REMAINING_PCT
+CODEX2_HARD_EXCLUDE_7D_PCT = 100.0 - CODEX2_MIN_REMAINING_PCT
 AGY_CACHE_TTL_SECONDS = 300.0
 
 WINDOW_5H_SECONDS = 5.0 * 3600.0
@@ -179,11 +182,12 @@ def _base_window_curve(pct: float | None, limit: float) -> float:
     """Compute pure usage-percentage weight in [0.15, 1.0] before reset timing adjustments."""
     if pct is None or pct <= 0.0:
         return 1.0
-    if pct < PENALTY_START_PCT:
-        return round(1.0 - 0.15 * (pct / PENALTY_START_PCT), 4)
-    span = max(1.0, limit - PENALTY_START_PCT)
-    ratio = min(1.0, (pct - PENALTY_START_PCT) / span)
-    # Smooth progressive decay from 0.85 at 70% down to 0.15 just below limit.
+    penalty_start = min(PENALTY_START_PCT, max(1.0, limit - 20.0))
+    if pct < penalty_start:
+        return round(1.0 - 0.15 * (pct / penalty_start), 4)
+    span = max(1.0, limit - penalty_start)
+    ratio = min(1.0, (pct - penalty_start) / span)
+    # Smooth progressive decay from 0.85 at penalty_start down to 0.15 just below limit.
     return round(max(0.15, 0.85 - 0.70 * (ratio**1.25)), 4)
 
 
@@ -261,26 +265,28 @@ def evaluate_window_quota(
     five_hour_resets_at: float | None = None,
     seven_day_resets_at: float | None = None,
     now: float | None = None,
+    hard_exclude_5h_pct: float = HARD_EXCLUDE_5H_PCT,
+    hard_exclude_7d_pct: float = HARD_EXCLUDE_7D_PCT,
 ) -> dict[str, Any]:
     """Compute time-to-reset aware weight, urgency, pace delta, and hard exclusion for 5h/7d windows."""
-    if five_hour_pct is not None and five_hour_pct >= HARD_EXCLUDE_5H_PCT:
+    if five_hour_pct is not None and five_hour_pct >= hard_exclude_5h_pct:
         return {
             "weight": 0.0,
             "base_weight": 0.0,
             "excluded": True,
-            "exclude_reason": f"5h usage {five_hour_pct:.1f}% >= {HARD_EXCLUDE_5H_PCT:.0f}%",
+            "exclude_reason": f"5h usage {five_hour_pct:.1f}% >= {hard_exclude_5h_pct:.0f}%",
             "reset_urgency": 0.0,
             "pace_delta_pct": None,
             "headroom_pct_per_h": None,
             "five_hour_pace_delta_pct": None,
             "seven_day_pace_delta_pct": None,
         }
-    if seven_day_pct is not None and seven_day_pct >= HARD_EXCLUDE_7D_PCT:
+    if seven_day_pct is not None and seven_day_pct >= hard_exclude_7d_pct:
         return {
             "weight": 0.0,
             "base_weight": 0.0,
             "excluded": True,
-            "exclude_reason": f"7d usage {seven_day_pct:.1f}% >= {HARD_EXCLUDE_7D_PCT:.0f}%",
+            "exclude_reason": f"7d usage {seven_day_pct:.1f}% >= {hard_exclude_7d_pct:.0f}%",
             "reset_urgency": 0.0,
             "pace_delta_pct": None,
             "headroom_pct_per_h": None,
@@ -292,7 +298,7 @@ def evaluate_window_quota(
         five_hour_pct,
         five_hour_resets_at,
         now,
-        limit=HARD_EXCLUDE_5H_PCT,
+        limit=hard_exclude_5h_pct,
         window_seconds=WINDOW_5H_SECONDS,
         urgency_horizon_seconds=URGENCY_HORIZON_5H_SECONDS,
     )
@@ -300,7 +306,7 @@ def evaluate_window_quota(
         seven_day_pct,
         seven_day_resets_at,
         now,
-        limit=HARD_EXCLUDE_7D_PCT,
+        limit=hard_exclude_7d_pct,
         window_seconds=WINDOW_7D_SECONDS,
         urgency_horizon_seconds=URGENCY_HORIZON_7D_SECONDS,
     )
@@ -723,7 +729,22 @@ def _probe_codex_dir(
     else:
         ev_ts, fp, rl = latest_event
         p5, r5, p7, r7 = _extract_codex_windows(rl, now)
-        ev = evaluate_window_quota(p5, p7, five_hour_resets_at=r5, seven_day_resets_at=r7, now=now)
+        if account == "codex-2":
+            ev = evaluate_window_quota(
+                p5,
+                p7,
+                five_hour_resets_at=r5,
+                seven_day_resets_at=r7,
+                now=now,
+                hard_exclude_5h_pct=CODEX2_HARD_EXCLUDE_5H_PCT,
+                hard_exclude_7d_pct=CODEX2_HARD_EXCLUDE_7D_PCT,
+            )
+            if ev["excluded"] and ev["exclude_reason"]:
+                ev["exclude_reason"] = (
+                    f"codex-2 {ev['exclude_reason']} (reserve >={CODEX2_MIN_REMAINING_PCT:.0f}% remaining)"
+                )
+        else:
+            ev = evaluate_window_quota(p5, p7, five_hour_resets_at=r5, seven_day_resets_at=r7, now=now)
         weight, excluded, reason = ev["weight"], ev["excluded"], ev["exclude_reason"]
         status = "excluded" if excluded else ("degraded" if weight < 1.0 else "ok")
         entry = {
@@ -1321,6 +1342,9 @@ def collect_all_quotas(
             "penalty_start_pct": PENALTY_START_PCT,
             "hard_exclude_5h_pct": HARD_EXCLUDE_5H_PCT,
             "hard_exclude_7d_pct": HARD_EXCLUDE_7D_PCT,
+            "codex2_min_remaining_pct": CODEX2_MIN_REMAINING_PCT,
+            "codex2_hard_exclude_5h_pct": CODEX2_HARD_EXCLUDE_5H_PCT,
+            "codex2_hard_exclude_7d_pct": CODEX2_HARD_EXCLUDE_7D_PCT,
             "time_to_reset_weighting": True,
             "urgency_horizon_5h_hours": URGENCY_HORIZON_5H_SECONDS / 3600.0,
             "urgency_horizon_7d_hours": URGENCY_HORIZON_7D_SECONDS / 3600.0,

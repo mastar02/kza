@@ -36,8 +36,11 @@
 - En Mac (`herdr-app` + `hc`), los especialistas se abren en worktrees aislados
   (`~/.herdr/worktrees/kza/<alias>`) mediante `scripts/kza_seat.py`, con
   enrutamiento dinámico ponderado por cuotas vía `scripts/kza_router.py`
-  (`gpt-6-luna`) y `scripts/kza_quota.py`. Jamás tocar terminales, templates
-  (`tu-*`, `gsm-*`) ni worktrees de otros proyectos.
+  (`gpt-6-luna`) y `scripts/kza_quota.py`. **Regla de cuota `codex-2`:** nunca
+  usar `codex-2` por debajo del **30% de cuota restante** (exclusión dura
+  automática al alcanzar `>= 70%` de uso en 5h o 7d) para preservar la
+  suscripción del compañero. Jamás tocar terminales, templates (`tu-*`, `gsm-*`)
+  ni worktrees de otros proyectos.
 - Las pruebas que requieran interacción con la PC, mediante el navegador o
   aplicaciones de escritorio (rol `kza-ui`), se delegan a un especialista
   seleccionado dinámicamente vía `scripts/kza_router.py` según capacidades,

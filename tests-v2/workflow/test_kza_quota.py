@@ -672,3 +672,62 @@ def test_time_to_reset_weighting_conserves_early_burn_and_prioritizes_expiring_q
     assert q_tie.details["selected_account"] == "codex"
     assert q_tie.weight == 1.0
     assert q_tie.reset_urgency > 0.80
+
+
+def test_codex2_hard_excluded_below_30_pct_remaining(tmp_path: Path) -> None:
+    """codex-2 must never be used once remaining quota drops to <=30% (>=70% used on 5h or 7d)."""
+    now = 1_800_000_000.0
+    d1 = tmp_path / "c1" / "2026" / "11" / "26"
+    d2 = tmp_path / "c2" / "2026" / "11" / "26"
+    d1.mkdir(parents=True)
+    d2.mkdir(parents=True)
+
+    def write_usage(folder: Path, fname: str, *, p5: float | None = None, r5: float | None = None, p7: float | None = None, r7: float | None = None) -> None:
+        rl: dict[str, object] = {"limit_id": "codex"}
+        if p5 is not None:
+            rl["primary"] = {"used_percent": p5, "window_minutes": 300, "resets_at": r5 or (now + 3600.0)}
+        if p7 is not None:
+            key = "secondary" if "primary" in rl else "primary"
+            rl[key] = {"used_percent": p7, "window_minutes": 10080, "resets_at": r7 or (now + 3 * 86400.0)}
+        (folder / fname).write_text(json.dumps({"timestamp": now - 10, "payload": {"rate_limits": rl}}) + "\n", encoding="utf-8")
+
+    # 1. codex-2 at 69.9% 7d (30.1% remaining) is still eligible, while codex at 75% is also eligible.
+    write_usage(d1, "s1.jsonl", p7=85.0)
+    write_usage(d2, "s2.jsonl", p7=69.9)
+    q_edge = kza_quota.probe_codex(sessions_dirs={"codex": tmp_path / "c1", "codex-2": tmp_path / "c2"}, now=now)
+    c2_edge = next(a for a in q_edge.details["accounts"] if a["account"] == "codex-2")
+    assert c2_edge["excluded"] is False
+    assert c2_edge["weight"] > 0.0
+
+    # 2. codex-2 at 70.0% 7d (30.0% remaining), even with imminent reset in 30m, MUST be hard-excluded;
+    #    primary codex at 75.0% stays eligible and is selected instead.
+    write_usage(d1, "s1.jsonl", p7=75.0)
+    write_usage(d2, "s2.jsonl", p7=70.0, r7=now + 1800.0)
+    q_7d = kza_quota.probe_codex(sessions_dirs={"codex": tmp_path / "c1", "codex-2": tmp_path / "c2"}, now=now)
+    c2_7d = next(a for a in q_7d.details["accounts"] if a["account"] == "codex-2")
+    assert c2_7d["excluded"] is True
+    assert c2_7d["weight"] == 0.0
+    assert c2_7d["reset_urgency"] == 0.0
+    assert "codex-2" in (c2_7d["exclude_reason"] or "")
+    assert "30%" in (c2_7d["exclude_reason"] or "")
+    assert q_7d.excluded is False
+    assert q_7d.details["selected_account"] == "codex"
+    assert q_7d.details["selected_cli"] == "codex"
+
+    # 3. codex-2 at 70.0% 5h (even with low 10% 7d) MUST also be hard-excluded and fail over to codex.
+    write_usage(d1, "s1.jsonl", p5=40.0, p7=75.0)
+    write_usage(d2, "s2.jsonl", p5=70.0, r5=now + 1200.0, p7=10.0)
+    q_5h = kza_quota.probe_codex(sessions_dirs={"codex": tmp_path / "c1", "codex-2": tmp_path / "c2"}, now=now)
+    c2_5h = next(a for a in q_5h.details["accounts"] if a["account"] == "codex-2")
+    assert c2_5h["excluded"] is True
+    assert c2_5h["weight"] == 0.0
+    assert q_5h.excluded is False
+    assert q_5h.details["selected_account"] == "codex"
+
+    # 4. If primary codex is also >=95% 7d while codex-2 is >=70%, entire codex runtime is excluded.
+    write_usage(d1, "s1.jsonl", p7=95.0)
+    write_usage(d2, "s2.jsonl", p7=70.0)
+    q_both = kza_quota.probe_codex(sessions_dirs={"codex": tmp_path / "c1", "codex-2": tmp_path / "c2"}, now=now)
+    assert q_both.excluded is True
+    assert q_both.weight == 0.0
+
