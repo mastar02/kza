@@ -34,7 +34,10 @@ const AMBIENT_COOLDOWN: Duration = Duration::from_secs(3);
 const FOLLOW_UP_WINDOW: Duration = Duration::from_secs(12);
 const FOLLOW_UP_MIN_VOICE_FRAMES: usize = 3;
 const FOLLOW_UP_MAX_FRAMES: usize = 62; // Just under the 5 s command cap.
-const WAKE_PREROLL_FRAMES: usize = 10; // 800 ms pre-roll so continuous speech after "Nexa" is not clipped.
+const WAKE_PREROLL_FRAMES: usize = 15; // 1.2 s pre-roll so continuous commands finishing as wake fires are preserved.
+const PREROLL_MIN_VOICED_FRAMES: usize = 3; // 240 ms of speech inside pre-roll.
+const PREROLL_VAD_THRESHOLD: f32 = 0.35;
+const PREROLL_RMS_RATIO: f32 = 1.5;
 const NEAR_WAKE_LOG_MIN: f32 = 0.15;
 const NEAR_WAKE_LOG_INTERVAL: Duration = Duration::from_secs(3);
 
@@ -589,7 +592,8 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
 
     let mut noise = NoiseFloorTracker::default();
     let mut guard = AmbientGuard::default();
-    let mut preroll: VecDeque<[f32; FRAME_SAMPLES]> = VecDeque::with_capacity(WAKE_PREROLL_FRAMES);
+    let mut preroll: VecDeque<([f32; FRAME_SAMPLES], bool)> =
+        VecDeque::with_capacity(WAKE_PREROLL_FRAMES);
     let mut near_wake_logged_at: Option<Instant> = None;
     let mut current: Option<(PostWakeEndpoint, Recording, WakeClaim)> = None;
     let mut non_wake = None::<NonWakeSegment>;
@@ -704,7 +708,11 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
         }
         if score >= *wake_threshold && guard.allow_wake(now, score) {
             let floor = noise.floor();
-            let endpoint = PostWakeEndpoint::new(floor);
+            let preroll_voiced_frames = preroll.iter().filter(|(_, voiced)| *voiced).count();
+            let endpoint = PostWakeEndpoint::with_preroll_speech(
+                floor,
+                preroll_voiced_frames >= PREROLL_MIN_VOICED_FRAMES,
+            );
             tracing::info!(
                 room_id = %room.room_id,
                 score,
@@ -713,12 +721,13 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 floor,
                 level_threshold = endpoint.level_threshold(),
                 preroll_frames = preroll.len(),
+                preroll_voiced_frames,
                 "wake word detected"
             );
             non_wake = None;
             follow_up_until = None;
             let mut recording = Recording::new(UtteranceKind::Command, score);
-            for prior in preroll.drain(..) {
+            for (prior, _) in preroll.drain(..) {
                 recording.samples.extend_from_slice(&prior);
             }
             recording.samples.extend_from_slice(&frame);
@@ -747,7 +756,9 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             if preroll.len() == WAKE_PREROLL_FRAMES {
                 preroll.pop_front();
             }
-            preroll.push_back(frame);
+            let frame_voiced =
+                speech >= PREROLL_VAD_THRESHOLD || rms >= noise.floor() * PREROLL_RMS_RATIO;
+            preroll.push_back((frame, frame_voiced));
         }
 
         let follow_up =

@@ -36,11 +36,14 @@ pub(crate) enum Verb {
 
 pub(crate) fn action(word: &str) -> Option<Verb> {
     Some(match word {
-        "prende" | "prenda" | "prendan" | "prender" | "prendela" | "prendelo" | "prendeme"
-        | "encende" | "encender" | "enciende" | "encienda" | "encendela" | "encendelo"
-        | "activa" | "activar" | "active" | "ilumina" => Verb::On,
-        "apaga" | "apagar" | "apague" | "apaguen" | "apagala" | "apagalo" | "apagame" | "corta"
-        | "corte" | "desactiva" | "desactivar" | "desactive" => Verb::Off,
+        "prende" | "prenda" | "prendan" | "prender" | "prendela" | "prendelo" | "prenderla"
+        | "prenderlo" | "prendeme" | "encende" | "encender" | "enciende" | "encienda"
+        | "encendela" | "encendelo" | "encenderla" | "encenderlo" | "activa" | "activar"
+        | "active" | "ilumina" => Verb::On,
+        "apaga" | "apagar" | "apague" | "apaguen" | "apagala" | "apagalo" | "apagarla"
+        | "apagarlo" | "apagame" | "corta" | "corte" | "desactiva" | "desactivar" | "desactive" => {
+            Verb::Off
+        }
         "pone" | "poner" | "pon" | "ponga" | "poneme" | "ponela" | "ponelo" | "ajusta"
         | "ajustar" | "ajuste" | "deja" | "dejar" | "deje" | "configura" | "configurar"
         | "configure" | "cambia" | "cambiar" | "cambie" => Verb::Set,

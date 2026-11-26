@@ -772,8 +772,10 @@ fn parses_room_as_light_shorthand_and_trailing_wake_word() {
         ("prendé el escritorio al 50%", Operation::On, "escritorio"),
         ("apagalo", Operation::Off, "escritorio"),
         ("apagala", Operation::Off, "escritorio"),
+        ("apagarlo", Operation::Off, "escritorio"),
         ("prendelo", Operation::On, "escritorio"),
         ("prendela", Operation::On, "escritorio"),
+        ("prenderlo", Operation::On, "escritorio"),
         ("prendeme el escritorio", Operation::On, "escritorio"),
         ("apagame el escritorio", Operation::Off, "escritorio"),
     ] {

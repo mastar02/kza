@@ -344,7 +344,10 @@ impl CommandAcceptanceGate {
             }
             return (Some(NoisePhrase(phrase)), false);
         }
-        if FILLERS.contains(&normalized.as_str()) {
+        if FILLERS.contains(&normalized.as_str())
+            || crate::normalize::WAKE_WORDS.contains(&normalized.as_str())
+            || self.wakes.iter().any(|wake| wake == &normalized)
+        {
             return (Some(FillerWord), false);
         }
         let mut tokens = normalized.split_whitespace();

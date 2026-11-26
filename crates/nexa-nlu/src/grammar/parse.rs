@@ -43,7 +43,18 @@ pub(crate) fn parse_core(core: &str, source_room: Option<&str>) -> GrammarMatch 
     let (noun, tail) = rest.split_once(' ').unwrap_or((rest, ""));
     let clitic_on_off = matches!(
         head,
-        "prendela" | "prendelo" | "encendela" | "encendelo" | "apagala" | "apagalo"
+        "prendela"
+            | "prendelo"
+            | "prenderla"
+            | "prenderlo"
+            | "encendela"
+            | "encendelo"
+            | "encenderla"
+            | "encenderlo"
+            | "apagala"
+            | "apagalo"
+            | "apagarla"
+            | "apagarlo"
     );
     let clitic_level = matches!(
         head,

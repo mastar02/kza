@@ -7,8 +7,11 @@ use crate::dsp::{NOISE_FLOOR_DEFAULT, NOISE_FLOOR_MAX, NOISE_FLOOR_MIN};
 const MIN_LISTEN: Duration = Duration::from_secs(1);
 const MAX_CAPTURE: Duration = Duration::from_secs(5);
 const NO_SPEECH_TIMEOUT: Duration = Duration::from_millis(2_500);
+const PREROLL_ONLY_SETTLE: Duration = Duration::from_millis(1_200);
 const MIN_VOICE: Duration = Duration::from_millis(240);
+const PREROLL_MIN_POST_VOICE: Duration = Duration::from_millis(80);
 const LEVEL_END_SILENCE: Duration = Duration::from_millis(300);
+const PREROLL_END_SILENCE: Duration = Duration::from_millis(480);
 const VAD_END_SILENCE: Duration = Duration::from_millis(600);
 const STALL_MARGIN: Duration = Duration::from_secs(1);
 const NOISE_RATIO: f32 = 1.8;
@@ -60,6 +63,7 @@ pub struct PostWakeEndpoint {
     initial_floor: f32,
     current_floor: f32,
     level_threshold: f32,
+    preroll_voiced: bool,
     peak_voice_rms: f32,
     last_rms: f32,
     elapsed: Duration,
@@ -78,6 +82,13 @@ pub struct PostWakeEndpoint {
 impl PostWakeEndpoint {
     #[must_use]
     pub fn new(noise_floor: f32) -> Self {
+        Self::with_preroll_speech(noise_floor, false)
+    }
+
+    /// Create an endpoint aware of whether the pre-wake buffer already captured voiced speech
+    /// (common when continuous commands like "Nexa, apagalo" finish as OpenWakeWord fires).
+    #[must_use]
+    pub fn with_preroll_speech(noise_floor: f32, preroll_voiced: bool) -> Self {
         let floor = if noise_floor.is_finite() {
             noise_floor.clamp(NOISE_FLOOR_MIN, NOISE_FLOOR_MAX)
         } else {
@@ -87,6 +98,7 @@ impl PostWakeEndpoint {
             initial_floor: floor,
             current_floor: floor,
             level_threshold: floor * NOISE_RATIO,
+            preroll_voiced,
             peak_voice_rms: 0.0,
             last_rms: 0.0,
             elapsed: Duration::ZERO,
@@ -171,26 +183,46 @@ impl PostWakeEndpoint {
             }
         }
 
-        let level_quiet = if self.level_voice >= MIN_VOICE {
+        let min_voice = if self.preroll_voiced {
+            PREROLL_MIN_POST_VOICE
+        } else {
+            MIN_VOICE
+        };
+        let level_end_silence = if self.preroll_voiced {
+            PREROLL_END_SILENCE
+        } else {
+            LEVEL_END_SILENCE
+        };
+        let level_quiet = if self.level_voice >= min_voice {
             // Once RMS confirmed the speech, disregard VAD hangover during trailing silence.
-            self.elapsed - self.last_level_voice >= LEVEL_END_SILENCE
+            self.elapsed - self.last_level_voice >= level_end_silence
         } else {
             self.elapsed - self.last_voice >= VAD_END_SILENCE
         };
         // On ATTNS-gated channels (e.g. XVF3800 ch0 Conference), AGC ramp-up during speech can
         // keep post-speech room tone above a squelched pre-wake floor even after Silero confirms
         // silence and RMS has dropped significantly below the speaker's peak.
-        let vad_agc_quiet = self.vad_voice >= MIN_VOICE
+        let vad_agc_quiet = self.vad_voice >= min_voice
             && self.peak_voice_rms >= VAD_AGC_MIN_PEAK_RMS
             && self.elapsed - self.last_vad_voice >= VAD_END_SILENCE
             && self.elapsed - self.last_strong_level_voice >= LEVEL_END_SILENCE;
         let quiet = level_quiet || vad_agc_quiet;
 
-        if self.voice >= MIN_VOICE && self.elapsed >= MIN_LISTEN && quiet {
+        if self.voice >= min_voice && self.elapsed >= MIN_LISTEN && quiet {
+            self.decision = EndpointDecision::Complete;
+        } else if self.preroll_voiced
+            && self.voice < PREROLL_MIN_POST_VOICE
+            && self.elapsed >= PREROLL_ONLY_SETTLE
+        {
+            // Fast continuous command finished inside the pre-roll right as OpenWakeWord fired;
+            // wait 1.2s for any follow-on words, then dispatch the pre-roll + post-wake clip.
             self.decision = EndpointDecision::Complete;
         } else if self.elapsed >= MAX_CAPTURE {
             self.close_at_max();
-        } else if self.voice < MIN_VOICE && self.elapsed >= NO_SPEECH_TIMEOUT {
+        } else if self.voice < MIN_VOICE
+            && !self.preroll_voiced
+            && self.elapsed >= NO_SPEECH_TIMEOUT
+        {
             self.decision = EndpointDecision::NoSpeech;
         }
         self.decision
@@ -304,5 +336,31 @@ mod tests {
             }
         }
         assert_eq!(decision, EndpointDecision::NoSpeech);
+    }
+
+    #[test]
+    fn preroll_voiced_completes_fast_continuous_commands() {
+        let frame = Duration::from_millis(80);
+        // Case 1: fast command ("Nexa, apagalo") finished right as wake fired (0 ms post-wake voice).
+        let mut finished_in_preroll = PostWakeEndpoint::with_preroll_speech(0.0046, true);
+        let mut decision = EndpointDecision::Listening;
+        for _ in 0..16 {
+            decision = finished_in_preroll.observe(0.0046, Some(0.01), frame);
+            if decision != EndpointDecision::Listening {
+                break;
+            }
+        }
+        assert_eq!(decision, EndpointDecision::Complete);
+
+        // Case 2: only the final 160 ms syllable arrived after wake fired.
+        let mut tail_only = PostWakeEndpoint::with_preroll_speech(0.0046, true);
+        assert_eq!(
+            tail_only.observe(0.012, Some(0.8), Duration::from_millis(160)),
+            EndpointDecision::Listening
+        );
+        assert_eq!(
+            tail_only.observe(0.0046, Some(0.01), Duration::from_millis(840)),
+            EndpointDecision::Complete
+        );
     }
 }
