@@ -59,7 +59,7 @@ weather_entity = "weather.forecast_home"
 [llm]
 fast_router_url = "http://127.0.0.1:8101/v1"
 fast_router_model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-fast_router_timeout_ms = 3500
+fast_router_timeout_ms = 5000
 cloud_gateway_url = "http://127.0.0.1:8200/v1"
 cloud_model = "grok-4.20-non-reasoning"
 cloud_timeout_ms = 60000

@@ -1,13 +1,26 @@
-use std::{io, sync::Arc, time::Duration};
+use std::{
+    io,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use eventsource_stream::{EventStreamError, Eventsource};
 use futures_util::StreamExt;
 use nexa_config::LlmConfig;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout, timeout_at};
 
 use crate::{CancellationToken, CloudConsentGate, ThinkTagStripper};
+
+const SYSTEM_PROMPT: &str =
+    "Sos Nexa, un asistente doméstico. Respondé en español, con claridad y brevedad.";
+const LOCAL_STREAM_BUDGET: Duration = Duration::from_secs(25);
+const CLOUD_STREAM_BUDGET: Duration = Duration::from_secs(60);
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct ApiKey(String);
@@ -27,12 +40,13 @@ impl std::fmt::Debug for ApiKey {
 #[derive(Clone, Debug)]
 pub struct Endpoint {
     pub id: String,
-    /// Full OpenAI-compatible completions or chat/completions URL.
+    /// Full OpenAI-compatible chat/completions URL.
     pub url: String,
     pub api_key: Option<ApiKey>,
     pub model: String,
     pub cloud: bool,
     pub priority: u32,
+    /// Time from starting the request to receiving the first generated content.
     pub timeout: Duration,
     pub idle_timeout: Duration,
 }
@@ -43,7 +57,7 @@ impl Endpoint {
             Self {
                 id: "fast_router_7b".into(),
                 url: format!(
-                    "{}/completions",
+                    "{}/chat/completions",
                     config.fast_router_url.trim_end_matches('/')
                 ),
                 api_key: None,
@@ -51,7 +65,7 @@ impl Endpoint {
                 cloud: false,
                 priority: 1,
                 timeout: Duration::from_millis(config.fast_router_timeout_ms),
-                idle_timeout: Duration::from_secs(3),
+                idle_timeout: STREAM_IDLE_TIMEOUT,
             },
             Self {
                 id: "reasoner_cloud".into(),
@@ -64,9 +78,17 @@ impl Endpoint {
                 cloud: true,
                 priority: 2,
                 timeout: Duration::from_millis(config.cloud_timeout_ms),
-                idle_timeout: Duration::from_secs(25),
+                idle_timeout: STREAM_IDLE_TIMEOUT,
             },
         ]
+    }
+
+    fn stream_budget(&self) -> Duration {
+        self.timeout.max(if self.cloud {
+            CLOUD_STREAM_BUDGET
+        } else {
+            LOCAL_STREAM_BUDGET
+        })
     }
 }
 
@@ -76,8 +98,10 @@ pub enum LlmError {
     Consent,
     #[error("generation cancelled")]
     Cancelled,
-    #[error("endpoint deadline exceeded")]
+    #[error("first token deadline exceeded")]
     Timeout,
+    #[error("total stream deadline exceeded")]
+    StreamTimeout,
     #[error("stream idle deadline exceeded")]
     Idle,
     #[error("endpoint returned HTTP {0}")]
@@ -97,8 +121,33 @@ impl LlmError {
         match self {
             Self::Status(s) => s.is_server_error() || matches!(s.as_u16(), 408 | 429),
             Self::Http(e) => !e.is_builder(),
-            Self::Timeout | Self::Idle | Self::Protocol => true,
+            Self::Timeout | Self::StreamTimeout | Self::Idle | Self::Protocol => true,
             _ => false,
+        }
+    }
+
+    pub(crate) fn affects_cooldown(&self) -> bool {
+        match self {
+            Self::Status(status) => status.is_server_error(),
+            Self::Http(error) => error.is_connect(),
+            Self::Timeout => true,
+            _ => false,
+        }
+    }
+
+    /// A bounded status label safe to log without including provider details.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Consent => "consent_denied",
+            Self::Cancelled => "cancelled",
+            Self::Timeout => "first_token_timeout",
+            Self::StreamTimeout => "stream_timeout",
+            Self::Idle => "idle_timeout",
+            Self::Status(_) => "http_status",
+            Self::Http(_) => "http_transport",
+            Self::Protocol => "protocol",
+            Self::Unavailable => "unavailable",
+            Self::Io(_) => "io",
         }
     }
 }
@@ -121,7 +170,6 @@ struct Usage {
 #[derive(Deserialize)]
 struct Choice {
     delta: Option<Delta>,
-    text: Option<String>,
 }
 #[derive(Deserialize)]
 struct Delta {
@@ -145,8 +193,22 @@ impl OpenAiClient {
         prompt: &str,
         max_tokens: u32,
         cancel: &CancellationToken,
-        mut emit: impl FnMut(&str),
+        emit: impl FnMut(&str),
     ) -> Result<Option<u64>, LlmError> {
+        let (result, _) = self
+            .stream_attempt(endpoint, prompt, max_tokens, cancel, emit)
+            .await;
+        result
+    }
+
+    pub(crate) async fn stream_attempt(
+        &self,
+        endpoint: &Endpoint,
+        prompt: &str,
+        max_tokens: u32,
+        cancel: &CancellationToken,
+        mut emit: impl FnMut(&str),
+    ) -> (Result<Option<u64>, LlmError>, bool) {
         let check = || {
             if cancel.is_cancelled() {
                 Err(LlmError::Cancelled)
@@ -156,15 +218,22 @@ impl OpenAiClient {
                 Ok(())
             }
         };
-        check()?;
+        // Shared by the HTTP chunk reader and SSE decoder within this attempt.
+        let first_token = AtomicBool::new(false);
+        let started = Instant::now();
+        let first_token_deadline = started + endpoint.timeout;
         let request = async {
-            let mut body = json!({"model":endpoint.model,"stream":true,"max_tokens":max_tokens,
-                "stream_options":{"include_usage":true}});
-            if endpoint.url.ends_with("/chat/completions") {
-                body["messages"] = json!([{"role":"user","content":prompt}]);
-            } else {
-                body["prompt"] = json!(prompt);
-            }
+            check()?;
+            let body = json!({
+                "model": endpoint.model,
+                "stream": true,
+                "max_tokens": max_tokens,
+                "stream_options": {"include_usage": true},
+                "messages": [
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ]
+            });
             let mut post = self.http.post(&endpoint.url).json(&body);
             if let Some(key) = &endpoint.api_key
                 && !key.0.is_empty()
@@ -173,17 +242,26 @@ impl OpenAiClient {
             }
             let send = post.send();
             tokio::pin!(send);
-            let mut response = std::future::poll_fn(|cx| {
+            let gated_send = std::future::poll_fn(|cx| {
                 let _admission = endpoint.cloud.then(|| self.gate.admit()).transpose()?;
                 send.as_mut().poll(cx).map_err(LlmError::Http)
-            })
-            .await?;
+            });
+            let mut response = timeout_at(first_token_deadline, gated_send)
+                .await
+                .map_err(|_| LlmError::Timeout)??;
             if !response.status().is_success() {
                 return Err(LlmError::Status(response.status()));
             }
+            let chunk_has_started = &first_token;
             let chunks = async_stream::try_stream! {
-                while let Some(chunk) = timeout(endpoint.idle_timeout, response.chunk())
-                    .await.map_err(|_| LlmError::Idle)?? {
+                loop {
+                    let chunk = if chunk_has_started.load(Ordering::Relaxed) {
+                        timeout(endpoint.idle_timeout, response.chunk())
+                            .await.map_err(|_| LlmError::Idle)??
+                    } else {
+                        response.chunk().await?
+                    };
+                    let Some(chunk) = chunk else { break };
                     yield chunk;
                 }
             };
@@ -191,7 +269,17 @@ impl OpenAiClient {
             tokio::pin!(events);
             let mut stripper = ThinkTagStripper::default();
             let mut tokens = None;
-            while let Some(event) = events.next().await {
+            loop {
+                let event = if first_token.load(Ordering::Relaxed) {
+                    events.next().await
+                } else {
+                    timeout_at(first_token_deadline, events.next())
+                        .await
+                        .map_err(|_| LlmError::Timeout)?
+                };
+                let Some(event) = event else {
+                    return Err(LlmError::Protocol);
+                };
                 check()?;
                 let data = event
                     .map_err(|error| match error {
@@ -214,21 +302,31 @@ impl OpenAiClient {
                     .choices
                     .into_iter()
                     .next()
-                    .and_then(|c| c.text.or_else(|| c.delta.and_then(|d| d.content)))
+                    .and_then(|choice| choice.delta?.content)
+                    .filter(|content| !content.is_empty())
                 {
+                    first_token.store(true, Ordering::Relaxed);
                     let visible = stripper.push(&delta);
                     if !visible.is_empty() {
                         emit(&visible);
                     }
                 }
             }
-            Err(LlmError::Protocol)
         };
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(LlmError::Cancelled),
             _ = self.gate.withdrawn.cancelled(), if endpoint.cloud => Err(LlmError::Consent),
-            result = timeout(endpoint.timeout, request) => result.map_err(|_| LlmError::Timeout)?,
-        }
+            result = timeout_at(started + endpoint.stream_budget(), request) => {
+                result.unwrap_or_else(|_| {
+                    if first_token.load(Ordering::Relaxed) {
+                        Err(LlmError::StreamTimeout)
+                    } else {
+                        Err(LlmError::Timeout)
+                    }
+                })
+            },
+        };
+        (result, first_token.load(Ordering::Relaxed))
     }
 }

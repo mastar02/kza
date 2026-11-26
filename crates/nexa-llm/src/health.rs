@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use crate::LlmError;
+use crate::{CancellationToken, LlmError};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use tokio::{sync::Mutex, time::Instant};
@@ -111,9 +111,21 @@ impl Cooldowns {
             .map_or(0, |entry| entry.saved.failures)
     }
 
-    pub async fn update(&self, id: &str, failed: bool) -> io::Result<()> {
+    pub async fn clear(&self, id: &str) -> io::Result<()> {
+        self.update(id, None).await
+    }
+
+    pub async fn record_failure(&self, id: &str, cancel: &CancellationToken) -> io::Result<()> {
+        self.update(id, Some(cancel)).await
+    }
+
+    async fn update(&self, id: &str, failure: Option<&CancellationToken>) -> io::Result<()> {
         let mut state = self.state.clone().lock_owned().await;
-        let changed = if failed {
+        let changed = if let Some(cancel) = failure {
+            // A cancellation may have arrived while waiting for a prior write.
+            if cancel.is_cancelled() {
+                return Ok(());
+            }
             let failures = state
                 .entries
                 .get(id)

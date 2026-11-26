@@ -43,7 +43,7 @@ impl FailoverRouter {
     }
 
     pub async fn clear_cooldown(&self, id: &str) -> Result<(), LlmError> {
-        Ok(self.health.update(id, false).await?)
+        Ok(self.health.clear(id).await?)
     }
 
     pub async fn cooldown_remaining(&self, id: &str) -> Duration {
@@ -71,29 +71,57 @@ impl FailoverRouter {
         prompt: &str,
         max_tokens: u32,
         cancel: &CancellationToken,
+        emit: impl FnMut(&str),
+    ) -> Result<&str, LlmError> {
+        self.stream_endpoints(prompt, max_tokens, cancel, false, emit)
+            .await
+    }
+
+    /// Generate with local endpoints only, even when cloud egress is authorized.
+    pub async fn stream_local_only(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+        cancel: &CancellationToken,
+        emit: impl FnMut(&str),
+    ) -> Result<&str, LlmError> {
+        self.stream_endpoints(prompt, max_tokens, cancel, true, emit)
+            .await
+    }
+
+    async fn stream_endpoints(
+        &self,
+        prompt: &str,
+        max_tokens: u32,
+        cancel: &CancellationToken,
+        local_only: bool,
         mut emit: impl FnMut(&str),
     ) -> Result<&str, LlmError> {
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
         let mut last = LlmError::Unavailable;
-        for ep in &self.endpoints {
-            if cancel.is_cancelled() {
-                return Err(LlmError::Cancelled);
-            }
+        for ep in self.endpoints.iter().filter(|ep| !local_only || !ep.cloud) {
             if !self.health.remaining(&ep.id).await.is_zero() {
                 continue;
             }
             let start = Instant::now();
+            // Filtered reasoning can establish endpoint progress before the caller sees text.
             let mut visible = false;
-            let result = self
+            let (result, first_token) = self
                 .client
-                .stream(ep, prompt, max_tokens, cancel, |text| {
+                .stream_attempt(ep, prompt, max_tokens, cancel, |text| {
                     visible = true;
                     emit(text);
                 })
                 .await;
+            if cancel.is_cancelled() {
+                return Err(LlmError::Cancelled);
+            }
             match result {
                 Ok(tokens) => {
                     let elapsed = start.elapsed();
-                    self.record_health(&ep.id, false).await;
+                    Self::log_health_write(self.health.clear(&ep.id).await);
                     self.metrics
                         .lock()
                         .await
@@ -103,23 +131,33 @@ impl FailoverRouter {
                     return Ok(&ep.id);
                 }
                 Err(e) => {
-                    if e.retryable() {
-                        self.record_health(&ep.id, true).await;
-                    } else if !matches!(e, LlmError::Consent) {
-                        return Err(e);
+                    if !matches!(e, LlmError::Consent) {
+                        let http_status = match &e {
+                            LlmError::Status(status) => Some(status.as_u16()),
+                            _ => None,
+                        };
+                        tracing::warn!(endpoint_id = %ep.id, latency_ms = start.elapsed().as_millis(),
+                            status = e.code(), http_status, first_token, "LLM endpoint failed");
                     }
-                    if visible {
+                    if !first_token && e.affects_cooldown() {
+                        Self::log_health_write(self.health.record_failure(&ep.id, cancel).await);
+                    }
+                    if visible || !(e.retryable() || matches!(e, LlmError::Consent)) {
                         return Err(e);
                     }
                     last = e;
                 }
             }
         }
-        Err(last)
+        if cancel.is_cancelled() {
+            Err(LlmError::Cancelled)
+        } else {
+            Err(last)
+        }
     }
 
-    async fn record_health(&self, id: &str, failed: bool) {
-        if let Err(error) = self.health.update(id, failed).await {
+    fn log_health_write(result: std::io::Result<()>) {
+        if let Err(error) = result {
             tracing::warn!(kind = ?error.kind(), "Could not persist LLM cooldown state");
         }
     }

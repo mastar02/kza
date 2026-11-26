@@ -8,12 +8,12 @@ use proptest::prelude::*;
 use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpListener,
+    net::{TcpListener, TcpStream},
     time::{advance, pause},
 };
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
-    matchers::{body_partial_json, method, path},
+    matchers::{BodyPartialJsonMatcher, body_partial_json, method, path},
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn Error>>;
@@ -22,7 +22,7 @@ const SEC: Duration = Duration::from_secs(1);
 fn endpoint(base: &str, cloud: bool) -> Endpoint {
     Endpoint {
         id: if cloud { "cloud" } else { "fast" }.into(),
-        url: format!("{base}/v1/{}completions", if cloud { "chat/" } else { "" }),
+        url: format!("{base}/v1/chat/completions"),
         api_key: None,
         model: "test".into(),
         cloud,
@@ -73,9 +73,21 @@ async fn router(eps: Vec<Endpoint>, path: Option<PathBuf>) -> Result<FailoverRou
     Ok(FailoverRouter::new(eps, Arc::new(CloudConsentGate::new(true)), path).await?)
 }
 
+fn chat_request(prompt: &str) -> BodyPartialJsonMatcher {
+    body_partial_json(json!({
+        "model": "test",
+        "stream": true,
+        "stream_options": {"include_usage": true},
+        "messages": [
+            {"role": "system", "content": "Sos Nexa, un asistente doméstico. Respondé en español, con claridad y brevedad."},
+            {"role": "user", "content": prompt},
+        ],
+    }))
+}
+
 async fn cloud_success(server: &MockServer) {
     Mock::given(method("POST")).and(path("/v1/chat/completions"))
-        .and(body_partial_json(json!({"stream":true,"messages":[{"role":"user","content":"hola"}]})))
+        .and(chat_request("hola"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
             "data: {\"choices\":[{\"delta\":{\"content\":\"sí<th\"}}]}\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ink>secreto</think>!\"}}]}\n\ndata: {\"choices\":[],\"usage\":{\"completion_tokens\":7}}\n\ndata: [DONE]\n\n", "text/event-stream"))
         .expect(1).mount(server).await;
@@ -97,8 +109,8 @@ async fn priority_503_failover_then_metrics_expire() -> Result {
     manual_clock();
     let fast = MockServer::start().await;
     let cloud = MockServer::start().await;
-    Mock::given(path("/v1/completions"))
-        .and(body_partial_json(json!({"prompt":"hola"})))
+    Mock::given(path("/v1/chat/completions"))
+        .and(chat_request("hola"))
         .respond_with(ResponseTemplate::new(503))
         .expect(1)
         .mount(&fast)
@@ -186,7 +198,7 @@ async fn persistence_failure_preserves_failover_and_success() -> Result {
     manual_clock();
     let fast = MockServer::start().await;
     let cloud = MockServer::start().await;
-    let failure = Mock::given(path("/v1/completions"))
+    let failure = Mock::given(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(503))
         .expect(1)
         .mount_as_scoped(&fast)
@@ -214,9 +226,9 @@ async fn persistence_failure_preserves_failover_and_success() -> Result {
     assert_eq!(router.cooldown_remaining("fast").await, 60 * SEC);
 
     drop(failure);
-    Mock::given(path("/v1/completions"))
+    Mock::given(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            "data: {\"choices\":[{\"text\":\"local\"}]}\n\ndata: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"local\"}}]}\n\ndata: [DONE]\n\n",
             "text/event-stream",
         ))
         .expect(2)
@@ -303,7 +315,7 @@ async fn denied_and_withdrawn_cloud_send_zero_requests() -> Result {
 }
 
 #[tokio::test]
-async fn total_deadline_fails_over() -> Result {
+async fn ttft_deadline_includes_wait_for_http_headers() -> Result {
     manual_clock();
     let socket = TcpListener::bind(("127.0.0.1", 0)).await?;
     let ep = endpoint(&format!("http://{}", socket.local_addr()?), false);
@@ -320,6 +332,7 @@ async fn total_deadline_fails_over() -> Result {
     let (open, result) = tokio::join!(stalled, r.stream("hola", 12, &cancel, |_| {}));
     let _socket = open?;
     assert_eq!(result?, "cloud");
+    assert_eq!(r.consecutive_errors("fast").await, 1);
     Ok(())
 }
 
@@ -339,7 +352,7 @@ async fn idle_after_visible_delta_preserves_partial_answer() -> Result {
     let stalled = async {
         let (mut client, _) = socket.accept().await?;
         client.read_u8().await?;
-        client.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"text\":\"ok\"}]}\n\n").await?;
+        client.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n").await?;
         delta.await?;
         advance(4 * SEC).await;
         Result::Ok(client)
@@ -357,6 +370,216 @@ async fn idle_after_visible_delta_preserves_partial_answer() -> Result {
     );
     let _socket = open?;
     assert!(matches!(result, Err(LlmError::Idle)));
+    assert_eq!(r.consecutive_errors("fast").await, 0);
+    assert_eq!(r.cooldown_remaining("fast").await, Duration::ZERO);
+    Ok(())
+}
+
+async fn open_sse(listener: &TcpListener) -> std::io::Result<TcpStream> {
+    let (mut socket, _) = listener.accept().await?;
+    socket.read_u8().await?;
+    socket
+        .write_all(
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
+        )
+        .await?;
+    Ok(socket)
+}
+
+async fn send_delta(socket: &mut TcpStream, text: &str) -> std::io::Result<()> {
+    let body = json!({"choices": [{"delta": {"content": text}}]});
+    socket
+        .write_all(format!("data: {body}\n\n").as_bytes())
+        .await
+}
+
+#[tokio::test]
+async fn role_only_frames_do_not_satisfy_first_token_deadline() -> Result {
+    manual_clock();
+    let socket = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let fast = endpoint(&format!("http://{}", socket.local_addr()?), false);
+    let r = router(vec![fast], None).await?;
+    let server = async {
+        let mut connection = open_sse(&socket).await?;
+        connection.write_all(b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\n").await?;
+        advance(9 * SEC).await;
+        assert_eq!(r.consecutive_errors("fast").await, 0);
+        advance(2 * SEC).await;
+        Result::Ok(connection)
+    };
+    let cancel = CancellationToken::new();
+    let (connection, result) = tokio::join!(server, r.stream("hola", 16, &cancel, |_| {}));
+    let _connection = connection?;
+    assert!(matches!(result, Err(LlmError::Timeout)));
+    assert_eq!(r.consecutive_errors("fast").await, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn generation_can_finish_after_first_token_deadline() -> Result {
+    manual_clock();
+    let socket = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let mut fast = endpoint(&format!("http://{}", socket.local_addr()?), false);
+    fast.timeout = SEC;
+    let r = router(vec![fast], None).await?;
+    let (seen, mut delta) = tokio::sync::mpsc::unbounded_channel();
+    let server = async {
+        let mut connection = open_sse(&socket).await?;
+        send_delta(&mut connection, "hola").await?;
+        assert_eq!(delta.recv().await.as_deref(), Some("hola"));
+        advance(2 * SEC).await;
+        send_delta(&mut connection, " mundo").await?;
+        connection.write_all(b"data: [DONE]\n\n").await?;
+        Result::Ok(connection)
+    };
+    let cancel = CancellationToken::new();
+    let (connection, result) = tokio::join!(
+        server,
+        r.stream("hola", 16, &cancel, move |text| {
+            let _ = seen.send(text.to_owned());
+        })
+    );
+    let _connection = connection?;
+    assert_eq!(result?, "fast");
+    assert_eq!(delta.recv().await.as_deref(), Some(" mundo"));
+    assert_eq!(r.consecutive_errors("fast").await, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn total_stream_budget_caps_active_stream_without_cooldown() -> Result {
+    manual_clock();
+    let socket = TcpListener::bind(("127.0.0.1", 0)).await?;
+    let mut fast = endpoint(&format!("http://{}", socket.local_addr()?), false);
+    fast.timeout = SEC;
+    fast.idle_timeout = 5 * SEC;
+    let r = router(vec![fast], None).await?;
+    let (seen, mut delta) = tokio::sync::mpsc::unbounded_channel();
+    let server = async {
+        let mut connection = open_sse(&socket).await?;
+        for _ in 0..7 {
+            send_delta(&mut connection, "hola").await?;
+            assert_eq!(delta.recv().await.as_deref(), Some("hola"));
+            advance(4 * SEC).await;
+        }
+        Result::Ok(connection)
+    };
+    let cancel = CancellationToken::new();
+    let (connection, result) = tokio::join!(
+        server,
+        r.stream("hola", 16, &cancel, move |text| {
+            let _ = seen.send(text.to_owned());
+        })
+    );
+    let _connection = connection?;
+    assert!(matches!(result, Err(LlmError::StreamTimeout)));
+    assert_eq!(r.consecutive_errors("fast").await, 0);
+    assert_eq!(r.cooldown_remaining("fast").await, Duration::ZERO);
+    Ok(())
+}
+
+#[tokio::test]
+async fn cancellation_before_or_after_first_token_never_penalizes_health() -> Result {
+    for after_token in [false, true] {
+        let socket = TcpListener::bind(("127.0.0.1", 0)).await?;
+        let fast = endpoint(&format!("http://{}", socket.local_addr()?), false);
+        let r = router(vec![fast], None).await?;
+        let cancel = CancellationToken::new();
+        let server = async {
+            let mut connection = open_sse(&socket).await?;
+            if after_token {
+                send_delta(&mut connection, "hola").await?;
+            } else {
+                cancel.cancel();
+            }
+            Result::Ok(connection)
+        };
+        let (connection, result) = tokio::join!(
+            server,
+            r.stream("hola", 16, &cancel, |_| {
+                assert!(after_token);
+                cancel.cancel();
+            })
+        );
+        let _connection = connection?;
+        assert!(matches!(result, Err(LlmError::Cancelled)));
+        assert_eq!(r.consecutive_errors("fast").await, 0);
+        assert_eq!(r.cooldown_remaining("fast").await, Duration::ZERO);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_only_never_calls_cloud_and_shares_cooldown() -> Result {
+    let local = MockServer::start().await;
+    Mock::given(path("/v1/chat/completions"))
+        .and(chat_request("contexto privado"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(1)
+        .mount(&local)
+        .await;
+    let cloud = MockServer::start().await;
+    cloud_success(&cloud).await;
+    let r = router(
+        vec![endpoint(&local.uri(), false), endpoint(&cloud.uri(), true)],
+        None,
+    )
+    .await?;
+    assert!(r.consent().is_allowed());
+    let cancel = CancellationToken::new();
+    assert!(matches!(
+        r.stream_local_only("contexto privado", 12, &cancel, |_| {})
+            .await,
+        Err(LlmError::Status(reqwest::StatusCode::SERVICE_UNAVAILABLE))
+    ));
+    assert_eq!(r.consecutive_errors("fast").await, 1);
+    assert!(matches!(
+        r.stream_local_only("contexto privado", 12, &cancel, |_| {})
+            .await,
+        Err(LlmError::Unavailable)
+    ));
+    assert_eq!(r.stream("hola", 12, &cancel, |_| {}).await?, "cloud");
+    assert_eq!(
+        local
+            .received_requests()
+            .await
+            .ok_or("recording disabled")?
+            .len(),
+        1
+    );
+    assert_eq!(
+        cloud
+            .received_requests()
+            .await
+            .ok_or("recording disabled")?
+            .len(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn retryable_http_429_does_not_penalize_health() -> Result {
+    let local = MockServer::start().await;
+    Mock::given(path("/v1/chat/completions"))
+        .and(chat_request("hola"))
+        .respond_with(ResponseTemplate::new(429))
+        .expect(1)
+        .mount(&local)
+        .await;
+    let cloud = MockServer::start().await;
+    cloud_success(&cloud).await;
+    let r = router(
+        vec![endpoint(&local.uri(), false), endpoint(&cloud.uri(), true)],
+        None,
+    )
+    .await?;
+    assert_eq!(
+        r.stream("hola", 12, &CancellationToken::new(), |_| {})
+            .await?,
+        "cloud"
+    );
+    assert_eq!(r.consecutive_errors("fast").await, 0);
     Ok(())
 }
 
@@ -401,7 +624,7 @@ async fn shipped_config_selects_fast_then_cloud_and_starts_closed() -> Result {
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../config/nexa/nexa.toml"),
     )?;
     let [fast, cloud] = Endpoint::from_config(&config.llm);
-    assert_eq!(fast.url, "http://127.0.0.1:8101/v1/completions");
+    assert_eq!(fast.url, "http://127.0.0.1:8101/v1/chat/completions");
     assert_eq!(cloud.url, "http://127.0.0.1:8200/v1/chat/completions");
     assert!(fast.priority < cloud.priority && !fast.cloud && cloud.cloud);
     assert_eq!(
@@ -427,9 +650,9 @@ async fn withdrawn_gateway_skipped_without_penalizing_health() -> Result {
         .expect(0)
         .mount(&cloud)
         .await;
-    Mock::given(path("/v1/completions"))
+    Mock::given(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_raw(
-            "data: {\"choices\":[{\"text\":\"local\"}]}\n\ndata: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"local\"}}]}\n\ndata: [DONE]\n\n",
             "text/event-stream",
         ))
         .expect(1)
