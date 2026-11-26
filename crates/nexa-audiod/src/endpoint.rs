@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use crate::dsp::{NOISE_FLOOR_MAX, NOISE_FLOOR_MIN};
+use crate::dsp::{NOISE_FLOOR_DEFAULT, NOISE_FLOOR_MAX, NOISE_FLOOR_MIN};
 
 const MIN_LISTEN: Duration = Duration::from_secs(1);
 const MAX_CAPTURE: Duration = Duration::from_secs(5);
@@ -48,7 +48,7 @@ impl PostWakeEndpoint {
         let floor = if noise_floor.is_finite() {
             noise_floor.clamp(NOISE_FLOOR_MIN, NOISE_FLOOR_MAX)
         } else {
-            NOISE_FLOOR_MAX
+            NOISE_FLOOR_DEFAULT
         };
         Self {
             level_threshold: floor * NOISE_RATIO,
@@ -59,6 +59,11 @@ impl PostWakeEndpoint {
             last_level_voice: Duration::ZERO,
             decision: EndpointDecision::Listening,
         }
+    }
+
+    #[must_use]
+    pub fn level_threshold(&self) -> f32 {
+        self.level_threshold
     }
 
     /// Remaining audio before the cap. The caller can trim the final frame to this duration.

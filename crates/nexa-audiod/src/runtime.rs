@@ -1,5 +1,6 @@
 //! Room supervision and capture ownership across device and inference I/O.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -32,6 +33,9 @@ const AMBIENT_COOLDOWN: Duration = Duration::from_secs(3);
 const FOLLOW_UP_WINDOW: Duration = Duration::from_secs(12);
 const FOLLOW_UP_MIN_VOICE_FRAMES: usize = 3;
 const FOLLOW_UP_MAX_FRAMES: usize = 62; // Just under the 5 s command cap.
+const WAKE_PREROLL_FRAMES: usize = 10; // 800 ms pre-roll so continuous speech after "Nexa" is not clipped.
+const NEAR_WAKE_LOG_MIN: f32 = 0.15;
+const NEAR_WAKE_LOG_INTERVAL: Duration = Duration::from_secs(3);
 
 pub fn zone_id(room_id: &str) -> String {
     format!("zone_{room_id}")
@@ -551,6 +555,8 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
 
     let mut noise = NoiseFloorTracker::default();
     let mut guard = AmbientGuard::default();
+    let mut preroll: VecDeque<[f32; FRAME_SAMPLES]> = VecDeque::with_capacity(WAKE_PREROLL_FRAMES);
+    let mut near_wake_logged_at: Option<Instant> = None;
     let mut current: Option<(PostWakeEndpoint, Recording)> = None;
     let mut non_wake = None::<NonWakeSegment>;
     let mut ambient_demand = service.ambient_demand();
@@ -644,14 +650,50 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             noise.observe(rms);
         }
         if score >= *wake_threshold && guard.allow_wake(now, score) {
-            tracing::info!(room_id = %room.room_id, score, threshold = *wake_threshold, "wake word detected");
+            let floor = noise.floor();
+            let endpoint = PostWakeEndpoint::new(floor);
+            tracing::info!(
+                room_id = %room.room_id,
+                score,
+                threshold = *wake_threshold,
+                rms,
+                floor,
+                level_threshold = endpoint.level_threshold(),
+                preroll_frames = preroll.len(),
+                "wake word detected"
+            );
             non_wake = None;
             follow_up_until = None;
-            current = Some((
-                PostWakeEndpoint::new(noise.floor()),
-                Recording::new(UtteranceKind::Command, score),
-            ));
+            let mut recording = Recording::new(UtteranceKind::Command, score);
+            for prior in preroll.drain(..) {
+                recording.samples.extend_from_slice(&prior);
+            }
+            recording.samples.extend_from_slice(&frame);
+            current = Some((endpoint, recording));
             continue;
+        }
+        if score >= NEAR_WAKE_LOG_MIN
+            && near_wake_logged_at.is_none_or(|at| now.duration_since(at) >= NEAR_WAKE_LOG_INTERVAL)
+        {
+            near_wake_logged_at = Some(now);
+            tracing::info!(
+                room_id = %room.room_id,
+                score,
+                threshold = *wake_threshold,
+                rms,
+                floor = noise.floor(),
+                speech,
+                "near-threshold wake score"
+            );
+        }
+        let speaking = service.speaking(&zone).unwrap_or(true);
+        if speaking {
+            preroll.clear();
+        } else {
+            if preroll.len() == WAKE_PREROLL_FRAMES {
+                preroll.pop_front();
+            }
+            preroll.push_back(frame);
         }
 
         let follow_up =
@@ -660,7 +702,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             && generation == ambient_demand.borrow().generation()
             && now >= ambient_after;
         // Barge-in may stop playback, but the turn's own output must not become a new clip.
-        let kind = if service.speaking(&zone).unwrap_or(true) {
+        let kind = if speaking {
             None
         } else if follow_up {
             Some(UtteranceKind::FollowUp)

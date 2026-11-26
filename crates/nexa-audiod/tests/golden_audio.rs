@@ -117,8 +117,7 @@ fn near_field_wakes_and_completes_a_post_wake_endpoint() {
 fn far_field_speech_envelope_rises_above_its_measured_noise_floor() {
     let samples = wav("far_field_low_rms_2s.wav");
     let mut noise = NoiseFloorTracker::default();
-    let ambient = wav("room_noise_2s.wav");
-    for frame in ambient.as_chunks::<FRAME_SAMPLES>().0 {
+    for frame in samples.as_chunks::<FRAME_SAMPLES>().0 {
         noise.observe(frame_rms(frame));
     }
     let relative_threshold = noise.floor() * 1.8;

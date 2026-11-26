@@ -78,7 +78,8 @@ struct Shadow;
 
 impl ShadowStt for Shadow {
     fn transcribe(&mut self, samples: &[f32]) -> Result<String, AudioError> {
-        Ok(if samples[0] > 0.1 { "living" } else { "hall" }.into())
+        let is_living = samples.iter().any(|&sample| (sample - 0.2).abs() < 1e-4);
+        Ok(if is_living { "living" } else { "hall" }.into())
     }
 }
 
@@ -300,7 +301,24 @@ async fn wake_discards_pending_ambient_and_arms_one_same_epoch_follow_up() {
         let command = stream.next().await.unwrap().unwrap();
         assert_eq!(command.kind(), UtteranceKind::Command);
         assert_eq!(command.parakeet_shadow_text, "living");
-        assert_eq!(command.pcm_f32le[..4], 0.2_f32.to_le_bytes());
+        // Command includes bounded wake pre-roll + wake frame (0.8) + post-wake speech (0.2) + trailing silence.
+        assert!(command.pcm_f32le.len() > (4 + 9) * 1280 * 4);
+        assert!(
+            command
+                .pcm_f32le
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|&b| b == 0.8_f32.to_le_bytes())
+        );
+        assert!(
+            command
+                .pcm_f32le
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .any(|&b| b == 0.2_f32.to_le_bytes())
+        );
 
         frames(&sender, 3, 0.05).await;
         frames(&sender, 8, 0.0).await;
@@ -480,7 +498,12 @@ async fn room_retries_do_not_interrupt_another_rooms_utterances() {
             }
             assert_eq!(utterance.room_id, utterance.parakeet_shadow_text);
             assert_eq!(utterance.sample_rate, 16_000);
-            assert_eq!(utterance.pcm_f32le.len(), 13 * 1280 * 4);
+            assert_eq!(utterance.pcm_f32le.len() % (1280 * 4), 0);
+            let frame_count = utterance.pcm_f32le.len() / (1280 * 4);
+            assert!(
+                (14..=24).contains(&frame_count),
+                "unexpected frame_count={frame_count}"
+            );
             assert!(ids.insert(utterance.utterance_id));
             *counts.entry(utterance.room_id).or_insert(0) += 1;
         }

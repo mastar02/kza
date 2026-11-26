@@ -6,7 +6,8 @@ use std::time::Duration;
 pub const SAMPLE_RATE: u32 = 16_000;
 pub const FRAME_SAMPLES: usize = 1_280;
 pub const NOISE_FLOOR_MIN: f32 = 0.0006;
-pub const NOISE_FLOOR_MAX: f32 = 0.002;
+pub const NOISE_FLOOR_DEFAULT: f32 = 0.002;
+pub const NOISE_FLOOR_MAX: f32 = 0.05;
 
 const NOISE_WINDOW_FRAMES: usize = 125; // 10 seconds of 80 ms frames.
 const MIN_HISTORY_FRAMES: usize = 13; // At least one second.
@@ -61,7 +62,7 @@ impl NoiseFloorTracker {
     pub fn floor(&self) -> f32 {
         let len = self.history.len();
         if len < MIN_HISTORY_FRAMES {
-            return NOISE_FLOOR_MAX;
+            return NOISE_FLOOR_DEFAULT;
         }
 
         let mut rms = [0.0; NOISE_WINDOW_FRAMES];

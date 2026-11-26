@@ -5,7 +5,8 @@ use std::time::{Duration, Instant};
 use nexa_audiod::ambient_guard::{AmbientGuard, CaptureOutcome, GuardState};
 use nexa_audiod::barge_in::BargeIn;
 use nexa_audiod::dsp::{
-    FRAME_SAMPLES, NOISE_FLOOR_MAX, NOISE_FLOOR_MIN, NoiseFloorTracker, frame_rms,
+    FRAME_SAMPLES, NOISE_FLOOR_DEFAULT, NOISE_FLOOR_MAX, NOISE_FLOOR_MIN, NoiseFloorTracker,
+    frame_rms,
 };
 use nexa_audiod::endpoint::{EndpointDecision, PostWakeEndpoint};
 use nexa_audiod::ma1260::{
@@ -34,12 +35,19 @@ fn noise_floor_interpolates_p20_and_evicts_after_ten_seconds() {
     for i in (0..12).rev() {
         tracker.observe(0.001 + i as f32 * 0.00005);
     }
-    assert_eq!(tracker.floor(), NOISE_FLOOR_MAX);
+    assert_eq!(tracker.floor(), NOISE_FLOOR_DEFAULT);
     tracker.observe(f32::NAN);
     tracker.observe(-1.0);
-    assert_eq!(tracker.floor(), NOISE_FLOOR_MAX);
+    assert_eq!(tracker.floor(), NOISE_FLOOR_DEFAULT);
     tracker.observe(0.0016);
     assert!((tracker.floor() - 0.00112).abs() < 1e-8);
+
+    // Real rooms with higher idle noise (e.g. hall=0.0052, cocina=0.0038) must not clamp at 0.002.
+    let mut loud_room = NoiseFloorTracker::default();
+    for _ in 0..20 {
+        loud_room.observe(0.0052);
+    }
+    assert!((loud_room.floor() - 0.0052).abs() < 1e-6);
 
     for _ in 0..125 {
         tracker.observe(0.0);
@@ -104,8 +112,8 @@ async fn ring_waits_for_data_and_drains_after_producer_disconnects() {
 
 #[test]
 fn endpoint_waits_for_minimum_listen_and_ignores_vad_tail_after_level_speech() {
-    let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_MAX);
-    let level_boundary = NOISE_FLOOR_MAX * 1.8;
+    let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_DEFAULT);
+    let level_boundary = NOISE_FLOOR_DEFAULT * 1.8;
     assert_eq!(
         endpoint.observe(level_boundary, Some(0.0), ms(240)),
         EndpointDecision::Listening
@@ -120,7 +128,7 @@ fn endpoint_waits_for_minimum_listen_and_ignores_vad_tail_after_level_speech() {
     );
     assert!(endpoint.observe(1.0, None, ms(10_000)).dispatches());
 
-    let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_MAX);
+    let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_DEFAULT);
     endpoint.observe(0.0, None, ms(700));
     endpoint.observe(level_boundary, None, ms(240));
     assert_eq!(
@@ -135,7 +143,7 @@ fn endpoint_waits_for_minimum_listen_and_ignores_vad_tail_after_level_speech() {
 
 #[test]
 fn vad_only_endpoint_requires_six_hundred_ms_of_joint_silence() {
-    let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_MAX);
+    let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_DEFAULT);
     endpoint.observe(0.0, None, ms(500));
     endpoint.observe(0.001, Some(0.5), ms(240));
     assert_eq!(
@@ -150,7 +158,7 @@ fn vad_only_endpoint_requires_six_hundred_ms_of_joint_silence() {
 
 #[test]
 fn endpoint_discards_short_click_and_invalid_signals_at_no_speech_deadline() {
-    let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_MAX);
+    let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_DEFAULT);
     endpoint.observe(0.8, None, ms(239));
     assert_eq!(
         endpoint.observe(f32::INFINITY, Some(f32::NAN), ms(2_260)),
@@ -168,12 +176,28 @@ fn endpoint_stall_is_bounded_and_incomplete() {
         (0, EndpointDecision::NoSpeech),
         (240, EndpointDecision::IncompleteAtMax),
     ] {
-        let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_MAX);
+        let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_DEFAULT);
         endpoint.observe(0.05, None, ms(onset));
         assert_eq!(endpoint.check_stall(ms(5_999)), EndpointDecision::Listening);
         assert_eq!(endpoint.check_stall(ms(6_000)), expected);
         assert!(!expected.dispatches());
     }
+}
+
+#[test]
+fn endpoint_completes_cleanly_in_louder_rooms_above_default_floor() {
+    // Regression: hall (~0.0052) and cocina (~0.0038) exceed NOISE_FLOOR_DEFAULT (0.002)
+    // and previously clamped to 0.002 -> level_threshold=0.0036 -> IncompleteAtMax on room silence.
+    let mut endpoint = PostWakeEndpoint::new(0.0052);
+    assert!((endpoint.level_threshold() - 0.0052 * 1.8).abs() < 1e-6);
+    assert_eq!(
+        endpoint.observe(0.015, Some(0.9), ms(400)),
+        EndpointDecision::Listening
+    );
+    assert_eq!(
+        endpoint.observe(0.0052, Some(0.1), ms(700)),
+        EndpointDecision::Complete
+    );
 }
 
 #[test]
@@ -307,7 +331,7 @@ proptest! {
 
     #[test]
     fn sustained_speech_caps_at_five_seconds_without_dispatch(frame_ms in 1..=320u64) {
-        let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_MAX);
+        let mut endpoint = PostWakeEndpoint::new(NOISE_FLOOR_DEFAULT);
         let mut elapsed = 0;
         while elapsed < 5_000 {
             elapsed += frame_ms;
