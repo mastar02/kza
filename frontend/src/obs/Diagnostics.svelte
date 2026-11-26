@@ -2,6 +2,7 @@
   import { onMount, untrack } from 'svelte'
   import { Mutation } from '../lib/mutation.svelte'
   import { Resource, rows, text } from '../lib/resource.svelte'
+  import { record } from '../lib/session'
   import type { Session } from '../lib/session'
 
   let { session, system = false }: { session: Session; system?: boolean } = $props()
@@ -45,6 +46,25 @@
     }),
   }))
   const write = new Mutation(ownerSession)
+  const alerts = new Resource(ownerSession, async signal => {
+    const value = await session.request('/api/alerts', { permissions: ['home:read'], signal })
+    const source = Array.isArray(value) ? value : record(value)?.alerts
+    return rows(source).map(item => {
+      const state = text(item.state ?? item.status, '')
+      const acknowledged = item.acknowledged === true || item.acked === true ||
+        ['acknowledged', 'acked', 'resolved'].includes(state)
+      return {
+        id: item.id ?? item.alert_id,
+        title: text(item.title ?? item.name ?? item.message, 'Alerta'),
+        detail: typeof item.title === 'string' || typeof item.name === 'string' ? text(item.message, '') : '',
+        severity: severityLabel[text(item.severity ?? item.priority, '')] ?? '',
+        acknowledged,
+      }
+    })
+  })
+  const severityLabel: Record<string, string> = {
+    critical: 'Crítica', high: 'Alta', warning: 'Advertencia', medium: 'Media', low: 'Baja', info: 'Informativa',
+  }
   let selected = $state<string | null>(null)
   const visible = $derived(collections.filter(config => config.group === group))
   const active = $derived(visible.find(config => config.path === selected) ?? visible[0])
@@ -52,12 +72,16 @@
 
   onMount(() => {
     void active?.resource.load()
+    if (!system && session.can('home:read')) void alerts.load()
     const poll = setInterval(() => {
-      if (!write.busy) void active?.resource.load(true)
+      if (write.busy) return
+      void active?.resource.load(true)
+      if (!system && session.can('home:read')) void alerts.load(true)
     }, 10000)
     return () => {
       clearInterval(poll)
       write.destroy()
+      alerts.destroy()
       for (const item of collections) item.resource.destroy()
     }
   })
@@ -75,6 +99,19 @@
     const list = active?.resource
     return write.run('/api/llm/endpoints/' + encodeURIComponent(id) + '/clear-cooldown',
       { permissions: ['admin:manage'], method: 'POST' }, async () => { await list?.load() })
+  }
+
+  function restart(id: unknown, name: unknown) {
+    if (typeof id !== 'string' || !window.confirm('¿Reiniciar el servicio ' + text(name, 'seleccionado') + '?')) return
+    const list = active?.resource
+    return write.run('/api/admin/services/' + encodeURIComponent(id) + '/restart',
+      { permissions: ['admin:manage'], method: 'POST' }, async () => { await list?.load(true) })
+  }
+
+  function acknowledge(id: unknown) {
+    if (typeof id !== 'string') return
+    return write.run('/api/admin/alerts/' + encodeURIComponent(id) + '/ack',
+      { permissions: ['admin:manage'], method: 'POST' }, () => alerts.load(true))
   }
 
   function label(value: unknown) {
@@ -103,12 +140,36 @@
             <div><dt>{field.label}</dt><dd>{label(field.value)}</dd></div>
           {/each}
         </dl>
+        {#if active?.path === '/api/system/services' && session.can('admin:manage')}
+          <button disabled={write.busy || list?.busy} onclick={() => restart(item.id, item.name)}>Reiniciar</button>
+        {/if}
         {#if item.cooldown && session.can('admin:manage')}
           <button disabled={write.busy || list?.busy} onclick={() => clearCooldown(item.id)}>Quitar cooldown</button>
         {/if}
       </article>
     {:else}<p class="muted">{list?.busy ? 'Consultando…' : 'Sin observaciones disponibles.'}</p>{/each}
   </div>
+  {#if !system && session.can('home:read')}
+    <section aria-labelledby="alerts-title">
+      <h3 id="alerts-title">Alertas</h3>
+      {#if alerts.error}<p class="error" role="alert">{alerts.error}</p>{/if}
+      <div class="grid">
+        {#each alerts.data ?? [] as alert}
+          <article class="card">
+            <h4>{alert.title}</h4>
+            {#if alert.detail}<p>{alert.detail}</p>{/if}
+            <p>
+              {#if alert.severity}<span class="pill">{alert.severity}</span>{/if}
+              <span class="pill">{alert.acknowledged ? 'Reconocida' : 'Pendiente'}</span>
+            </p>
+            {#if !alert.acknowledged && session.can('admin:manage')}
+              <button disabled={write.busy || alerts.busy} onclick={() => acknowledge(alert.id)}>Reconocer</button>
+            {/if}
+          </article>
+        {:else}<p class="muted">{alerts.busy ? 'Consultando alertas…' : 'No hay alertas activas.'}</p>{/each}
+      </div>
+    </section>
+  {/if}
 </section>
 
 <style>

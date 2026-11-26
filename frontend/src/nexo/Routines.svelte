@@ -4,7 +4,7 @@
   import type { Operation } from '../lib/home'
   import { Mutation } from '../lib/mutation.svelte'
   import { Resource, rows, text } from '../lib/resource.svelte'
-  import { record } from '../lib/session'
+  import { HttpError, record } from '../lib/session'
   import type { Session } from '../lib/session'
 
   let { session }: { session: Session } = $props()
@@ -21,6 +21,51 @@
   const device = $derived(catalog.data?.entities.find(item => item.id === selected))
   const field = $derived(device && operation && controlFor(device, operation))
   let draftError = $state('')
+  let historyId = $state('')
+  const canHistory = $derived(session.can('home:read') || session.can('routines:execute'))
+  const history = new Resource(ownerSession, async signal => {
+    const grant = session.can('home:read') ? 'home:read' : 'routines:execute'
+    try {
+      const value = await session.request('/api/routines/' + encodeURIComponent(historyId) + '/attempts',
+        { permissions: [grant], signal })
+      const source = Array.isArray(value) ? value : record(value)?.runs ?? record(value)?.attempts
+      return rows(source).map(describeAttempt)
+    } catch (error) {
+      if (error instanceof HttpError && error.status === 503) return []
+      throw error
+    }
+  })
+  const attemptStatus: Record<string, string> = {
+    accepted: 'Aceptada', succeeded: 'Aceptada', completed: 'Aceptada', failed: 'Fallida', error: 'Fallida',
+    partial: 'Parcial', late: 'Tardía', running: 'En curso', uncertain: 'Sin confirmar',
+    skipped: 'Omitida', interrupted: 'Interrumpida',
+  }
+  const attemptSummary: Record<string, string> = {
+    Aceptada: 'La ejecución fue aceptada.', Fallida: 'La ejecución no se pudo completar.',
+    Parcial: 'Solo parte de las acciones se completó.', 'Tardía': 'La ejecución llegó fuera de horario.',
+    'En curso': 'La ejecución sigue en curso.', 'Sin confirmar': 'No se pudo confirmar el resultado.',
+    Omitida: 'La rutina no se ejecutó.', Interrumpida: 'La ejecución se interrumpió.',
+  }
+
+  function describeAttempt(item: Record<string, unknown>) {
+    const label = attemptStatus[text(item.status, '')] ?? 'Sin confirmar'
+    const raw = item.started_at ?? item.at ?? item.created_at ?? item.requested_at ?? item.finished_at
+    const when = typeof raw === 'number' ? new Date(raw < 1e12 ? raw * 1000 : raw)
+      : typeof raw === 'string' ? new Date(raw) : null
+    return {
+      when: when && Number.isFinite(when.getTime()) ? when.toLocaleString('es-UY') : 'Sin fecha',
+      label,
+      summary: text(item.summary ?? item.message ?? item.detail, attemptSummary[label]),
+    }
+  }
+
+  function toggleHistory(routine: Record<string, unknown>) {
+    if (typeof routine.routine_id !== 'string') return
+    if (historyId === routine.routine_id) { historyId = ''; history.clear(); return }
+    historyId = routine.routine_id
+    history.clear()
+    void history.load()
+  }
   const routineStatus: Record<string, string> = {
     running: 'En curso', succeeded: 'Completada', failed: 'Falló', uncertain: 'Sin confirmar',
     skipped: 'Omitida', interrupted: 'Interrumpida',
@@ -30,8 +75,8 @@
     void list.load()
     if (canManage) void catalog.load()
     const refresh = setInterval(() => { if (!change.busy) void list.load(true) }, 15000)
-    const unregister = session.onPurge(() => { selected = ''; operation = ''; draftError = '' })
-    return () => { clearInterval(refresh); unregister(); list.destroy(); catalog.destroy(); change.destroy() }
+    const unregister = session.onPurge(() => { selected = ''; operation = ''; draftError = ''; historyId = '' })
+    return () => { clearInterval(refresh); unregister(); list.destroy(); catalog.destroy(); history.destroy(); change.destroy() }
   })
 
   function modify(routine: Record<string, unknown>, action: 'enable' | 'disable' | 'execute' | 'delete') {
@@ -95,6 +140,28 @@
         </div>
         <p>{text(routine.description, schedule ? 'Programada' : 'Ejecución manual')}{schedule ? ' · ' + text(schedule.at) : ''}</p>
         {#if last}<p>Última ejecución · {routineStatus[text(last.status)] ?? 'Sin confirmar'}</p>{/if}
+        {#if canHistory && typeof routine.routine_id === 'string'}
+          <button aria-expanded={historyId === routine.routine_id} onclick={() => toggleHistory(routine)}>
+            {historyId === routine.routine_id ? 'Ocultar historial' : 'Historial'}
+          </button>
+          {#if historyId === routine.routine_id}
+            <div class="history" aria-live="polite">
+              {#if history.error}
+                <p class="error" role="alert">{history.error}</p>
+              {:else if history.busy}
+                <p class="muted">Consultando historial…</p>
+              {:else if history.data && history.data.length}
+                <ul>
+                  {#each history.data as run}
+                    <li><strong>{run.when}</strong> · <span class="pill">{run.label}</span> — {run.summary}</li>
+                  {/each}
+                </ul>
+              {:else if history.data}
+                <p class="muted">Esta rutina todavía no tiene ejecuciones registradas.</p>
+              {/if}
+            </div>
+          {/if}
+        {/if}
         {#if canExecute && routine.enabled === true}
           <button disabled={change.busy || list.busy || last?.status === 'running'} onclick={() => modify(routine, 'execute')}>Ejecutar</button>
         {/if}
