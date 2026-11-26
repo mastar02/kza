@@ -587,6 +587,18 @@ impl<C: Clock> Household<C> {
             .optional()?)
     }
 
+    pub fn list_routine_runs(&self, routine: RoutineId, limit: usize) -> Result<Vec<RoutineRun>> {
+        query_all(
+            self.db(),
+            &format!(
+                "SELECT {RUN_COLUMNS} FROM routine_runs WHERE routine_id = ?1
+                      ORDER BY started_at DESC, id DESC LIMIT ?2"
+            ),
+            params![routine.0, limit],
+            read_run,
+        )
+    }
+
     pub fn running_routines(&self) -> Result<Vec<RoutineRun>> {
         query_all(
             self.db(),

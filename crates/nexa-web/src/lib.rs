@@ -1,5 +1,6 @@
 //! Nexa HTTP/WS control plane. Runtime data is reached through daemon clients.
 
+#[path = "auth/mod.rs"]
 pub mod auth;
 pub mod clients;
 pub mod sys;
