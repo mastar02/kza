@@ -28,21 +28,9 @@ pub fn authorize_action(
     entity_id: &str,
     operation: &str,
 ) -> Result<(), ControlPolicyError> {
-    let supported = match domain(entity_id) {
-        Some("light") => matches!(
-            operation,
-            "turn_on" | "turn_off" | "brightness" | "color_temp_kelvin"
-        ),
-        Some("switch") => matches!(operation, "turn_on" | "turn_off"),
-        Some("climate") => matches!(operation, "set_temperature" | "set_hvac_mode"),
-        Some("cover") => matches!(
-            operation,
-            "open_cover" | "close_cover" | "stop_cover" | "set_cover_position"
-        ),
-        Some("scene") => operation == "activate_scene",
-        _ => false,
-    };
-    if supported && policy.allows(entity_id, operation) {
+    if nexa_config::supports_ha_operation(entity_id, operation)
+        && policy.allows(entity_id, operation)
+    {
         Ok(())
     } else {
         Err(ControlPolicyError::Denied {

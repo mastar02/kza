@@ -71,6 +71,35 @@ pub enum Operation {
     },
 }
 
+impl From<nexa_config::SceneBrightness> for Brightness {
+    fn from(value: nexa_config::SceneBrightness) -> Self {
+        match value {
+            nexa_config::SceneBrightness::Percent(pct) => Self::Percent(pct),
+            nexa_config::SceneBrightness::Raw(raw) => Self::Raw(raw),
+        }
+    }
+}
+
+impl From<nexa_config::SceneOperation> for Operation {
+    fn from(value: nexa_config::SceneOperation) -> Self {
+        use nexa_config::SceneOperation;
+        match value {
+            SceneOperation::TurnOn => Self::TurnOn,
+            SceneOperation::TurnOff => Self::TurnOff,
+            SceneOperation::Brightness(value) => Self::Brightness {
+                brightness: value.into(),
+            },
+            SceneOperation::ColorTempKelvin {
+                color_temp_kelvin,
+                brightness,
+            } => Self::ColorTempKelvin {
+                color_temp_kelvin,
+                brightness: brightness.map(Into::into),
+            },
+        }
+    }
+}
+
 impl Operation {
     pub fn name(&self) -> &'static str {
         match self {

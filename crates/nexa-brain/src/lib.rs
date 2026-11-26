@@ -19,10 +19,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexa_config::{ConfigError, LoadedBundle, SceneEffectConfig};
+use nexa_config::{ConfigError, LoadedBundle};
 use nexa_ha::{
-    Brightness, ControlPolicy, ControlService, EffectIntent, HaClient, MembershipSource, Operation,
-    ReviewedGroup,
+    ControlPolicy, ControlService, EffectIntent, HaClient, MembershipSource, ReviewedGroup,
 };
 use nexa_household::{Clock, HouseholdWorker, reminders::ReminderPolicy};
 use nexa_llm::{ApiKey, CancellationToken, CloudConsentGate, Endpoint, FailoverRouter};
@@ -114,7 +113,12 @@ impl HomeDependencies {
             .map(|(entity_id, effects)| {
                 let effects = effects
                     .iter()
-                    .map(|effect| scene_effect(entity_id, effect))
+                    .map(|effect| {
+                        Ok::<_, ConfigError>(EffectIntent {
+                            entity_id: effect.entity_id.clone(),
+                            operation: effect.scene_operation(entity_id)?.into(),
+                        })
+                    })
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok((entity_id.clone(), effects))
             })
@@ -146,47 +150,6 @@ impl HomeDependencies {
             forecast,
         })
     }
-}
-
-fn scene_effect(scene: &str, effect: &SceneEffectConfig) -> Result<EffectIntent, ConfigError> {
-    let brightness = effect
-        .brightness_pct
-        .map(Brightness::Percent)
-        .or_else(|| effect.brightness.map(Brightness::Raw));
-    let light = effect.entity_id.starts_with("light.");
-    let switch = effect.entity_id.starts_with("switch.");
-    let operation = match (
-        effect.operation.as_str(),
-        brightness,
-        effect.color_temp_kelvin,
-    ) {
-        ("turn_on", None, None) if light || switch => Operation::TurnOn,
-        ("turn_off", None, None) if light || switch => Operation::TurnOff,
-        ("brightness", Some(brightness), None) if light => Operation::Brightness { brightness },
-        ("color_temp_kelvin", brightness, Some(color_temp_kelvin))
-            if light
-                && color_temp_kelvin > 0
-                && !matches!(
-                    brightness,
-                    Some(Brightness::Percent(0) | Brightness::Raw(0))
-                ) =>
-        {
-            Operation::ColorTempKelvin {
-                color_temp_kelvin,
-                brightness,
-            }
-        }
-        _ => {
-            return Err(ConfigError::Validation(format!(
-                "scene '{scene}' has an unsupported operation or invalid parameters for '{}' on '{}'",
-                effect.operation, effect.entity_id
-            )));
-        }
-    };
-    Ok(EffectIntent {
-        entity_id: effect.entity_id.clone(),
-        operation,
-    })
 }
 
 #[derive(Debug)]
