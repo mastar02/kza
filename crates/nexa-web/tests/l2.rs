@@ -29,6 +29,7 @@ use nexa_web::{
     EVALUATOR_TOKEN, HOME_ID, HOME_TOKEN, OPERATOR_TOKEN, TestMode, WebConfig, auth::Origin,
     build_app, clients::Clients, sys::PlatformMonitor,
 };
+use prost::Message as _;
 use serde_json::{Value, json};
 use tokio::{
     net::{TcpListener, UnixListener},
@@ -50,7 +51,24 @@ type RpcStream<T> = Pin<Box<dyn Stream<Item = Result<T, Status>> + Send + 'stati
 #[derive(Debug, Clone, Default)]
 struct Daemons {
     observed: Arc<Mutex<Vec<ActorContext>>>,
+    metadata_actors: Arc<Mutex<Vec<ActorContext>>>,
     purged: Arc<Mutex<Vec<String>>>,
+}
+
+impl Daemons {
+    #[allow(clippy::result_large_err)]
+    fn record_metadata_actor(&self, request: &Request<Empty>, key: &str) -> Result<(), Status> {
+        let bytes = request
+            .metadata()
+            .get_bin(key)
+            .ok_or_else(|| Status::unauthenticated("actor metadata required"))?
+            .to_bytes()
+            .map_err(|_| Status::unauthenticated("invalid actor metadata"))?;
+        let actor = ActorContext::decode(bytes)
+            .map_err(|_| Status::unauthenticated("invalid actor context"))?;
+        self.metadata_actors.lock().unwrap().push(actor);
+        Ok(())
+    }
 }
 
 macro_rules! service {
@@ -123,6 +141,16 @@ service! {
                 ..Default::default()
             }]}))
         }
+        get_llm_endpoints(request: Empty) -> LlmEndpointsSnapshot => |server| {
+            server.record_metadata_actor(&request, "x-nexa-actor-bin")?;
+            Ok(Response::new(LlmEndpointsSnapshot {
+                endpoints:vec![LlmEndpointStatus { endpoint_id:"wire-llm".into(),..Default::default() }],
+            }))
+        }
+        get_cloud_consent(request: Empty) -> CloudConsentStatus => |server| {
+            server.record_metadata_actor(&request, "x-nexa-actor-bin")?;
+            Ok(Response::new(CloudConsentStatus { consent_granted:true,..Default::default() }))
+        }
         sync_household_lists(request: ActorRequest) -> ListSyncResponse => |_server| {
             let actor = request.into_inner().actor.unwrap();
             assert_eq!(actor.user_id, HOME_ID);
@@ -146,9 +174,7 @@ service! {
         ; get_health(Empty) -> HealthResponse,
           execute_home_action(HomeActionRequest) -> HomeActionReceipt,
           get_home_action_receipt(GetHomeActionReceiptRequest) -> HomeActionReceipt,
-          get_llm_endpoints(Empty) -> LlmEndpointsSnapshot,
           clear_llm_cooldown(ClearLlmCooldownRequest) -> Empty,
-          get_cloud_consent(Empty) -> CloudConsentStatus,
           withdraw_cloud_consent(WithdrawCloudConsentRequest) -> CloudConsentStatus,
           subscribe_live_events(SubscribeLiveEventsRequest) -> Self::SubscribeLiveEventsStream,
           get_routine(GetRoutineRequest) -> RoutineRecord,
@@ -180,7 +206,8 @@ service! {
 service! {
     impl MemoryService {
         []
-        get_ambient_control(_request: Empty) -> AmbientControlStatus => |_server| {
+        get_ambient_control(request: Empty) -> AmbientControlStatus => |server| {
+            server.record_metadata_actor(&request, "actor-context-bin")?;
             Ok(Response::new(AmbientControlStatus { paused:true,revision:7,updated_at_unix_ms:1_700_000_000_000 }))
         }
         purge_retired_user(request: PurgeRetiredUserRequest) -> ErasureReceipt => |server| {
@@ -329,7 +356,30 @@ async fn tonic_uds_contracts_and_failed_purge_retry() {
         Body::empty(),
     )
     .await;
+    assert_eq!(ambient.status(), StatusCode::OK);
     assert_eq!(document(ambient).await["revision"], 7);
+    let endpoints = call(
+        &app,
+        "GET",
+        "/api/llm/endpoints",
+        Some(OPERATOR_TOKEN),
+        None,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(endpoints.status(), StatusCode::OK);
+    assert_eq!(document(endpoints).await[0]["id"], "wire-llm");
+    let cloud = call(
+        &app,
+        "GET",
+        "/api/admin/cloud-consent",
+        Some(OPERATOR_TOKEN),
+        None,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(cloud.status(), StatusCode::OK);
+    assert_eq!(document(cloud).await["consent_granted"], true);
     let routines = call(
         &app,
         "GET",
@@ -476,6 +526,11 @@ async fn tonic_uds_contracts_and_failed_purge_retry() {
     assert_eq!(*daemons.purged.lock().unwrap(), vec![HOME_ID, HOME_ID]);
     let actors = daemons.observed.lock().unwrap();
     assert_eq!(actors.len(), 5);
+    // Capture mute carries the same authenticated caller in the request body.
+    assert_eq!(
+        *daemons.metadata_actors.lock().unwrap(),
+        vec![actors[2].clone(); 3]
+    );
     for (index, actor) in actors.iter().enumerate() {
         assert_eq!(actor.lease_id.len(), 64);
         assert_eq!(actor.lease_epoch, 1);

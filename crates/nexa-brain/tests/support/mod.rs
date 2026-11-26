@@ -25,6 +25,7 @@ use nexa_proto::v1::{
     ml_service_server::{MlService, MlServiceServer},
     *,
 };
+use prost::Message;
 use tempfile::TempDir;
 use tokio::{
     net::UnixListener,
@@ -234,7 +235,7 @@ impl MlService for Ml {
 #[derive(Debug)]
 pub struct Memory {
     queries: mpsc::UnboundedSender<QueryMemoryRequest>,
-    observations: mpsc::UnboundedSender<RecordVoiceObservationRequest>,
+    observations: mpsc::UnboundedSender<(RecordVoiceObservationRequest, ActorContext)>,
     hits: Vec<MemorySearchHit>,
 }
 
@@ -256,8 +257,16 @@ impl MemoryService for Memory {
         &self,
         request: Request<RecordVoiceObservationRequest>,
     ) -> Reply<VoiceObservationReceipt> {
+        let bytes = request
+            .metadata()
+            .get_bin("actor-context-bin")
+            .ok_or_else(|| Status::unauthenticated("actor metadata required"))?
+            .to_bytes()
+            .map_err(|_| Status::unauthenticated("invalid actor metadata"))?;
+        let actor = ActorContext::decode(bytes)
+            .map_err(|_| Status::unauthenticated("invalid actor context"))?;
         self.observations
-            .send(request.into_inner())
+            .send((request.into_inner(), actor))
             .map_err(|_| Status::cancelled("test done"))?;
         Ok(Response::new(VoiceObservationReceipt {
             capture_id: "cap".into(),
@@ -430,7 +439,7 @@ pub struct Harness {
     pub cancelled: mpsc::UnboundedReceiver<CancelPlaybackRequest>,
     pub modes: mpsc::UnboundedReceiver<SttMode>,
     pub queries: mpsc::UnboundedReceiver<QueryMemoryRequest>,
-    pub observations: mpsc::UnboundedReceiver<RecordVoiceObservationRequest>,
+    pub observations: mpsc::UnboundedReceiver<(RecordVoiceObservationRequest, ActorContext)>,
     capture: mpsc::Sender<std::result::Result<AudioUtterance, Status>>,
     shutdown: CancellationToken,
     jobs: JoinSet<Result>,

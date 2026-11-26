@@ -5,9 +5,11 @@ use std::{os::unix::fs::MetadataExt, path::Path, pin::Pin, sync::Arc, time::Dura
 use futures_util::Stream;
 use hyper_util::rt::TokioIo;
 use nexa_proto::{sockets, v1::*};
+use prost::Message;
 use tokio::net::UnixStream;
 use tonic::{
-    Status,
+    Request, Status,
+    metadata::MetadataValue,
     transport::{Channel, Endpoint},
 };
 use tower::service_fn;
@@ -16,7 +18,7 @@ pub type LiveEvents = Pin<Box<dyn Stream<Item = Result<LiveRuntimeEvent, Status>
 
 macro_rules! daemon {
     ($service:ident, $transport:ident, $client:path;
-     $( $method:ident($request:ty) -> $response:ty $(=> $adapt:expr)?; )+) => {
+     $( $method:ident($request:ty $(=> $actor_metadata:literal)?) -> $response:ty $(=> $adapt:expr)?; )+) => {
         #[tonic::async_trait]
         pub trait $service: Send + Sync {
             $(
@@ -33,6 +35,7 @@ macro_rules! daemon {
         impl $service for $transport {
             $(
                 async fn $method(&self, request: $request) -> Result<$response, Status> {
+                    $(let request = actor_request(request, $actor_metadata);)?
                     let response = <$client>::new(self.0.clone()).$method(request).await?.into_inner();
                     $(let response = ($adapt)(response);)?
                     Ok(response)
@@ -40,6 +43,15 @@ macro_rules! daemon {
             )+
         }
     };
+}
+
+fn actor_request(actor: ActorContext, metadata_key: &'static str) -> Request<Empty> {
+    let mut request = Request::new(Empty {});
+    request.metadata_mut().insert_bin(
+        metadata_key,
+        MetadataValue::from_bytes(&actor.encode_to_vec()),
+    );
+    request
 }
 
 daemon! {
@@ -56,9 +68,9 @@ daemon! {
     get_home_catalog(GetHomeCatalogRequest) -> HomeCatalogSnapshot;
     execute_home_action(HomeActionRequest) -> HomeActionReceipt;
     get_home_action_receipt(GetHomeActionReceiptRequest) -> HomeActionReceipt;
-    get_llm_endpoints(Empty) -> LlmEndpointsSnapshot;
+    get_llm_endpoints(ActorContext => "x-nexa-actor-bin") -> LlmEndpointsSnapshot;
     clear_llm_cooldown(ClearLlmCooldownRequest) -> Empty;
-    get_cloud_consent(Empty) -> CloudConsentStatus;
+    get_cloud_consent(ActorContext => "x-nexa-actor-bin") -> CloudConsentStatus;
     withdraw_cloud_consent(WithdrawCloudConsentRequest) -> CloudConsentStatus;
     subscribe_live_events(SubscribeLiveEventsRequest) -> LiveEvents
         => |response| -> LiveEvents { Box::pin(response) };
@@ -100,7 +112,7 @@ daemon! {
     link_voice_profile_to_person(LinkVoiceProfileRequest) -> VoiceProfile;
     set_voice_consent(SetVoiceConsentRequest) -> VoiceConsentStatus;
     purge_retired_user(PurgeRetiredUserRequest) -> ErasureReceipt;
-    get_ambient_control(Empty) -> AmbientControlStatus;
+    get_ambient_control(ActorContext => "actor-context-bin") -> AmbientControlStatus;
     set_ambient_pause(SetAmbientPauseRequest) -> AmbientControlStatus;
 }
 

@@ -26,6 +26,7 @@ tokio = { workspace = true, features = ["fs"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 nexa-proto.workspace = true
+prost.workspace = true
 serde.workspace = true
 tonic.workspace = true
 thiserror.workspace = true

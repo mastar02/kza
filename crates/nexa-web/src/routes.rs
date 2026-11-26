@@ -1230,7 +1230,7 @@ async fn execute(
                 .await?;
             json!({"status":capture(receipt.status.ok_or(BAD_UPSTREAM)?),"forgotten_capture_owners":receipt.forgotten_capture_owners})
         }
-        Ambient => ambient(memory.get_ambient_control(Empty {}).await?),
+        Ambient => ambient(memory.get_ambient_control(lease.actor()).await?),
         AmbientWrite => {
             exact_fields(body, &["paused", "expected_revision"])?;
             let value = memory
@@ -1345,7 +1345,7 @@ async fn execute(
         ),
         Llm => json!(
             brain
-                .get_llm_endpoints(Empty {})
+                .get_llm_endpoints(lease.actor())
                 .await?
                 .endpoints
                 .into_iter()
@@ -1454,7 +1454,7 @@ async fn execute(
             state.system.restart(id).await?;
             json!({"ok":true,"service":id,"command_completed":true})
         }
-        Cloud => cloud(brain.get_cloud_consent(Empty {}).await?, false),
+        Cloud => cloud(brain.get_cloud_consent(lease.actor()).await?, false),
         CloudWithdraw => cloud(
             brain
                 .withdraw_cloud_consent(WithdrawCloudConsentRequest { actor: actor() })

@@ -497,6 +497,12 @@ impl Brain {
                 query_embedding: vector.values,
                 top_k: 4,
                 include_shared: true,
+                actor: Some(v1::ActorContext {
+                    subject: "nexa-brain".into(),
+                    role: v1::Role::Operator as i32,
+                    permissions: vec![v1::Permission::MemoryRead as i32],
+                    ..Default::default()
+                }),
                 ..v1::QueryMemoryRequest::default()
             })
             .await?;
