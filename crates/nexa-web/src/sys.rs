@@ -4,14 +4,20 @@ use serde::Serialize;
 use tonic::async_trait;
 
 const RESTARTABLE: &[&str] = &[
-    "kza-voice",
-    "kza-llm-ik",
-    "kza-llm-fast",
-    "chromadb",
     "nexa-audiod",
     "nexa-brain",
     "nexa-memoryd",
+    "nexa-ml",
+    "nexa-llm-fast",
 ];
+
+#[cfg(any(target_os = "linux", test))]
+fn monitored_services() -> impl Iterator<Item = &'static str> {
+    RESTARTABLE
+        .iter()
+        .copied()
+        .chain(["nexa-web", "nexa-dashboard-proxy"])
+}
 
 pub fn restartable(name: &str) -> bool {
     RESTARTABLE.contains(&name)
@@ -102,7 +108,7 @@ impl SystemMonitor for PlatformMonitor {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{Gpu, MonitorError, RESTARTABLE, Service};
+    use super::{Gpu, MonitorError, Service, monitored_services};
     use futures_util::StreamExt;
     use nvml_wrapper::{Nvml, enum_wrappers::device::TemperatureSensor};
     use zbus::{Connection, Proxy, zvariant::OwnedObjectPath};
@@ -139,7 +145,7 @@ mod linux {
         let connection = Connection::session().await?;
         let manager = manager(&connection).await?;
         let mut result = Vec::new();
-        for name in RESTARTABLE.iter().copied().chain(["nexa-web"]) {
+        for name in monitored_services() {
             let unit_name = format!("{name}.service");
             let path: OwnedObjectPath = match manager.call("GetUnit", &(unit_name,)).await {
                 Ok(path) => path,
@@ -197,5 +203,27 @@ mod linux {
             }
         }
         Err(MonitorError::Unavailable)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn systemd_inventory_preserves_http_services_during_restart() {
+        let (allowed, read_only): (Vec<_>, Vec<_>) =
+            monitored_services().partition(|name| restartable(name));
+        assert_eq!(
+            allowed,
+            [
+                "nexa-audiod",
+                "nexa-brain",
+                "nexa-memoryd",
+                "nexa-ml",
+                "nexa-llm-fast"
+            ]
+        );
+        assert_eq!(read_only, ["nexa-web", "nexa-dashboard-proxy"]);
     }
 }
