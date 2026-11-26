@@ -2,7 +2,7 @@
 # One-time privileged server bootstrap for the dedicated non-sudo `nexa` runtime account.
 # Run ONLY on the Linux host during an authorized provisioning window (`sudo ./provision-nexa-user.sh`).
 # Zero containers/pods: configures native systemd --user linger, minimal hardware groups,
-# immutable /opt/nexa releases dir, strict udev rules, and per-UID 30s stop timeout.
+# user-managed /opt/nexa releases dir, strict udev rules, and per-UID 30s stop timeout.
 set -euo pipefail
 
 NEXA_USER="nexa"
@@ -45,8 +45,17 @@ loginctl enable-linger "${NEXA_USER}"
 
 NEXA_UID="$(id -u "${NEXA_USER}")"
 
-# Immutable release binaries & models (read-only for nexa; writable only by release installer).
-install -d -o root -g "${NEXA_USER}" -m 0750 /opt/nexa /opt/nexa/releases /opt/nexa/models /opt/nexa/bin /opt/nexa/lib
+# Hand off the two deployment directories once. On later runs their contents
+# are user-controlled and must never be traversed with root privileges.
+[[ ! -L /opt/nexa ]] || { echo "Unexpected /opt/nexa symlink" >&2; exit 1; }
+if [[ ! -d /opt/nexa || $(stat -c %U /opt/nexa) == root ]]; then
+  install -d -o root -g "${NEXA_USER}" -m 0750 /opt/nexa /opt/nexa/models /opt/nexa/bin /opt/nexa/lib
+  install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0750 /opt/nexa/releases
+  chown "${NEXA_USER}:${NEXA_USER}" /opt/nexa
+elif [[ $(stat -c %U /opt/nexa) != "${NEXA_USER}" ]]; then
+  echo "Unexpected /opt/nexa owner" >&2
+  exit 1
+fi
 # Validated TOML config (read-only for nexa) & owner-only secrets.
 install -d -o root -g "${NEXA_USER}" -m 0750 /etc/nexa
 install -d -o "${NEXA_USER}" -g "${NEXA_USER}" -m 0700 /etc/nexa/secrets

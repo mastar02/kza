@@ -2,6 +2,8 @@
 Description=Nexa Real-Time Audio Edge Daemon (ALSA, XVF3800, MA1260, ONNX CPU)
 PartOf=nexa.target
 After=sound.target
+StartLimitBurst=5
+StartLimitIntervalSec=120s
 
 [Service]
 Type=notify
@@ -14,16 +16,14 @@ UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
 ReadWritePaths=/var/lib/nexa/audiod /var/lib/nexa/clips
 LockPersonality=yes
 RestrictSUIDSGID=yes
-IPAddressDeny=any
 MemoryMax=8G
 CPUQuota=1200%
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=120s
 TimeoutStopSec=10s
 WatchdogSec=30s
 

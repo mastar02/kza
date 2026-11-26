@@ -1,8 +1,10 @@
 # Convenciones del servidor compartido — espejo local
 
-## Nota operativa 2026-11-25
+## Nota operativa 2026-11-26
 
 Alta del usuario Linux dedicado `nexa` para Nexa v2. La excepción R10 permite cinco daemons nativos y dos auxiliares bajo systemd de usuario, sin pods. El host `192.168.1.2` tiene 2× RTX 3070 de 8 GiB. El reparto físico vigente está en el [inventario](architecture/HARDWARE.md).
+
+Los servicios auxiliares de indexación `kza-chroma` y `kza-code-index-ctr` siguen bajo la cuenta `kza`. Nexa v2 corre bajo `nexa`.
 
 | Acceso | Dirección y alcance |
 | --- | --- |
@@ -19,26 +21,6 @@ A continuación se conserva el espejo histórico de Notion (páginas 8 y 9) con 
 > Inconsistencias conocidas DEL ORIGINAL (espejadas fielmente, no errores de este doc): la pág. 9 dice "reglas R1-R12" pero la pág. 8 define hasta R14; el mapa de puertos ubica `:9501` (Kibana, obs) dentro del sub-rango 9500-9599 reclamado por KZA; el sub-rango de thermouy (9320-9329) quedó dentro del de konsi (9300-9399). El propio original (auditoría 2026-05-01) reconoce que el mapa necesita auditoría.
 
 ---
-
-## Nota operativa local — 2026-10-28
-
-La release compilada de KZA, instalada por pedido del usuario, usa
-`kza-dashboard-proxy.service` con NGINX nativo bajo `kza`, TLS local en
-`192.168.1.2:9540` y backend en `127.0.0.1:9500`. El puerto 9540 pertenece al
-sub-rango KZA 9500–9599 y se comprobó libre antes de instalar. No se cambió el
-NGINX compartido. Esta exposición directa por el proxy del proyecto se registra
-como desviación operativa local de R6; queda pendiente integrarla con el proxy
-de plataforma. No implica una actualización de la página canónica de Notion.
-
-La consola de voz usa temporalmente archivo privado y rotación horaria, como
-desviación local de R9: el socket del journal global bloqueó el event loop. El
-usuario reinició journald; después volvió a observarse CPU alta. La investigación
-posterior identificó una avalancha de captura USB de KZA, y el operador retiró
-únicamente el micrófono involucrado. La reparación de esa ruta USB sigue pendiente.
-Journald se estabilizó durante más de tres minutos sin reiniciarlo ni modificar
-su configuración. Ver la [prueba de aislamiento](https://github.com/mastar02/kza/blob/archive/pre-purge-v2-2026-11/docs/runbooks/2026-10-28-journald-usb-flood.md).
-La rotación no prueba el borrado global requerido por privacidad. Ver
-[despliegue y limitaciones](architecture/DEPLOYMENT.md).
 
 ## Pág. 8 — Convenciones del servidor compartido
 
@@ -93,13 +75,9 @@ El servidor `192.168.1.2` aloja múltiples proyectos que comparten CPU, RAM, VRA
 1. **vLLM nativo bajo infra (2026-04-20)** — el overhead de NVIDIA CDI (~0.34 GB sobre 8 GB) obligaba a `gpu-memory-utilization 0.92`; se revirtió a nativo (`/home/infra/vllm-venv/`, systemd --user) con 0.80. Criterio para nativo en servicios de plataforma: (a) servicio estable y pinneado, (b) recursos al límite y el overhead del container lo agrava, (c) el dueño del servicio opera la infra. Forma nativa correcta: venv en `/home/<usuario>/<proyecto>-venv/`, unit en `~/.config/systemd/user/`, Type=simple, ExecStart absoluto al venv, Restart=on-failure.
 2. **ha-core rootful + host network (2026-04-21)** — Podman rootless con `--network=host` no ve la red física (slirp4netns/pasta); HA necesita broadcasts mDNS/SSDP para discovery. Quadlet rootful en `/etc/containers/systemd/ha-core.container`, `MemoryMax=3G`, `AddCapability=NET_ADMIN,NET_RAW`. Criterio rootful: (a) requiere visibilidad de red física real, (b) multicast/broadcast esencial, (c) sin alternativa rootless.
 3. **mail/Mailcow bajo root (requisito Docker)** — user `mail` (UID 8) existe pero Mailcow corre bajo root directamente.
-4. **unbound nativo bajo dns (2026-04-30)** — imagen mvance no es rootless-friendly. AppArmor override en `/etc/apparmor.d/local/usr.sbin.unbound` para leer config bajo `/home/dns/` (template para futuros servicios nativos). *(KZA-voice también corre nativo bajo systemd --user — excepción R10 propia, análoga a la #1 (vLLM nativo): acceso USB ReSpeaker + MA1260 serial + presupuesto <300ms hacen al contenedor inviable.)*
+4. **unbound nativo bajo dns (2026-04-30)** — imagen mvance no es rootless-friendly. AppArmor override en `/etc/apparmor.d/local/usr.sbin.unbound` para leer config bajo `/home/dns/` (template para futuros servicios nativos).
 5. **obs-filebeat nativo bajo obs (2026-06-04)** — imagen oficial 8.15.5 (libsystemd 245) no lee formato compact de systemd 255; keep-groups requiere crun no instalado.
-6. **kza-voice con lanzador gestionado (U3b-0d, desarrollado 2026-11-12, no instalado)** — dos desvíos de la forma nativa de la excepción #1, ambos de KZA:
-   - `Type=notify` con `NotifyAccess=main`, `KillMode=mixed` y `RestartPreventExitStatus=69 78` en vez de `Type=simple`. El proceso principal es el controlador de admisión (`/home/kza/releases/controller/current/scripts/stage_runtime.pyc serve`), que retransmite READY/WATCHDOG/STATUS del hijo `src.main`; el hijo nunca recibe `NOTIFY_SOCKET`. El drop-in es `~/.config/systemd/user/kza-voice.service.d/managed.conf`, generado desde `systemd/kza-voice.service.d/managed.conf.template`.
-   - El controlador y el hijo usan el venv `/home/kza/kza/.venv`, no `/home/<usuario>/<proyecto>-venv/`. El venv y los modelos quedan en la lista de conservación de la unidad de retiro Q5.
-   Detalle en `docs/architecture/DEPLOYMENT.md` § «Lanzador gestionado (U3b-0d)».
-7. **sudo único para el presupuesto de parada del manager de `kza` (decisión N1 = B del usuario, PENDIENTE de aplicar)** — el `timeout.conf` del paquete systemd de Ubuntu (`/usr/lib/systemd/system/user@.service.d/timeout.conf`, `TimeoutStopSec=5`) da 5 s a todo el manager de usuario en un reinicio; KZA no cierra ordenadamente en ese tiempo. El drop-in `/etc/systemd/system/user@1000.service.d/zz-kza-stop-timeout.conf` (`[Service]` `TimeoutStopSec=<B>s`, 0644 root:root) lo sube **sólo para uid 1000**; el `timeout.conf` del proveedor sigue vigente para los demás usuarios. B = la cadena de parada `After=` que empieza en kza-voice + 15 s; `install-launcher` imprime el valor. Lo aplica únicamente el usuario o el operador, en una ventana autorizada; ningún comando de KZA escribe en `/etc`. No reiniciar `user@1000.service`. Costo aceptado: un servicio de `kza` colgado puede demorar el reinicio del host hasta B (unos 3-4 min) en vez de 5 s. Mientras no esté aplicado, el controlador detecta el presupuesto efectivo en cada arranque y opera en modo de respaldo (cierre rápido y recuperación por arranque). Registrar aquí fecha y valor cuando se aplique.
+6. **Nexa v2 bajo nexa** — siete unidades systemd de usuario con acceso a hardware y estado según el [contrato de despliegue](architecture/DEPLOYMENT.md).
 
 ### Excepción a R6 — proxy intra-proyecto (2026-04-24)
 
