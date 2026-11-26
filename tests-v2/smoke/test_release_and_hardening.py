@@ -5,6 +5,7 @@ import errno
 import hashlib
 import json
 import os
+import pwd
 from pathlib import Path
 import re
 import select
@@ -47,6 +48,15 @@ def test_service_units():
         assert unit["Unit"]["PartOf"] == "nexa.target"
         assert s["NoNewPrivileges"] == s["PrivateTmp"] == "yes"
         assert s["ProtectSystem"] == "strict"
+        for key in ("StartLimitIntervalSec", "StartLimitBurst"):
+            assert unit["Unit"][key] and key not in s
+        assert all(key not in section for section in unit.values()
+                   for key in ("IPAddressDeny", "IPAddressAllow"))
+        families = {"AF_UNIX"}
+        if path.stem in {"nexa-brain", "nexa-web", "nexa-llm-fast", "nexa-dashboard-proxy"}:
+            families.update(("AF_INET", "AF_INET6"))
+        assert set(s["RestrictAddressFamilies"].split()) == families
+        assert s["RuntimeDirectoryPreserve"] == "yes"
         assert s["TimeoutStopSec"] == "10s"
         if path.stem in (*BINARIES, "nexa-ml"):
             assert s["Type"] == "notify"
@@ -75,6 +85,9 @@ def test_service_units():
             assert s["RuntimeDirectory"] == "nexa-proxy"
             assert s["ReadWritePaths"] == "/var/lib/nexa/proxy"
         if path.stem == "nexa-llm-fast":
+            args = s["ExecStart"].split()
+            for flag, value in (("-ngl", "99"), ("-t", "8"), ("-tb", "8")):
+                assert args[args.index(flag) + 1] == value
             assert s["RuntimeDirectory"] == "nexa-llm-fast"
             assert "CUDA_VISIBLE_DEVICES=1" in s["Environment"].split()
             assert "LD_LIBRARY_PATH=/opt/nexa/lib" in s["Environment"].split()
@@ -83,8 +96,6 @@ def test_service_units():
             assert ml["ambient_stt_device"] == ml["speaker_encoder_device"] == "cuda:0"
             assert ml["ambient_stt_workers"] == 2
             assert ml["embeddings_device"] == "cpu"
-        if path.stem in {"nexa-memoryd", "nexa-ml"}:
-            assert s["IPAddressDeny"] == "any" and "IPAddressAllow" not in s
         if path.stem == "nexa-ml":
             assert "PYTHONDONTWRITEBYTECODE=1" in s["Environment"].split()
             assert "PYTHONPATH=/opt/nexa/current/ml/src" in s["Environment"].split()
@@ -200,7 +211,10 @@ def test_reject_invalid_source_date_epoch(inputs, monkeypatch, epoch):
     assert not out.exists()
 
 
-def test_package_and_switch(inputs):
+@pytest.mark.parametrize("user_mode", [False, True], ids=["legacy", "user"])
+def test_package_and_switch(inputs, user_mode):
+    if user_mode and os.geteuid() == 0:
+        pytest.skip("user installation requires a real non-root uid")
     v1 = package(inputs)
     files = sorted(p.relative_to(v1).as_posix() for p in v1.rglob("*") if p.is_file())
     sums = (v1 / "SHA256SUMS").read_text().splitlines()
@@ -217,8 +231,12 @@ def test_package_and_switch(inputs):
     root.mkdir()
     env = dict(os.environ, NEXA_INSTALL_TEST_ROOT=str(root), NEXA_SKIP_SYSTEMCTL="1", NEXA_SKIP_CHOWN="1")
 
+    options = ["--user"] if user_mode else []
+    if user_mode:
+        env["NEXA_USER"] = pwd.getpwuid(os.geteuid()).pw_name
+
     def install(*args, ok=True):
-        return run("bash", DEPLOY / "install-release.sh", *args, env=env, ok=ok)
+        return run("bash", DEPLOY / "install-release.sh", *options, *args, env=env, ok=ok)
 
     current = root / "opt/nexa/current"
     install("install", v1, "v1")
@@ -234,9 +252,15 @@ def test_package_and_switch(inputs):
     for version in ("../evil", "a..b", ".", "/absolute"):
         install("install", v2, version, ok=False)
         install("rollback", version, ok=False)
+    lock = current.parent / ".install-lock"
+    lock.mkdir()
+    assert "install lock unavailable" in install("install", v2, "v2", ok=False).stderr
+    assert lock.is_dir() and not (root / "opt/nexa/releases/v2").exists()
+    lock.rmdir()
     content = (v2 / "ml/worker.py").read_bytes()
     (v2 / "ml/worker.py").write_bytes(content + b"!")
-    install("install", v2, "v2", ok=False)
+    corrupt = install("install", v2, "v2", ok=False)
+    assert "FAILED" in corrupt.stdout
     (v2 / "ml/worker.py").write_bytes(content)
     (v2 / "ml/extra").touch()
     install("install", v2, "v2", ok=False)
@@ -267,10 +291,13 @@ def test_package_and_switch(inputs):
     assert os.readlink(current) == "releases/v2"
     target = root / "home/nexa/.config/systemd/user/nexa.target"
     assert target.read_bytes() == (units / "nexa.target").read_bytes()
-    assert stat.S_IMODE((current / "bin/nexa-web").stat().st_mode) == 0o750
+    assert stat.S_IMODE((current / "bin/nexa-web").stat().st_mode) == (0o550 if user_mode else 0o750)
     assert (current / "ml/worker.py").read_bytes() == content
     assert stat.S_IMODE((current / "ml/worker.py").stat().st_mode) == 0o440
-    install("rollback", "v1")
+    if user_mode:
+        for path in [current, *current.rglob("*")]:
+            assert path.stat().st_mode & 0o222 == 0
+    install("--rollback" if user_mode else "rollback", "v1")
     assert os.readlink(current) == "releases/v1"
     assert target.read_bytes() == (v1 / "systemd/nexa.target").read_bytes()
     assert (current / "ml/worker.py").read_text() == "pass\n"

@@ -3,6 +3,8 @@ Description=Nexa Voice Brain (NLU, Orchestrator, HA WS Cache, Household Core, LL
 PartOf=nexa.target
 After=network-online.target nexa-audiod.service nexa-ml.service nexa-memoryd.service nexa-llm-fast.service
 Wants=network-online.target nexa-audiod.service nexa-ml.service nexa-memoryd.service nexa-llm-fast.service
+StartLimitBurst=5
+StartLimitIntervalSec=120s
 
 [Service]
 Type=notify
@@ -15,19 +17,14 @@ UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/nexa/household
 LockPersonality=yes
 RestrictSUIDSGID=yes
-# Loopback only by default (HA :8123, llama-server :8101, LiteLLM :8200).
-# Add a drop-in IPAddressAllow=<HA_LAN_IP>/32 if Home Assistant lives on a separate LAN IP.
-IPAddressDeny=any
-IPAddressAllow=127.0.0.1/32
 MemoryMax=4G
 CPUQuota=400%
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=120s
 TimeoutStopSec=10s
 WatchdogSec=30s
 

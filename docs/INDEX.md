@@ -18,4 +18,4 @@
 
 ## Archivo del monolito
 
-**T7.0b · HECHO e integrado en `v2/main`.** El [roadmap](architecture/NEXA_V2_ROADMAP.md) identifica los dos tags de archivo y el gate de retiro en el servidor. Las pruebas del orquestador se mantienen en [tests-v2/workflow](../tests-v2/workflow/). El [manifiesto de rescate](research/2026-10-25-production-recovery.json) conserva la trazabilidad de producción.
+[Árbol previo a la purga](https://github.com/mastar02/kza/tree/archive/pre-purge-v2-2026-11) · [Rescate del monolito](https://github.com/mastar02/kza/tree/archive/legacy-monolith-2026-11).

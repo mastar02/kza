@@ -3,6 +3,8 @@ Description=Nexa Independent Web Control Plane (Axum, Auth/RBAC, WS Fan-out, Vit
 PartOf=nexa.target
 After=network-online.target nexa-brain.service nexa-memoryd.service nexa-audiod.service
 Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=120s
 
 [Service]
 Type=notify
@@ -15,17 +17,14 @@ UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 ReadWritePaths=/var/lib/nexa/auth
 LockPersonality=yes
 RestrictSUIDSGID=yes
-IPAddressDeny=any
-IPAddressAllow=127.0.0.1/32
 MemoryMax=1G
 CPUQuota=200%
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=120s
 TimeoutStopSec=10s
 WatchdogSec=30s
 

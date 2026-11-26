@@ -1,6 +1,8 @@
 [Unit]
 Description=Nexa Stateless GPU ML Worker (Whisper, Kokoro streaming TTS, ECAPA, BGE-M3)
 PartOf=nexa.target
+StartLimitBurst=5
+StartLimitIntervalSec=180s
 
 [Service]
 Type=notify
@@ -15,15 +17,13 @@ UMask=0077
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX
 LockPersonality=yes
 RestrictSUIDSGID=yes
-IPAddressDeny=any
 MemoryMax=32G
 CPUQuota=1600%
 Restart=on-failure
 RestartSec=5s
-StartLimitBurst=5
-StartLimitIntervalSec=180s
 TimeoutStartSec=120s
 TimeoutStopSec=10s
 WatchdogSec=30s
