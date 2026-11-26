@@ -7,11 +7,12 @@ per mode (COMMAND off, AMBIENT on) because the proto carries no such field.
 """
 
 import asyncio
+import contextlib
 import logging
 import pathlib
 import re
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -172,16 +173,77 @@ def faster_whisper_loader(
     return load
 
 
+class WhisperPriorityGate:
+    """Arbitrates one shared Whisper slot so COMMAND always preempts queued AMBIENT work."""
+
+    def __init__(self) -> None:
+        self._busy = False
+        self._commands_waiting = 0
+        self._ambient_waiting = 0
+        self._cond: asyncio.Condition | None = None
+
+    def _condition(self) -> asyncio.Condition:
+        if self._cond is None:
+            self._cond = asyncio.Condition()
+        return self._cond
+
+    @contextlib.asynccontextmanager
+    async def command(self) -> AsyncIterator[None]:
+        cond = self._condition()
+        async with cond:
+            self._commands_waiting += 1
+            try:
+                await cond.wait_for(lambda: not self._busy)
+                self._busy = True
+            finally:
+                self._commands_waiting -= 1
+                if not self._busy:
+                    cond.notify_all()
+        try:
+            yield
+        finally:
+            async with cond:
+                self._busy = False
+                cond.notify_all()
+
+    @contextlib.asynccontextmanager
+    async def ambient(self, max_waiting: int) -> AsyncIterator[None]:
+        cond = self._condition()
+        async with cond:
+            if self._busy or self._commands_waiting > 0:
+                if self._ambient_waiting >= max_waiting:
+                    raise ResourceExhaustedError("shared ambient queue is full")
+                self._ambient_waiting += 1
+                try:
+                    await cond.wait_for(lambda: not self._busy and self._commands_waiting == 0)
+                finally:
+                    self._ambient_waiting -= 1
+            self._busy = True
+        try:
+            yield
+        finally:
+            async with cond:
+                self._busy = False
+                cond.notify_all()
+
+
 class WhisperSlot:
-    """Single Whisper instance (COMMAND or one AMBIENT pool member)."""
+    """Single Whisper instance (COMMAND, shared COMMAND/AMBIENT, or one AMBIENT pool member)."""
 
     def __init__(
-        self, slot: ModelSlot, *, vad_filter: bool, default_beam: int, default_language: str
+        self,
+        slot: ModelSlot,
+        *,
+        vad_filter: bool,
+        default_beam: int,
+        default_language: str,
+        gate: WhisperPriorityGate | None = None,
     ) -> None:
         self.slot = slot
         self.vad_filter = vad_filter
         self.default_beam = default_beam
         self.default_language = default_language
+        self._gate = gate
 
     def options(
         self, *, language: str, beam_size: int, initial_prompt: str, hotwords: str
@@ -205,7 +267,61 @@ class WhisperSlot:
         infer = (timing or InferenceTiming()).wrap(
             self.slot.slot_id, lambda model: transcribe_blocking(model, audio, opts, name)
         )
+        if self._gate is not None:
+            async with self._gate.command():
+                return await self.slot.run(infer)
         return await self.slot.run(infer)
+
+
+class SharedWhisperAmbient:
+    """Low-priority AMBIENT facade reusing the single COMMAND Whisper slot."""
+
+    def __init__(
+        self,
+        slot: ModelSlot,
+        *,
+        gate: WhisperPriorityGate,
+        vad_filter: bool,
+        default_beam: int,
+        default_language: str,
+        max_waiting: int,
+    ) -> None:
+        self.slot = slot
+        self._gate = gate
+        self.vad_filter = vad_filter
+        self.default_beam = default_beam
+        self.default_language = default_language
+        self._max_waiting = max_waiting
+
+    @property
+    def template(self) -> "SharedWhisperAmbient":
+        """Options template matching WhisperPool's contract."""
+        return self
+
+    def options(
+        self, *, language: str, beam_size: int, initial_prompt: str, hotwords: str
+    ) -> TranscribeOptions:
+        """Validate ambient options (keeping ambient vad_filter/beam defaults)."""
+        return build_options(
+            language=language,
+            beam_size=beam_size,
+            vad_filter=self.vad_filter,
+            initial_prompt=initial_prompt,
+            hotwords=hotwords,
+            default_language=self.default_language,
+            default_beam=self.default_beam,
+        )
+
+    async def transcribe(
+        self, audio: np.ndarray, opts: TranscribeOptions, *, timing: InferenceTiming | None = None
+    ) -> Transcription:
+        """Run ambient STT on the shared slot whenever no COMMAND is waiting or active."""
+        name = self.slot.model_name
+        infer = (timing or InferenceTiming()).wrap(
+            self.slot.slot_id, lambda model: transcribe_blocking(model, audio, opts, name)
+        )
+        async with self._gate.ambient(self._max_waiting):
+            return await self.slot.run(infer)
 
 
 class WhisperPool:

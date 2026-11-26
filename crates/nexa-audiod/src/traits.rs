@@ -63,7 +63,25 @@ pub trait WakeEngine: Send {
 
 /// Run the single shared shadow recognizer off the real-time capture path.
 pub trait ShadowStt: Send {
+    fn is_enabled(&self) -> bool {
+        true
+    }
+
     fn transcribe(&mut self, samples: &[f32]) -> Result<String, AudioError>;
+}
+
+/// Zero-overhead no-op shadow recognizer used when Parakeet is disabled.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DisabledShadow;
+
+impl ShadowStt for DisabledShadow {
+    fn is_enabled(&self) -> bool {
+        false
+    }
+
+    fn transcribe(&mut self, _samples: &[f32]) -> Result<String, AudioError> {
+        Ok(String::new())
+    }
 }
 
 pub trait AmpTransport: Send + Sync {

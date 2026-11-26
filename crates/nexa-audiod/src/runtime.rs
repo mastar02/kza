@@ -11,6 +11,7 @@ use nexa_proto::v1::{
 use tokio::sync::{Semaphore, mpsc, watch};
 
 use crate::ambient_guard::{AmbientGuard, CaptureOutcome};
+use crate::arbiter::{ArbitrationOutcome, WakeArbiter, WakeClaim};
 use crate::capture_seal::{
     CaptureError, CaptureTransition, SharedCapture, change_capture, running_epoch,
 };
@@ -167,6 +168,7 @@ impl CaptureGate {
 pub struct SharedShadow<S> {
     model: Arc<Mutex<S>>,
     permit: Arc<Semaphore>,
+    enabled: bool,
 }
 
 struct ShadowResult {
@@ -177,9 +179,11 @@ struct ShadowResult {
 
 impl<S: ShadowStt + 'static> SharedShadow<S> {
     pub fn new(model: S) -> Self {
+        let enabled = model.is_enabled();
         Self {
             model: Arc::new(Mutex::new(model)),
             permit: Arc::new(Semaphore::new(1)),
+            enabled,
         }
     }
 
@@ -189,6 +193,16 @@ impl<S: ShadowStt + 'static> SharedShadow<S> {
         epoch: u64,
         recording: Recording,
     ) -> Result<Option<ShadowResult>, AudioError> {
+        if !self.enabled {
+            if gate.epoch() != Some(epoch) {
+                return Ok(None);
+            }
+            return Ok(Some(ShadowResult {
+                recording,
+                text: Ok(String::new()),
+                latency_ms: 0,
+            }));
+        }
         let permit = tokio::select! {
             biased;
             _ = gate.closed(epoch) => return Ok(None),
@@ -229,6 +243,7 @@ struct RoomProcessor<V, W> {
     room: MicrophoneRoomStatus,
     inference: Arc<Mutex<(V, W)>>,
     wake_threshold: f32,
+    arbiter: WakeArbiter,
 }
 
 impl<C, V, W> RoomPipeline<C, V, W>
@@ -250,8 +265,16 @@ where
                 },
                 inference: Arc::new(Mutex::new((vad, wake))),
                 wake_threshold,
+                arbiter: WakeArbiter::default(),
             },
         }
+    }
+
+    /// Share a multi-room wake arbiter across all configured room pipelines.
+    #[must_use]
+    pub fn with_arbiter(mut self, arbiter: WakeArbiter) -> Self {
+        self.processor.arbiter = arbiter;
+        self
     }
 
     pub async fn run<A: AmpTransport, P: PlaybackOutput, S: ShadowStt + 'static>(
@@ -550,6 +573,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
         room,
         inference,
         wake_threshold,
+        arbiter,
     } = processor;
     let reset = Arc::clone(inference);
     tokio::task::spawn_blocking(move || {
@@ -567,7 +591,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
     let mut guard = AmbientGuard::default();
     let mut preroll: VecDeque<[f32; FRAME_SAMPLES]> = VecDeque::with_capacity(WAKE_PREROLL_FRAMES);
     let mut near_wake_logged_at: Option<Instant> = None;
-    let mut current: Option<(PostWakeEndpoint, Recording)> = None;
+    let mut current: Option<(PostWakeEndpoint, Recording, WakeClaim)> = None;
     let mut non_wake = None::<NonWakeSegment>;
     let mut ambient_demand = service.ambient_demand();
     let mut generation = ambient_demand.borrow_and_update().generation();
@@ -634,23 +658,40 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
         }
         .map_err(|error| unavailable("join room inference worker", error))??;
         let now = Instant::now();
-        if let Some((mut endpoint, mut recording)) = current.take() {
+        if let Some((mut endpoint, mut recording, claim)) = current.take() {
             let remaining = endpoint.remaining().as_millis() as usize * SAMPLE_RATE as usize / 1000;
             let used = remaining.min(frame.len());
             recording.samples.extend_from_slice(&frame[..used]);
+            claim.observe_rms(rms);
             let decision = endpoint.observe(rms, Some(speech), frame_duration(used));
             if decision == EndpointDecision::Listening {
-                current = Some((endpoint, recording));
+                current = Some((endpoint, recording, claim));
             } else if decision.dispatches() {
                 recording.endpoint = Some(endpoint.telemetry());
-                guard.record(now, CaptureOutcome::Accepted);
-                follow_up_until = Some(now + FOLLOW_UP_WINDOW);
-                tokio::select! {
-                    biased;
-                    _ = gate.closed(epoch) => return Ok(()),
-                    result = utterances.send(recording) => result.map_err(|error| unavailable("enqueue utterance", error))?,
+                let final_rms = frame_rms(&recording.samples);
+                match claim.finish(final_rms, now) {
+                    ArbitrationOutcome::Won => {
+                        guard.record(now, CaptureOutcome::Accepted);
+                        follow_up_until = Some(now + FOLLOW_UP_WINDOW);
+                        tokio::select! {
+                            biased;
+                            _ = gate.closed(epoch) => return Ok(()),
+                            result = utterances.send(recording) => result.map_err(|error| unavailable("enqueue utterance", error))?,
+                        }
+                    }
+                    ArbitrationOutcome::Yielded { winner_room } => {
+                        tracing::info!(
+                            room_id = %room.room_id,
+                            utterance_id = %recording.id,
+                            winner_room,
+                            rms = final_rms,
+                            peak_voice_rms = endpoint.telemetry().peak_voice_rms,
+                            "utterance yielded to louder room"
+                        );
+                    }
                 }
             } else {
+                drop(claim);
                 recording.endpoint = Some(endpoint.telemetry());
                 recording.log_endpoint(&room.room_id, decision, 0, false);
                 guard.record(now, CaptureOutcome::Rejected);
@@ -681,7 +722,8 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 recording.samples.extend_from_slice(&prior);
             }
             recording.samples.extend_from_slice(&frame);
-            current = Some((endpoint, recording));
+            let claim = arbiter.begin(&room.room_id, now, score, rms);
+            current = Some((endpoint, recording, claim));
             continue;
         }
         if score >= NEAR_WAKE_LOG_MIN

@@ -223,6 +223,9 @@ impl RouterEngine {
                     None,
                     weak_wake,
                 ),
+                GrammarMatch::Blocked(grammar::GrammarBlock::Information) => {
+                    (PathType::SlowLlm, Route::SlowLlm, None, false)
+                }
                 GrammarMatch::Blocked(block) => (
                     PathType::Rejected,
                     Route::Rejected,

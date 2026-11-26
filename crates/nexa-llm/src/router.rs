@@ -73,7 +73,7 @@ impl FailoverRouter {
         cancel: &CancellationToken,
         emit: impl FnMut(&str),
     ) -> Result<&str, LlmError> {
-        self.stream_endpoints(prompt, max_tokens, cancel, false, emit)
+        self.stream_endpoints(None, prompt, max_tokens, None, cancel, false, emit)
             .await
     }
 
@@ -85,14 +85,41 @@ impl FailoverRouter {
         cancel: &CancellationToken,
         emit: impl FnMut(&str),
     ) -> Result<&str, LlmError> {
-        self.stream_endpoints(prompt, max_tokens, cancel, true, emit)
+        self.stream_endpoints(None, prompt, max_tokens, None, cancel, true, emit)
             .await
     }
 
-    async fn stream_endpoints(
+    /// Run a bounded local-only completion with a custom system prompt and temperature.
+    pub async fn complete_local_with_system(
         &self,
+        system_prompt: &str,
         prompt: &str,
         max_tokens: u32,
+        temperature: f32,
+        cancel: &CancellationToken,
+    ) -> Result<(&str, String), LlmError> {
+        let mut output = String::new();
+        let endpoint = self
+            .stream_endpoints(
+                Some(system_prompt),
+                prompt,
+                max_tokens,
+                Some(temperature),
+                cancel,
+                true,
+                |chunk| output.push_str(chunk),
+            )
+            .await?;
+        Ok((endpoint, output))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn stream_endpoints(
+        &self,
+        system_prompt: Option<&str>,
+        prompt: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
         cancel: &CancellationToken,
         local_only: bool,
         mut emit: impl FnMut(&str),
@@ -108,13 +135,29 @@ impl FailoverRouter {
             let start = Instant::now();
             // Filtered reasoning can establish endpoint progress before the caller sees text.
             let mut visible = false;
-            let (result, first_token) = self
-                .client
-                .stream_attempt(ep, prompt, max_tokens, cancel, |text| {
-                    visible = true;
-                    emit(text);
-                })
-                .await;
+            let (result, first_token) = if let Some(system_prompt) = system_prompt {
+                self.client
+                    .stream_attempt_with(
+                        ep,
+                        system_prompt,
+                        prompt,
+                        max_tokens,
+                        temperature,
+                        cancel,
+                        |text| {
+                            visible = true;
+                            emit(text);
+                        },
+                    )
+                    .await
+            } else {
+                self.client
+                    .stream_attempt(ep, prompt, max_tokens, cancel, |text| {
+                        visible = true;
+                        emit(text);
+                    })
+                    .await
+            };
             if cancel.is_cancelled() {
                 return Err(LlmError::Cancelled);
             }

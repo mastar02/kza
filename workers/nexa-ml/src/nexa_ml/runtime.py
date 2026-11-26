@@ -17,7 +17,9 @@ from nexa_ml.tts_slot import TTS_SLOT_ID, TtsSlot, kokoro_loader
 from nexa_ml.whisper_slot import (
     AMBIENT_SLOT_PREFIX,
     COMMAND_SLOT_ID,
+    SharedWhisperAmbient,
     WhisperPool,
+    WhisperPriorityGate,
     WhisperSlot,
     faster_whisper_loader,
 )
@@ -104,6 +106,13 @@ class MlRuntime:
         self._clock = clock
         self._started = clock()
         mp = config.max_pending
+        shared_stt = (
+            config.ambient_stt_workers == 1
+            and config.ambient_stt_model == config.command_stt_model
+            and config.ambient_stt_device == config.command_stt_device
+            and config.ambient_stt_compute_type == config.command_stt_compute_type
+        )
+        gate = WhisperPriorityGate() if shared_stt else None
         self.command = WhisperSlot(
             ModelSlot(
                 COMMAND_SLOT_ID,
@@ -115,23 +124,41 @@ class MlRuntime:
             vad_filter=config.command_vad_filter,
             default_beam=config.command_beam_size,
             default_language=config.stt_language,
+            gate=gate,
         )
-        members = [
-            WhisperSlot(
-                ModelSlot(
-                    f"{AMBIENT_SLOT_PREFIX}{i}",
-                    config.ambient_stt_model,
-                    config.ambient_stt_device,
-                    loaders.ambient_stt(i),
-                    max_pending=1,
-                ),
+        if shared_stt and gate is not None:
+            logger.info(
+                "Sharing single Whisper slot %s for command and ambient (%s on %s)",
+                COMMAND_SLOT_ID,
+                config.command_stt_model,
+                config.command_stt_device,
+            )
+            members: list[WhisperSlot] = []
+            self.ambient: WhisperPool | SharedWhisperAmbient = SharedWhisperAmbient(
+                self.command.slot,
+                gate=gate,
                 vad_filter=config.ambient_vad_filter,
                 default_beam=config.ambient_beam_size,
                 default_language=config.stt_language,
+                max_waiting=mp,
             )
-            for i in range(config.ambient_stt_workers)
-        ]
-        self.ambient = WhisperPool(members, max_waiting=mp)
+        else:
+            members = [
+                WhisperSlot(
+                    ModelSlot(
+                        f"{AMBIENT_SLOT_PREFIX}{i}",
+                        config.ambient_stt_model,
+                        config.ambient_stt_device,
+                        loaders.ambient_stt(i),
+                        max_pending=1,
+                    ),
+                    vad_filter=config.ambient_vad_filter,
+                    default_beam=config.ambient_beam_size,
+                    default_language=config.stt_language,
+                )
+                for i in range(config.ambient_stt_workers)
+            ]
+            self.ambient = WhisperPool(members, max_waiting=mp)
         self.tts = TtsSlot(
             ModelSlot(TTS_SLOT_ID, config.tts_model, config.tts_device, loaders.tts, max_pending=mp),
             default_voice=config.tts_voice,

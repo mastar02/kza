@@ -1,8 +1,13 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
+use nexa_ha::EffectIntent;
 use nexa_llm::{CancellationToken, LlmError};
 use nexa_proto::v1::{self, LiveEventKind};
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Status;
@@ -10,6 +15,123 @@ use tonic::Status;
 use crate::Brain;
 
 use super::Turn;
+
+const VOICE_MAX_TOKENS: u32 = 140;
+const HOME_ROUTER_MAX_TOKENS: u32 = 180;
+const HOME_ROUTER_TEMPERATURE: f32 = 0.15;
+const MAX_CATALOG_ENTITIES: usize = 64;
+
+const HOME_ROUTER_SYSTEM_PROMPT: &str = "Sos Nexa, un asistente doméstico rioplatense. Respondé SOLO con un objeto JSON válido sin texto extra ni bloques de razonamiento.\nFormato exacto:\n{\"action\": {\"entity_id\": \"...\", \"operation\": \"...\", \"params\": {}} | null, \"confidence\": 0.0, \"reply\": \"respuesta breve en español (1-2 oraciones)\"}\nReglas estrictas:\n1. Usá \"action\" SOLO si el usuario pide controlar un dispositivo de la lista provista. Elegí ÚNICAMENTE un entity_id y una operation presentes en esa lista.\n2. Si el usuario no nombra habitación, priorizá los dispositivos de source_room.\n3. Operaciones válidas y sus params exactos: turn_on ({}), turn_off ({}), activate_scene ({}), open_cover ({}), close_cover ({}), stop_cover ({}), set_cover_position ({\"position\": \"0..100\"}), brightness ({\"brightness_pct\": \"1..100\"}), color_temp_kelvin ({\"color_temp_kelvin\": \"2000..6500\"}), set_temperature ({\"temperature\": \"16..30\"}), set_hvac_mode ({\"hvac_mode\": \"off|cool|heat|dry|fan_only|auto\"}).\n4. Nunca inventes entidades ni controles cerraduras o alarmas.\n5. Si es una pregunta sobre el estado de la casa o charla general, devolvé \"action\": null, \"confidence\": 0.0 y una respuesta concisa en \"reply\".";
+
+#[derive(Debug, Deserialize)]
+struct LlmHomeDecision {
+    #[serde(default)]
+    action: Option<LlmHomeAction>,
+    #[serde(default)]
+    confidence: f32,
+    #[serde(default)]
+    reply: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlmHomeAction {
+    entity_id: String,
+    operation: String,
+    #[serde(default)]
+    params: HashMap<String, Value>,
+}
+
+fn strip_json_fences(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if let Some(rest) = trimmed.strip_prefix("```") {
+        let body = rest
+            .strip_prefix("json")
+            .or_else(|| rest.strip_prefix("JSON"))
+            .unwrap_or(rest)
+            .trim_start();
+        if let Some(inner) = body.strip_suffix("```") {
+            return inner.trim();
+        }
+    }
+    trimmed
+}
+
+fn parse_llm_home_decision(raw: &str) -> Option<LlmHomeDecision> {
+    let clean = strip_json_fences(raw);
+    if let Ok(parsed) = serde_json::from_str::<LlmHomeDecision>(clean) {
+        return Some(parsed);
+    }
+    let start = clean.find('{')?;
+    let end = clean.rfind('}')?;
+    (end > start)
+        .then(|| serde_json::from_str::<LlmHomeDecision>(&clean[start..=end]).ok())
+        .flatten()
+}
+
+fn flatten_params(raw: &HashMap<String, Value>) -> Option<HashMap<String, String>> {
+    let mut out = HashMap::with_capacity(raw.len());
+    for (key, value) in raw {
+        let text = match value {
+            Value::String(s) => s.clone(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            _ => return None,
+        };
+        out.insert(key.clone(), text);
+    }
+    Some(out)
+}
+
+fn is_disallowed_security_entity(entity_id: &str) -> bool {
+    matches!(
+        entity_id.split_once('.').map(|(domain, _)| domain),
+        Some("lock" | "alarm_control_panel")
+    )
+}
+
+fn is_readonly_state_query(text: &str) -> bool {
+    let folded = nexa_nlu::normalize::words(text);
+    let tokens: Vec<&str> = folded.split_whitespace().collect();
+    let Some(&first) = tokens.first() else {
+        return false;
+    };
+    let asks_status_verb = matches!(
+        first,
+        "esta" | "estan" | "sigue" | "siguen" | "quedo" | "quedaron"
+    );
+    let has_state_adjective = tokens.iter().any(|word| {
+        matches!(
+            *word,
+            "prendida"
+                | "prendidas"
+                | "prendido"
+                | "prendidos"
+                | "encendida"
+                | "encendidas"
+                | "encendido"
+                | "encendidos"
+                | "apagada"
+                | "apagadas"
+                | "apagado"
+                | "apagados"
+                | "abierta"
+                | "abiertas"
+                | "abierto"
+                | "abiertos"
+                | "cerrada"
+                | "cerradas"
+                | "cerrado"
+                | "cerrados"
+        )
+    });
+    if asks_status_verb && has_state_adjective {
+        return true;
+    }
+    folded.starts_with("como esta ")
+        || folded.starts_with("como estan ")
+        || folded.starts_with("a cuanto esta ")
+        || folded.starts_with("que temperatura ")
+}
 
 impl Brain {
     async fn memory_context(&self, text: &str) -> Result<Vec<String>, Status> {
@@ -59,6 +181,193 @@ impl Brain {
             .collect())
     }
 
+    fn allowlisted_home_catalog(&self, source_room: &str) -> Vec<Value> {
+        let mut entities: Vec<_> = self
+            .catalog()
+            .entities
+            .into_iter()
+            .filter(|entity| {
+                !entity.capabilities.is_empty() && !is_disallowed_security_entity(&entity.entity_id)
+            })
+            .collect();
+        // Prioritize devices in the room where the user spoke, then non-scene devices, then scenes.
+        entities.sort_by_key(|entity| {
+            (
+                entity.room_id != source_room,
+                entity.entity_id.starts_with("scene."),
+            )
+        });
+        entities
+            .into_iter()
+            .take(MAX_CATALOG_ENTITIES)
+            .map(|entity| {
+                json!({
+                    "entity_id": entity.entity_id,
+                    "room": entity.room_id,
+                    "name": entity.friendly_name,
+                    "state": entity.state,
+                    "ops": entity.capabilities,
+                })
+            })
+            .collect()
+    }
+
+    async fn try_local_home_router(
+        &self,
+        turn: &Turn,
+        conversation: &str,
+        text: &str,
+        context: &[String],
+    ) -> Result<Option<String>, Status> {
+        if self.home.deps.is_none() || self.config.ha_controls.entities.is_empty() {
+            return Ok(None);
+        }
+        let catalog = self.allowlisted_home_catalog(&turn.zone);
+        if catalog.is_empty() {
+            return Ok(None);
+        }
+        let mut payload = json!({
+            "source_room": turn.zone,
+            "utterance": text,
+            "devices": catalog,
+        });
+        if !context.is_empty() {
+            payload["memory"] = json!(context);
+        }
+        let started = Instant::now();
+        let cancel = turn.lease.cancel.child_token();
+        let (endpoint_id, raw) = match self
+            .llm
+            .complete_local_with_system(
+                HOME_ROUTER_SYSTEM_PROMPT,
+                &payload.to_string(),
+                HOME_ROUTER_MAX_TOKENS,
+                HOME_ROUTER_TEMPERATURE,
+                &cancel,
+            )
+            .await
+        {
+            Ok(result) => result,
+            Err(LlmError::Cancelled) => return Err(Status::cancelled("turn cancelled")),
+            Err(error) => {
+                tracing::warn!(
+                    route = "llm_ha",
+                    room_id = %turn.zone,
+                    utterance_id = %conversation,
+                    latency_ms = started.elapsed().as_millis(),
+                    status = error.code(),
+                    "Local HA LLM router failed; falling back to streaming reply"
+                );
+                return Ok(None);
+            }
+        };
+        let llm_ms = started.elapsed().as_millis();
+        let Some(decision) = parse_llm_home_decision(&raw) else {
+            tracing::info!(
+                route = "llm_ha",
+                room_id = %turn.zone,
+                utterance_id = %conversation,
+                endpoint_id,
+                latency_ms = llm_ms,
+                status = "non_json_fallback",
+                "Local HA LLM router returned non-JSON"
+            );
+            let fallback = raw.trim();
+            let looks_like_broken_json = fallback.starts_with('{') || fallback.starts_with("```");
+            return Ok((!fallback.is_empty() && !looks_like_broken_json)
+                .then(|| fallback.chars().take(320).collect()));
+        };
+
+        let min_conf = self.config.core.nlu.min_llm_command_confidence;
+        let readonly_query = is_readonly_state_query(text);
+        if let Some(action) = decision.action
+            && !readonly_query
+            && decision.confidence.is_finite()
+            && decision.confidence >= min_conf
+        {
+            let allowed = !is_disallowed_security_entity(&action.entity_id)
+                && self
+                    .config
+                    .ha_controls
+                    .entities
+                    .contains_key(&action.entity_id);
+            let intent = if allowed {
+                flatten_params(&action.params)
+                    .and_then(|params| {
+                        crate::home::typed_operation(&action.operation, &params).ok()
+                    })
+                    .map(|operation| EffectIntent {
+                        entity_id: action.entity_id.clone(),
+                        operation,
+                    })
+            } else {
+                None
+            };
+            if let Some(intent) = intent {
+                let result = self.execute_home(crate::id("llm-voice"), intent).await;
+                let total_ms = started.elapsed().as_millis();
+                match &result {
+                    Ok(receipt) => tracing::info!(
+                        route = "llm_ha",
+                        room_id = %turn.zone,
+                        utterance_id = %conversation,
+                        endpoint_id,
+                        confidence = decision.confidence,
+                        latency_ms = total_ms,
+                        status = %receipt.status,
+                        "Voice route executed"
+                    ),
+                    Err(error) => tracing::warn!(
+                        route = "llm_ha",
+                        room_id = %turn.zone,
+                        utterance_id = %conversation,
+                        endpoint_id,
+                        confidence = decision.confidence,
+                        latency_ms = total_ms,
+                        status = ?error.code(),
+                        "Voice route failed"
+                    ),
+                }
+                let spoken = match result.as_ref().map(|receipt| receipt.status.as_str()) {
+                    Ok("accepted") => decision
+                        .reply
+                        .filter(|reply| !reply.trim().is_empty() && reply.chars().count() <= 180)
+                        .unwrap_or_else(|| "Listo.".into()),
+                    Ok("uncertain" | "partial") => "No pude confirmar la orden.".into(),
+                    _ => "No pude enviar la orden.".into(),
+                };
+                return Ok(Some(spoken));
+            }
+            tracing::warn!(
+                route = "llm_ha",
+                room_id = %turn.zone,
+                utterance_id = %conversation,
+                endpoint_id,
+                confidence = decision.confidence,
+                latency_ms = llm_ms,
+                status = "denied_action",
+                "Local HA LLM proposed a disallowed or invalid action"
+            );
+            return Ok(Some("No puedo ejecutar esa acción por voz.".into()));
+        }
+
+        tracing::info!(
+            route = "llm",
+            room_id = %turn.zone,
+            utterance_id = %conversation,
+            endpoint_id,
+            latency_ms = llm_ms,
+            local_only = true,
+            status = "ok",
+            "Voice route executed"
+        );
+        let reply = decision
+            .reply
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        Ok(reply)
+    }
+
     pub(super) async fn slow_llm(
         &self,
         turn: &Turn,
@@ -83,6 +392,12 @@ impl Brain {
                 Vec::new()
             }
         };
+        if let Some(reply) = self
+            .try_local_home_router(turn, conversation, text, &context)
+            .await?
+        {
+            return self.say(turn, conversation, reply).await.map(|_| ());
+        }
         let local_prompt = (!context.is_empty()).then(|| {
             // Memory context can go only to the local model. Only the original
             // user input can be retried across the cloud consent boundary.
@@ -191,9 +506,13 @@ impl Brain {
     ) -> Result<(), LlmError> {
         let started = Instant::now();
         let result = if local_only {
-            self.llm.stream_local_only(prompt, 256, cancel, emit).await
+            self.llm
+                .stream_local_only(prompt, VOICE_MAX_TOKENS, cancel, emit)
+                .await
         } else {
-            self.llm.stream(prompt, 256, cancel, emit).await
+            self.llm
+                .stream(prompt, VOICE_MAX_TOKENS, cancel, emit)
+                .await
         };
         let latency_ms = started.elapsed().as_millis();
         match &result {
@@ -211,5 +530,42 @@ impl Brain {
             }
         }
         result.map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_plain_and_fenced_llm_home_decisions() {
+        let fenced = "```json\n{\"action\":{\"entity_id\":\"light.grupo_escritorio\",\"operation\":\"brightness\",\"params\":{\"brightness_pct\":50}},\"confidence\":0.92,\"reply\":\"Puse la luz al 50%.\"}\n```";
+        let decision = parse_llm_home_decision(fenced).expect("fenced JSON must parse");
+        let action = decision.action.expect("action present");
+        assert_eq!(action.entity_id, "light.grupo_escritorio");
+        assert_eq!(action.operation, "brightness");
+        let params = flatten_params(&action.params).expect("params flatten");
+        assert_eq!(params.get("brightness_pct").map(String::as_str), Some("50"));
+        assert!(crate::home::typed_operation(&action.operation, &params).is_ok());
+        assert!((decision.confidence - 0.92).abs() < 1e-6);
+        assert_eq!(decision.reply.as_deref(), Some("Puse la luz al 50%."));
+    }
+
+    #[test]
+    fn blocks_security_domains_even_if_proposed_by_llm() {
+        assert!(is_disallowed_security_entity("lock.puerta_entrada"));
+        assert!(is_disallowed_security_entity("alarm_control_panel.casa"));
+        assert!(!is_disallowed_security_entity("light.grupo_escritorio"));
+    }
+
+    #[test]
+    fn distinguishes_readonly_state_queries_from_natural_requests() {
+        assert!(is_readonly_state_query("¿Está encendida la luz?"));
+        assert!(is_readonly_state_query("quedo prendida la luz del living"));
+        assert!(is_readonly_state_query("¿Cómo está el aire?"));
+        assert!(!is_readonly_state_query("Tengo poca luz acá"));
+        assert!(!is_readonly_state_query(
+            "¿Podés prender la luz del escritorio?"
+        ));
     }
 }

@@ -7,13 +7,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use nexa_audiod::arbiter::WakeArbiter;
 use nexa_audiod::capture_store::CaptureStore;
 use nexa_audiod::grpc::AudioService;
 use nexa_audiod::hw::{amp::Ma1260, simulation::Simulation};
 use nexa_audiod::runtime::{RoomPipeline, SharedShadow, run_capture_control, zone_id};
 use nexa_audiod::socket::{AudioSocket, Notify};
 use nexa_audiod::traits::{
-    AmpTransport, CaptureSource, PlaybackOutput, ShadowStt, VadEngine, WakeEngine,
+    AmpTransport, CaptureSource, DisabledShadow, PlaybackOutput, ShadowStt, VadEngine, WakeEngine,
 };
 use nexa_config::{LoadedBundle, Ma1260Connection};
 use nexa_proto::sockets;
@@ -101,6 +102,7 @@ async fn run(options: Options) -> DaemonResult<()> {
             .unwrap_or_else(|| bundle.core.paths.runtime_dir.clone())
             .join(sockets::AUDIO)
     });
+    let arbiter = WakeArbiter::default();
     if options.simulation {
         let rooms = bundle
             .rooms
@@ -114,6 +116,7 @@ async fn run(options: Options) -> DaemonResult<()> {
                     Simulation,
                     bundle.core.audio.wake_threshold,
                 )
+                .with_arbiter(arbiter.clone())
             })
             .collect();
         return serve(
@@ -122,7 +125,7 @@ async fn run(options: Options) -> DaemonResult<()> {
             Ma1260Connection::Simulation,
             Simulation,
             rooms,
-            Simulation,
+            DisabledShadow,
         )
         .await;
     }
@@ -131,22 +134,56 @@ async fn run(options: Options) -> DaemonResult<()> {
     {
         use nexa_audiod::hw::alsa::{AlsaCapture, AlsaPlayback};
         use nexa_audiod::hw::onnx::{OpenWakeWord, Parakeet, Silero, init_cpu};
+        use nexa_audiod::traits::AudioError;
+
+        enum HardwareShadow {
+            Disabled,
+            Parakeet(Parakeet),
+        }
+
+        impl ShadowStt for HardwareShadow {
+            fn is_enabled(&self) -> bool {
+                matches!(self, Self::Parakeet(_))
+            }
+
+            fn transcribe(&mut self, samples: &[f32]) -> Result<String, AudioError> {
+                match self {
+                    Self::Disabled => Ok(String::new()),
+                    Self::Parakeet(model) => model.transcribe(samples),
+                }
+            }
+        }
 
         init_cpu()?;
         let models = &bundle.core.paths.models_dir;
         let audio = &bundle.core.audio;
-        let shadow = Parakeet::open(&models.join(&audio.parakeet_model))?;
+        let shadow = if audio.parakeet_model.trim().is_empty() {
+            tracing::info!(
+                parakeet_mode = "disabled",
+                "shadow STT disabled by configuration"
+            );
+            HardwareShadow::Disabled
+        } else {
+            tracing::info!(
+                parakeet_mode = "enabled",
+                "loading Parakeet shadow STT model"
+            );
+            HardwareShadow::Parakeet(Parakeet::open(&models.join(&audio.parakeet_model))?)
+        };
         let mut rooms = Vec::new();
         for room in &bundle.rooms.rooms {
             let vad = Silero::open(&models.join(&audio.silero_vad_model))?;
             let wake = OpenWakeWord::open(&models.join(&audio.wake_model))?;
-            rooms.push(RoomPipeline::new(
-                room,
-                AlsaCapture::new(room.clone()),
-                vad,
-                wake,
-                audio.wake_threshold,
-            ));
+            rooms.push(
+                RoomPipeline::new(
+                    room,
+                    AlsaCapture::new(room.clone()),
+                    vad,
+                    wake,
+                    audio.wake_threshold,
+                )
+                .with_arbiter(arbiter.clone()),
+            );
         }
         let output = AlsaPlayback::new(bundle.rooms.rooms.clone());
         serve(

@@ -758,3 +758,36 @@ fn rejects_oversized_compound_input_before_parsing() {
     assert!(turn.decision.normalized_text.is_empty());
     assert!(elapsed < Duration::from_millis(5), "{elapsed:?}");
 }
+
+#[test]
+fn parses_room_as_light_shorthand_and_trailing_wake_word() {
+    let router = RouterEngine::default();
+    for (phrase, expected_op, expected_room) in [
+        ("prendé el escritorio", Operation::On, "escritorio"),
+        ("apagá el escritorio", Operation::Off, "escritorio"),
+        ("Nexa, prendé la cocina, Nexa", Operation::On, "cocina"),
+        ("apagá el living", Operation::Off, "living"),
+        ("prendé el escritorio al 50%", Operation::On, "escritorio"),
+    ] {
+        let turn = router.route(phrase, clear_wake());
+        let Route::Domotics(command) = turn.route else {
+            panic!("{phrase}: {turn:?}");
+        };
+        assert_eq!(command.domain, Domain::Light, "{phrase}");
+        assert_eq!(command.operation, expected_op, "{phrase}");
+        assert_eq!(command.room.as_deref(), Some(expected_room), "{phrase}");
+    }
+    // Non-room nouns must remain unclaimed (SlowLlm), never misclassified as lights.
+    let tv = router.route("prendé la tele", clear_wake());
+    assert_eq!(tv.route, Route::SlowLlm);
+
+    // State questions and natural observations about devices route to SlowLlm, never FastDomotics.
+    for text in [
+        "¿Está encendida la luz?",
+        "Tengo poca luz acá",
+        "¿Cómo está el aire del living?",
+    ] {
+        let turn = router.route(text, clear_wake());
+        assert_eq!(turn.route, Route::SlowLlm, "{text}: {turn:?}");
+    }
+}

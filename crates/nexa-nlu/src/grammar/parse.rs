@@ -52,6 +52,11 @@ pub(crate) fn parse_core(core: &str, source_room: Option<&str>) -> GrammarMatch 
         None if matches!(head, "ponela" | "ponelo") && core.split_whitespace().count() <= 6 => {
             (Domain::Light, rest)
         }
+        None if matches!(verb, Some(Verb::On | Verb::Off))
+            && super::canonical_room(noun).is_some() =>
+        {
+            (Domain::Light, rest)
+        }
         None => return GrammarMatch::Unclaimed,
     };
     let parsed = if domain == Domain::Light {

@@ -68,6 +68,7 @@ pub struct AudioConfig {
     pub wake_model: String,
     pub wake_threshold: f32,
     pub silero_vad_model: String,
+    #[serde(default)]
     pub parakeet_model: String,
     pub ma1260_connection: Ma1260Connection,
     pub barge_in_enabled: bool,

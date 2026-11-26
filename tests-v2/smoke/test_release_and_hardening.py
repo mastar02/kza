@@ -94,9 +94,10 @@ def test_service_units():
             assert "CUDA_VISIBLE_DEVICES=1" in s["Environment"].split()
             assert "LD_LIBRARY_PATH=/opt/nexa/lib" in s["Environment"].split()
             ml = tomllib.loads((ROOT / "config/nexa/nexa.toml").read_text())["ml"]
-            assert ml["command_stt_device"] == ml["tts_device"] == "cuda:1"
+            assert ml["command_stt_device"] == ml["tts_device"] == "cuda:0"
             assert ml["ambient_stt_device"] == ml["speaker_encoder_device"] == "cuda:0"
-            assert ml["ambient_stt_workers"] == 2
+            assert ml["command_stt_model"] == ml["ambient_stt_model"] == "whisper-v3-turbo"
+            assert ml["ambient_stt_workers"] == 1
             assert ml["embeddings_device"] == "cpu"
         if path.stem == "nexa-ml":
             assert "PYTHONDONTWRITEBYTECODE=1" in s["Environment"].split()

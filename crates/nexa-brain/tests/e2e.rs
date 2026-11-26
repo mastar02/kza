@@ -575,3 +575,120 @@ async fn household_worker_reminders_routines_timers_with_no_ambient_control() ->
     drop(events);
     h.stop().await
 }
+
+#[tokio::test]
+async fn local_llm_home_router_executes_allowlisted_action_and_denies_security_domains() -> Result {
+    let ha = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/states/light.grupo_living"))
+        .and(header("authorization", "Bearer ha-test-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "entity_id": "light.grupo_living", "state": "off", "attributes": {}
+        })))
+        .mount(&ha)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/services/light/turn_on"))
+        .and(header("authorization", "Bearer ha-test-token"))
+        .and(body_json(json!({"entity_id": "light.grupo_living"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+        .expect(1)
+        .mount(&ha)
+        .await;
+
+    let llm = MockServer::start().await;
+    let ok_payload = serde_json::to_string(&json!({
+        "action": {"entity_id": "light.grupo_living", "operation": "turn_on", "params": {}},
+        "confidence": 0.91,
+        "reply": "Prendo la luz del living."
+    }))?;
+    let ok_sse = format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": ok_payload}}]})
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(wiremock::matchers::body_string_contains("tengo poca luz"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(ok_sse),
+        )
+        .expect(1)
+        .mount(&llm)
+        .await;
+
+    let denied_payload = serde_json::to_string(&json!({
+        "action": {"entity_id": "lock.puerta_entrada", "operation": "turn_on", "params": {}},
+        "confidence": 0.99,
+        "reply": "Abriendo."
+    }))?;
+    let denied_sse = format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": denied_payload}}]})
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(wiremock::matchers::body_string_contains("dejame entrar"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(denied_sse),
+        )
+        .expect(1)
+        .mount(&llm)
+        .await;
+
+    let query_payload = serde_json::to_string(&json!({
+        "action": {"entity_id": "light.grupo_living", "operation": "turn_on", "params": {}},
+        "confidence": 0.95,
+        "reply": "La luz del living está apagada."
+    }))?;
+    let query_sse = format!(
+        "data: {}\n\ndata: [DONE]\n\n",
+        json!({"choices": [{"delta": {"content": query_payload}}]})
+    );
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(wiremock::matchers::body_string_contains("encendida la luz"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(query_sse),
+        )
+        .expect(1)
+        .mount(&llm)
+        .await;
+
+    let mut h = Harness::start(
+        |cfg| {
+            cfg.core.home_assistant.url = ha.uri();
+            cfg.core.llm.fast_router_url = format!("{}/v1", llm.uri());
+        },
+        true,
+    )
+    .await?;
+
+    h.utterance("natural-light", "Tengo poca luz acá", Kind::Command)
+        .await?;
+    assert_eq!(receive(&mut h.spoken).await?, "Prendo la luz del living.");
+    let _ = h.playback().await?;
+
+    h.utterance("sneaky-lock", "Dejame entrar por favor", Kind::Command)
+        .await?;
+    assert_eq!(
+        receive(&mut h.spoken).await?,
+        "No puedo ejecutar esa acción por voz."
+    );
+    let _ = h.playback().await?;
+
+    h.utterance("state-query", "¿Está encendida la luz?", Kind::Command)
+        .await?;
+    assert_eq!(
+        receive(&mut h.spoken).await?,
+        "La luz del living está apagada."
+    );
+    let _ = h.playback().await?;
+
+    h.stop().await
+}

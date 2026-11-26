@@ -14,7 +14,7 @@ frame_ms = 80
 wake_model = "wakeword/nexa.onnx"
 wake_threshold = 0.40
 silero_vad_model = "vad/silero_vad.onnx"
-parakeet_model = "stt/nemo-parakeet-tdt-0.6b-v3"
+parakeet_model = ""
 barge_in_enabled = true
 
 [audio.ma1260_connection]
@@ -22,18 +22,18 @@ kind = "simulation"
 
 [ml]
 # Two RTX 3070 GPUs, 8 GiB each.
-# cuda:1 hosts llama-server 7B (:8101), Whisper Command v3-turbo and streaming Kokoro-82M.
-# cuda:0 hosts two ambient Whisper large-v3 workers and one ECAPA speaker encoder.
+# cuda:0 hosts ONE shared Whisper v3-turbo (command > ambient priority), Kokoro-82M TTS and ECAPA.
+# cuda:1 is 100% dedicated to the local LLM (Qwen3.5-9B-Q4_K_M on :8101).
 # BAAI/bge-m3 runs on CPU.
 command_stt_model = "whisper-v3-turbo"
-command_stt_device = "cuda:1"
+command_stt_device = "cuda:0"
 command_stt_compute_type = "int8_float16"
-ambient_stt_model = "whisper-large-v3"
+ambient_stt_model = "whisper-v3-turbo"
 ambient_stt_device = "cuda:0"
-ambient_stt_workers = 2
+ambient_stt_workers = 1
 tts_voice = "ef_dora"
 tts_lang_code = "e"
-tts_device = "cuda:1"
+tts_device = "cuda:0"
 speaker_encoder_device = "cuda:0"
 embeddings_model = "BAAI/bge-m3"
 embeddings_device = "cpu"
@@ -58,7 +58,7 @@ weather_entity = "weather.forecast_home"
 
 [llm]
 fast_router_url = "http://127.0.0.1:8101/v1"
-fast_router_model = "Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+fast_router_model = "Qwen3.5-9B-Q4_K_M.gguf"
 fast_router_timeout_ms = 5000
 cloud_gateway_url = "http://127.0.0.1:8200/v1"
 cloud_model = "grok-4.20-non-reasoning"

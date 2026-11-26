@@ -592,3 +592,70 @@ async def test_tts_close_failure_still_ends_the_rpc(harness: Harness) -> None:
         c async for c in harness.stub.SynthesizeStream(ml_pb2.SynthesizeRequest(text="otra"), timeout=5)
     ]
     assert chunks[-1].is_final
+
+
+async def test_shared_single_whisper_prioritizes_command_over_ambient(short_dir) -> None:
+    """When command and ambient share one model/device with 1 worker, load once and prioritize COMMAND."""
+    import threading
+    from conftest import Fakes
+    from nexa_ml.config import MlConfig
+    from nexa_ml.pb import ml_pb2_grpc
+    from nexa_ml.runtime import MlRuntime
+    from nexa_ml.server import start_server
+
+    fakes = Fakes()
+    cfg = MlConfig(
+        command_stt_model="whisper-v3-turbo",
+        command_stt_device="cuda:0",
+        ambient_stt_model="whisper-v3-turbo",
+        ambient_stt_device="cuda:0",
+        ambient_stt_workers=1,
+        max_pending=4,
+    )
+    runtime = MlRuntime(cfg, fakes.loaders(1))
+    await runtime.load_all()
+    assert runtime.slot_ids == ["stt-command", "tts", "speaker", "embed"]
+    assert fakes.command.loads == 1
+    assert all(amb.loads == 0 for amb in fakes.ambient)
+
+    sock = short_dir / "shared-ml.sock"
+    server = await start_server(runtime, sock)
+    channel = grpc.aio.insecure_channel(f"unix://{sock}")
+    try:
+        stub = ml_pb2_grpc.MlServiceStub(channel)
+        model = fakes.command.models[0]
+        order: list[bool] = []
+        first_started = threading.Event()
+        release_first = threading.Event()
+        orig_transcribe = model.transcribe
+
+        def gated_transcribe(audio, **kwargs):
+            vad = kwargs["vad_filter"]
+            order.append(vad)
+            if len(order) == 1:
+                first_started.set()
+                release_first.wait(timeout=5)
+            return orig_transcribe(audio, **kwargs)
+
+        model.transcribe = gated_transcribe  # type: ignore[method-assign]
+
+        async def _call(mode: int):
+            return await stub.Transcribe(_tx(mode), timeout=10)
+
+        amb1 = asyncio.create_task(_call(ml_pb2.STT_MODE_AMBIENT))
+        await asyncio.to_thread(first_started.wait, 5)
+        amb2 = asyncio.create_task(_call(ml_pb2.STT_MODE_AMBIENT))
+        await asyncio.sleep(0.02)
+        cmd = asyncio.create_task(_call(ml_pb2.STT_MODE_COMMAND))
+        await asyncio.sleep(0.02)
+        release_first.set()
+        r1, r2, rc = await asyncio.gather(amb1, amb2, cmd)
+        assert r1.model_id == "whisper-v3-turbo"
+        assert r2.model_id == "whisper-v3-turbo"
+        assert rc.model_id == "whisper-v3-turbo"
+        # Running ambient finishes first (True), then COMMAND preempts queued ambient (False before True).
+        assert order == [True, False, True]
+    finally:
+        await channel.close()
+        await server.stop(0)
+        runtime.close()

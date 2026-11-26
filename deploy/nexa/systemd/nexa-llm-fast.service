@@ -1,5 +1,5 @@
 [Unit]
-Description=Nexa Fast Local LLM Router (Qwen2.5-7B-Instruct Q4_K_M on cuda:1, RTX 3070 8 GiB, :8101)
+Description=Nexa Fast Local LLM Router (Qwen3.5-9B Q4_K_M on dedicated cuda:1, RTX 3070 8 GiB, :8101)
 PartOf=nexa.target
 StartLimitBurst=5
 StartLimitIntervalSec=180s
@@ -12,9 +12,9 @@ RuntimeDirectory=nexa-llm-fast
 RuntimeDirectoryMode=0700
 RuntimeDirectoryPreserve=yes
 ExecStart=/opt/nexa/bin/llama-server \
-  --model /opt/nexa/models/Qwen2.5-7B-Instruct-Q4_K_M/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
-  --host 127.0.0.1 --port 8101 -t 8 -tb 8 -c 2048 -ctk q8_0 -ctv q8_0 -ngl 99 \
-  --minilog \
+  --model /opt/nexa/models/Qwen3.5-9B-Q4_K_M/Qwen3.5-9B-Q4_K_M.gguf \
+  --host 127.0.0.1 --port 8101 -t 8 -tb 8 -c 4096 -ctk q8_0 -ctv q8_0 -ngl 99 \
+  --jinja --parallel 1 --minilog \
   --api-key-file /etc/nexa/secrets/llama-api-key
 UMask=0077
 NoNewPrivileges=yes

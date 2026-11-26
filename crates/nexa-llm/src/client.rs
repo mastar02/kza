@@ -207,6 +207,29 @@ impl OpenAiClient {
         prompt: &str,
         max_tokens: u32,
         cancel: &CancellationToken,
+        emit: impl FnMut(&str),
+    ) -> (Result<Option<u64>, LlmError>, bool) {
+        self.stream_attempt_with(
+            endpoint,
+            SYSTEM_PROMPT,
+            prompt,
+            max_tokens,
+            None,
+            cancel,
+            emit,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream_attempt_with(
+        &self,
+        endpoint: &Endpoint,
+        system_prompt: &str,
+        prompt: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+        cancel: &CancellationToken,
         mut emit: impl FnMut(&str),
     ) -> (Result<Option<u64>, LlmError>, bool) {
         let check = || {
@@ -224,16 +247,23 @@ impl OpenAiClient {
         let first_token_deadline = started + endpoint.timeout;
         let request = async {
             check()?;
-            let body = json!({
+            let mut body = json!({
                 "model": endpoint.model,
                 "stream": true,
                 "max_tokens": max_tokens,
                 "stream_options": {"include_usage": true},
                 "messages": [
-                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": prompt}
                 ]
             });
+            if let Some(temp) = temperature {
+                body["temperature"] = json!(temp);
+            }
+            if !endpoint.cloud {
+                // Disable slow reasoning blocks on Qwen3 / Qwen3.5 for real-time voice turns.
+                body["chat_template_kwargs"] = json!({"enable_thinking": false});
+            }
             let mut post = self.http.post(&endpoint.url).json(&body);
             if let Some(key) = &endpoint.api_key
                 && !key.0.is_empty()

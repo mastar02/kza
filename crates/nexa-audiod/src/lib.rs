@@ -1,6 +1,7 @@
 //! Portable audio processing and transport contracts for Nexa's audio daemon.
 
 pub mod ambient_guard;
+pub mod arbiter;
 pub mod barge_in;
 pub mod capture_seal;
 pub mod capture_store;

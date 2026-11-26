@@ -93,5 +93,25 @@ pub(crate) fn strip_head(text: &str, wakes: &[String]) -> String {
     {
         text.truncate(tail.trim_end_matches([' ', ',']).len());
     }
+    let folded_end = fold(&text);
+    if let Some(wake) = wakes
+        .iter()
+        .map(String::as_str)
+        .chain(WAKE_WORDS.iter().copied())
+        .filter(|word| !word.is_empty())
+        .find(|word| {
+            folded_end
+                .strip_suffix(word)
+                .is_some_and(|prefix| prefix.ends_with([' ', ',', '.', ':', ';', '-']))
+        })
+    {
+        let keep = text.len().saturating_sub(wake.len());
+        if text.is_char_boundary(keep) {
+            let trimmed = text[..keep].trim_end_matches([' ', ',', '.', ':', ';', '-']);
+            if !trimmed.is_empty() {
+                text.truncate(trimmed.len());
+            }
+        }
+    }
     text
 }

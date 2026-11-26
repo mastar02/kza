@@ -317,6 +317,7 @@ impl CommandAcceptanceGate {
         let refusal_only =
             context.reply_to_deferred_routine && block == Some(GrammarBlock::Deferred);
         if let Some(reason) = block
+            && reason != GrammarBlock::Information
             && !refusal_only
             && !evidence
                 .claim

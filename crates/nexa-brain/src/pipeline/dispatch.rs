@@ -84,8 +84,9 @@ impl Brain {
         );
         let shadow = words(&utterance.parakeet_shadow_text);
         let corroborated = !shadow.is_empty() && shadow == words(&stt.text);
-        let admitted = (wake || follow_up || routed.acceptance.ring_stop)
-            && (!(routed.requires_veto || follow_up) || corroborated);
+        let shadow_veto_ok = shadow.is_empty() || corroborated;
+        let admitted = (wake || (follow_up && shadow_veto_ok) || routed.acceptance.ring_stop)
+            && (!routed.requires_veto || shadow_veto_ok);
         let path = routed.decision.path.as_str_name();
         let admitted_route = admitted && !matches!(routed.route, Route::Rejected);
         tracing::info!(

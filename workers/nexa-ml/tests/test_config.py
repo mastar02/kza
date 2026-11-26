@@ -12,7 +12,11 @@ REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 def test_repo_nexa_toml_parses() -> None:
     cfg = load_config(REPO_ROOT / "config" / "nexa" / "nexa.toml")
     assert cfg.command_stt_model == "whisper-v3-turbo"
-    assert cfg.ambient_stt_workers == 2
+    assert cfg.command_stt_device == "cuda:0"
+    assert cfg.ambient_stt_model == "whisper-v3-turbo"
+    assert cfg.ambient_stt_device == "cuda:0"
+    assert cfg.ambient_stt_workers == 1
+    assert cfg.tts_device == "cuda:0"
     assert cfg.speaker_encoder_device == "cuda:0"
     assert cfg.embeddings_device == "cpu"
 
