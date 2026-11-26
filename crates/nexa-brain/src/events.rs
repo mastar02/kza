@@ -71,6 +71,37 @@ impl Events {
         self.sender.subscribe()
     }
 
+    /// Merge outcome fields (executed HA action, spoken reply) into an existing in-memory turn,
+    /// respecting any recorded erasure fence for that conversation ID.
+    pub fn update_turn(&self, turn: &str, patch: Value) {
+        let Some(patch_obj) = patch.as_object() else {
+            return;
+        };
+        let mut history = self
+            .history
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if history.erased_turns.iter().any(|id| id == turn) {
+            return;
+        }
+        let Some(record) = history
+            .recent_turns
+            .iter_mut()
+            .rev()
+            .find(|event| event.conversation_id == turn)
+        else {
+            return;
+        };
+        let mut payload =
+            serde_json::from_str::<Value>(&record.payload_json).unwrap_or_else(|_| json!({}));
+        if let Some(target) = payload.as_object_mut() {
+            for (key, value) in patch_obj {
+                target.insert(key.clone(), value.clone());
+            }
+            record.payload_json = payload.to_string();
+        }
+    }
+
     pub(crate) fn conversations(&self, room: &str, limit: usize) -> Value {
         let history = self
             .history

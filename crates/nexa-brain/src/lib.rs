@@ -40,7 +40,7 @@ use home::Home;
 pub type BrainError = Box<dyn std::error::Error + Send + Sync>;
 type Worker = HouseholdWorker<Arc<dyn BrainClock>>;
 
-pub(crate) const COMMAND_STT_INITIAL_PROMPT: &str = "Esto es un asistente de voz llamado Nexa que controla luces, aire acondicionado, persianas y música en el escritorio, el living, la cocina, el baño y el hall. Habla rioplatense con voseo: prendé, apagá, subí, bajá, poné, dale.";
+pub(crate) const COMMAND_STT_INITIAL_PROMPT: &str = "Comandos de casa inteligente para Nexa en español rioplatense: luces, aire acondicionado, persianas y escenas en escritorio, living, cocina, baño y escalera. Voseo: prendé, apagá, subí, bajá, poné.";
 pub(crate) const COMMAND_STT_HOTWORDS: &str = "Nexa prendé apagá prendelo apagalo prendela apagala subí bajá poné escritorio living cocina baño escalera luz luces aire";
 pub(crate) const COMMAND_STT_BEAM_SIZE: u32 = 5;
 

@@ -302,11 +302,38 @@ impl Brain {
                 status = "non_json_fallback",
                 "Local HA LLM router returned non-JSON"
             );
+            if super::dispatch::debug_voice_transcripts() {
+                tracing::info!(
+                    debug_voice = true,
+                    room_id = %turn.zone,
+                    utterance_id = %conversation,
+                    llm_raw = %raw.trim().chars().take(320).collect::<String>(),
+                    "LLM home non-JSON trace"
+                );
+            }
             let fallback = raw.trim();
             let looks_like_broken_json = fallback.starts_with('{') || fallback.starts_with("```");
-            return Ok((!fallback.is_empty() && !looks_like_broken_json)
-                .then(|| fallback.chars().take(320).collect()));
+            let reply: Option<String> = (!fallback.is_empty() && !looks_like_broken_json)
+                .then(|| fallback.chars().take(320).collect());
+            if let Some(text) = &reply {
+                self.events
+                    .update_turn(conversation, json!({"reply": text}));
+            }
+            return Ok(reply);
         };
+
+        if super::dispatch::debug_voice_transcripts() {
+            tracing::info!(
+                debug_voice = true,
+                room_id = %turn.zone,
+                utterance_id = %conversation,
+                llm_action_entity = decision.action.as_ref().map(|a| a.entity_id.as_str()).unwrap_or("none"),
+                llm_action_op = decision.action.as_ref().map(|a| a.operation.as_str()).unwrap_or("none"),
+                llm_confidence = decision.confidence,
+                llm_reply = decision.reply.as_deref().unwrap_or(""),
+                "LLM home decision trace"
+            );
+        }
 
         let min_conf = self.config.core.nlu.min_llm_command_confidence;
         let readonly_query = is_readonly_state_query(text);
@@ -334,29 +361,57 @@ impl Brain {
                 None
             };
             if let Some(intent) = intent {
+                let entity_id = intent.entity_id.clone();
+                let operation = intent.operation.name();
                 let result = self.execute_home(crate::id("llm-voice"), intent).await;
                 let total_ms = started.elapsed().as_millis();
                 match &result {
-                    Ok(receipt) => tracing::info!(
-                        route = "llm_ha",
-                        room_id = %turn.zone,
-                        utterance_id = %conversation,
-                        endpoint_id,
-                        confidence = decision.confidence,
-                        latency_ms = total_ms,
-                        status = %receipt.status,
-                        "Voice route executed"
-                    ),
-                    Err(error) => tracing::warn!(
-                        route = "llm_ha",
-                        room_id = %turn.zone,
-                        utterance_id = %conversation,
-                        endpoint_id,
-                        confidence = decision.confidence,
-                        latency_ms = total_ms,
-                        status = ?error.code(),
-                        "Voice route failed"
-                    ),
+                    Ok(receipt) => {
+                        tracing::info!(
+                            route = "llm_ha",
+                            room_id = %turn.zone,
+                            utterance_id = %conversation,
+                            endpoint_id,
+                            entity_id = %entity_id,
+                            operation,
+                            confidence = decision.confidence,
+                            latency_ms = total_ms,
+                            status = %receipt.status,
+                            "Voice route executed"
+                        );
+                        self.events.update_turn(
+                            conversation,
+                            json!({
+                                "executed_entity": entity_id,
+                                "executed_operation": operation,
+                                "executed_status": receipt.status,
+                                "llm_confidence": decision.confidence,
+                            }),
+                        );
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            route = "llm_ha",
+                            room_id = %turn.zone,
+                            utterance_id = %conversation,
+                            endpoint_id,
+                            entity_id = %entity_id,
+                            operation,
+                            confidence = decision.confidence,
+                            latency_ms = total_ms,
+                            status = ?error.code(),
+                            "Voice route failed"
+                        );
+                        self.events.update_turn(
+                            conversation,
+                            json!({
+                                "executed_entity": entity_id,
+                                "executed_operation": operation,
+                                "executed_status": format!("{:?}", error.code()),
+                                "llm_confidence": decision.confidence,
+                            }),
+                        );
+                    }
                 }
                 let spoken = match result.as_ref().map(|receipt| receipt.status.as_str()) {
                     Ok("accepted") => decision
@@ -366,6 +421,8 @@ impl Brain {
                     Ok("uncertain" | "partial") => "No pude confirmar la orden.".into(),
                     _ => "No pude enviar la orden.".into(),
                 };
+                self.events
+                    .update_turn(conversation, json!({"reply": spoken}));
                 return Ok(Some(spoken));
             }
             tracing::warn!(
@@ -373,12 +430,24 @@ impl Brain {
                 room_id = %turn.zone,
                 utterance_id = %conversation,
                 endpoint_id,
+                entity_id = %action.entity_id,
+                operation = %action.operation,
                 confidence = decision.confidence,
                 latency_ms = llm_ms,
                 status = "denied_action",
                 "Local HA LLM proposed a disallowed or invalid action"
             );
-            return Ok(Some("No puedo ejecutar esa acción por voz.".into()));
+            let denied = "No puedo ejecutar esa acción por voz.".to_owned();
+            self.events.update_turn(
+                conversation,
+                json!({
+                    "executed_entity": action.entity_id,
+                    "executed_operation": action.operation,
+                    "executed_status": "denied_action",
+                    "reply": denied,
+                }),
+            );
+            return Ok(Some(denied));
         }
 
         tracing::info!(
@@ -395,6 +464,10 @@ impl Brain {
             .reply
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
+        if let Some(text) = &reply {
+            self.events
+                .update_turn(conversation, json!({"reply": text}));
+        }
         Ok(reply)
     }
 

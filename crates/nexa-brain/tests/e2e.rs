@@ -690,5 +690,30 @@ async fn local_llm_home_router_executes_allowlisted_action_and_denies_security_d
     );
     let _ = h.playback().await?;
 
+    let conversations = h
+        .client
+        .list_conversations(v1::ListConversationsRequest {
+            actor: Some(actor(Role::Operator, &[P::ConversationsRead])),
+            ..v1::ListConversationsRequest::default()
+        })
+        .await?
+        .into_inner();
+    let turns: Value = serde_json::from_str(&conversations.payload_json)?;
+    let light_turn = turns
+        .as_array()
+        .and_then(|arr| {
+            arr.iter()
+                .find(|item| item["conversation_id"] == "natural-light")
+        })
+        .ok_or("natural-light turn missing in conversations")?;
+    assert_eq!(light_turn["routing"]["transcript"], "Tengo poca luz acá");
+    assert_eq!(
+        light_turn["routing"]["executed_entity"],
+        "light.grupo_living"
+    );
+    assert_eq!(light_turn["routing"]["executed_operation"], "turn_on");
+    assert_eq!(light_turn["routing"]["executed_status"], "accepted");
+    assert_eq!(light_turn["routing"]["reply"], "Prendo la luz del living.");
+
     h.stop().await
 }

@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use nexa_nlu::{
@@ -14,6 +15,21 @@ use tonic::Status;
 use crate::Brain;
 
 use super::Turn;
+
+/// Opt-in operator diagnostics flag (off by default) to log voice transcripts and LLM decisions.
+pub(super) fn debug_voice_transcripts() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("NEXA_DEBUG_VOICE_TRANSCRIPTS")
+            .ok()
+            .is_some_and(|value| {
+                matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+    })
+}
 
 impl Brain {
     pub(super) async fn route_and_respond(
@@ -98,11 +114,31 @@ impl Brain {
             corroborated,
             "NLU route resolved"
         );
+        let transcript_preview: String = stt.text.chars().take(320).collect();
+        if debug_voice_transcripts() {
+            tracing::info!(
+                debug_voice = true,
+                room_id = %room,
+                utterance_id = %conversation,
+                kind = utterance.kind().as_str_name(),
+                stt_text = %transcript_preview,
+                normalized = %routed.decision.normalized_text,
+                path,
+                admitted = admitted_route,
+                reason = routed.decision.reason.as_deref().unwrap_or("none"),
+                "Voice transcript trace"
+            );
+        }
         self.event(
             LiveEventKind::Turn,
             room,
             conversation,
             json!({
+                "kind": utterance.kind().as_str_name(),
+                "transcript": transcript_preview,
+                "normalized": routed.decision.normalized_text,
+                "avg_logprob": stt.avg_logprob,
+                "compression_ratio": stt.compression_ratio,
                 "path": path,
                 "reason": routed.decision.reason,
                 "admitted": admitted_route,
@@ -163,6 +199,12 @@ impl Brain {
                     .await;
             }
         };
+        self.events.update_turn(
+            conversation,
+            json!({
+                "reply": reply.chars().take(320).collect::<String>(),
+            }),
+        );
         self.say(turn, conversation, reply).await.map(|_| ())
     }
 
@@ -176,18 +218,38 @@ impl Brain {
         let Some(action) = self.resolve_voice_action(command, room) else {
             tracing::info!(route = "ha", room_id = %room, utterance_id = %conversation,
                 latency_ms = started.elapsed().as_millis(), status = "unresolved", "Voice route executed");
+            self.events
+                .update_turn(conversation, json!({"executed_status": "unresolved"}));
             return "¿A qué dispositivo te referís?".into();
         };
+        let entity_id = action.entity_id.clone();
+        let operation = action.operation.name();
         let result = self.execute_home(crate::id("voice"), action).await;
         let latency_ms = started.elapsed().as_millis();
         match &result {
             Ok(receipt) => {
                 tracing::info!(route = "ha", room_id = %room, utterance_id = %conversation,
-                latency_ms, status = %receipt.status, "Voice route executed")
+                entity_id = %entity_id, operation, latency_ms, status = %receipt.status, "Voice route executed");
+                self.events.update_turn(
+                    conversation,
+                    json!({
+                        "executed_entity": entity_id,
+                        "executed_operation": operation,
+                        "executed_status": receipt.status,
+                    }),
+                );
             }
             Err(error) => {
                 tracing::warn!(route = "ha", room_id = %room, utterance_id = %conversation,
-                latency_ms, status = ?error.code(), "Voice route failed")
+                entity_id = %entity_id, operation, latency_ms, status = ?error.code(), "Voice route failed");
+                self.events.update_turn(
+                    conversation,
+                    json!({
+                        "executed_entity": entity_id,
+                        "executed_operation": operation,
+                        "executed_status": format!("{:?}", error.code()),
+                    }),
+                );
             }
         }
         match result.as_ref().map(|value| value.status.as_str()) {
