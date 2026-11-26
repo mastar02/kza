@@ -51,8 +51,8 @@ min_llm_command_confidence = 0.6
 url = "http://127.0.0.1:8123"
 timeout_ms = 2000
 state_confirmation_timeout_ms = 2000
-cache_max_staleness_s = 120
-full_refresh_interval_s = 300
+cache_max_staleness_s = 180
+full_refresh_interval_s = 60
 unavailable_precheck_enabled = true
 weather_entity = "weather.forecast_home"
 

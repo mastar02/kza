@@ -202,6 +202,23 @@ pub struct XvfTuning {
 pub struct HaControlPolicyConfig {
     #[serde(default)]
     pub entities: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub groups: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    pub scenes: HashMap<String, Vec<SceneEffectConfig>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SceneEffectConfig {
+    pub entity_id: String,
+    pub operation: String,
+    #[serde(default)]
+    pub brightness_pct: Option<u8>,
+    #[serde(default)]
+    pub brightness: Option<u8>,
+    #[serde(default)]
+    pub color_temp_kelvin: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -433,6 +450,44 @@ impl HaControlPolicyConfig {
                 )));
             }
         }
+        for (entity_id, members) in &self.groups {
+            if ha_entity_domain(entity_id) != Some("light")
+                || members.is_empty()
+                || members
+                    .iter()
+                    .any(|member| ha_entity_domain(member) != Some("light"))
+            {
+                return Err(ConfigError::Validation(format!(
+                    "group '{entity_id}' in ha-controls must be a light with at least one light member"
+                )));
+            }
+        }
+        for (entity_id, effects) in &self.scenes {
+            if ha_entity_domain(entity_id) != Some("scene") || effects.is_empty() {
+                return Err(ConfigError::Validation(format!(
+                    "scene '{entity_id}' in ha-controls must be a scene with at least one effect"
+                )));
+            }
+            for effect in effects {
+                if matches!(
+                    ha_entity_domain(&effect.entity_id),
+                    None | Some("lock" | "alarm_control_panel")
+                ) {
+                    return Err(ConfigError::Validation(format!(
+                        "scene '{entity_id}' has an invalid or restricted effect target '{}'",
+                        effect.entity_id
+                    )));
+                }
+                if effect.brightness_pct.is_some_and(|pct| pct > 100)
+                    || (effect.brightness_pct.is_some() && effect.brightness.is_some())
+                {
+                    return Err(ConfigError::Validation(format!(
+                        "scene '{entity_id}' effect on '{}' requires at most one brightness field and brightness_pct within 0..=100",
+                        effect.entity_id
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -461,6 +516,17 @@ impl LoadedBundle {
             ha_controls,
         })
     }
+}
+
+fn ha_entity_domain(entity_id: &str) -> Option<&str> {
+    let (domain, name) = entity_id.split_once('.')?;
+    let valid_part = |part: &str| {
+        !part.is_empty()
+            && part
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+    };
+    (valid_part(domain) && valid_part(name)).then_some(domain)
 }
 
 fn reject_legacy_path(label: &str, path: &Path) -> Result<(), ConfigError> {
@@ -499,6 +565,10 @@ mod tests {
         assert_eq!(core.web.bind_host, "127.0.0.1");
         assert_eq!(core.web.port, 9500);
         assert_eq!(core.web.proxy_tls_port, 9540);
+        assert!(
+            core.home_assistant.full_refresh_interval_s < core.home_assistant.cache_max_staleness_s,
+            "the HA cache should stay fresh between scheduled full refreshes"
+        );
 
         let rooms: RoomsConfig =
             toml::from_str(sample_rooms_toml()).expect("rooms template parses");
@@ -508,8 +578,91 @@ mod tests {
         let controls: HaControlPolicyConfig =
             toml::from_str(sample_ha_controls_toml()).expect("ha-controls template parses");
         controls.validate().expect("ha-controls template validates");
-        // Default template is fail-closed (empty entities).
-        assert!(!controls.allows("light.living", "turn_on"));
+        assert_eq!(controls, HaControlPolicyConfig::default());
+    }
+
+    #[test]
+    fn legacy_entity_grants_load_without_reviewed_definitions() {
+        let policy: HaControlPolicyConfig = toml::from_str(
+            r#"[entities]
+                "light.living" = ["turn_on"]
+            "#,
+        )
+        .expect("legacy controls parse");
+        policy.validate().expect("legacy controls validate");
+        assert!(policy.allows("light.living", "turn_on"));
+        assert!(policy.groups.is_empty());
+        assert!(policy.scenes.is_empty());
+    }
+
+    #[test]
+    fn reviewed_groups_and_scenes_load_without_granting_operations() {
+        let policy: HaControlPolicyConfig = toml::from_str(
+            r#"
+            [groups]
+            "light.group" = ["light.leaf"]
+
+            [scenes]
+            "scene.reading" = [
+                { entity_id = "light.group", operation = "brightness", brightness_pct = 100 },
+                { entity_id = "light.desk", operation = "color_temp_kelvin", color_temp_kelvin = 3000, brightness = 200 },
+                { entity_id = "switch.lamp", operation = "turn_off" },
+            ]
+            "#,
+        )
+        .expect("reviewed definitions parse");
+        policy.validate().expect("reviewed definitions validate");
+        assert_eq!(policy.groups["light.group"], ["light.leaf"]);
+        let effects = &policy.scenes["scene.reading"];
+        assert_eq!(effects[0].brightness_pct, Some(100));
+        assert_eq!(effects[1].brightness, Some(200));
+        assert_eq!(effects[1].color_temp_kelvin, Some(3000));
+        assert_eq!(effects[2].brightness, None);
+        assert!(!policy.allows("scene.reading", "activate_scene"));
+        assert!(!policy.allows("light.group", "brightness"));
+    }
+
+    #[test]
+    fn rejects_invalid_reviewed_groups_and_scenes() {
+        for definition in [
+            r#"[groups]
+            "switch.group" = ["light.leaf"]"#,
+            r#"[groups]
+            "lock.group" = ["light.leaf"]"#,
+            r#"[groups]
+            "light.group" = []"#,
+            r#"[groups]
+            "light.group" = ["switch.member"]"#,
+            r#"[groups]
+            "light.group" = ["alarm_control_panel.home"]"#,
+            r#"[scenes]
+            "light.reading" = [{ entity_id = "light.leaf", operation = "turn_on" }]"#,
+            r#"[scenes]
+            "scene.reading" = []"#,
+            r#"[scenes]
+            "scene.reading" = [{ entity_id = "lock.door", operation = "turn_on" }]"#,
+            r#"[scenes]
+            "scene.reading" = [{ entity_id = "alarm_control_panel.home", operation = "turn_off" }]"#,
+            r#"[scenes]
+            "scene.reading" = [{ entity_id = "light.", operation = "turn_on" }]"#,
+            r#"[scenes]
+            "scene.reading" = [{ entity_id = "light.leaf", operation = "brightness", brightness_pct = 101 }]"#,
+            r#"[scenes]
+            "scene.reading" = [{ entity_id = "light.leaf", operation = "brightness", brightness_pct = 40, brightness = 20 }]"#,
+        ] {
+            let policy: HaControlPolicyConfig =
+                toml::from_str(definition).expect("definitions parse before validation");
+            assert!(policy.validate().is_err(), "accepted {definition}");
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_scene_effect_fields() {
+        let result = toml::from_str::<HaControlPolicyConfig>(
+            r#"[scenes]
+            "scene.reading" = [{ entity_id = "light.leaf", operation = "turn_on", transition = 1 }]"#,
+        );
+        assert!(result.is_err());
     }
 
     #[test]

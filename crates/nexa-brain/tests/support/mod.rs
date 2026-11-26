@@ -414,6 +414,7 @@ pub fn bundle(dir: &Path) -> Result<LoadedBundle> {
                 vec!["turn_on".to_owned(), "turn_off".to_owned()],
             )]
             .into(),
+            ..nexa_config::HaControlPolicyConfig::default()
         },
     })
 }

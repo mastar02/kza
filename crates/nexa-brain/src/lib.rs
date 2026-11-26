@@ -19,8 +19,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use nexa_config::LoadedBundle;
-use nexa_ha::{ControlPolicy, ControlService, HaClient};
+use nexa_config::{ConfigError, LoadedBundle, SceneEffectConfig};
+use nexa_ha::{
+    Brightness, ControlPolicy, ControlService, EffectIntent, HaClient, MembershipSource, Operation,
+    ReviewedGroup,
+};
 use nexa_household::{Clock, HouseholdWorker, reminders::ReminderPolicy};
 use nexa_llm::{ApiKey, CancellationToken, CloudConsentGate, Endpoint, FailoverRouter};
 use nexa_nlu::{
@@ -90,12 +93,37 @@ impl Debug for ForecastReader {
 
 impl HomeDependencies {
     pub fn new(bundle: &LoadedBundle, token: &str) -> Result<Self, BrainError> {
+        let grants = &bundle.ha_controls;
+        grants.validate()?;
+        let groups = grants
+            .groups
+            .iter()
+            .map(|(entity_id, members)| {
+                (
+                    entity_id.clone(),
+                    ReviewedGroup {
+                        members: members.clone(),
+                        source: MembershipSource::HaState,
+                    },
+                )
+            })
+            .collect();
+        let scenes = grants
+            .scenes
+            .iter()
+            .map(|(entity_id, effects)| {
+                let effects = effects
+                    .iter()
+                    .map(|effect| scene_effect(entity_id, effect))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((entity_id.clone(), effects))
+            })
+            .collect::<Result<_, ConfigError>>()?;
+        let policy = ControlPolicy::new(grants.clone()).with_effects(scenes, groups);
+
         let config = &bundle.core.home_assistant;
         let client = HaClient::new(config, token)?;
-        let control = ControlService::new(
-            client.clone(),
-            ControlPolicy::new(bundle.ha_controls.clone()),
-        );
+        let control = ControlService::new(client.clone(), policy);
         let mut url = reqwest::Url::parse(&config.url)?;
         url.path_segments_mut()
             .map_err(|()| io::Error::other("invalid HA path"))?
@@ -118,6 +146,47 @@ impl HomeDependencies {
             forecast,
         })
     }
+}
+
+fn scene_effect(scene: &str, effect: &SceneEffectConfig) -> Result<EffectIntent, ConfigError> {
+    let brightness = effect
+        .brightness_pct
+        .map(Brightness::Percent)
+        .or_else(|| effect.brightness.map(Brightness::Raw));
+    let light = effect.entity_id.starts_with("light.");
+    let switch = effect.entity_id.starts_with("switch.");
+    let operation = match (
+        effect.operation.as_str(),
+        brightness,
+        effect.color_temp_kelvin,
+    ) {
+        ("turn_on", None, None) if light || switch => Operation::TurnOn,
+        ("turn_off", None, None) if light || switch => Operation::TurnOff,
+        ("brightness", Some(brightness), None) if light => Operation::Brightness { brightness },
+        ("color_temp_kelvin", brightness, Some(color_temp_kelvin))
+            if light
+                && color_temp_kelvin > 0
+                && !matches!(
+                    brightness,
+                    Some(Brightness::Percent(0) | Brightness::Raw(0))
+                ) =>
+        {
+            Operation::ColorTempKelvin {
+                color_temp_kelvin,
+                brightness,
+            }
+        }
+        _ => {
+            return Err(ConfigError::Validation(format!(
+                "scene '{scene}' has an unsupported operation or invalid parameters for '{}' on '{}'",
+                effect.operation, effect.entity_id
+            )));
+        }
+    };
+    Ok(EffectIntent {
+        entity_id: effect.entity_id.clone(),
+        operation,
+    })
 }
 
 #[derive(Debug)]
