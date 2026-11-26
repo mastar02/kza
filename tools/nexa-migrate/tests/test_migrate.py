@@ -45,8 +45,12 @@ def ddl(file: str, marker: str) -> str:
     return next(block for block in blocks if marker in block)
 
 
-def add_ledger(db: sqlite3.Connection, entries: list[tuple]) -> list[tuple]:
+def create_ledger_tables(db: sqlite3.Connection) -> None:
     db.executescript(ddl("src/memory/deletion_ledger.py", "CREATE TABLE deletion_ledger_v1"))
+
+
+def add_ledger(db: sqlite3.Connection, entries: list[tuple]) -> list[tuple]:
+    create_ledger_tables(db)
     db.execute("INSERT INTO deletion_ledger_salt_v1 VALUES (1,?)", (SALT.hex(),))
     previous = "0" * 64
     rows = []
@@ -283,8 +287,13 @@ def checksums(source):
             for path in source.iterdir() if path.is_file()}
 
 
-def test_full_migration_and_privacy(legacy, tmp_path, run_migration, vec_extension):
+@pytest.mark.parametrize("empty_ledger_db", [None, "dashboard_auth.db", "zz_shadow.db"],
+                         ids=["single-pair", "empty-first", "empty-last"])
+def test_full_migration_and_privacy(legacy, tmp_path, run_migration, vec_extension, empty_ledger_db):
     source, original_ledger = legacy
+    if empty_ledger_db is not None:
+        with closing(sqlite3.connect(source / empty_ledger_db)) as db, db:
+            create_ledger_tables(db)
     dest = tmp_path / "nexa"
     result = run_migration(source, dest)
     assert result.returncode == 0, result.stderr
@@ -361,6 +370,82 @@ def test_full_migration_and_privacy(legacy, tmp_path, run_migration, vec_extensi
         assert rows(dest, file, "PRAGMA journal_mode", vec_extension) == [("wal",)]
     assert stat.S_IMODE(dest.stat().st_mode) == 0o700
     assert stat.S_IMODE((dest / "memory/legacy-deletion-ledger.json").stat().st_mode) == 0o600
+
+
+def test_duplicate_empty_ledgers_get_fresh_salt(tmp_path, run_migration, vec_extension):
+    source = tmp_path / "legacy"
+    source.mkdir()
+    for name in ("dashboard_auth.db", "memory_privacy.db"):
+        with closing(sqlite3.connect(source / name)) as db, db:
+            create_ledger_tables(db)
+
+    dest = tmp_path / "nexa"
+    result = run_migration(source, dest)
+    assert result.returncode == 0, result.stderr
+    [(salt_id, salt)] = rows(dest, "memory/memory.db", "SELECT * FROM deletion_ledger_salt_v1", vec_extension)
+    assert salt_id == 1
+    assert isinstance(salt, bytes) and len(salt) == 32
+    assert rows(dest, "memory/memory.db", "SELECT * FROM deletion_ledger_v1", vec_extension) == []
+
+
+@pytest.mark.parametrize(("first_empty", "second_empty"), [
+    (None, None),
+    ("deletion_ledger_salt_v1", "deletion_ledger_salt_v1"),
+    ("deletion_ledger_v1", "deletion_ledger_v1"),
+    ("deletion_ledger_v1", "deletion_ledger_salt_v1"),
+])
+def test_duplicate_populated_ledgers_fail_closed(tmp_path, run_migration, first_empty, second_empty):
+    source = tmp_path / "legacy"
+    source.mkdir()
+    for name, empty in (("dashboard_auth.db", first_empty), ("memory_privacy.db", second_empty)):
+        with closing(sqlite3.connect(source / name)) as db, db:
+            add_ledger(db, [("fact_deleted", name)])
+            if empty is not None:
+                db.execute(f"DELETE FROM {empty}")
+
+    dest = tmp_path / "nexa"
+    result = run_migration(source, dest)
+    assert result.returncode == 1
+    assert result.stderr == "Migration refused: duplicate supported source table\n"
+    assert not dest.exists()
+
+
+@pytest.mark.parametrize(("first_missing", "second_missing"), [
+    (None, "deletion_ledger_v1"),
+    (None, "deletion_ledger_salt_v1"),
+    ("deletion_ledger_v1", None),
+    ("deletion_ledger_salt_v1", None),
+    ("deletion_ledger_v1", "deletion_ledger_salt_v1"),
+])
+def test_duplicate_incomplete_ledgers_fail_closed(tmp_path, run_migration, first_missing, second_missing):
+    source = tmp_path / "legacy"
+    source.mkdir()
+    for name, missing in (("dashboard_auth.db", first_missing), ("memory_privacy.db", second_missing)):
+        with closing(sqlite3.connect(source / name)) as db, db:
+            create_ledger_tables(db)
+            if missing is not None:
+                db.execute(f"DROP TABLE {missing}")
+
+    dest = tmp_path / "nexa"
+    result = run_migration(source, dest)
+    assert result.returncode == 1
+    assert result.stderr == "Migration refused: duplicate supported source table\n"
+    assert not dest.exists()
+
+
+def test_duplicate_empty_nonledger_table_fails_closed(tmp_path, run_migration):
+    source = tmp_path / "legacy"
+    source.mkdir()
+    for name in ("dashboard_auth.db", "memory_privacy.db"):
+        with closing(sqlite3.connect(source / name)) as db, db:
+            create_ledger_tables(db)
+            db.execute("CREATE TABLE facts (fact_id TEXT PRIMARY KEY)")
+
+    dest = tmp_path / "nexa"
+    result = run_migration(source, dest)
+    assert result.returncode == 1
+    assert result.stderr == "Migration refused: duplicate supported source table\n"
+    assert not dest.exists()
 
 
 def test_shared_tasks_respect_tombstones(legacy, tmp_path, run_migration):
@@ -552,7 +637,7 @@ def test_dry_run_and_explicit_report(legacy, tmp_path, run_migration):
     assert not dest.exists()
 
 
-@pytest.mark.parametrize("damage", ["bad-db", "bad-ledger", "missing-salt", "plaintext-digest"])
+@pytest.mark.parametrize("damage", ["bad-db", "bad-ledger", "missing-salt", "missing-salt-table", "plaintext-digest"])
 def test_corrupt_source_fails_closed(legacy, tmp_path, run_migration, damage):
     source, _ = legacy
     if damage == "bad-db":
@@ -564,6 +649,8 @@ def test_corrupt_source_fails_closed(legacy, tmp_path, run_migration, damage):
         with closing(sqlite3.connect(source / "memory_privacy.db")) as db, db:
             if damage == "bad-ledger":
                 db.execute("UPDATE deletion_ledger_v1 SET row_sha256=? WHERE seq=2", ("f" * 64,))
+            elif damage == "missing-salt-table":
+                db.execute("DROP TABLE deletion_ledger_salt_v1")
             else:
                 db.execute("DELETE FROM deletion_ledger_salt_v1")
     dest = tmp_path / "nexa"
