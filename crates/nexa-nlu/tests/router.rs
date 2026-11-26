@@ -793,7 +793,13 @@ fn parses_room_as_light_shorthand_and_trailing_wake_word() {
     assert_eq!(dim_cmd.operation, Operation::SetLight);
     assert_eq!(dim_cmd.slots.brightness_pct, Some(80));
     // Non-room / non-light phrases must remain unclaimed (SlowLlm), never misclassified as lights.
-    for phrase in ["prendé la tele", "aprende a tocar guitarra", "bajalo"] {
+    // Unaccented STT slips like "apagara"/"prendera" must not be silently dropped as future tense.
+    for phrase in [
+        "prendé la tele",
+        "aprende a tocar guitarra",
+        "bajalo",
+        "apagara la luz",
+    ] {
         let turn = router.route(phrase, clear_wake());
         assert_eq!(turn.route, Route::SlowLlm, "{phrase}: {turn:?}");
     }

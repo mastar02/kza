@@ -50,7 +50,8 @@ pub(crate) fn non_immediate(core: &str) -> Option<GrammarBlock> {
     {
         return Some(GrammarBlock::Past);
     }
-    if FUTURE_ACTION.is_match(&folded) {
+    let core_lower = core.to_lowercase();
+    if FUTURE_INFLECTED.is_match(&core_lower) || FUTURE_PERIPHRASTIC.is_match(&folded) {
         return Some(GrammarBlock::Future);
     }
     if INFORMATION.is_match(&folded) {
@@ -77,6 +78,7 @@ regex_patterns! {
     PAST_ACTION => r"\b(?:\w+(?:aste|iste|aron|ieron|asteis|isteis)|apagué|prendí|encendí|bajé|cerré|cambié|pausé|frené|puse|puso|pusimos|apag[oó]|prendi[oó]|encendi[oó]|subi[oó]|bajó|cerró|abri[oó]|(?:ajust|configur|dej|activ|desactiv|par|cambi|levant)[éó]|reprodujo|apagaba[ns]?|prend[ií]a[ns]?|encend[ií]a[ns]?|sub[ií]a[ns]?|bajaba[ns]?|cerraba[ns]?|abr[ií]a[ns]?|pon[ií]a[ns]?)\b";
     PERFECT_ACTION => r"\b(?:he|has|ha|hemos|han|habia[ns]?|habiamos|hubo|habras?) (?:\w+ ){0,2}(?:apagado|prendido|encendido|subido|bajado|cerrado|abierto|puesto|activado|desactivado|cambiado)\b";
     PAST_CONTEXT => r"\b(?:ayer|anteayer|anoche|recien|antes|(?:ya|yo) (?:subi|abri))\b";
-    FUTURE_ACTION => r"\b(?:(?:apagar|prender|encender|subir|bajar|cerrar|abrir|activar|desactivar|poner)(?:e|as?|emos|an)|(?:voy|vas|va|vamos|van) a (?:apagar|prender|encender|subir|bajar|cerrar|abrir|activar|desactivar|poner))\b";
+    FUTURE_INFLECTED => r"\b(?:apagar|prender|encender|subir|bajar|cerrar|abrir|activar|desactivar|poner)(?:é|ás|á|emos|án)\b";
+    FUTURE_PERIPHRASTIC => r"\b(?:voy|vas|va|vamos|van) a (?:apagar|prender|encender|subir|bajar|cerrar|abrir|activar|desactivar|poner)\b";
     INFORMATION => r"^(?:(?:decime|dime|contame|cuentame|explicame) )?(?:que|como|cuando|donde|quien|por que|para que)\b|^(?:(?:la luz|las luces|el aire|las? persianas?)(?: \w+){0,4} )?(?:esta|estas|estan|sigue|siguen|quedo|quedaron|tengo|tenes)\b";
 }

@@ -699,7 +699,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             continue;
         }
 
-        if speech < 0.5 {
+        if speech < 0.2 {
             noise.observe(rms);
         }
         if score >= *wake_threshold && guard.allow_wake(now, score) {
