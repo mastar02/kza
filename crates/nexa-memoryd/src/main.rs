@@ -5,10 +5,20 @@ use std::path::{Path, PathBuf};
 use nexa_config::NexaConfig;
 use nexa_memoryd::db::{FACT_MODEL, Store};
 use nexa_memoryd::service::{BoundSocket, MemoryRpc};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::filter::{FilterExt, filter_fn};
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt().with_target(true).init();
+    let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Keep dependency diagnostics out of the daemon's log, including at trace level.
+    let daemon_targets = filter_fn(|metadata| {
+        metadata.target() == "nexa_memoryd" || metadata.target().starts_with("nexa_memoryd::")
+    });
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(daemon_targets.and(env_filter)))
+        .init();
     let config_dir = config_directory()?;
     let config = NexaConfig::load_file(config_dir.join("nexa.toml"))?;
     if config.ml.embeddings_model != FACT_MODEL {
@@ -24,7 +34,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket = BoundSocket::bind(&runtime_dir)?;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let watchdog = notify_ready()?;
-    tracing::info!(service = "nexa-memoryd", "private memory socket ready");
+    tracing::info!(
+        service = "nexa-memoryd",
+        ambient_capture_enabled = config.memory.ambient_enabled,
+        "private memory socket ready"
+    );
 
     let result = socket
         .serve(
