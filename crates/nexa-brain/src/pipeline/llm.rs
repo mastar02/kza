@@ -16,12 +16,12 @@ use crate::Brain;
 
 use super::Turn;
 
-const VOICE_MAX_TOKENS: u32 = 140;
-const HOME_ROUTER_MAX_TOKENS: u32 = 180;
+const VOICE_MAX_TOKENS: u32 = 120;
+const HOME_ROUTER_MAX_TOKENS: u32 = 140;
 const HOME_ROUTER_TEMPERATURE: f32 = 0.15;
-const MAX_CATALOG_ENTITIES: usize = 64;
+const MAX_CATALOG_ENTITIES: usize = 32;
 
-const HOME_ROUTER_SYSTEM_PROMPT: &str = "Sos Nexa, un asistente doméstico rioplatense. Respondé SOLO con un objeto JSON válido sin texto extra ni bloques de razonamiento.\nFormato exacto:\n{\"action\": {\"entity_id\": \"...\", \"operation\": \"...\", \"params\": {}} | null, \"confidence\": 0.0, \"reply\": \"respuesta breve en español (1-2 oraciones)\"}\nReglas estrictas:\n1. Usá \"action\" SOLO si el usuario pide controlar un dispositivo de la lista provista. Elegí ÚNICAMENTE un entity_id y una operation presentes en esa lista.\n2. Si el usuario no nombra habitación, priorizá los dispositivos de source_room.\n3. Operaciones válidas y sus params exactos: turn_on ({}), turn_off ({}), activate_scene ({}), open_cover ({}), close_cover ({}), stop_cover ({}), set_cover_position ({\"position\": \"0..100\"}), brightness ({\"brightness_pct\": \"1..100\"}), color_temp_kelvin ({\"color_temp_kelvin\": \"2000..6500\"}), set_temperature ({\"temperature\": \"16..30\"}), set_hvac_mode ({\"hvac_mode\": \"off|cool|heat|dry|fan_only|auto\"}).\n4. Nunca inventes entidades ni controles cerraduras o alarmas.\n5. Si es una pregunta sobre el estado de la casa o charla general, devolvé \"action\": null, \"confidence\": 0.0 y una respuesta concisa en \"reply\".";
+const HOME_ROUTER_SYSTEM_PROMPT: &str = "Sos Nexa, asistente doméstico rioplatense. Respondé SOLO JSON válido sin markdown ni razonamiento:\n{\"action\": {\"entity_id\": \"...\", \"operation\": \"...\", \"params\": {}} | null, \"confidence\": 0.0, \"reply\": \"<=12 palabras en español rioplatense\"}\nReglas:\n1. Usá \"action\" SOLO con entity_id y operation exactos de la lista de dispositivos.\n2. El texto viene de STT de voz y puede tener errores fonéticos menores (ej: 'aprende' por 'prendé', o una palabra rara en vez de 'escritorio'/'luz'). Si el usuario claramente pide prender/apagar/regular sin nombrar otra habitación válida, actuá sobre la luz principal de source_room.\n3. Operaciones y params: turn_on ({}), turn_off ({}), activate_scene ({}), open_cover ({}), close_cover ({}), stop_cover ({}), set_cover_position ({\"position\": \"0..100\"}), brightness ({\"brightness_pct\": \"1..100\"}), color_temp_kelvin ({\"color_temp_kelvin\": \"2000..6500\"}), set_temperature ({\"temperature\": \"16..30\"}), set_hvac_mode ({\"hvac_mode\": \"off|cool|heat|dry|fan_only|auto\"}).\n4. Nunca inventes entidades ni controles cerraduras o alarmas.\n5. Si es pregunta de estado o charla general, devolvé \"action\": null, \"confidence\": 0.0 y \"reply\" breve.";
 
 #[derive(Debug, Deserialize)]
 struct LlmHomeDecision {
@@ -181,33 +181,63 @@ impl Brain {
             .collect())
     }
 
-    fn allowlisted_home_catalog(&self, source_room: &str) -> Vec<Value> {
+    fn allowlisted_home_catalog(&self, source_room: &str) -> Vec<String> {
+        let other_rooms: Vec<String> = self
+            .config
+            .rooms
+            .rooms
+            .iter()
+            .map(|room| room.room_id.clone())
+            .filter(|id| id != source_room)
+            .collect();
         let mut entities: Vec<_> = self
             .catalog()
             .entities
             .into_iter()
             .filter(|entity| {
-                !entity.capabilities.is_empty() && !is_disallowed_security_entity(&entity.entity_id)
+                if entity.capabilities.is_empty()
+                    || is_disallowed_security_entity(&entity.entity_id)
+                {
+                    return false;
+                }
+                if let Some(scene_slug) = entity.entity_id.strip_prefix("scene.") {
+                    // Keep global scenes and source_room scenes; omit scenes scoped to other rooms.
+                    return !other_rooms
+                        .iter()
+                        .any(|room| scene_slug.starts_with(&format!("{room}_")));
+                }
+                true
             })
             .collect();
         // Prioritize devices in the room where the user spoke, then non-scene devices, then scenes.
-        entities.sort_by_key(|entity| {
+        entities.sort_by(|a, b| {
             (
-                entity.room_id != source_room,
-                entity.entity_id.starts_with("scene."),
+                a.room_id != source_room,
+                a.entity_id.starts_with("scene."),
+                &a.entity_id,
             )
+                .cmp(&(
+                    b.room_id != source_room,
+                    b.entity_id.starts_with("scene."),
+                    &b.entity_id,
+                ))
         });
         entities
             .into_iter()
             .take(MAX_CATALOG_ENTITIES)
             .map(|entity| {
-                json!({
-                    "entity_id": entity.entity_id,
-                    "room": entity.room_id,
-                    "name": entity.friendly_name,
-                    "state": entity.state,
-                    "ops": entity.capabilities,
-                })
+                let room = if entity.room_id.is_empty() {
+                    "-"
+                } else {
+                    entity.room_id.as_str()
+                };
+                format!(
+                    "{}|room={}|state={}|ops={}",
+                    entity.entity_id,
+                    room,
+                    entity.state,
+                    entity.capabilities.join(",")
+                )
             })
             .collect()
     }
@@ -226,21 +256,21 @@ impl Brain {
         if catalog.is_empty() {
             return Ok(None);
         }
-        let mut payload = json!({
-            "source_room": turn.zone,
-            "utterance": text,
-            "devices": catalog,
-        });
+        // Keep stable device list first so llama-server reuses its KV prefix cache across turns.
+        let mut user_prompt = format!("Dispositivos permitidos:\n{}\n", catalog.join("\n"));
         if !context.is_empty() {
-            payload["memory"] = json!(context);
+            user_prompt.push_str("Memoria local: ");
+            user_prompt.push_str(&json!(context).to_string());
+            user_prompt.push('\n');
         }
+        user_prompt.push_str(&format!("source_room: {}\nutterance: {}", turn.zone, text));
         let started = Instant::now();
         let cancel = turn.lease.cancel.child_token();
         let (endpoint_id, raw) = match self
             .llm
             .complete_local_with_system(
                 HOME_ROUTER_SYSTEM_PROMPT,
-                &payload.to_string(),
+                &user_prompt,
                 HOME_ROUTER_MAX_TOKENS,
                 HOME_ROUTER_TEMPERATURE,
                 &cancel,

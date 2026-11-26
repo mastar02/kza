@@ -33,29 +33,54 @@ pub(crate) fn parse_core(core: &str, source_room: Option<&str>) -> GrammarMatch 
     let core = core.strip_suffix(" ahora").unwrap_or(core);
     let (head, rest) = core.split_once(' ').unwrap_or((core, ""));
     let verb = action(head);
-    let rest = trim_article(if verb.is_some() { rest } else { core });
+    // Whisper frequently elides "Nexa, prendé <room/light>" into "aprende <room/light>".
+    let stt_prende_elision = head == "aprende";
+    let rest = trim_article(if verb.is_some() || stt_prende_elision {
+        rest
+    } else {
+        core
+    });
     let (noun, tail) = rest.split_once(' ').unwrap_or((rest, ""));
-    let (domain, tail) = match entity_at(noun) {
+    let clitic_on_off = matches!(
+        head,
+        "prendela" | "prendelo" | "encendela" | "encendelo" | "apagala" | "apagalo"
+    );
+    let clitic_level = matches!(
+        head,
+        "ponela" | "ponelo" | "subila" | "subilo" | "bajala" | "bajalo"
+    ) && !rest.is_empty();
+    let (verb, domain, tail) = match entity_at(noun) {
         Some(Domain::Climate) if noun == "aire" && prefix(tail, "acondicionado") => (
+            verb,
             Domain::Climate,
             tail.strip_prefix("acondicionado")
                 .unwrap_or(tail)
                 .trim_start(),
         ),
         Some(Domain::Light) if noun == "brillo" => (
+            verb,
             Domain::Light,
             tail.strip_prefix("de la luz ")
                 .or_else(|| tail.strip_prefix("de las luces "))
                 .unwrap_or(tail),
         ),
-        Some(domain) => (domain, tail),
-        None if matches!(head, "ponela" | "ponelo") && core.split_whitespace().count() <= 6 => {
-            (Domain::Light, rest)
+        Some(Domain::Light) if stt_prende_elision => (Some(Verb::On), Domain::Light, tail),
+        Some(domain) => (verb, domain, tail),
+        None if (clitic_on_off || clitic_level) && core.split_whitespace().count() <= 6 => {
+            (verb, Domain::Light, rest)
         }
-        None if matches!(verb, Some(Verb::On | Verb::Off))
+        None if (matches!(verb, Some(Verb::On | Verb::Off)) || stt_prende_elision)
             && super::canonical_room(noun).is_some() =>
         {
-            (Domain::Light, rest)
+            (
+                if stt_prende_elision {
+                    Some(Verb::On)
+                } else {
+                    verb
+                },
+                Domain::Light,
+                rest,
+            )
         }
         None => return GrammarMatch::Unclaimed,
     };

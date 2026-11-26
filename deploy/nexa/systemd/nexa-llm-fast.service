@@ -14,7 +14,7 @@ RuntimeDirectoryPreserve=yes
 ExecStart=/opt/nexa/bin/llama-server \
   --model /opt/nexa/models/Qwen3.5-9B-Q4_K_M/Qwen3.5-9B-Q4_K_M.gguf \
   --host 127.0.0.1 --port 8101 -t 8 -tb 8 -c 4096 -ctk q8_0 -ctv q8_0 -ngl 99 \
-  --jinja --parallel 1 --minilog \
+  --jinja --parallel 1 --verbosity 0 \
   --api-key-file /etc/nexa/secrets/llama-api-key
 UMask=0077
 NoNewPrivileges=yes

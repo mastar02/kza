@@ -36,15 +36,18 @@ pub(crate) enum Verb {
 
 pub(crate) fn action(word: &str) -> Option<Verb> {
     Some(match word {
-        "prende" | "prenda" | "prendan" | "prender" | "encende" | "encender" | "enciende"
-        | "encienda" | "activa" | "activar" | "active" | "ilumina" => Verb::On,
-        "apaga" | "apagar" | "apague" | "apaguen" | "corta" | "corte" | "desactiva"
-        | "desactivar" | "desactive" => Verb::Off,
+        "prende" | "prenda" | "prendan" | "prender" | "prendela" | "prendelo" | "prendeme"
+        | "encende" | "encender" | "enciende" | "encienda" | "encendela" | "encendelo"
+        | "activa" | "activar" | "active" | "ilumina" => Verb::On,
+        "apaga" | "apagar" | "apague" | "apaguen" | "apagala" | "apagalo" | "apagame" | "corta"
+        | "corte" | "desactiva" | "desactivar" | "desactive" => Verb::Off,
         "pone" | "poner" | "pon" | "ponga" | "poneme" | "ponela" | "ponelo" | "ajusta"
         | "ajustar" | "ajuste" | "deja" | "dejar" | "deje" | "configura" | "configurar"
         | "configure" | "cambia" | "cambiar" | "cambie" => Verb::Set,
-        "subi" | "sube" | "subir" | "suba" | "levanta" | "levantar" => Verb::Raise,
-        "baja" | "bajar" | "baje" | "bajen" => Verb::Lower,
+        "subi" | "sube" | "subir" | "suba" | "subila" | "subilo" | "levanta" | "levantar" => {
+            Verb::Raise
+        }
+        "baja" | "bajar" | "baje" | "bajen" | "bajala" | "bajalo" => Verb::Lower,
         "abri" | "abre" | "abrir" | "abra" => Verb::Open,
         "cerra" | "cierra" | "cerrar" | "cierre" => Verb::Close,
         "para" | "parar" | "pare" | "detene" | "detener" | "deten" | "detenga" | "frena"
