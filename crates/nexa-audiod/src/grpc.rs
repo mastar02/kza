@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -16,6 +17,7 @@ use nexa_proto::v1::{
 };
 use tokio::sync::{Mutex as AsyncMutex, broadcast, watch};
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 
@@ -44,6 +46,7 @@ enum StopReason {
 }
 
 struct ActivePlayback {
+    log_id: String,
     token: String,
     stop: watch::Sender<Option<StopReason>>,
     speaking: bool,
@@ -85,12 +88,85 @@ impl PlaybackSlot<'_> {
 
 impl Drop for PlaybackSlot<'_> {
     fn drop(&mut self) {
-        if let Some(id) = self.zone_id
-            && let Ok(mut active) = self.registry.lock()
-        {
-            active.remove(id);
+        if let Some(id) = self.zone_id {
+            match self.registry.lock() {
+                Ok(mut active) => {
+                    active.remove(id);
+                }
+                Err(error) => tracing::warn!(zone_id = id, %error, "playback slot cleanup failed"),
+            }
         }
     }
+}
+
+#[derive(Default)]
+struct AudioDiagnostics {
+    utterances_published: AtomicU64,
+    utterances_dropped: AtomicU64,
+    utterances_lagged: AtomicU64,
+    playbacks_failed: AtomicU64,
+}
+
+struct PlaybackTrace<'a> {
+    diagnostics: &'a AudioDiagnostics,
+    spec: &'a PlaybackSpec,
+    id: String,
+    card: String,
+    started: Instant,
+    first_audio: Option<Instant>,
+    stop_reason: Option<StopReason>,
+    completed: bool,
+    error: Option<String>,
+}
+
+impl PlaybackTrace<'_> {
+    fn ttfa_ms(&self) -> u32 {
+        self.first_audio
+            .map_or(0, |first| millis_u32(first.duration_since(self.started)))
+    }
+
+    fn adapter_error(&mut self, operation: &str, error: AudioError) -> Status {
+        self.error = Some(format!("{operation}: {}", error.cause()));
+        audio_status(error)
+    }
+}
+
+impl Drop for PlaybackTrace<'_> {
+    fn drop(&mut self) {
+        let PlaybackSpec {
+            zone_id,
+            sample_rate,
+            ..
+        } = self.spec;
+        let ttfa_ms = self.ttfa_ms();
+        let total_ms = millis_u32(self.started.elapsed());
+        let playback_id = &self.id;
+        let card = &self.card;
+        if let Some(error) = &self.error {
+            self.diagnostics.playbacks_failed.fetch_add(1, Relaxed);
+            tracing::warn!(%zone_id, %playback_id, %card, sample_rate, ttfa_ms, total_ms, %error, "playback error");
+        } else if self.completed {
+            tracing::info!(%zone_id, %playback_id, %card, sample_rate, ttfa_ms, total_ms, "playback complete");
+        } else {
+            let reason = match self.stop_reason {
+                Some(StopReason::BargeIn) => "barge_in",
+                Some(StopReason::Cancelled) => "requested",
+                None => "rpc_dropped",
+            };
+            tracing::info!(%zone_id, %playback_id, %card, sample_rate, ttfa_ms, total_ms, reason, "playback cancelled");
+        }
+    }
+}
+
+fn playback_log_id(request_id: &str, token: &str) -> String {
+    // The brain can reuse the playback ID as its cancellation capability.
+    // Unknown client formats can also contain arbitrary text.
+    if request_id != token
+        && let Ok(id) = uuid::Uuid::parse_str(request_id)
+    {
+        return id.to_string();
+    }
+    uuid::Uuid::new_v4().to_string()
 }
 
 pub struct AudioService<A, P> {
@@ -102,6 +178,7 @@ pub struct AudioService<A, P> {
     microphones: Mutex<MicrophonesSnapshot>,
     playbacks: PlaybackRegistry,
     utterances: broadcast::Sender<AudioUtterance>,
+    diagnostics: Arc<AudioDiagnostics>,
     started: Instant,
     barge_in_enabled: bool,
 }
@@ -163,6 +240,7 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
             }),
             playbacks: Mutex::default(),
             utterances: broadcast::channel(UTTERANCE_QUEUE).0,
+            diagnostics: Arc::default(),
             started: Instant::now(),
             barge_in_enabled: true,
         })
@@ -211,11 +289,31 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
 
     /// Publish only while the capture's original ingress epoch remains open.
     pub fn publish_utterance(&self, utterance: AudioUtterance) -> Result<bool, Status> {
+        let room_id = utterance.room_id.clone();
+        let utterance_id = utterance.utterance_id.clone();
+        let kind = utterance.kind().as_str_name();
         let capture = self.capture_status.borrow();
         if running_epoch(&capture) != Some(utterance.capture_epoch) {
+            drop(capture);
+            self.diagnostics.utterances_dropped.fetch_add(1, Relaxed);
+            tracing::warn!(%room_id, %utterance_id, kind, reason = "capture_epoch_closed", "utterance publication skipped");
             return Ok(false);
         }
-        Ok(self.utterances.send(utterance).is_ok())
+        let sent = self.utterances.send(utterance);
+        drop(capture);
+        match sent {
+            Ok(subscribers) => {
+                self.diagnostics.utterances_published.fetch_add(1, Relaxed);
+                tracing::info!(%room_id, %utterance_id, kind, subscribers, "utterance published");
+                Ok(true)
+            }
+            Err(error) => {
+                self.diagnostics.utterances_dropped.fetch_add(1, Relaxed);
+                // SendError's Display omits the unsent utterance.
+                tracing::warn!(%room_id, %utterance_id, kind, reason = "no_subscribers", %error, "utterance publication skipped");
+                Ok(false)
+            }
+        }
     }
 
     /// Feed audio from the currently admitted capture epoch into matching zones' barge-in detectors.
@@ -255,6 +353,7 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
                 && playback.stop(StopReason::BargeIn)
             {
                 interrupted += 1;
+                tracing::info!(%zone_id, playback_id = %playback.log_id, "barge-in triggered");
             }
         }
         Ok(interrupted)
@@ -276,8 +375,8 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
         &'a self,
         zone_id: &'a str,
         token: &str,
+        log_id: &str,
     ) -> Result<(PlaybackSlot<'a>, watch::Receiver<Option<StopReason>>), Status> {
-        self.zone(zone_id)?;
         let mut active = lock(&self.playbacks)?;
         if active.contains_key(zone_id) {
             return Err(Status::already_exists("audio zone already has a playback"));
@@ -286,6 +385,7 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
         active.insert(
             zone_id.to_owned(),
             ActivePlayback {
+                log_id: log_id.to_owned(),
                 token: token.to_owned(),
                 stop,
                 speaking: false,
@@ -305,12 +405,25 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
         spec: &PlaybackSpec,
         token: &str,
         mut chunks: impl Stream<Item = Result<PlayAudioChunk, Status>> + Unpin + Send,
-        first_audio: &mut Option<Instant>,
+        trace: &mut PlaybackTrace<'_>,
     ) -> Result<(), Status> {
-        let mut session = self.output.open(spec).await.map_err(audio_status)?;
+        let mut session = self
+            .output
+            .open(spec)
+            .await
+            .map_err(|error| trace.adapter_error("open", error))?;
+        trace.card = session.card().to_owned();
+        tracing::info!(
+            zone_id = %spec.zone_id, playback_id = %trace.id, card = %trace.card,
+            sample_rate = spec.sample_rate, open_ms = millis_u32(trace.started.elapsed()), "playback opened"
+        );
         let mut pcm = Vec::new();
         while let Some(chunk) = chunks.next().await {
-            let chunk = chunk?;
+            let chunk = chunk.inspect_err(|status| {
+                if status.code() != tonic::Code::Cancelled {
+                    trace.error = Some(format!("read playback stream: {}", status.code()));
+                }
+            })?;
             if chunk.playback_id != spec.playback_id
                 || chunk.zone_id != spec.zone_id
                 || chunk.sample_rate != spec.sample_rate
@@ -337,14 +450,20 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
                 if let Some(playback) = lock(&self.playbacks)?.get_mut(&spec.zone_id) {
                     playback.speaking = true;
                 }
-                session.write(&pcm).await.map_err(audio_status)?;
-                first_audio.get_or_insert_with(Instant::now);
+                session
+                    .write(&pcm)
+                    .await
+                    .map_err(|error| trace.adapter_error("write", error))?;
+                trace.first_audio.get_or_insert_with(Instant::now);
             }
             if chunk.is_final {
-                if first_audio.is_none() {
+                if trace.first_audio.is_none() {
                     return Err(Status::invalid_argument("playback stream has no samples"));
                 }
-                return session.finish().await.map_err(audio_status);
+                return session
+                    .finish()
+                    .await
+                    .map_err(|error| trace.adapter_error("drain", error));
             }
         }
         Err(Status::invalid_argument(
@@ -391,7 +510,14 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
             version: env!("CARGO_PKG_VERSION").into(),
             state: state as i32,
             uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
-            detail: detail.into(),
+            detail: format!(
+                "{detail}; amp_mode={}; utterances_published={}; utterances_dropped={}; utterances_lagged={}; playbacks_failed={}",
+                self.amp.mode(),
+                self.diagnostics.utterances_published.load(Relaxed),
+                self.diagnostics.utterances_dropped.load(Relaxed),
+                self.diagnostics.utterances_lagged.load(Relaxed),
+                self.diagnostics.playbacks_failed.load(Relaxed),
+            ),
         }))
     }
 
@@ -434,10 +560,15 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
         }
         let zone = self.zone(&request.zone_id)?;
         let step = percent_to_step(request.volume_pct);
-        let command = CommandFrame::new(zone.amp_zone, Command::Volume, step)
-            .map_err(|_| Status::internal("invalid configured amplifier zone"))?;
+        let command = CommandFrame::new(zone.amp_zone, Command::Volume, step).map_err(|error| {
+            tracing::warn!(zone_id = %request.zone_id, %error, "invalid amplifier command");
+            Status::internal("invalid configured amplifier zone")
+        })?;
         let mut state = zone.volume.lock().await;
-        self.amp.send(command).await.map_err(audio_status)?;
+        self.amp.send(command).await.map_err(|error| {
+            tracing::warn!(zone_id = %request.zone_id, amp_mode = self.amp.mode(), error = %error.cause(), "amplifier command failed");
+            audio_status(error)
+        })?;
         state.volume_pct = step_to_percent(step);
         let mut response = state.clone();
         response.speaking = self.speaking(&request.zone_id)?;
@@ -500,6 +631,7 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
     ) -> Result<Response<Self::SubscribeUtterancesStream>, Status> {
         let include_ambient = request.into_inner().include_ambient;
         let capture = self.capture_status.clone();
+        let diagnostics = Arc::clone(&self.diagnostics);
         let stream =
             BroadcastStream::new(self.utterances.subscribe()).filter_map(
                 move |result| match result {
@@ -507,9 +639,13 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
                         == Some(utterance.capture_epoch)
                         && (include_ambient || utterance.kind() != UtteranceKind::Ambient))
                         .then_some(Ok(utterance)),
-                    Err(_) => Some(Err(Status::resource_exhausted(
-                        "utterance subscriber fell behind",
-                    ))),
+                    Err(BroadcastStreamRecvError::Lagged(missed)) => {
+                        diagnostics.utterances_lagged.fetch_add(missed, Relaxed);
+                        tracing::warn!(missed, "utterance subscriber fell behind");
+                        Some(Err(Status::resource_exhausted(
+                            "utterance subscriber fell behind",
+                        )))
+                    }
                 },
             );
         Ok(Response::new(Box::pin(stream)))
@@ -523,12 +659,23 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
         let mut stream = request.into_inner();
         let first = stream
             .message()
-            .await?
-            .ok_or_else(|| Status::invalid_argument("empty playback stream"))?;
+            .await
+            .inspect_err(
+                |status| tracing::warn!(error = %status.code(), "read playback header failed"),
+            )?
+            .ok_or_else(|| {
+                tracing::warn!(error = "empty_stream", "invalid playback header");
+                Status::invalid_argument("empty playback stream")
+            })?;
         if first.playback_id.is_empty()
             || first.barge_in_token.is_empty()
             || first.sample_rate != PLAYBACK_SAMPLE_RATE
         {
+            tracing::warn!(
+                sample_rate = first.sample_rate,
+                error = "invalid_metadata",
+                "invalid playback header"
+            );
             return Err(Status::invalid_argument("invalid 24 kHz playback header"));
         }
         let spec = PlaybackSpec {
@@ -538,28 +685,47 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
             priority: first.priority,
         };
         let token = first.barge_in_token.clone();
-        let (slot, mut stop) = self.reserve_playback(&spec.zone_id, &token)?;
-        let mut first_audio = None;
-        tokio::select! {
-            biased;
-            changed = stop.changed() => {
-                changed.map_err(|_| Status::unavailable("playback state closed"))?;
+        // Resolve the zone before attaching it to logs.
+        self.zone(&spec.zone_id)
+            .inspect_err(|_| tracing::warn!(error = "unknown_zone", "playback rejected"))?;
+        let mut trace = PlaybackTrace {
+            diagnostics: &self.diagnostics,
+            spec: &spec,
+            id: playback_log_id(&spec.playback_id, &token),
+            card: "unopened".into(),
+            started,
+            first_audio: None,
+            stop_reason: None,
+            completed: false,
+            error: None,
+        };
+        let stopped = async {
+            let (slot, mut stop) = self.reserve_playback(&spec.zone_id, &token, &trace.id)?;
+            tokio::select! {
+                biased;
+                changed = stop.changed() => {
+                    changed.map_err(|error| Status::unavailable(format!("playback state closed: {error}")))?;
+                }
+                result = self.play_to_output(
+                    &spec,
+                    &token,
+                    tokio_stream::iter([Ok(first)]).chain(stream),
+                    &mut trace,
+                ) => result?,
             }
-            result = self.play_to_output(
-                &spec,
-                &token,
-                tokio_stream::iter([Ok(first)]).chain(stream),
-                &mut first_audio,
-            ) => {
-                result?;
+            slot.retire()
+        }.await.inspect_err(|status| {
+            if status.code() != tonic::Code::Cancelled {
+                trace.error.get_or_insert_with(|| status.message().to_owned());
             }
-        }
-        let stopped = slot.retire()?;
+        })?;
+        trace.stop_reason = stopped;
+        trace.completed = stopped.is_none();
         Ok(Response::new(PlayAudioReceipt {
             playback_id: spec.playback_id.clone(),
-            completed: stopped.is_none(),
+            completed: trace.completed,
             interrupted_by_barge_in: stopped == Some(StopReason::BargeIn),
-            ttfa_ms: first_audio.map_or(0, |first| millis_u32(first.duration_since(started))),
+            ttfa_ms: trace.ttfa_ms(),
             total_ms: millis_u32(started.elapsed()),
         }))
     }
@@ -586,9 +752,10 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
 
 #[allow(clippy::result_large_err)]
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>, Status> {
-    mutex
-        .lock()
-        .map_err(|_| Status::internal("audio service state is unavailable"))
+    mutex.lock().map_err(|error| {
+        tracing::warn!(%error, "audio service state lock failed");
+        Status::internal("audio service state is unavailable")
+    })
 }
 
 #[allow(clippy::result_large_err)]
@@ -634,4 +801,62 @@ fn audio_status(error: AudioError) -> Status {
 
 fn millis_u32(duration: Duration) -> u32 {
     u32::try_from(duration.as_millis()).unwrap_or(u32::MAX)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::capture_seal::{CaptureControl, CaptureState};
+    use crate::hw::{amp::Ma1260, simulation::Simulation};
+    use nexa_config::Ma1260Connection;
+
+    #[test]
+    fn playback_log_ids_keep_safe_uuids_and_replace_tokens_and_untrusted_strings() {
+        let id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(playback_log_id(&id, "separate-token"), id);
+        assert_ne!(playback_log_id(&id, &id), id);
+        let id = playback_log_id("customer name\n", "separate-token");
+        assert!(uuid::Uuid::parse_str(&id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn publication_counts_missing_subscribers_and_lag_separately() {
+        let mut capture = CaptureControl::restore(CaptureState::default(), true).unwrap();
+        capture.acknowledge_resumed(0).unwrap();
+        let service = AudioService::new(
+            Arc::new(Mutex::new(capture)),
+            Ma1260::new(Ma1260Connection::Simulation),
+            Simulation,
+            [],
+        )
+        .unwrap();
+        let event = || AudioUtterance {
+            capture_epoch: 0,
+            kind: UtteranceKind::Command as i32,
+            ..Default::default()
+        };
+        assert!(!service.publish_utterance(event()).unwrap());
+
+        let mut stream = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest::default()))
+            .await
+            .unwrap()
+            .into_inner();
+        for _ in 0..UTTERANCE_QUEUE + 2 {
+            assert!(service.publish_utterance(event()).unwrap());
+        }
+        assert_eq!(
+            stream.next().await.unwrap().unwrap_err().code(),
+            tonic::Code::ResourceExhausted
+        );
+
+        let diagnostics = &service.diagnostics;
+        assert_eq!(diagnostics.utterances_dropped.load(Relaxed), 1);
+        assert_eq!(
+            diagnostics.utterances_published.load(Relaxed),
+            (UTTERANCE_QUEUE + 2) as u64
+        );
+        assert_eq!(diagnostics.utterances_lagged.load(Relaxed), 2);
+    }
 }

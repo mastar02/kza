@@ -11,6 +11,10 @@ use crate::traits::{
 pub struct Simulation;
 
 impl CaptureSource for Simulation {
+    fn device(&self) -> (&str, u32) {
+        ("simulation", 1)
+    }
+
     async fn start(&mut self) -> Result<(), AudioError> {
         Ok(())
     }
@@ -56,6 +60,10 @@ impl PlaybackOutput for Simulation {
 }
 
 impl PlaybackSession for SimulatedPlayback {
+    fn card(&self) -> &str {
+        "simulation"
+    }
+
     async fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
         tokio::time::sleep(Duration::from_secs_f64(
             samples.len() as f64 / f64::from(self.0),

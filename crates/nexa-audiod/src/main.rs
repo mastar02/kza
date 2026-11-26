@@ -12,7 +12,9 @@ use nexa_audiod::grpc::AudioService;
 use nexa_audiod::hw::{amp::Ma1260, simulation::Simulation};
 use nexa_audiod::runtime::{RoomPipeline, SharedShadow, run_capture_control, zone_id};
 use nexa_audiod::socket::{AudioSocket, Notify};
-use nexa_audiod::traits::{CaptureSource, PlaybackOutput, ShadowStt, VadEngine, WakeEngine};
+use nexa_audiod::traits::{
+    AmpTransport, CaptureSource, PlaybackOutput, ShadowStt, VadEngine, WakeEngine,
+};
 use nexa_config::{LoadedBundle, Ma1260Connection};
 use nexa_proto::sockets;
 use nexa_proto::v1::{ZoneState, audio_service_server::AudioServiceServer};
@@ -20,6 +22,7 @@ use tokio::signal::unix::{SignalKind, signal};
 use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tonic::transport::Server;
+use tracing_subscriber::EnvFilter;
 
 const CAPTURE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const GRPC_SHUTDOWN_GRACE: Duration = Duration::from_millis(300);
@@ -75,7 +78,12 @@ fn main() -> DaemonResult<()> {
         println!("Usage: nexa-audiod [--config-dir DIR] [--simulation] [--socket PATH]");
         return Ok(());
     };
-    tracing_subscriber::fmt().with_target(true).init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .with_target(true)
+        .init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
@@ -190,8 +198,13 @@ where
         ma1260_zone: u32::from(room.ma1260_zone),
         ..Default::default()
     });
+    let amp = Ma1260::new(amp);
+    tracing::info!(
+        amp_mode = amp.mode(),
+        "configured MA1260 amplifier transport"
+    );
     let service = Arc::new(
-        AudioService::new(Arc::clone(&capture), Ma1260::new(amp), output, zones)?
+        AudioService::new(Arc::clone(&capture), amp, output, zones)?
             .with_barge_in(bundle.core.audio.barge_in_enabled),
     );
     let mut socket = AudioSocket::bind(&socket_path).await?;

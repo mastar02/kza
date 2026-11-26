@@ -23,6 +23,28 @@ const SYSFS: &str = "/sys";
 
 type Reply<T> = oneshot::Sender<Result<T, AudioError>>;
 
+fn channel_error(operation: &'static str, error: impl std::fmt::Display) -> AudioError {
+    tracing::warn!(operation, %error, "ALSA worker communication failed");
+    AudioError::Unavailable
+}
+
+fn send_reply<T>(reply: Reply<T>, result: Result<T, AudioError>, operation: &'static str) -> bool {
+    match reply.send(result) {
+        Ok(()) => true,
+        Err(Err(error)) => {
+            tracing::warn!(operation, error = %error.cause(), "ALSA operation failed after receiver closed");
+            false
+        }
+        Err(Ok(_)) => false, // Expected when an in-flight operation is cancelled.
+    }
+}
+
+fn drop_playback(pcm: &PCM) {
+    if let Err(error) = pcm.drop() {
+        tracing::warn!(%error, "ALSA playback buffer discard failed");
+    }
+}
+
 #[derive(Debug)]
 struct CaptureRequest {
     length: usize,
@@ -34,6 +56,7 @@ pub struct AlsaCapture {
     room: RoomDefinition,
     sender: Option<mpsc::Sender<CaptureRequest>>,
     worker: Option<JoinHandle<()>>,
+    device: Option<(String, u32)>,
 }
 
 impl AlsaCapture {
@@ -42,11 +65,20 @@ impl AlsaCapture {
             room,
             sender: None,
             worker: None,
+            device: None,
         }
     }
 }
 
 impl CaptureSource for AlsaCapture {
+    fn device(&self) -> (&str, u32) {
+        self.device
+            .as_ref()
+            .map_or(("unknown", 1), |(card, channels)| {
+                (card.as_str(), *channels)
+            })
+    }
+
     async fn start(&mut self) -> Result<(), AudioError> {
         if self.worker.is_some() {
             return Err(AudioError::Rejected);
@@ -56,16 +88,17 @@ impl CaptureSource for AlsaCapture {
         let (ready, initialized) = oneshot::channel();
         self.worker = Some(thread::Builder::new().name("alsa-capture".into()).spawn(
             move || {
-                let (pcm, channels) = match open_capture(&room) {
+                let (pcm, card, channels) = match open_capture(&room) {
                     Ok(open) => open,
                     Err(error) => {
-                        let _ = ready.send(Err(error));
+                        send_reply(ready, Err(error), "open capture");
                         return;
                     }
                 };
-                if ready.send(Ok(())).is_err() {
+                if !send_reply(ready, Ok((card, channels)), "open capture") {
                     return;
                 }
+                let channels = channels as usize;
                 let mut interleaved = vec![0; FRAME_SAMPLES * channels];
                 while let Some(request) = requests.blocking_recv() {
                     let chunk = &mut interleaved[..request.length * channels];
@@ -77,7 +110,7 @@ impl CaptureSource for AlsaCapture {
                             .collect()
                     });
                     let failed = result.is_err();
-                    if request.reply.send(result).is_err() || failed {
+                    if !send_reply(request.reply, result, "read capture") || failed {
                         break;
                     }
                 }
@@ -85,7 +118,12 @@ impl CaptureSource for AlsaCapture {
             },
         )?);
         self.sender = Some(sender);
-        initialized.await.map_err(|_| AudioError::Unavailable)?
+        self.device = Some(
+            initialized
+                .await
+                .map_err(|error| channel_error("open capture", error))??,
+        );
+        Ok(())
     }
 
     async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
@@ -97,29 +135,32 @@ impl CaptureSource for AlsaCapture {
                 reply,
             })
             .await
-            .map_err(|_| AudioError::Unavailable)?;
-        let received = result.await.map_err(|_| AudioError::Unavailable)??;
+            .map_err(|error| channel_error("request capture read", error))?;
+        let received = result
+            .await
+            .map_err(|error| channel_error("receive capture frame", error))??;
         samples[..received.len()].copy_from_slice(&received);
         Ok(received.len())
     }
 
     async fn stop(&mut self) -> Result<(), AudioError> {
         self.sender.take();
+        self.device.take();
         if let Some(worker) = self.worker.take() {
             // Joining also confirms PCM was dropped if the worker unwound.
             tokio::task::spawn_blocking(move || {
                 if worker.join().is_err() {
-                    tracing::error!("ALSA capture worker panicked");
+                    tracing::warn!("ALSA capture worker panicked");
                 }
             })
             .await
-            .map_err(|_| AudioError::Unavailable)?;
+            .map_err(|error| channel_error("join capture worker", error))?;
         }
         Ok(())
     }
 }
 
-fn open_capture(room: &RoomDefinition) -> Result<(PCM, usize), AudioError> {
+fn open_capture(room: &RoomDefinition) -> Result<(PCM, String, u32), AudioError> {
     let (port, card) = sysfs::resolve(
         Path::new(SYSFS),
         room.mic_usb_port.as_deref(),
@@ -137,7 +178,7 @@ fn open_capture(room: &RoomDefinition) -> Result<(PCM, usize), AudioError> {
     }
     let pcm = open_pcm(&card, Direction::Capture, channels, SAMPLE_RATE)?;
     pcm.start().map_err(alsa_error)?;
-    Ok((pcm, channels as usize))
+    Ok((pcm, card, channels))
 }
 
 fn open_pcm(card: &str, direction: Direction, channels: u32, rate: u32) -> Result<PCM, AudioError> {
@@ -213,6 +254,7 @@ enum PlaybackRequest {
 pub struct AlsaPlaybackSession {
     sender: mpsc::Sender<PlaybackRequest>,
     cancelled: Arc<AtomicBool>,
+    card: String,
 }
 
 impl Drop for AlsaPlaybackSession {
@@ -234,28 +276,33 @@ impl PlaybackOutput for AlsaPlayback {
         let (sender, mut requests) = mpsc::channel(1);
         let (ready, opened) = oneshot::channel();
         let cancelled = Arc::new(AtomicBool::new(false));
-        let session = AlsaPlaybackSession {
+        let mut session = AlsaPlaybackSession {
             sender,
             cancelled: Arc::clone(&cancelled),
+            card: String::new(),
         };
         thread::Builder::new()
             .name("alsa-playback".into())
             .spawn(move || {
-                let pcm = sysfs::alsa_card(
+                let opened = sysfs::alsa_card(
                     Path::new(SYSFS),
                     room.mic_usb_port.as_deref(),
                     room.mic_serial.as_deref(),
                 )
                 .map_err(AudioError::from)
-                .and_then(|card| open_pcm(&card, Direction::Playback, 1, sample_rate));
-                let pcm = match pcm {
-                    Ok(pcm) => pcm,
+                .and_then(|card| {
+                    open_pcm(&card, Direction::Playback, 1, sample_rate)
+                        .inspect_err(|error| tracing::warn!(%card, sample_rate, error = %error.cause(), "ALSA playback open failed"))
+                        .map(|pcm| (pcm, card))
+                });
+                let (pcm, card) = match opened {
+                    Ok(opened) => opened,
                     Err(error) => {
-                        let _ = ready.send(Err(error));
+                        send_reply(ready, Err(error), "open playback");
                         return;
                     }
                 };
-                if ready.send(Ok(())).is_err() {
+                if !send_reply(ready, Ok(card), "open playback") {
                     return;
                 }
                 while let Some(request) = requests.blocking_recv() {
@@ -263,28 +310,34 @@ impl PlaybackOutput for AlsaPlayback {
                         PlaybackRequest::Write(samples, reply) => {
                             let result = write_playback(&pcm, &samples, &cancelled);
                             let failed = result.is_err();
-                            if reply.send(result).is_err() || failed {
+                            if !send_reply(reply, result, "write playback") || failed {
                                 break;
                             }
                         }
                         PlaybackRequest::Finish(reply) => {
                             let result = drain_playback(&pcm, &cancelled);
                             if result.is_err() {
-                                let _ = pcm.drop();
+                                drop_playback(&pcm);
                             }
-                            let _ = reply.send(result);
+                            send_reply(reply, result, "drain playback");
                             return;
                         }
                     }
                 }
-                let _ = pcm.drop();
+                drop_playback(&pcm);
             })?;
-        opened.await.map_err(|_| AudioError::Unavailable)??;
+        session.card = opened
+            .await
+            .map_err(|error| channel_error("open playback", error))??;
         Ok(session)
     }
 }
 
 impl PlaybackSession for AlsaPlaybackSession {
+    fn card(&self) -> &str {
+        &self.card
+    }
+
     async fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
         let pcm = samples
             .iter()
@@ -294,8 +347,10 @@ impl PlaybackSession for AlsaPlaybackSession {
         self.sender
             .send(PlaybackRequest::Write(pcm, reply))
             .await
-            .map_err(|_| AudioError::Unavailable)?;
-        result.await.map_err(|_| AudioError::Unavailable)?
+            .map_err(|error| channel_error("request playback write", error))?;
+        result
+            .await
+            .map_err(|error| channel_error("receive playback write result", error))?
     }
 
     async fn finish(&mut self) -> Result<(), AudioError> {
@@ -303,8 +358,10 @@ impl PlaybackSession for AlsaPlaybackSession {
         self.sender
             .send(PlaybackRequest::Finish(reply))
             .await
-            .map_err(|_| AudioError::Unavailable)?;
-        result.await.map_err(|_| AudioError::Unavailable)?
+            .map_err(|error| channel_error("request playback drain", error))?;
+        result
+            .await
+            .map_err(|error| channel_error("receive playback drain result", error))?
     }
 }
 
@@ -316,8 +373,11 @@ fn write_playback(
     let io = pcm.io_i16().map_err(alsa_error)?;
     let mut last_progress = Instant::now();
     while !samples.is_empty() {
-        if cancelled.load(Ordering::Acquire) || last_progress.elapsed() >= IO_TIMEOUT {
-            return Err(AudioError::Unavailable);
+        if cancelled.load(Ordering::Acquire) {
+            return Err(std::io::Error::from(std::io::ErrorKind::Interrupted).into());
+        }
+        if last_progress.elapsed() >= IO_TIMEOUT {
+            return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
         }
         match io.writei(samples) {
             Ok(count) if count != 0 => {
@@ -325,6 +385,7 @@ fn write_playback(
                 last_progress = Instant::now();
             }
             Err(error) if error.errno() == rustix::io::Errno::PIPE.raw_os_error() => {
+                tracing::warn!(%error, "ALSA playback underrun; preparing device");
                 pcm.prepare().map_err(alsa_error)?;
             }
             Err(error) if !again(error) => return Err(alsa_error(error)),
@@ -342,11 +403,19 @@ fn drain_playback(pcm: &PCM, cancelled: &AtomicBool) -> Result<(), AudioError> {
         match pcm.drain() {
             Ok(()) => return Ok(()),
             Err(error) if again(error) => thread::sleep(Duration::from_millis(10)),
-            Err(_) if pcm.state() == State::Setup => return Ok(()),
+            Err(error) if pcm.state() == State::Setup => {
+                tracing::warn!(%error, "ALSA playback drain returned an error after device stopped");
+                return Ok(());
+            }
             Err(error) => return Err(alsa_error(error)),
         }
     }
-    Err(AudioError::Unavailable)
+    let kind = if cancelled.load(Ordering::Acquire) {
+        std::io::ErrorKind::Interrupted
+    } else {
+        std::io::ErrorKind::TimedOut
+    };
+    Err(std::io::Error::from(kind).into())
 }
 
 fn again(error: alsa::Error) -> bool {

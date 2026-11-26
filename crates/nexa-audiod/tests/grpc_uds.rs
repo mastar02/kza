@@ -56,6 +56,25 @@ struct OutputEvents {
 struct FakeOutput {
     events: Arc<Mutex<OutputEvents>>,
     wrote: Arc<Notify>,
+    fail: Arc<Mutex<Option<Failure>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Failure {
+    Open,
+    Write,
+    Finish,
+}
+
+impl FakeOutput {
+    fn fail_at(&self, stage: Failure) -> Result<(), AudioError> {
+        let mut failure = self.fail.lock().unwrap();
+        if *failure == Some(stage) {
+            failure.take();
+            return Err(AudioError::Adapter("injected output failure".into()));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -70,6 +89,7 @@ impl PlaybackOutput for FakeOutput {
     async fn open(&self, spec: &PlaybackSpec) -> Result<Self::Session, AudioError> {
         assert_eq!(spec.zone_id, "living-speakers");
         assert_eq!(spec.sample_rate, 24_000);
+        self.fail_at(Failure::Open)?;
         Ok(FakeSession {
             output: self.clone(),
             finished: false,
@@ -79,12 +99,14 @@ impl PlaybackOutput for FakeOutput {
 
 impl PlaybackSession for FakeSession {
     async fn write(&mut self, samples: &[f32]) -> Result<(), AudioError> {
+        self.output.fail_at(Failure::Write)?;
         self.output.events.lock().unwrap().samples.extend(samples);
         self.output.wrote.notify_one();
         Ok(())
     }
 
     async fn finish(&mut self) -> Result<(), AudioError> {
+        self.output.fail_at(Failure::Finish)?;
         self.finished = true;
         self.output.events.lock().unwrap().finished += 1;
         Ok(())
@@ -532,6 +554,59 @@ async fn volume_roundtrip_and_final_pcm_reach_injected_outputs_over_uds() {
     assert!(receipt.completed);
     assert!(!receipt.interrupted_by_barge_in);
     assert_eq!(harness.output.events.lock().unwrap().finished, 1);
+    harness.shutdown().await;
+}
+
+#[tokio::test]
+async fn playback_adapter_errors_retire_the_zone_and_increment_health_over_uds() {
+    let mut harness = Harness::start(running_capture()).await;
+    for (index, stage) in [Failure::Open, Failure::Write, Failure::Finish]
+        .into_iter()
+        .enumerate()
+    {
+        *harness.output.fail.lock().unwrap() = Some(stage);
+        let error = harness
+            .client
+            .play_audio_stream(tokio_stream::iter([chunk("test-token", true)]))
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Code::Unavailable);
+        assert_eq!(error.message(), "audio adapter unavailable");
+        assert!(
+            !harness
+                .client
+                .get_zones(Empty {})
+                .await
+                .unwrap()
+                .into_inner()
+                .zones[0]
+                .speaking
+        );
+        let health = harness
+            .client
+            .get_health(Empty {})
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            health
+                .detail
+                .contains(&format!("playbacks_failed={}", index + 1))
+        );
+
+        let retry = harness
+            .client
+            .play_audio_stream(tokio_stream::iter([chunk("retry-token", true)]))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(retry.completed);
+    }
+    {
+        let events = harness.output.events.lock().unwrap();
+        assert_eq!(events.cancelled, 2);
+        assert_eq!(events.finished, 3);
+    }
     harness.shutdown().await;
 }
 
