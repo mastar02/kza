@@ -15,7 +15,7 @@ use crate::capture_seal::{
     CaptureError, CaptureTransition, SharedCapture, change_capture, running_epoch,
 };
 use crate::dsp::{FRAME_SAMPLES, NoiseFloorTracker, SAMPLE_RATE, frame_duration, frame_rms};
-use crate::endpoint::{EndpointDecision, PostWakeEndpoint};
+use crate::endpoint::{EndpointDecision, EndpointTelemetry, PostWakeEndpoint};
 use crate::grpc::AudioService;
 use crate::ring::{CaptureConsumer, CaptureProducer, capture_ring};
 use crate::traits::{
@@ -427,6 +427,7 @@ struct Recording {
     samples: Vec<f32>,
     score: f32,
     time: u64,
+    endpoint: Option<EndpointTelemetry>,
 }
 
 impl Recording {
@@ -437,6 +438,7 @@ impl Recording {
             samples: Vec::new(),
             score,
             time: unix_ms(),
+            endpoint: None,
         }
     }
 
@@ -473,10 +475,18 @@ impl Recording {
         parakeet_ms: u32,
         parakeet_ok: bool,
     ) {
+        let stats = self.endpoint.unwrap_or_default();
         tracing::info!(
             room_id, utterance_id = %self.id, kind = self.kind.as_str_name(),
             ?decision, duration_ms = frame_duration(self.samples.len()).as_millis() as u64,
-            rms = frame_rms(&self.samples), parakeet_ms, parakeet_ok,
+            rms = frame_rms(&self.samples),
+            level_threshold = stats.level_threshold,
+            effective_level_threshold = stats.effective_level_threshold,
+            peak_voice_rms = stats.peak_voice_rms,
+            tail_rms = stats.last_rms,
+            voice_ms = stats.voice_ms,
+            vad_voice_ms = stats.vad_voice_ms,
+            parakeet_ms, parakeet_ok,
             "utterance endpoint"
         );
     }
@@ -632,6 +642,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             if decision == EndpointDecision::Listening {
                 current = Some((endpoint, recording));
             } else if decision.dispatches() {
+                recording.endpoint = Some(endpoint.telemetry());
                 guard.record(now, CaptureOutcome::Accepted);
                 follow_up_until = Some(now + FOLLOW_UP_WINDOW);
                 tokio::select! {
@@ -640,6 +651,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                     result = utterances.send(recording) => result.map_err(|error| unavailable("enqueue utterance", error))?,
                 }
             } else {
+                recording.endpoint = Some(endpoint.telemetry());
                 recording.log_endpoint(&room.room_id, decision, 0, false);
                 guard.record(now, CaptureOutcome::Rejected);
             }

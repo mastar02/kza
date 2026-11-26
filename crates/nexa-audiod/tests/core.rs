@@ -201,6 +201,36 @@ fn endpoint_completes_cleanly_in_louder_rooms_above_default_floor() {
 }
 
 #[test]
+fn endpoint_completes_after_attns_squelched_floor_with_open_agc_room_tone() {
+    // Regression (escritorio ch0 Conference): pre-wake ATTNS squelches silence to NOISE_FLOOR_MIN
+    // (0.0006 -> level_threshold=0.00108), then AGC ramp during speech leaves open-AGC room tone
+    // around 0.0020-0.0045 after speech ends.
+    let mut agc_low_tail = PostWakeEndpoint::new(NOISE_FLOOR_MIN);
+    assert_eq!(
+        agc_low_tail.observe(0.012, Some(0.95), ms(960)),
+        EndpointDecision::Listening
+    );
+    assert_eq!(
+        agc_low_tail.observe(0.0022, Some(0.05), ms(320)),
+        EndpointDecision::Complete
+    );
+
+    let mut agc_mid_tail = PostWakeEndpoint::new(NOISE_FLOOR_MIN);
+    assert_eq!(
+        agc_mid_tail.observe(0.012, Some(0.95), ms(960)),
+        EndpointDecision::Listening
+    );
+    assert_eq!(
+        agc_mid_tail.observe(0.0045, Some(0.05), ms(560)),
+        EndpointDecision::Listening
+    );
+    assert_eq!(
+        agc_mid_tail.observe(0.0045, Some(0.05), ms(80)),
+        EndpointDecision::Complete
+    );
+}
+
+#[test]
 fn ambient_guard_has_independent_room_hysteresis_and_cooldown() {
     let start = Instant::now();
     let mut living = AmbientGuard::default();
