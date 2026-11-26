@@ -235,7 +235,7 @@ async fn streaming_barge_in_and_irreversible_cloud_withdrawal() -> Result {
         read_http_request(&mut socket).await?;
         socket.write_all(concat!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n",
-            "data: {\"choices\":[{\"text\":\"Esta oración llega antes de que termine el modelo.\"}]}\n\n"
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Esta oración llega antes de que termine el modelo.\"}}]}\n\n"
         ).as_bytes()).await?;
         let mut byte = [0];
         let result = socket.read(&mut byte).await;
@@ -355,6 +355,11 @@ async fn read_http_request(socket: &mut tokio::net::TcpStream) -> std::io::Resul
         }
     }
     let headers = String::from_utf8_lossy(&header);
+    if headers.lines().next() != Some("POST /v1/chat/completions HTTP/1.1") {
+        return Err(std::io::Error::other(
+            "unexpected request line in chat fixture",
+        ));
+    }
     let length = headers
         .lines()
         .filter_map(|line| line.split_once(':'))

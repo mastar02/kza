@@ -519,6 +519,20 @@ async fn local_failure_falls_back_without_memory_and_reports_error_streak() -> R
     voice_with_memory(true).await
 }
 
+fn chat_prompt(request: &wiremock::Request, prompt: &str) -> bool {
+    serde_json::from_slice::<Value>(&request.body).is_ok_and(|body| {
+        let Some([system, user]) = body["messages"].as_array().map(Vec::as_slice) else {
+            return false;
+        };
+        body["stream"] == true
+            && system["role"] == "system"
+            && system["content"]
+                .as_str()
+                .is_some_and(|text| !text.is_empty())
+            && user == &json!({"role": "user", "content": prompt})
+    })
+}
+
 async fn voice_with_memory(local_fails: bool) -> Result {
     const SHARED_FACT: &str = "Marcador privado de la casa verificado";
     const QUESTION: &str = "por que es azul el cielo";
@@ -529,7 +543,7 @@ async fn voice_with_memory(local_fails: bool) -> Result {
             .insert_header("Content-Type", "text/event-stream")
             .set_body_string(format!(
                 "data: {}\n\ndata: [DONE]\n\n",
-                json!({"choices": [{"text": text}]}),
+                json!({"choices": [{"delta": {"content": text}}]}),
             ))
     };
     let enriched = format!(
@@ -537,10 +551,8 @@ async fn voice_with_memory(local_fails: bool) -> Result {
         json!([SHARED_FACT])
     );
     Mock::given(method("POST"))
-        .and(path("/v1/completions"))
-        .and(move |req: &wiremock::Request| {
-            serde_json::from_slice::<Value>(&req.body).is_ok_and(|body| body["prompt"] == enriched)
-        })
+        .and(path("/v1/chat/completions"))
+        .and(move |req: &wiremock::Request| chat_prompt(req, &enriched))
         .respond_with(if local_fails {
             ResponseTemplate::new(503)
         } else {
@@ -551,35 +563,13 @@ async fn voice_with_memory(local_fails: bool) -> Result {
         .await;
     if local_fails {
         Mock::given(method("POST"))
-            .and(path("/v1/completions"))
-            .and(|req: &wiremock::Request| {
-                serde_json::from_slice::<Value>(&req.body)
-                    .is_ok_and(|body| body["prompt"] == QUESTION)
-            })
-            .respond_with(ResponseTemplate::new(503))
-            .expect(1)
-            .mount(&local)
-            .await;
-        Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
-            .and(|req: &wiremock::Request| {
-                serde_json::from_slice::<Value>(&req.body).is_ok_and(|body| {
-                    body["messages"] == json!([{"role": "user", "content": QUESTION}])
-                })
-            })
+            .and(|req: &wiremock::Request| chat_prompt(req, QUESTION))
             .respond_with(reply("Respuesta sin memoria."))
             .expect(1)
             .mount(&cloud)
             .await;
     }
-    Mock::given(method("POST"))
-        .and(move |req: &wiremock::Request| {
-            !local_fails || String::from_utf8_lossy(&req.body).contains(SHARED_FACT)
-        })
-        .respond_with(ResponseTemplate::new(500))
-        .expect(0)
-        .mount(&cloud)
-        .await;
     let mut h = Harness::start_with_hits(
         |cfg| {
             cfg.core.llm.fast_router_url = format!("{}/v1", local.uri());
@@ -638,7 +628,7 @@ async fn voice_with_memory(local_fails: bool) -> Result {
         .iter()
         .find(|endpoint| endpoint.kind == "local")
         .ok_or("missing local endpoint")?;
-    assert_eq!(local_status.consecutive_errors > 0, local_fails);
+    assert_eq!(local_status.consecutive_errors, u32::from(local_fails));
     h.stop().await?;
     local.verify().await;
     cloud.verify().await;
@@ -648,15 +638,17 @@ async fn voice_with_memory(local_fails: bool) -> Result {
             .await
             .ok_or("wiremock recording disabled")?
             .len(),
-        if local_fails { 2 } else { 1 }
+        1
     );
-    assert_eq!(
-        cloud
-            .received_requests()
-            .await
-            .ok_or("wiremock recording disabled")?
-            .len(),
-        usize::from(local_fails)
+    let cloud_requests = cloud
+        .received_requests()
+        .await
+        .ok_or("wiremock recording disabled")?;
+    assert_eq!(cloud_requests.len(), usize::from(local_fails));
+    assert!(
+        cloud_requests
+            .iter()
+            .all(|request| !String::from_utf8_lossy(&request.body).contains(SHARED_FACT))
     );
     Ok(())
 }
