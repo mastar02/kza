@@ -79,8 +79,18 @@ python3 -c 'import os, sys; os.replace(*sys.argv[1:])' "$lock/current" "$base/cu
 if [[ -z $prefix ]]; then
   as_nexa systemctl --user daemon-reload
   as_nexa systemctl --user restart nexa.target
-  for svc in nexa-audiod nexa-ml nexa-memoryd nexa-brain nexa-web; do
-    as_nexa systemctl --user is-active --quiet "$svc.service" || die "$svc inactive after switch"
+  deadline=$((SECONDS + 130))
+  for svc in nexa-memoryd nexa-llm-fast nexa-audiod nexa-ml nexa-brain nexa-web nexa-dashboard-proxy; do
+    while true; do
+      state=$(as_nexa systemctl --user is-active "$svc.service" 2>/dev/null || true)
+      case "$state" in
+        active) break ;;
+        activating|reloading)
+          (( SECONDS < deadline )) || die "$svc timed out in state $state after switch"
+          sleep 1 ;;
+        *) die "$svc state=$state after switch" ;;
+      esac
+    done
   done
 fi
 echo "Switched $base/current -> releases/$version"

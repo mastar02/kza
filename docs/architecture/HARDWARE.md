@@ -4,11 +4,11 @@ Inventario verificado del servidor `192.168.1.2` al 2026-11-25. CPU AMD Threadri
 
 | Dispositivo físico | Carga | VRAM prevista |
 | --- | --- | --- |
-| `cuda:1` · PCI `C2:00.0` | llama-server Qwen2.5-7B-Instruct-Q4_K_M (~4,9 GiB), Whisper Command v3-turbo en `int8_float16` (~1,2 GiB), Kokoro-82M en streaming (~0,6 GiB) | 6,7 / 8 GiB |
+| `cuda:1` · PCI `C2:00.0` | llama-server Qwen2.5-7B-Instruct-Q4_K_M (`-ngl 20 -c 2048`, ~5,2 GiB), Whisper Command v3-turbo en `int8_float16` + Kokoro-82M en streaming (~2,4 GiB) | 7,6 / 8 GiB |
 | `cuda:0` · PCI `C1:00.0` | Dos instancias Whisper Ambient large-v3 en `int8_float16` (~3,8 GiB entre ambas) y una ECAPA-TDNN (~0,3 GiB) | 4,1 / 8 GiB |
 | CPU | Embeddings BAAI/bge-m3. ONNX para Parakeet TDT 0.6B v3, Silero VAD y OpenWakeWord. | RAM del host |
 
-El perfil de llama-server usa `-ngl 99 -c 4096 -ctk q8_0 -ctv q8_0`. Al validar la asignación, contrastar los procesos con la dirección PCI física, porque CUDA puede renumerar los dispositivos visibles dentro de un servicio. Acordar cualquier reasignación antes de aplicarla.
+El perfil de `llama-server` (`ik_llama.cpp`) usa `-t 16 -tb 16 -c 2048 -ctk q8_0 -ctv q8_0 -ngl 20` para convivir dentro de los 8 GiB reales de la RTX 3070 junto a Whisper Command y Kokoro-82M. Al validar la asignación, contrastar los procesos con la dirección PCI física, porque CUDA puede renumerar los dispositivos visibles dentro de un servicio. Acordar cualquier reasignación antes de aplicarla.
 
 ## Audio por habitación
 

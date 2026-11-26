@@ -10,7 +10,7 @@ RuntimeDirectory=nexa-llm-fast
 RuntimeDirectoryMode=0700
 ExecStart=/opt/nexa/bin/llama-server \
   --model /opt/nexa/models/Qwen2.5-7B-Instruct-Q4_K_M/Qwen2.5-7B-Instruct-Q4_K_M.gguf \
-  --host 127.0.0.1 --port 8101 -ngl 99 -c 4096 -ctk q8_0 -ctv q8_0 --parallel 2 \
+  --host 127.0.0.1 --port 8101 -t 16 -tb 16 -c 2048 -ctk q8_0 -ctv q8_0 -ngl 20 \
   --api-key-file /etc/nexa/secrets/llama-api-key
 UMask=0077
 NoNewPrivileges=yes
