@@ -25,7 +25,7 @@ afterEach(async () => {
 
 const routine = { routine_id: 'r-1', name: 'Buenas noches', enabled: true, revision: 1, schedule: null }
 
-function routineFetcher(attempts: () => Response, perms = ['home:read']) {
+function routineFetcher(attempts: () => Response, perms = ['home:read', 'routines:execute']) {
   const who = identity(perms)
   return transport(path => {
     if (path === '/api/admin/auth/whoami') return who()
@@ -41,7 +41,7 @@ describe('historial de rutinas', () => {
       { status: 'accepted', started_at: '2026-11-20T22:00:00Z', summary: 'Se apagaron las luces.' },
       { status: 'late', at: 1795000000 },
     ] }))
-    const target = await view(Routines, ['home:read'], fetcher)
+    const target = await view(Routines, ['routines:execute'], fetcher)
     await vi.waitFor(() => expect(target.textContent).toContain('Buenas noches'))
     expect(fetcher.mock.calls.some(([url]) => String(url).includes('attempts'))).toBe(false)
     clickButton(target, 'Historial')
@@ -52,7 +52,7 @@ describe('historial de rutinas', () => {
   })
 
   it('acepta la clave attempts', async () => {
-    const target = await view(Routines, ['home:read'],
+    const target = await view(Routines, ['routines:execute'],
       routineFetcher(() => json({ attempts: [{ status: 'partial', created_at: '2026-11-20T22:00:00Z' }] })))
     await vi.waitFor(() => expect(target.textContent).toContain('Buenas noches'))
     clickButton(target, 'Historial')
@@ -61,7 +61,7 @@ describe('historial de rutinas', () => {
 
   it('muestra estado vacío limpio sin ejecuciones y con 503', async () => {
     for (const response of [() => json({ runs: [] }), () => json({}, 503)]) {
-      const target = await view(Routines, ['home:read'], routineFetcher(response))
+      const target = await view(Routines, ['routines:execute'], routineFetcher(response))
       await vi.waitFor(() => expect(target.textContent).toContain('Buenas noches'))
       clickButton(target, 'Historial')
       await vi.waitFor(() => expect(target.textContent).toContain('todavía no tiene ejecuciones'))
@@ -70,7 +70,7 @@ describe('historial de rutinas', () => {
   })
 
   it('informa un error de servidor distinto de 503', async () => {
-    const target = await view(Routines, ['home:read'], routineFetcher(() => json({}, 500)))
+    const target = await view(Routines, ['routines:execute'], routineFetcher(() => json({}, 500)))
     await vi.waitFor(() => expect(target.textContent).toContain('Buenas noches'))
     clickButton(target, 'Historial')
     await vi.waitFor(() => expect(target.querySelector('[role=alert]')?.textContent).toContain('500'))
@@ -87,11 +87,19 @@ function opsFetcher(permissions: string[], posts: string[]) {
       if (path.endsWith('/ack')) acked = true
       return json({ ok: true })
     }
-    if (path === '/api/alerts') return json({ alerts: [{ id: 'a-1', title: 'GPU caliente', severity: 'high', acknowledged: acked }] })
-    if (path === '/api/system/services') return json([{ id: 'svc-1', name: 'Memoria', status: 'activo' }])
+    if (path === '/api/alerts') return json({ alerts: [{ id: 'a-1', title: 'GPU caliente', priority: 'high', body: 'Temperatura alta', acked }] })
+    if (path === '/api/system/services') return json([{ name: 'nexa-brain', status: 'active', substate: 'running' }])
     return json([])
   })
 }
+
+describe('permiso del historial', () => {
+  it('oculta Historial sin routines:execute', async () => {
+    const target = await view(Routines, [], routineFetcher(() => json({ runs: [] }), ['home:read']))
+    await vi.waitFor(() => expect(target.textContent).toContain('Buenas noches'))
+    expect([...target.querySelectorAll('button')].some(b => b.textContent?.trim() === 'Historial')).toBe(false)
+  })
+})
 
 describe('alertas y servicios', () => {
   it('oculta Reconocer sin admin:manage', async () => {
@@ -104,7 +112,7 @@ describe('alertas y servicios', () => {
     const posts: string[] = []
     const permissions = ['home:read', 'diagnostics:read', 'admin:manage']
     const target = await view(Diagnostics, permissions, opsFetcher(permissions, posts))
-    await vi.waitFor(() => expect(target.textContent).toContain('GPU caliente'))
+    await vi.waitFor(() => expect(target.textContent).toContain('Temperatura alta'))
     clickButton(target, 'Reconocer')
     await vi.waitFor(() => expect(posts).toEqual(['/api/admin/alerts/a-1/ack']))
     await vi.waitFor(() => expect(target.textContent).toContain('Reconocida'))
@@ -114,7 +122,7 @@ describe('alertas y servicios', () => {
   it('reinicia servicios solo con admin:manage y confirmación', async () => {
     const readonly = await view(Diagnostics, [], opsFetcher(['home:read', 'diagnostics:read'], []), { system: true })
     clickButton(readonly, 'Servicios')
-    await vi.waitFor(() => expect(readonly.textContent).toContain('Memoria'))
+    await vi.waitFor(() => expect(readonly.textContent).toContain('nexa-brain'))
     expect([...readonly.querySelectorAll('button')].some(b => b.textContent?.trim() === 'Reiniciar')).toBe(false)
 
     const posts: string[] = []
@@ -124,12 +132,12 @@ describe('alertas y servicios', () => {
     const buttons = () => [...target.querySelectorAll('button')].filter(b => b.textContent?.trim() === 'Reiniciar')
     expect(buttons()).toHaveLength(0)
     clickButton(target, 'Servicios')
-    await vi.waitFor(() => expect(target.textContent).toContain('Memoria'))
+    await vi.waitFor(() => expect(target.textContent).toContain('nexa-brain'))
     await vi.waitFor(() => expect(buttons()).toHaveLength(1))
     clickButton(target, 'Reiniciar')
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(posts).toEqual([])
     clickButton(target, 'Reiniciar')
-    await vi.waitFor(() => expect(posts).toEqual(['/api/admin/services/svc-1/restart']))
+    await vi.waitFor(() => expect(posts).toEqual(['/api/admin/services/nexa-brain/restart']))
   })
 })

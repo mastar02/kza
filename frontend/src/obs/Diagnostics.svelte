@@ -25,7 +25,7 @@
       { key: 'temp', label: 'Temperatura (°C)' }, { key: 'util', label: 'Utilización (%)' },
     ] },
     { path: '/api/system/services', title: 'Servicios', group: 'system', fields: [
-      { key: 'status', label: 'Estado' }, { key: 'uptime', label: 'Tiempo activo' }, { key: 'mem', label: 'Memoria' },
+      { key: 'status', label: 'Estado' }, { key: 'substate', label: 'Subestado' }, { key: 'uptime', label: 'Tiempo activo' }, { key: 'mem', label: 'Memoria' },
     ] },
   ]
   const group = $derived(system ? 'system' : 'diagnostics')
@@ -51,13 +51,13 @@
     const source = Array.isArray(value) ? value : record(value)?.alerts
     return rows(source).map(item => {
       const state = text(item.state ?? item.status, '')
-      const acknowledged = item.acknowledged === true || item.acked === true ||
+      const acknowledged = item.acked === true || item.acknowledged === true ||
         ['acknowledged', 'acked', 'resolved'].includes(state)
       return {
         id: item.id ?? item.alert_id,
         title: text(item.title ?? item.name ?? item.message, 'Alerta'),
-        detail: typeof item.title === 'string' || typeof item.name === 'string' ? text(item.message, '') : '',
-        severity: severityLabel[text(item.severity ?? item.priority, '')] ?? '',
+        detail: text(item.body ?? item.message, ''),
+        severity: severityLabel[text(item.priority ?? item.severity, '')] ?? '',
         acknowledged,
       }
     })
@@ -141,7 +141,7 @@
           {/each}
         </dl>
         {#if active?.path === '/api/system/services' && session.can('admin:manage')}
-          <button disabled={write.busy || list?.busy} onclick={() => restart(item.id, item.name)}>Reiniciar</button>
+          <button disabled={write.busy || list?.busy} onclick={() => restart(item.name, item.name)}>Reiniciar</button>
         {/if}
         {#if item.cooldown && session.can('admin:manage')}
           <button disabled={write.busy || list?.busy} onclick={() => clearCooldown(item.id)}>Quitar cooldown</button>

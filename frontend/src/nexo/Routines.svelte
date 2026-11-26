@@ -22,12 +22,11 @@
   const field = $derived(device && operation && controlFor(device, operation))
   let draftError = $state('')
   let historyId = $state('')
-  const canHistory = $derived(session.can('home:read') || session.can('routines:execute'))
+  const canHistory = $derived(session.can('routines:execute'))
   const history = new Resource(ownerSession, async signal => {
-    const grant = session.can('home:read') ? 'home:read' : 'routines:execute'
     try {
       const value = await session.request('/api/routines/' + encodeURIComponent(historyId) + '/attempts',
-        { permissions: [grant], signal })
+        { permissions: ['routines:execute'], signal })
       const source = Array.isArray(value) ? value : record(value)?.runs ?? record(value)?.attempts
       return rows(source).map(describeAttempt)
     } catch (error) {
