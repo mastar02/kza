@@ -230,76 +230,14 @@ impl Brain {
     pub(crate) fn catalog(&self) -> HomeCatalogSnapshot {
         let frame = self.home.deps.as_ref().map(|home| home.client.frame());
         let instant = Instant::now();
-        let mut entries = BTreeMap::new();
-        let rooms = self
-            .config
-            .rooms
-            .rooms
-            .iter()
-            .map(|room| {
-                let ids = room
-                    .default_light
-                    .iter()
-                    .chain(room.default_climate.iter())
-                    .cloned()
-                    .collect::<Vec<_>>();
-                for id in &ids {
-                    entries.insert(id.clone(), room.room_id.clone());
-                }
-                HomeRoom {
-                    room_id: room.room_id.clone(),
-                    name: room.name.clone(),
-                    entity_ids: ids,
-                    default_light: room.default_light.clone().unwrap_or_default(),
-                    default_climate: room.default_climate.clone().unwrap_or_default(),
-                }
-            })
-            .collect();
-        for id in self.config.ha_controls.entities.keys() {
-            entries.entry(id.clone()).or_default();
-        }
-        let mut stale = entries.is_empty();
-        let mut observed = 0;
-        let entities = entries
-            .into_iter()
-            .map(|(id, room_id)| {
-                let state = frame
-                    .as_ref()
-                    .and_then(|frame| frame.entity(&id, instant).ok());
-                stale |= state.is_none();
-                let at = state
-                    .and_then(nexa_ha::EntityState::reported_at)
-                    .map_or(0, |time| unsigned(time.timestamp_millis()));
-                observed = observed.max(at);
-                HomeEntity {
-                    domain: id.split_once('.').map_or("", |(domain, _)| domain).into(),
-                    capabilities: self
-                        .config
-                        .ha_controls
-                        .entities
-                        .get(&id)
-                        .cloned()
-                        .unwrap_or_default(),
-                    entity_id: id.clone(),
-                    room_id,
-                    friendly_name: state
-                        .and_then(|state| state.attributes().get("friendly_name"))
-                        .and_then(Value::as_str)
-                        .unwrap_or(&id)
-                        .into(),
-                    state: state.map_or("unknown", nexa_ha::EntityState::state).into(),
-                    available: state
-                        .is_some_and(|state| !matches!(state.state(), "unavailable" | "unknown")),
-                    observed_at_unix_ms: at,
-                }
-            })
-            .collect();
-        HomeCatalogSnapshot {
-            observed_at_unix_ms: observed,
-            stale,
-            rooms,
-            entities,
-        }
+        let now_ms = self.now();
+        build_catalog_from_frame(
+            &self.config.rooms,
+            &self.config.ha_controls,
+            frame.as_deref(),
+            instant,
+            now_ms,
+        )
     }
 
     pub(crate) async fn run_home_events(&self) {
@@ -538,5 +476,574 @@ impl crate::ForecastReader {
                 serde_json::from_value(reply["service_response"][entity]["forecast"].clone()).ok()
             })
             .unwrap_or_default()
+    }
+}
+
+struct RoomBuilder {
+    room_id: String,
+    name: String,
+    entity_ids: Vec<String>,
+    default_light: String,
+    default_climate: String,
+    aliases: Vec<String>,
+}
+
+const EXTRA_ROOMS: &[(&str, &str, &[&str])] = &[
+    (
+        "dormitorio",
+        "Dormitorio",
+        &[
+            "dormitorio",
+            "cuarto",
+            "habitacion",
+            "pieza",
+            "bedroom",
+            "velador",
+        ],
+    ),
+    ("bano", "Baño", &["bano", "banio", "bathroom", "ducha", "toilet"]),
+    ("balcon", "Balcón", &["balcon", "terraza", "exterior"]),
+    ("lavadero", "Lavadero", &["lavadero", "lavanderia", "laundry"]),
+    ("escalera", "Escalera", &["escalera", "escaleras", "stairs"]),
+    (
+        "pasillo",
+        "Pasillo",
+        &["pasillo", "corredor", "hall", "recibidor"],
+    ),
+];
+
+fn configured_room_aliases(room_id: &str, name: &str) -> Vec<String> {
+    let mut aliases = Vec::new();
+    for raw in [room_id, name] {
+        let normalized = words(raw).replace('_', " ");
+        for part in normalized.split_whitespace() {
+            if !part.is_empty() && !aliases.iter().any(|existing| existing == part) {
+                aliases.push(part.to_owned());
+            }
+        }
+    }
+    let extra: &[&str] = match room_id {
+        "living" => &["living", "sala", "comedor", "estar", "tv"],
+        "cocina" => &["cocina", "kitchen", "mesada", "isla", "desayunador"],
+        "escritorio" => &["escritorio", "estudio", "oficina", "office", "pc"],
+        "hall" => &["hall", "pasillo", "recibidor", "entrada"],
+        "dormitorio" | "cuarto" => &["dormitorio", "cuarto", "habitacion", "pieza", "velador"],
+        "bano" => &["bano", "banio", "ducha", "bathroom"],
+        "balcon" => &["balcon", "terraza", "exterior"],
+        "lavadero" => &["lavadero", "lavanderia"],
+        "escalera" => &["escalera", "escaleras"],
+        _ => &[],
+    };
+    for alias in extra {
+        if !aliases.iter().any(|existing| existing == alias) {
+            aliases.push((*alias).to_owned());
+        }
+    }
+    aliases
+}
+
+fn entity_tokens(entity_id: &str, friendly_name: &str) -> Vec<String> {
+    let object = entity_id
+        .split_once('.')
+        .map_or(entity_id, |(_, obj)| obj);
+    let combined = format!("{object} {friendly_name}");
+    words(&combined)
+        .replace('_', " ")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn matches_aliases(tokens: &[String], aliases: &[&str]) -> bool {
+    tokens
+        .iter()
+        .any(|token| aliases.contains(&token.as_str()))
+}
+
+fn as_u32_rounded(value: &Value) -> Option<u32> {
+    value
+        .as_u64()
+        .and_then(|v| u32::try_from(v).ok())
+        .or_else(|| {
+            value
+                .as_f64()
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .map(|v| v.round() as u32)
+        })
+}
+
+fn mireds_to_kelvin(value: &Value) -> Option<u32> {
+    value
+        .as_f64()
+        .filter(|m| m.is_finite() && *m > 0.0)
+        .map(|m| (1_000_000.0 / m).round() as u32)
+}
+
+struct EntityAttrs {
+    brightness_pct: Option<u32>,
+    color_temp_kelvin: Option<u32>,
+    color_temp_min: Option<u32>,
+    color_temp_max: Option<u32>,
+    temperature: Option<f64>,
+    current_temperature: Option<f64>,
+    current_humidity: Option<f64>,
+    hvac_action: String,
+    hvac_modes: Vec<String>,
+    temperature_min: Option<f64>,
+    temperature_max: Option<f64>,
+    temperature_step: Option<f64>,
+    position: Option<u32>,
+}
+
+fn extract_entity_attrs(
+    domain: &str,
+    capabilities: &[String],
+    state: Option<&nexa_ha::EntityState>,
+) -> EntityAttrs {
+    let Some(attrs) = state.map(nexa_ha::EntityState::attributes) else {
+        return EntityAttrs {
+            brightness_pct: None,
+            color_temp_kelvin: None,
+            color_temp_min: capabilities
+                .iter()
+                .any(|c| c == "color_temp_kelvin")
+                .then_some(2200),
+            color_temp_max: capabilities
+                .iter()
+                .any(|c| c == "color_temp_kelvin")
+                .then_some(6500),
+            temperature: None,
+            current_temperature: None,
+            current_humidity: None,
+            hvac_action: String::new(),
+            hvac_modes: Vec::new(),
+            temperature_min: None,
+            temperature_max: None,
+            temperature_step: None,
+            position: None,
+        };
+    };
+
+    let brightness_pct = attrs
+        .get("brightness_pct")
+        .and_then(as_u32_rounded)
+        .map(|v| v.min(100))
+        .or_else(|| {
+            attrs.get("brightness").and_then(Value::as_f64).map(|b| {
+                ((b * 100.0) / 255.0).round().clamp(0.0, 100.0) as u32
+            })
+        });
+
+    let color_temp_kelvin = attrs
+        .get("color_temp_kelvin")
+        .and_then(as_u32_rounded)
+        .or_else(|| attrs.get("color_temp").and_then(mireds_to_kelvin));
+
+    let mut color_temp_min = attrs
+        .get("min_color_temp_kelvin")
+        .and_then(as_u32_rounded)
+        .or_else(|| attrs.get("max_mireds").and_then(mireds_to_kelvin));
+    let mut color_temp_max = attrs
+        .get("max_color_temp_kelvin")
+        .and_then(as_u32_rounded)
+        .or_else(|| attrs.get("min_mireds").and_then(mireds_to_kelvin));
+    if capabilities.iter().any(|c| c == "color_temp_kelvin") {
+        color_temp_min.get_or_insert(2200);
+        color_temp_max.get_or_insert(6500);
+    }
+
+    let temperature = attrs.get("temperature").and_then(Value::as_f64);
+    let current_temperature = attrs.get("current_temperature").and_then(Value::as_f64);
+    let current_humidity = attrs.get("current_humidity").and_then(Value::as_f64);
+    let hvac_action = attrs
+        .get("hvac_action")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    let hvac_modes = attrs
+        .get("hvac_modes")
+        .and_then(Value::as_array)
+        .map(|modes| {
+            modes
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let temperature_min = attrs.get("min_temp").and_then(Value::as_f64);
+    let temperature_max = attrs.get("max_temp").and_then(Value::as_f64);
+    let temperature_step = attrs
+        .get("target_temp_step")
+        .and_then(Value::as_f64)
+        .filter(|step| step.is_finite() && *step > 0.0)
+        .or_else(|| {
+            if domain == "climate" && temperature_min.is_some() && temperature_max.is_some() {
+                Some(1.0)
+            } else {
+                None
+            }
+        });
+    let position = attrs
+        .get("current_position")
+        .and_then(as_u32_rounded)
+        .map(|v| v.min(100));
+
+    EntityAttrs {
+        brightness_pct,
+        color_temp_kelvin,
+        color_temp_min,
+        color_temp_max,
+        temperature,
+        current_temperature,
+        current_humidity,
+        hvac_action,
+        hvac_modes,
+        temperature_min,
+        temperature_max,
+        temperature_step,
+        position,
+    }
+}
+
+pub(crate) fn build_catalog_from_frame(
+    rooms_cfg: &nexa_config::RoomsConfig,
+    controls: &nexa_config::HaControlPolicyConfig,
+    frame: Option<&nexa_ha::StateFrame>,
+    instant: Instant,
+    now_ms: u64,
+) -> HomeCatalogSnapshot {
+    let mut room_map: BTreeMap<String, usize> = BTreeMap::new();
+    let mut builders: Vec<RoomBuilder> = Vec::new();
+    let mut entries: BTreeMap<String, String> = BTreeMap::new();
+
+    for room in &rooms_cfg.rooms {
+        let mut ids = Vec::new();
+        for id in room.default_light.iter().chain(room.default_climate.iter()) {
+            entries.insert(id.clone(), room.room_id.clone());
+            if !ids.contains(id) {
+                ids.push(id.clone());
+            }
+        }
+        let idx = builders.len();
+        room_map.insert(room.room_id.clone(), idx);
+        builders.push(RoomBuilder {
+            room_id: room.room_id.clone(),
+            name: room.name.clone(),
+            entity_ids: ids,
+            default_light: room.default_light.clone().unwrap_or_default(),
+            default_climate: room.default_climate.clone().unwrap_or_default(),
+            aliases: configured_room_aliases(&room.room_id, &room.name),
+        });
+    }
+
+    for id in controls.entities.keys() {
+        entries.entry(id.clone()).or_default();
+    }
+
+    let frame_fresh = frame.is_some_and(|f| f.snapshot_is_fresh(instant));
+    let mut observed_count = 0usize;
+    let mut max_reported_at = 0u64;
+
+    let mut entities: Vec<HomeEntity> = entries
+        .into_iter()
+        .map(|(id, mut room_id)| {
+            let state = frame.and_then(|f| f.entity(&id, instant).ok());
+            if state.is_some() {
+                observed_count += 1;
+            }
+            let at = state
+                .and_then(nexa_ha::EntityState::reported_at)
+                .map_or(0, |time| unsigned(time.timestamp_millis()));
+            max_reported_at = max_reported_at.max(at);
+
+            let domain = id.split_once('.').map_or("", |(domain, _)| domain).to_owned();
+            let friendly_name = state
+                .and_then(|s| s.attributes().get("friendly_name"))
+                .and_then(Value::as_str)
+                .unwrap_or(&id)
+                .to_owned();
+            let capabilities = controls.entities.get(&id).cloned().unwrap_or_default();
+
+            if room_id.is_empty() {
+                let tokens = entity_tokens(&id, &friendly_name);
+                if let Some(configured) = builders.iter_mut().find(|room| {
+                    let alias_refs: Vec<&str> = room.aliases.iter().map(String::as_str).collect();
+                    matches_aliases(&tokens, &alias_refs)
+                }) {
+                    room_id = configured.room_id.clone();
+                    if !configured.entity_ids.contains(&id) {
+                        configured.entity_ids.push(id.clone());
+                    }
+                    if configured.default_light.is_empty() && domain == "light" {
+                        configured.default_light = id.clone();
+                    } else if configured.default_climate.is_empty() && domain == "climate" {
+                        configured.default_climate = id.clone();
+                    }
+                } else if let Some(&(extra_id, extra_name, extra_aliases)) = EXTRA_ROOMS
+                    .iter()
+                    .find(|&&(_, _, aliases)| matches_aliases(&tokens, aliases))
+                {
+                    room_id = extra_id.to_owned();
+                    let idx = if let Some(&idx) = room_map.get(extra_id) {
+                        idx
+                    } else {
+                        let idx = builders.len();
+                        room_map.insert(extra_id.to_owned(), idx);
+                        builders.push(RoomBuilder {
+                            room_id: extra_id.to_owned(),
+                            name: extra_name.to_owned(),
+                            entity_ids: Vec::new(),
+                            default_light: String::new(),
+                            default_climate: String::new(),
+                            aliases: extra_aliases.iter().map(|s| (*s).to_owned()).collect(),
+                        });
+                        idx
+                    };
+                    let target = &mut builders[idx];
+                    if !target.entity_ids.contains(&id) {
+                        target.entity_ids.push(id.clone());
+                    }
+                    if target.default_light.is_empty() && domain == "light" {
+                        target.default_light = id.clone();
+                    } else if target.default_climate.is_empty() && domain == "climate" {
+                        target.default_climate = id.clone();
+                    }
+                }
+            }
+
+            let available = if domain == "scene" {
+                state.is_some_and(|s| s.state() != "unavailable")
+            } else {
+                state.is_some_and(|s| !matches!(s.state(), "unavailable" | "unknown"))
+            };
+            let attrs = extract_entity_attrs(&domain, &capabilities, state);
+
+            HomeEntity {
+                entity_id: id,
+                domain,
+                room_id,
+                friendly_name,
+                state: state.map_or("unknown", nexa_ha::EntityState::state).into(),
+                available,
+                capabilities,
+                observed_at_unix_ms: if frame_fresh && state.is_some() {
+                    now_ms
+                } else {
+                    at
+                },
+                brightness_pct: attrs.brightness_pct,
+                color_temp_kelvin: attrs.color_temp_kelvin,
+                color_temp_min: attrs.color_temp_min,
+                color_temp_max: attrs.color_temp_max,
+                temperature: attrs.temperature,
+                current_temperature: attrs.current_temperature,
+                current_humidity: attrs.current_humidity,
+                hvac_action: attrs.hvac_action,
+                hvac_modes: attrs.hvac_modes,
+                temperature_min: attrs.temperature_min,
+                temperature_max: attrs.temperature_max,
+                temperature_step: attrs.temperature_step,
+                position: attrs.position,
+            }
+        })
+        .collect();
+
+    // Prefer `light.grupo_*` as room default_light if a room only had a leaf default or empty default.
+    let entity_index: HashMap<String, usize> = entities
+        .iter()
+        .enumerate()
+        .map(|(i, e)| (e.entity_id.clone(), i))
+        .collect();
+
+    let rooms = builders
+        .into_iter()
+        .map(|room| {
+            let mut current_temperature = None;
+            let mut current_humidity = None;
+            let ordered_ids: Vec<&str> = (!room.default_climate.is_empty())
+                .then_some(room.default_climate.as_str())
+                .into_iter()
+                .chain(room.entity_ids.iter().map(String::as_str))
+                .collect();
+            for id in ordered_ids {
+                if let Some(entity) = entity_index.get(id).map(|&i| &entities[i]) {
+                    if current_temperature.is_none() {
+                        current_temperature = entity.current_temperature;
+                    }
+                    if current_humidity.is_none() {
+                        current_humidity = entity.current_humidity;
+                    }
+                }
+            }
+            HomeRoom {
+                room_id: room.room_id,
+                name: room.name,
+                entity_ids: room.entity_ids,
+                default_light: room.default_light,
+                default_climate: room.default_climate,
+                current_temperature,
+                current_humidity,
+            }
+        })
+        .collect();
+
+    let stale = entities.is_empty() || !frame_fresh || observed_count == 0;
+    let catalog_observed_at = if !stale { now_ms } else { max_reported_at };
+    // Sort entities cleanly inside the response for UI predictability.
+    entities.sort_by(|a, b| a.entity_id.cmp(&b.entity_id));
+
+    HomeCatalogSnapshot {
+        observed_at_unix_ms: catalog_observed_at,
+        stale,
+        rooms,
+        entities,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nexa_config::{HaControlPolicyConfig, RoomDefinition, RoomsConfig, XvfTuning};
+    use nexa_ha::StateFrame;
+    use std::time::Duration;
+
+    fn tuning() -> XvfTuning {
+        XvfTuning {
+            pp_agc_max_gain: 1.0,
+            pp_attns_mode: 0,
+            pp_attns_slope: 0.5,
+            pp_min_nn: 0.51,
+        }
+    }
+
+    fn room(room_id: &str, name: &str, default_light: Option<&str>, default_climate: Option<&str>) -> RoomDefinition {
+        RoomDefinition {
+            room_id: room_id.into(),
+            name: name.into(),
+            mic_usb_port: None,
+            mic_serial: None,
+            mic_channel: 0,
+            ma1260_zone: 1,
+            default_light: default_light.map(str::to_owned),
+            default_climate: default_climate.map(str::to_owned),
+            xvf_tuning: tuning(),
+        }
+    }
+
+    #[test]
+    fn catalog_reports_fresh_snapshot_attributes_scenes_and_extra_rooms() {
+        let rooms_cfg = RoomsConfig {
+            rooms: vec![
+                room("living", "Living", Some("light.living_techo"), Some("climate.aire_living")),
+                room("cocina", "Cocina", Some("light.cocina"), None),
+            ],
+        };
+        let mut entities = HashMap::new();
+        entities.insert("light.living_techo".into(), vec!["turn_on".into(), "turn_off".into(), "brightness".into(), "color_temp_kelvin".into()]);
+        entities.insert("climate.aire_living".into(), vec!["turn_on".into(), "turn_off".into(), "set_temperature".into(), "set_hvac_mode".into()]);
+        entities.insert("light.cocina".into(), vec!["turn_on".into(), "turn_off".into()]);
+        entities.insert("light.dormitorio_velador".into(), vec!["turn_on".into(), "turn_off".into()]);
+        entities.insert("switch.bano_extractor".into(), vec!["turn_on".into(), "turn_off".into()]);
+        entities.insert("light.balcon".into(), vec!["turn_on".into(), "turn_off".into()]);
+        entities.insert("scene.living_cine".into(), vec!["activate_scene".into()]);
+        entities.insert("light.offline_optional".into(), vec!["turn_on".into()]);
+        let controls = HaControlPolicyConfig {
+            entities,
+            ..Default::default()
+        };
+
+        let now = Instant::now();
+        let wall_now = 1_800_000_000_000_u64;
+        // Old last_updated timestamp from hours ago MUST NOT make fresh snapshot stale.
+        let stale_reported = "2026-11-26T00:00:00Z";
+        let frame = StateFrame::test_snapshot(
+            Duration::from_secs(30),
+            now,
+            &[
+                json!({
+                    "entity_id": "light.living_techo",
+                    "state": "on",
+                    "last_reported": stale_reported,
+                    "attributes": {
+                        "friendly_name": "Luz Living",
+                        "brightness": 128,
+                        "color_temp_kelvin": 3000,
+                        "min_color_temp_kelvin": 2000,
+                        "max_color_temp_kelvin": 6500
+                    }
+                }),
+                json!({
+                    "entity_id": "climate.aire_living",
+                    "state": "cool",
+                    "last_reported": stale_reported,
+                    "attributes": {
+                        "friendly_name": "Aire Living",
+                        "temperature": 23.0,
+                        "current_temperature": 25.5,
+                        "current_humidity": 48.0,
+                        "hvac_action": "cooling",
+                        "hvac_modes": ["off", "cool", "heat"],
+                        "min_temp": 16.0,
+                        "max_temp": 30.0,
+                        "target_temp_step": 1.0
+                    }
+                }),
+                json!({
+                    "entity_id": "light.cocina",
+                    "state": "off",
+                    "attributes": { "friendly_name": "Cocina" }
+                }),
+                json!({
+                    "entity_id": "light.dormitorio_velador",
+                    "state": "on",
+                    "attributes": { "friendly_name": "Velador Cuarto", "brightness_pct": 60 }
+                }),
+                json!({
+                    "entity_id": "switch.bano_extractor",
+                    "state": "off",
+                    "attributes": { "friendly_name": "Extractor Baño" }
+                }),
+                json!({
+                    "entity_id": "light.balcon",
+                    "state": "off",
+                    "attributes": { "friendly_name": "Balcón" }
+                }),
+                json!({
+                    "entity_id": "scene.living_cine",
+                    "state": "unknown",
+                    "attributes": { "friendly_name": "Living Cine" }
+                }),
+            ],
+        );
+
+        let snap = build_catalog_from_frame(&rooms_cfg, &controls, Some(&frame), now, wall_now);
+        assert!(!snap.stale);
+        assert_eq!(snap.observed_at_unix_ms, wall_now);
+
+        let room_ids: Vec<_> = snap.rooms.iter().map(|r| r.room_id.as_str()).collect();
+        assert!(room_ids.contains(&"living"));
+        assert!(room_ids.contains(&"cocina"));
+        assert!(room_ids.contains(&"dormitorio"));
+        assert!(room_ids.contains(&"bano"));
+        assert!(room_ids.contains(&"balcon"));
+
+        let living = snap.rooms.iter().find(|r| r.room_id == "living").unwrap();
+        assert_eq!(living.current_temperature, Some(25.5));
+        assert_eq!(living.current_humidity, Some(48.0));
+        assert!(living.entity_ids.contains(&"scene.living_cine".into()));
+
+        let light = snap.entities.iter().find(|e| e.entity_id == "light.living_techo").unwrap();
+        assert_eq!(light.brightness_pct, Some(50));
+        assert_eq!(light.color_temp_kelvin, Some(3000));
+        assert_eq!(light.color_temp_min, Some(2000));
+        assert_eq!(light.color_temp_max, Some(6500));
+        assert!(light.available);
+
+        let scene = snap.entities.iter().find(|e| e.entity_id == "scene.living_cine").unwrap();
+        assert!(scene.available);
+
+        let missing = snap.entities.iter().find(|e| e.entity_id == "light.offline_optional").unwrap();
+        assert!(!missing.available);
     }
 }

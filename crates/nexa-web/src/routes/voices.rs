@@ -105,7 +105,7 @@ pub(super) async fn execute(
                 state
                     .live
                     .authorize(&fields.headers, lease, ws::Channel::VoiceReview)?;
-            let doc = projection(
+            let mut doc = projection(
                 brain
                     .get_voice_capture_review(VoiceCaptureReviewRequest {
                         fingerprint_id: id.into(),
@@ -115,6 +115,26 @@ pub(super) async fn execute(
                     .await?
                     .payload_json,
             )?;
+            if let Some(obj) = doc.as_object_mut()
+                && !obj.contains_key("rows")
+            {
+                if !obj.contains_key("id")
+                    && let Some(capture_id) = obj
+                        .get("capture_id")
+                        .or_else(|| obj.get("fingerprint_id"))
+                        .cloned()
+                {
+                    obj.insert("id".into(), capture_id);
+                }
+                if !obj.contains_key("transcript")
+                    && let Some(preview) = obj.get("transcript_preview").cloned()
+                {
+                    obj.insert("transcript".into(), preview);
+                    obj.entry("transcript_scope")
+                        .or_insert_with(|| json!("preview"));
+                }
+                doc = json!({ "rows": [doc] });
+            }
             state
                 .live
                 .projection(connection, ws::Channel::VoiceReview, doc)?
@@ -127,14 +147,15 @@ pub(super) async fn execute(
                 state
                     .live
                     .authorize(&fields.headers, lease, ws::Channel::VoiceCaptures)?;
-            let query = if fields.query.is_empty() {
+            let raw_query = if fields.query.is_empty() {
                 body.clone()
             } else if body == &json!({}) {
                 json!(fields.query)
             } else {
                 return Err(INVALID);
             };
-            let doc = projection(
+            let query = filter_capture_query(&raw_query);
+            let mut doc = projection(
                 brain
                     .query_voice_captures(VoiceCaptureQueryRequest {
                         query_json: query.to_string(),
@@ -143,6 +164,7 @@ pub(super) async fn execute(
                     .await?
                     .payload_json,
             )?;
+            normalize_voice_captures(&mut doc);
             state
                 .live
                 .projection(connection, ws::Channel::VoiceCaptures, doc)?
@@ -224,4 +246,56 @@ pub(super) async fn execute(
         }
     };
     Ok((status, Json(value)).into_response())
+}
+
+fn filter_capture_query(raw: &Value) -> Value {
+    let Some(obj) = raw.as_object() else {
+        return raw.clone();
+    };
+    let mut filtered = serde_json::Map::new();
+    for (key, value) in obj {
+        if matches!(
+            key.as_str(),
+            "room" | "room_id" | "cursor" | "limit" | "review_status"
+        ) && !value.is_null()
+        {
+            filtered.insert(key.clone(), value.clone());
+        }
+    }
+    Value::Object(filtered)
+}
+
+fn normalize_voice_captures(doc: &mut Value) {
+    let Some(obj) = doc.as_object_mut() else {
+        return;
+    };
+    if obj.contains_key("rows") {
+        return;
+    }
+    let Some(captures) = obj.remove("captures").and_then(|v| match v {
+        Value::Array(items) => Some(items),
+        _ => None,
+    }) else {
+        return;
+    };
+    let rows: Vec<Value> = captures
+        .into_iter()
+        .map(|mut item| {
+            if let Some(row) = item.as_object_mut() {
+                if !row.contains_key("id")
+                    && let Some(capture_id) = row
+                        .get("capture_id")
+                        .or_else(|| row.get("fingerprint_id"))
+                        .cloned()
+                {
+                    row.insert("id".into(), capture_id);
+                }
+                row.entry("review_available").or_insert_with(|| json!(false));
+            }
+            item
+        })
+        .collect();
+    let next = obj.remove("next").unwrap_or(Value::Null);
+    obj.insert("rows".into(), Value::Array(rows));
+    obj.entry("next_cursor").or_insert(next);
 }

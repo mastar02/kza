@@ -10,8 +10,8 @@
   let { session }: { session: Session } = $props()
   const permissions = ['voices:read', 'voices:review']
   type Profile = { id: string; name: string; revision: number }
-  type Capture = { id: string; room: string | null; seconds: number; review: boolean }
-  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+  type Capture = { id: string; room: string | null; seconds: number | null; review: boolean }
+  const profileId = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
   const media = new SampleMedia()
   let profileRows = $state.raw<Profile[]>([])
   let captureRows = $state.raw<Capture[]>([])
@@ -28,7 +28,7 @@
   function profiles(items: readonly unknown[]): Profile[] {
     return items.map(item => {
       const row = record(item)
-      if (typeof row?.id !== 'string' || !uuid.test(row.id) || typeof row.name !== 'string' ||
+      if (typeof row?.id !== 'string' || !profileId.test(row.id) || typeof row.name !== 'string' ||
           !row.name.trim() || row.name.length > 64 || typeof row.revision !== 'number' ||
           !Number.isSafeInteger(row.revision) || row.revision < 1) throw new Error('Invalid profile')
       return { id: row.id, name: row.name, revision: row.revision }
@@ -38,12 +38,14 @@
   function captures(items: readonly unknown[]): Capture[] {
     return items.map(item => {
       const row = record(item)
-      if (typeof row?.id !== 'string' || !fingerprint.test(row.id) || typeof row.duration_s !== 'number' ||
-          !Number.isFinite(row.duration_s) || row.duration_s <= 0 || typeof row.review_available !== 'boolean') {
-        throw new Error('Invalid capture')
-      }
-      return { id: row.id, room: typeof row.room_id === 'string' ? row.room_id : null,
-        seconds: row.duration_s, review: row.review_available }
+      const id = typeof row?.id === 'string' ? row.id
+        : typeof row?.capture_id === 'string' ? row.capture_id
+        : typeof row?.fingerprint_id === 'string' ? row.fingerprint_id : null
+      if (!id || !fingerprint.test(id)) throw new Error('Invalid capture')
+      const seconds = typeof row?.duration_s === 'number' && Number.isFinite(row.duration_s) && row.duration_s > 0
+        ? row.duration_s : null
+      const review = typeof row?.review_available === 'boolean' ? row.review_available : false
+      return { id, room: typeof row?.room_id === 'string' ? row.room_id : null, seconds, review }
     })
   }
 
@@ -99,7 +101,7 @@
       await Promise.all([
         client.read('voices:profiles', '/api/voices/profiles', { permissions }, profiles),
         client.read('voices:captures', '/api/voices/captures/query', { permissions, method: 'POST',
-          body: { room: null, window: null, group_state: null, association: null, listenable_only: false, text: null, cursor: null } }, captures),
+          body: { limit: 50 } }, captures),
       ])
     } catch (failure) { if (client?.ready) error = messageFor(failure) }
     finally { busy = false }
@@ -174,7 +176,7 @@
         {#each captureRows as capture, index (capture.id)}
           <li>
             <label class="capture-choice"><input type="checkbox" bind:group={selected} value={capture.id} disabled={changing} />
-              Captura {index + 1} · {capture.seconds.toFixed(1)} s{capture.room ? ' · ' + capture.room : ''}
+              Captura {index + 1}{capture.seconds !== null ? ' · ' + capture.seconds.toFixed(1) + ' s' : ''}{capture.room ? ' · ' + capture.room : ''}
             </label>
             <button disabled={busy || changing} onclick={() => review(capture.id, 'text')}>Leer</button>
             {#if capture.review}<button disabled={busy || changing} onclick={() => review(capture.id, 'audio')}>Consultar audio</button>{/if}

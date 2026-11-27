@@ -50,4 +50,24 @@ describe('typed home operations', () => {
     expect(await readReceipt(session, receipt)).toEqual(receipt)
     expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
   })
+
+  it('extracts HA attributes and room defaults from catalog', () => {
+    const catalog = catalogFrom({
+      rooms: [{
+        room_id: 'living', name: 'Living', entity_ids: ['light.living'],
+        current_temperature: 23.5, current_humidity: 45, default_light: 'light.living', default_climate: null,
+      }],
+      entities: [{
+        entity_id: 'light.living', domain: 'light', name: 'Luz Living', state: 'on', available: true,
+        brightness_pct: 65, color_temp_kelvin: 3200,
+        capabilities: ['turn_on', 'turn_off', 'brightness'], control_limits: { brightness_min: 0, brightness_max: 100 },
+      }],
+      observed_at: Date.now() / 1000 - 0.1,
+      stale: false,
+      observation: { state: 'fresh', observed_at: Date.now() / 1000 - 0.1, expires_at: Date.now() / 1000 + 30 },
+    })
+    expect(catalog.rooms[0]?.humidity).toBe(45)
+    expect(catalog.entities[0]?.brightnessPct).toBe(65)
+    expect(catalog.entities[0]?.colorTempKelvin).toBe(3200)
+  })
 })

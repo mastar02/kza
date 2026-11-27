@@ -150,4 +150,35 @@ describe('alertas y servicios', () => {
     clickButton(target, 'Reiniciar')
     await vi.waitFor(() => expect(posts).toEqual(['/api/admin/services/nexa-brain/restart']))
   })
+
+  it('muestra GPUs, LLM endpoints y Daemons con recarga de slot ML', async () => {
+    const posts: string[] = []
+    const who = identity(['home:read', 'diagnostics:read', 'admin:manage'], 'operator')
+    const fetcher = transport((path, options) => {
+      if (path === '/api/admin/auth/whoami') return who()
+      if (options.method === 'POST') { posts.push(path); return json({ ok: true }) }
+      if (path === '/api/system/gpus') {
+        return json([{ id: 0, name: 'RTX 4090', memory_used_mb: 10240, memory_total_mb: 24576, temperature: 52, utilization: 18, power_w: 110.4 }])
+      }
+      if (path === '/api/system/daemons') {
+        return json({
+          daemons: {
+            audio: { service: 'nexa-audiod', available: true, state: 'ok', version: '2.4.0', uptime_ms: 120000 },
+            ml: { service: 'nexa-ml', available: true, state: 'ok', version: '2.4.0', uptime_ms: 120000,
+              slots: [{ slot_id: 'stt-command', model_name: 'whisper-v3-turbo', state: 'ok' }] },
+          },
+        })
+      }
+      return json([])
+    })
+    const sysTarget = await view(Diagnostics, fetcher, { system: true })
+    await vi.waitFor(() => expect(sysTarget.textContent).toContain('RTX 4090'))
+    expect(sysTarget.textContent).toContain('52')
+    expect(sysTarget.textContent).toContain('18')
+    clickButton(sysTarget, 'Daemons y ML')
+    await vi.waitFor(() => expect(sysTarget.textContent).toContain('whisper-v3-turbo'))
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true)
+    clickButton(sysTarget, 'Recargar')
+    await vi.waitFor(() => expect(posts).toEqual(['/api/admin/ml/slots/stt-command/reload']))
+  })
 })

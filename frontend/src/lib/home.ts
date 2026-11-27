@@ -22,8 +22,15 @@ export type HomeCommand =
 export type Entity = {
   id: string; name: string; domain: string; state: string; available: boolean
   capabilities: Operation[]; limits: Record<string, unknown>; observation: unknown
+  brightnessPct: number | null; colorTempKelvin: number | null
+  temperature: number | null; currentTemperature: number | null
+  currentHumidity: number | null; hvacAction: string | null; position: number | null
 }
-type Room = { id: string; name: string; entityIds: string[]; temperature: number | null }
+export type Room = {
+  id: string; name: string; entityIds: string[]
+  temperature: number | null; humidity: number | null
+  defaultLight: string | null; defaultClimate: string | null
+}
 export type Catalog = { rooms: Room[]; entities: Entity[]; observation: unknown; observed: unknown; stale: boolean }
 
 const byDomain: Record<string, readonly Operation[]> = {
@@ -44,6 +51,10 @@ function strings(value: unknown): string[] {
   return entries(value).filter((item): item is string => typeof item === 'string')
 }
 
+function finiteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
 export function catalogFrom(value: unknown): Catalog {
   const doc = record(value)
   if (!doc || !Array.isArray(doc.rooms) || !Array.isArray(doc.entities)) throw new Error('Invalid home catalog')
@@ -60,17 +71,31 @@ export function catalogFrom(value: unknown): Catalog {
       available: row.available === true, observation: row.observation,
       capabilities: strings(row.capabilities).filter((op): op is Operation => accepted.includes(op as Operation)),
       limits: record(row.control_limits) ?? {},
+      brightnessPct: finiteNumber(row.brightness_pct),
+      colorTempKelvin: finiteNumber(row.color_temp_kelvin),
+      temperature: finiteNumber(row.temperature),
+      currentTemperature: finiteNumber(row.current_temperature),
+      currentHumidity: finiteNumber(row.current_humidity),
+      hvacAction: typeof row.hvac_action === 'string' && row.hvac_action ? row.hvac_action : null,
+      position: finiteNumber(row.position),
     })
   }
   const rooms = doc.rooms.flatMap(raw => {
     const row = record(raw)
     if (typeof row?.room_id !== 'string' || typeof row.name !== 'string') return []
-    return [{ id: row.room_id, name: row.name, entityIds: strings(row.entity_ids),
-      temperature: typeof row.current_temperature === 'number' ? row.current_temperature : null }]
+    return [{
+      id: row.room_id, name: row.name, entityIds: strings(row.entity_ids),
+      temperature: finiteNumber(row.current_temperature),
+      humidity: finiteNumber(row.current_humidity),
+      defaultLight: typeof row.default_light === 'string' && row.default_light ? row.default_light : null,
+      defaultClimate: typeof row.default_climate === 'string' && row.default_climate ? row.default_climate : null,
+    }]
   })
   return { rooms, entities: [...entityMap.values()], stale: doc.stale !== false,
     observation: doc.observation, observed: doc.observed_at }
 }
+
+const CLOCK_SKEW_MS = 5000
 
 function millis(value: unknown): number {
   return typeof value === 'number' ? value * 1000 : typeof value === 'string' ? Date.parse(value) : NaN
@@ -79,12 +104,12 @@ function millis(value: unknown): number {
 function fresh(value: unknown, now: number): boolean {
   const observation = record(value)
   return (observation?.state === 'fresh' || observation?.state === 'partial') &&
-    millis(observation.observed_at) <= now && now < millis(observation.expires_at)
+    millis(observation.observed_at) <= now + CLOCK_SKEW_MS && now < millis(observation.expires_at)
 }
 
 export function canControl(session: Session, catalog: Catalog, entity: Entity, operation: Operation, now = Date.now()): boolean {
   const catalogFresh = catalog.observation != null ? fresh(catalog.observation, now)
-    : millis(catalog.observed) <= now && now - millis(catalog.observed) < 6000
+    : millis(catalog.observed) <= now + CLOCK_SKEW_MS && now - millis(catalog.observed) < 6000
   const stateKnown = entity.domain === 'scene' ? entity.state !== 'unavailable'
     : knownStates[entity.domain]?.includes(entity.state) === true
   return session.can('home:read', 'home:control') && !catalog.stale && catalogFresh &&

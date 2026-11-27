@@ -45,13 +45,19 @@
   }
 
   function project(value: unknown) {
-    return rows(value).filter(current).map(({ id, kind, content, category, expires_at }) => ({
-      id, kind, content: personal && kind === 'voice_proposal_pending' ? null : content, category, expires_at,
-    }))
+    return rows(value).map(row => ({
+      ...row,
+      id: row.id ?? row.fact_id,
+      kind: row.kind,
+      content: personal && row.kind === 'voice_proposal_pending' ? null : row.content,
+      category: row.category,
+      expires_at: row.expires_at ?? null,
+    })).filter(current)
   }
 
   function current(fact: Record<string, unknown>) {
-    return fact.expires_at === null || typeof fact.expires_at === 'number' && fact.expires_at > now
+    return fact.expires_at === undefined || fact.expires_at === null ||
+      (typeof fact.expires_at === 'number' && fact.expires_at > now)
   }
 
   function change(fact: Record<string, unknown>, operation: 'delete' | 'return' | 'confirm' | 'reject') {

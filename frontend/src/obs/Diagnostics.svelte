@@ -8,43 +8,103 @@
   let { session, system = false }: { session: Session; system?: boolean } = $props()
   const ownerSession = untrack(() => session)
   type Field = { key: string; label: string }
-  type Collection = { path: string; title: string; fields: Field[]; group: 'system' | 'diagnostics' }
+  type Collection = { path: string; title: string; fields: Field[]; group: 'system' | 'diagnostics'; isDaemons?: boolean }
   const configurations: Collection[] = [
     { path: '/api/zones', title: 'Zonas', group: 'diagnostics', fields: [
-      { key: 'audioState', label: 'Audio' }, { key: 'status', label: 'Estado' },
+      { key: 'audioState', label: 'Audio' }, { key: 'volume', label: 'Volumen (%)' }, { key: 'ma1260_zone', label: 'Canal MA1260' },
     ] },
     { path: '/api/ha/entities', title: 'Home Assistant', group: 'diagnostics', fields: [
-      { key: 'domain', label: 'Dominio' }, { key: 'state', label: 'Estado' }, { key: 'zone', label: 'Zona' },
+      { key: 'domain', label: 'Dominio' }, { key: 'state', label: 'Estado' }, { key: 'zone', label: 'Ambiente' },
     ] },
     { path: '/api/llm/endpoints', title: 'Endpoints LLM', group: 'diagnostics', fields: [
-      { key: 'model', label: 'Modelo' }, { key: 'state', label: 'Estado' }, { key: 'cooldown_until', label: 'Cooldown hasta' },
+      { key: 'model', label: 'Endpoint' }, { key: 'kind', label: 'Tipo' }, { key: 'state', label: 'Estado' },
+      { key: 'consecutive_errors', label: 'Errores' }, { key: 'cooldown_until', label: 'Cooldown hasta' },
     ] },
     { path: '/api/system/gpus', title: 'GPUs', group: 'system', fields: [
-      { key: 'id', label: 'Dispositivo' }, { key: 'role', label: 'Asignación declarada' },
+      { key: 'id', label: 'Dispositivo' },
       { key: 'vramUsed', label: 'VRAM usada (GB)' }, { key: 'vramTotal', label: 'VRAM total (GB)' },
       { key: 'temp', label: 'Temperatura (°C)' }, { key: 'util', label: 'Utilización (%)' },
+      { key: 'power_w', label: 'Consumo (W)' },
     ] },
     { path: '/api/system/services', title: 'Servicios', group: 'system', fields: [
       { key: 'status', label: 'Estado' }, { key: 'substate', label: 'Subestado' }, { key: 'uptime', label: 'Tiempo activo' }, { key: 'mem', label: 'Memoria' },
     ] },
+    { path: '/api/system/daemons', title: 'Daemons y ML', group: 'system', isDaemons: true, fields: [
+      { key: 'state', label: 'Estado' }, { key: 'version', label: 'Versión' }, { key: 'uptime', label: 'Tiempo activo' }, { key: 'detail', label: 'Detalle' },
+    ] },
   ]
   const group = $derived(system ? 'system' : 'diagnostics')
+
+  function mbToGb(value: unknown): string | number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? (value / 1024).toFixed(1) : null
+  }
+
+  function formatUptime(ms: unknown): string | null {
+    if (typeof ms !== 'number' || !Number.isFinite(ms) || ms <= 0) return null
+    const secs = Math.floor(ms / 1000)
+    const mins = Math.floor(secs / 60)
+    const hours = Math.floor(mins / 60)
+    return hours > 0 ? `${hours}h ${mins % 60}m` : mins > 0 ? `${mins}m ${secs % 60}s` : `${secs}s`
+  }
+
+  function mapInventoryItem(config: Collection, item: Record<string, unknown>) {
+    const normalized: Record<string, unknown> = {
+      ...item,
+      zone: item.zone ?? item.room_id,
+      model: item.model ?? item.name ?? item.id,
+      state: item.state ?? (item.in_cooldown === true ? 'cooldown' : item.in_cooldown === false ? 'ready' : undefined),
+      cooldown_until: item.cooldown_until ?? item.cooldown_ends,
+      vramUsed: item.vramUsed ?? mbToGb(item.memory_used_mb),
+      vramTotal: item.vramTotal ?? mbToGb(item.memory_total_mb),
+      temp: item.temp ?? item.temperature,
+      util: item.util ?? item.utilization,
+      power_w: typeof item.power_w === 'number' && Number.isFinite(item.power_w) ? Math.round(item.power_w) : item.power_w,
+    }
+    const cooldownVal = config.path === '/api/llm/endpoints' ? (normalized.cooldown_until ?? null) : null
+    return {
+      id: item.id ?? item.entity_id ?? item.name,
+      name: item.name ?? item.label ?? item.id ?? item.entity_id,
+      cooldown: cooldownVal,
+      slots: [] as Record<string, unknown>[],
+      fields: config.fields
+        .map(({ key, label }) => ({ label, value: normalized[key] }))
+        .filter(field => typeof field.value === 'string' || typeof field.value === 'number'),
+    }
+  }
+
   const collections = configurations.map(config => ({
     ...config,
     resource: new Resource(ownerSession, async signal => {
       const value = await session.request(config.path, { permissions: ['diagnostics:read'], signal })
+      if (config.isDaemons) {
+        const daemonsObj = record(record(value)?.daemons)
+        if (!daemonsObj) throw new Error('Invalid daemons')
+        return Object.entries(daemonsObj).map(([key, raw]) => {
+          const item = record(raw) ?? {}
+          const slots = Array.isArray(item.slots)
+            ? item.slots.map(s => record(s)).filter((s): s is Record<string, unknown> => Boolean(s))
+            : []
+          const uptime = formatUptime(item.uptime_ms)
+          const fields = [
+            { label: 'Estado', value: text(item.state, item.available === true ? 'ok' : 'unavailable') },
+            { label: 'Versión', value: item.version },
+            { label: 'Tiempo activo', value: uptime },
+            { label: 'Detalle', value: item.detail },
+          ].filter(field => typeof field.value === 'string' || typeof field.value === 'number')
+          return {
+            id: key,
+            name: text(item.service, key),
+            cooldown: null as unknown,
+            slots,
+            fields,
+          }
+        })
+      }
       if (!Array.isArray(value)) throw new Error('Invalid inventory')
-      return rows(value).map(item => ({
-        id: item.id ?? item.entity_id,
-        name: item.name ?? item.label ?? item.id,
-        cooldown: config.path === '/api/llm/endpoints' ? item.cooldown_until ?? item.cooldown_ends : null,
-        fields: config.fields.map(({ key, label }) => {
-          const value = key === 'cooldown_until' ? item.cooldown_until ?? item.cooldown_ends : item[key]
-          return { label, value }
-        }).filter(field => typeof field.value === 'string' || typeof field.value === 'number'),
-      }))
+      return rows(value).map(item => mapInventoryItem(config, item))
     }),
   }))
+
   const write = new Mutation(ownerSession)
   const alerts = new Resource(ownerSession, async signal => {
     const value = await session.request('/api/alerts', { permissions: ['home:read'], signal })
@@ -97,16 +157,23 @@
 
   function clearCooldown(id: unknown) {
     if (typeof id !== 'string' || !window.confirm('¿Quitar el cooldown de este endpoint?')) return
-    const list = active?.resource
+    const currentList = active?.resource
     return write.run('/api/llm/endpoints/' + encodeURIComponent(id) + '/clear-cooldown',
-      { permissions: ['admin:manage'], method: 'POST' }, async () => { await list?.load() })
+      { permissions: ['admin:manage'], method: 'POST' }, async () => { await currentList?.load() })
   }
 
   function restart(id: unknown, name: unknown) {
     if (typeof id !== 'string' || !window.confirm('¿Reiniciar el servicio ' + text(name, 'seleccionado') + '?')) return
-    const list = active?.resource
+    const currentList = active?.resource
     return write.run('/api/admin/services/' + encodeURIComponent(id) + '/restart',
-      { permissions: ['admin:manage'], method: 'POST' }, async () => { await list?.load(true) })
+      { permissions: ['admin:manage'], method: 'POST' }, async () => { await currentList?.load(true) })
+  }
+
+  function reloadSlot(slotId: unknown) {
+    if (typeof slotId !== 'string' || !window.confirm('¿Recargar el modelo ' + slotId + '?')) return
+    const currentList = active?.resource
+    return write.run('/api/admin/ml/slots/' + encodeURIComponent(slotId) + '/reload',
+      { permissions: ['admin:manage'], method: 'POST', body: {} }, async () => { await currentList?.load(true) })
   }
 
   function acknowledge(id: unknown) {
@@ -141,6 +208,18 @@
             <div><dt>{field.label}</dt><dd>{label(field.value)}</dd></div>
           {/each}
         </dl>
+        {#if item.slots.length}
+          <div class="ml-slots">
+            {#each item.slots as slot}
+              <div class="slot-row">
+                <span><strong>{text(slot.slot_id)}</strong> · {text(slot.model_name)} ({text(slot.state)})</span>
+                {#if session.can('admin:manage') && typeof slot.slot_id === 'string'}
+                  <button disabled={write.busy || list?.busy} onclick={() => reloadSlot(slot.slot_id)}>Recargar</button>
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
         {#if active?.path === '/api/system/services' && session.can('admin:manage') && typeof item.name === 'string' && !nonRestartableServices.has(item.name)}
           <button disabled={write.busy || list?.busy} onclick={() => restart(item.name, item.name)}>Reiniciar</button>
         {/if}
@@ -175,4 +254,6 @@
 
 <style>
   nav { margin-block-end: 1rem; }
+  .ml-slots { margin-block-start: .65rem; border-top: 1px solid var(--line); padding-block-start: .5rem; display: grid; gap: .4rem; }
+  .slot-row { display: flex; justify-content: space-between; align-items: center; gap: .5rem; flex-wrap: wrap; }
 </style>

@@ -70,7 +70,7 @@ pub(super) async fn execute(
                     "conversation_filter_unavailable",
                 ));
             }
-            let rows = projection(
+            let mut rows = projection(
                 brain
                     .list_conversations(ListConversationsRequest {
                         limit: fields.limit(100, 200)?,
@@ -80,6 +80,7 @@ pub(super) async fn execute(
                     .await?
                     .payload_json,
             )?;
+            normalize_conversations(&mut rows);
             state
                 .live
                 .projection(connection, ws::Channel::Conversations, rows)?
@@ -181,4 +182,77 @@ pub(super) async fn execute(
         ),
     };
     Ok((status, Json(value)).into_response())
+}
+
+fn normalize_conversations(doc: &mut Value) {
+    let Some(items) = doc.as_array_mut() else {
+        return;
+    };
+    for item in items {
+        let Some(row) = item.as_object_mut() else {
+            continue;
+        };
+        if !row.contains_key("id")
+            && let Some(id) = row.get("conversation_id").cloned()
+        {
+            row.insert("id".into(), id);
+        }
+        if !row.contains_key("ts") {
+            let ts = row
+                .get("observed_at_unix_ms")
+                .and_then(Value::as_i64)
+                .and_then(chrono::DateTime::from_timestamp_millis)
+                .map(|dt| dt.format("%H:%M:%S UTC").to_string())
+                .unwrap_or_default();
+            row.insert("ts".into(), json!(ts));
+        }
+        if !row.contains_key("zone") {
+            let zone = row
+                .get("room_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            row.insert("zone".into(), json!(zone));
+        }
+        let routing = row.get("routing").and_then(Value::as_object).cloned();
+        if !row.contains_key("user") {
+            let user = routing
+                .as_ref()
+                .and_then(|r| {
+                    r.get("speaker_id")
+                        .or_else(|| r.get("user_id"))
+                        .or_else(|| r.get("user"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or_default()
+                .to_owned();
+            row.insert("user".into(), json!(user));
+        }
+        if !row.contains_key("stt") {
+            let stt = routing
+                .as_ref()
+                .and_then(|r| {
+                    r.get("transcript")
+                        .or_else(|| r.get("stt"))
+                        .or_else(|| r.get("raw_text"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or_default()
+                .to_owned();
+            row.insert("stt".into(), json!(stt));
+        }
+        if !row.contains_key("tts") {
+            let tts = routing
+                .as_ref()
+                .and_then(|r| {
+                    r.get("spoken_reply")
+                        .or_else(|| r.get("tts"))
+                        .or_else(|| r.get("reply"))
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or_default()
+                .to_owned();
+            row.insert("tts".into(), json!(tts));
+        }
+    }
 }

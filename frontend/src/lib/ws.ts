@@ -26,7 +26,7 @@ const pathPermissions: Record<SocketPath, readonly string[]> = {
 }
 
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const liveTypes = new Set(['turn', 'wake', 'tts', 'alert', 'cooldown'])
+const liveTypes = new Set(['turn', 'wake', 'tts', 'alert', 'cooldown', 'ha_state'])
 const retryDelays = [500, 1500, 3500, 7000]
 let pageId: string | undefined
 

@@ -109,6 +109,30 @@ impl StateFrame {
         self.max_staleness
     }
 
+    pub fn snapshot_is_fresh(&self, now: Instant) -> bool {
+        self.snapshot_at
+            .is_some_and(|at| is_fresh(at, now, self.max_staleness))
+    }
+
+    #[doc(hidden)]
+    pub fn test_snapshot(max_staleness: Duration, as_of: Instant, states_json: &[Value]) -> Self {
+        let mut frame = Self::empty(max_staleness);
+        frame.snapshot_at = Some(as_of);
+        for raw in states_json {
+            if let Ok(entity) = serde_json::from_value::<EntityState>(raw.clone()) {
+                let id = entity.entity_id.clone();
+                frame.entries.insert(
+                    id,
+                    Observation {
+                        state: Arc::new(entity),
+                        as_of,
+                    },
+                );
+            }
+        }
+        frame
+    }
+
     /// Freshness is per entity. An event for one entity cannot renew another.
     pub fn entity(&self, entity_id: &str, now: Instant) -> Result<&EntityState, StateReadError> {
         self.current(entity_id, now)

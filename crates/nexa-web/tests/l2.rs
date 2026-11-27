@@ -992,3 +992,98 @@ fn cli_test_mode_serves_spa_and_seed_cookies() {
 }
 
 use tower::ServiceExt;
+
+#[tokio::test]
+async fn home_catalog_observation_receipt_mapping_control_fields_and_ws_expiry() {
+    let fixture = TestMode::new().await.unwrap();
+    let app = fixture
+        .app(Origin::parse(ORIGIN).unwrap(), false, None)
+        .unwrap();
+
+    let catalog = call(
+        &app,
+        "GET",
+        "/api/home/catalog",
+        Some(HOME_TOKEN),
+        None,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(catalog.status(), StatusCode::OK);
+    let catalog_doc = document(catalog).await;
+    assert_eq!(catalog_doc["stale"], false);
+    assert_eq!(catalog_doc["observation"]["state"], "fresh");
+    assert!(
+        catalog_doc["observation"]["expires_at"].as_f64().unwrap()
+            > catalog_doc["observation"]["observed_at"].as_f64().unwrap()
+    );
+    assert_eq!(
+        catalog_doc["entities"][0]["control_limits"]["brightness_max"],
+        100
+    );
+
+    let capture = call(
+        &app,
+        "GET",
+        "/api/capture/control",
+        Some(OPERATOR_TOKEN),
+        None,
+        Body::empty(),
+    )
+    .await;
+    let capture_doc = document(capture).await;
+    assert_eq!(capture_doc["target_muted"], false);
+    assert_eq!(capture_doc["pending_browser_recorders"], 0);
+    assert_eq!(capture_doc["pending_native_clients"], 0);
+
+    let ambient = call(
+        &app,
+        "GET",
+        "/api/ambient/control",
+        Some(OPERATOR_TOKEN),
+        None,
+        Body::empty(),
+    )
+    .await;
+    let ambient_doc = document(ambient).await;
+    assert_eq!(ambient_doc["phase"], "running");
+    assert_eq!(ambient_doc["admission_paused"], false);
+    assert_eq!(ambient_doc["persisted_paused"], false);
+    assert_eq!(ambient_doc["pending_operations"], 0);
+
+    let (addr, server) = serve(app.clone()).await;
+    let mut live = connect(addr, "/ws/live", OPERATOR_TOKEN).await.unwrap();
+    let _connection = v3(&mut live).await;
+
+    fixture.emit(LiveRuntimeEvent {
+        kind: LiveEventKind::Turn as i32,
+        room_id: "living".into(),
+        payload_json: r#"{"stt":"hola"}"#.into(),
+        emitted_at_unix_ms: 1_700_000_000_000,
+        ..Default::default()
+    });
+    let event = next_json(&mut live).await;
+    assert_eq!(event["type"], "turn");
+    assert!(event["expires_at"].as_f64().is_some());
+    assert_eq!(event["payload"]["zone"], "living");
+
+    let mut voices = connect(addr, "/ws/voices", OPERATOR_TOKEN).await.unwrap();
+    let voice_conn = v3(&mut voices).await;
+    let profiles = app
+        .clone()
+        .oneshot(
+            axum::http::Request::get("/api/voices/profiles")
+                .header("authorization", format!("Bearer {OPERATOR_TOKEN}"))
+                .header("x-kza-live-connection", voice_conn)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let profiles_doc = document(profiles).await;
+    let snapshot = &profiles_doc["snapshot"];
+    assert!(
+        snapshot["expires_at"].as_f64().unwrap() > snapshot["observed_at"].as_f64().unwrap()
+    );
+    server.abort();
+}

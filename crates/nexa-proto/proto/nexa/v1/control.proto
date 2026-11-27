@@ -73,6 +73,19 @@ message HomeEntity {
   bool available = 6;
   repeated string capabilities = 7;
   uint64 observed_at_unix_ms = 8;
+  optional uint32 brightness_pct = 9;
+  optional uint32 color_temp_kelvin = 10;
+  optional uint32 color_temp_min = 11;
+  optional uint32 color_temp_max = 12;
+  optional double temperature = 13;
+  optional double current_temperature = 14;
+  optional double current_humidity = 15;
+  string hvac_action = 16;
+  repeated string hvac_modes = 17;
+  optional double temperature_min = 18;
+  optional double temperature_max = 19;
+  optional double temperature_step = 20;
+  optional uint32 position = 21;
 }
 
 message HomeRoom {
@@ -81,6 +94,8 @@ message HomeRoom {
   repeated string entity_ids = 3;
   string default_light = 4;
   string default_climate = 5;
+  optional double current_temperature = 6;
+  optional double current_humidity = 7;
 }
 
 message HomeCatalogSnapshot {

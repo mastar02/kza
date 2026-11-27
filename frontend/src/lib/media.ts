@@ -1,17 +1,20 @@
 import { record } from './session'
 
-export const fingerprint = /^vf_[0-9a-f]{64}$/
+export const fingerprint = /^(?:vf_[0-9a-f]{64}|[0-9a-f]{32})$/
+export const strictFingerprint = /^vf_[0-9a-f]{64}$/
 export type Sample = { id: string; transcript: string | null; audio: Uint8Array<ArrayBuffer> | null }
 
 export function sampleFrom(rows: readonly unknown[], id: string, format: 'text' | 'audio', evaluation = false): Sample {
   const row = record(rows[0])
   if (rows.length !== 1 || row?.id !== id || !fingerprint.test(id) ||
-      evaluation && row.modality !== (format === 'audio' ? 'audio_preview' : 'transcript_full')) {
+      evaluation && (!strictFingerprint.test(id) || row.modality !== (format === 'audio' ? 'audio_preview' : 'transcript_full'))) {
     throw new Error('Invalid review sample')
   }
   const transcript = row.transcript
+  const validScope = evaluation ? row.transcript_scope === 'full_segment'
+    : (row.transcript_scope === 'full_segment' || row.transcript_scope === 'preview')
   if ((!evaluation || format === 'text') && (typeof transcript !== 'string' || transcript.length > 16384 ||
-      row.transcript_scope !== 'full_segment' || new TextEncoder().encode(transcript).length > 32768)) {
+      !validScope || new TextEncoder().encode(transcript).length > 32768)) {
     throw new Error('Invalid transcript')
   }
   if (format === 'text') return { id, transcript: transcript as string, audio: null }

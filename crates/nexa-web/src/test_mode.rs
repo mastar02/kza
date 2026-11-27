@@ -355,6 +355,7 @@ impl Brain for Fixtures {
                 available: true,
                 capabilities: vec!["turn_on".into(), "turn_off".into()],
                 observed_at_unix_ms: observed,
+                ..Default::default()
             }],
         })
     }

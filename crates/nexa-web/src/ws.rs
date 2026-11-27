@@ -40,6 +40,7 @@ const MAX_CONNECTIONS: usize = 32;
 const MAX_RECEIPTS: usize = 128;
 const HANDSHAKE: Duration = Duration::from_secs(5);
 const SEND_DEADLINE: Duration = Duration::from_millis(500);
+const PROJECTION_TTL_SECS: f64 = 300.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Channel {
@@ -132,6 +133,7 @@ impl Receipt {
 struct Connection {
     lease_id: String,
     epoch: u64,
+    expires_at: f64,
     mode: Mode,
     ready: bool,
     retired: bool,
@@ -184,6 +186,7 @@ impl Connections {
             Connection {
                 lease_id: actor.lease_id,
                 epoch: actor.lease_epoch,
+                expires_at: lease.expires_at(),
                 mode,
                 ready: false,
                 retired: false,
@@ -267,12 +270,17 @@ impl Connections {
             if !state.ready || state.retired || !state.mode.permits(channel) {
                 return None;
             }
+            let observed_at = auth::now();
+            let expires_at = (observed_at + PROJECTION_TTL_SECS).min(state.expires_at);
+            if expires_at <= observed_at {
+                return None;
+            }
             let snapshot = if rows.as_array().is_some_and(Vec::is_empty) {
                 Value::Null
             } else {
                 let receipt = Receipt::new(channel, true);
-                let result = json!({"event_id":receipt.event.to_string(),"observed_at":auth::now(),
-                    "expires_at":null,"receipt":receipt.public(),"channel":channel.name(),
+                let result = json!({"event_id":receipt.event.to_string(),"observed_at":observed_at,
+                    "expires_at":expires_at,"receipt":receipt.public(),"channel":channel.name(),
                     "rows":rows,"next_cursor":next_cursor});
                 if state.receipts.len() >= MAX_RECEIPTS {
                     state.retired = true;
@@ -644,18 +652,30 @@ fn live_event(registration: &Registration, event: LiveRuntimeEvent) -> Option<Va
         LiveEventKind::HaState => "ha_state",
         _ => return None,
     };
-    let payload: Value = serde_json::from_str(&event.payload_json).ok()?;
-    if !payload.is_object() {
-        return None;
+    let mut payload: Value = serde_json::from_str(&event.payload_json).ok()?;
+    let map = payload.as_object_mut()?;
+    if !map.contains_key("zone") && !event.room_id.is_empty() {
+        map.insert("zone".into(), Value::String(event.room_id));
     }
+    let ts = chrono::DateTime::from_timestamp_millis(
+        i64::try_from(event.emitted_at_unix_ms).ok().unwrap_or(0),
+    )
+    .filter(|_| event.emitted_at_unix_ms != 0)
+    .map(|dt| dt.format("%H:%M:%S UTC").to_string())
+    .unwrap_or_default();
     let receipt = Receipt::new(Channel::Conversations, false);
-    let result = json!({"type":kind,"event_id":receipt.event.to_string(),
-        "payload":payload,"receipt":receipt.public(),"ts":event.emitted_at_unix_ms});
     registration.states.with(registration.id, |state| {
         if state.retired || state.receipts.len() >= MAX_RECEIPTS {
             state.retired = true;
             return None;
         }
+        let now = auth::now();
+        let expires_at = (now + PROJECTION_TTL_SECS).min(state.expires_at);
+        if expires_at <= now {
+            return None;
+        }
+        let result = json!({"type":kind,"event_id":receipt.event.to_string(),
+            "expires_at":expires_at,"payload":payload,"receipt":receipt.public(),"ts":ts});
         state.receipts.push(receipt);
         Some(result)
     })

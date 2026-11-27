@@ -21,12 +21,55 @@ fn nonempty(value: String) -> Option<String> {
 }
 
 pub(super) fn entity(row: HomeEntity) -> Value {
+    let mut limits = serde_json::Map::new();
+    match row.domain.as_str() {
+        "light" => {
+            limits.insert("brightness_min".into(), json!(0));
+            limits.insert("brightness_max".into(), json!(100));
+            if let (Some(min), Some(max)) = (row.color_temp_min, row.color_temp_max) {
+                limits.insert("color_temp_min".into(), json!(min));
+                limits.insert("color_temp_max".into(), json!(max));
+            }
+        }
+        "climate" => {
+            if let Some(min) = row.temperature_min {
+                limits.insert("temperature_min".into(), json!(min));
+            }
+            if let Some(max) = row.temperature_max {
+                limits.insert("temperature_max".into(), json!(max));
+            }
+            if let Some(step) = row.temperature_step {
+                limits.insert("temperature_step".into(), json!(step));
+            }
+            if !row.hvac_modes.is_empty() {
+                limits.insert("hvac_modes".into(), json!(row.hvac_modes));
+            }
+        }
+        "cover" => {
+            limits.insert("position_min".into(), json!(0));
+            limits.insert("position_max".into(), json!(100));
+        }
+        _ => {}
+    }
     json!({
-        "entity_id":row.entity_id,"domain":row.domain,"name":row.friendly_name,"state":row.state,
-        "brightness_pct":null,"room_id":nonempty(row.room_id),"area_id":null,"capabilities":row.capabilities,
-        "state_changed_at":null,"observed_at":datetime(row.observed_at_unix_ms),"available":row.available,
-        "temperature":null,"color_temp_kelvin":null,"position":null,"current_temperature":null,
-        "current_humidity":null,"hvac_action":null,
+        "entity_id": row.entity_id,
+        "domain": row.domain,
+        "name": row.friendly_name,
+        "state": row.state,
+        "brightness_pct": row.brightness_pct,
+        "room_id": nonempty(row.room_id),
+        "area_id": null,
+        "capabilities": row.capabilities,
+        "control_limits": Value::Object(limits),
+        "state_changed_at": null,
+        "observed_at": datetime(row.observed_at_unix_ms),
+        "available": row.available,
+        "temperature": row.temperature,
+        "color_temp_kelvin": row.color_temp_kelvin,
+        "position": row.position,
+        "current_temperature": row.current_temperature,
+        "current_humidity": row.current_humidity,
+        "hvac_action": nonempty(row.hvac_action),
     })
 }
 
@@ -35,41 +78,82 @@ pub(super) fn home_catalog(data: HomeCatalogSnapshot) -> Result<Value> {
         StatusCode::SERVICE_UNAVAILABLE,
         "home_catalog_unavailable",
     ))?;
-    let rooms: Vec<_> = data.rooms.into_iter().map(|room| json!({
-        "room_id":room.room_id,"name":room.name,"entity_ids":room.entity_ids,
-        "current_temperature":null,"current_humidity":null,"default_light":nonempty(room.default_light),
-        "default_climate":nonempty(room.default_climate)
-    })).collect();
+    let observed_s = data.observed_at_unix_ms as f64 / 1000.0;
+    let observation = if !data.stale {
+        json!({"state": "fresh", "observed_at": observed_s, "expires_at": observed_s + 30.0})
+    } else {
+        json!({"state": "stale", "observed_at": observed_s, "expires_at": observed_s})
+    };
+    let rooms: Vec<_> = data
+        .rooms
+        .into_iter()
+        .map(|room| {
+            json!({
+                "room_id": room.room_id,
+                "name": room.name,
+                "entity_ids": room.entity_ids,
+                "current_temperature": room.current_temperature,
+                "current_humidity": room.current_humidity,
+                "default_light": nonempty(room.default_light),
+                "default_climate": nonempty(room.default_climate)
+            })
+        })
+        .collect();
     let entities: Vec<_> = data.entities.into_iter().map(entity).collect();
     let unassigned: Vec<_> = entities
         .iter()
         .filter(|row| row["room_id"].is_null())
         .collect();
-    Ok(
-        json!({"observed_at":observed_at,"stale":data.stale,"rooms":rooms,"entities":entities,
-        "unassigned_entities":unassigned,"reason":null,"source":"real","observation":null,
-        "registry_observation":null,"selection_observation":null}),
-    )
+    Ok(json!({
+        "observed_at": observed_at,
+        "stale": data.stale,
+        "rooms": rooms,
+        "entities": entities,
+        "unassigned_entities": unassigned,
+        "reason": null,
+        "source": "real",
+        "observation": observation,
+        "registry_observation": null,
+        "selection_observation": null,
+    }))
 }
 
 pub(super) fn home_receipt(row: HomeActionReceipt) -> Value {
-    json!({"request_id":row.request_id,"entity_id":row.entity_id,"status":row.status,
+    let status = match row.status.as_str() {
+        "accepted" | "confirmed" => "confirmed",
+        "in_progress" => "in_progress",
+        "rejected" | "not_sent" | "failed" => "failed",
+        _ => "uncertain",
+    };
+    json!({"request_id":row.request_id,"entity_id":row.entity_id,"status":status,
         "reason":nonempty(row.detail),"effects":[],"dispatch":"unknown","effect":"unknown","observation_scope":null})
 }
 
 pub(super) fn microphone(row: MicrophoneRoomStatus) -> Value {
-    let capture = match MicCaptureState::try_from(row.state) {
-        Ok(MicCaptureState::Waiting) => "waiting",
-        Ok(MicCaptureState::Receiving) => "receiving",
-        Ok(MicCaptureState::Recovering) => "recovering",
-        Ok(MicCaptureState::Muted) => "muted",
-        Ok(MicCaptureState::Offline) => "offline",
+    let state = MicCaptureState::try_from(row.state).ok();
+    let capture = match state {
+        Some(MicCaptureState::Waiting) => "waiting",
+        Some(MicCaptureState::Receiving) => "receiving",
+        Some(MicCaptureState::Recovering) => "recovering",
+        Some(MicCaptureState::Muted) => "muted",
+        Some(MicCaptureState::Offline) => "offline",
+        _ => "unknown",
+    };
+    let connection = match state {
+        Some(MicCaptureState::Receiving | MicCaptureState::Muted) => "connected",
+        Some(MicCaptureState::Waiting | MicCaptureState::Recovering) => "reconnecting",
+        Some(MicCaptureState::Offline) => "disconnected",
         _ => "unknown",
     };
     let port = nonempty(row.usb_port);
+    let binding = match (&port, state) {
+        (Some(_), Some(MicCaptureState::Receiving | MicCaptureState::Muted)) => "bound",
+        (Some(_), _) => "configured",
+        (None, _) => "unconfigured",
+    };
     json!({"mic_id":row.room_id,"room_id":row.room_id,"room_name":row.room_name,"configured_usb_port":port,
         "usb_port":port,"serial":null,"product":null,"alsa_card":null,"portaudio_index":null,
-        "identity_observed_at":null,"connection":"unknown","binding":"unknown",
+        "identity_observed_at":null,"connection":connection,"binding":binding,
         "capture":{"state":capture,"last_rms":row.last_rms,"frames_captured":row.frames_captured,
             "recoveries":row.recoveries,"last_frame_at":seconds(row.last_frame_unix_ms)},
         "voice":{"state":"unknown"},"direction":{"state":"unknown"},"physical_validation":{"state":"pending"}})
@@ -198,13 +282,17 @@ pub(super) fn capture(row: CaptureControlStatus) -> Value {
         Ok(CapturePhase::Resuming) => "resuming",
         _ => "unknown",
     };
-    json!({"phase":phase,"revision":row.revision,"persisted_muted":row.persisted_muted,"ingress_sealed":row.ingress_sealed,
-        "supported":row.supported,"pending_operations":row.pending_operations,"live_capture_owners":row.live_capture_owners,
-        "carried_capture_owners":row.carried_capture_owners,"total_mute_confirmed":nexa_proto::is_total_mute_confirmed(&row)})
+    json!({"phase":phase,"revision":row.revision,"persisted_muted":row.persisted_muted,"target_muted":row.persisted_muted,
+        "ingress_sealed":row.ingress_sealed,"supported":row.supported,"pending_operations":row.pending_operations,
+        "pending_browser_recorders":0,"pending_native_clients":0,
+        "live_capture_owners":row.live_capture_owners,"carried_capture_owners":row.carried_capture_owners,
+        "total_mute_confirmed":nexa_proto::is_total_mute_confirmed(&row)})
 }
 
 pub(super) fn ambient(row: AmbientControlStatus) -> Value {
-    json!({"paused":row.paused,"revision":row.revision,"updated_at":seconds(row.updated_at_unix_ms)})
+    let phase = if row.paused { "paused" } else { "running" };
+    json!({"phase":phase,"paused":row.paused,"admission_paused":row.paused,"persisted_paused":row.paused,
+        "pending_operations":0,"revision":row.revision,"updated_at":seconds(row.updated_at_unix_ms)})
 }
 
 pub(super) fn require_evaluator(lease: &Lease) -> Result<()> {
@@ -271,7 +359,9 @@ pub(super) fn zone(row: ZoneState) -> Value {
 }
 
 pub(super) fn llm_endpoint(row: LlmEndpointStatus) -> Value {
-    json!({"id":row.endpoint_id,"kind":row.kind,"priority":row.priority,"in_cooldown":row.in_cooldown,
+    let state = if row.in_cooldown { "cooldown" } else { "ready" };
+    json!({"id":row.endpoint_id,"name":row.endpoint_id,"model":row.endpoint_id,"kind":row.kind,
+        "state":state,"priority":row.priority,"in_cooldown":row.in_cooldown,
         "cooldown_until":seconds(row.cooldown_until_unix_ms),"consecutive_errors":row.consecutive_errors})
 }
 

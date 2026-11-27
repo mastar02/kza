@@ -13,7 +13,9 @@
   let error = $state('')
   let busy = $state(false)
   let client: ReceiptSocket | undefined
-  const labels: Record<string, string> = { turn: 'Turno', wake: 'Activación', tts: 'Respuesta', alert: 'Alerta', cooldown: 'Cooldown' }
+  const labels: Record<string, string> = {
+    turn: 'Turno', wake: 'Activación', tts: 'Respuesta', alert: 'Alerta', cooldown: 'Cooldown', ha_state: 'Home Assistant',
+  }
 
   onMount(() => {
     client = new ReceiptSocket(session, '/ws/live', {
@@ -38,11 +40,19 @@
   function project(items: readonly unknown[]): Turn[] {
     return items.map(item => {
       const row = record(item)
-      if (typeof row?.id !== 'string' || !/^turn_[0-9]+_[0-9a-f-]{36}$/.test(row.id) ||
-          typeof row.stt !== 'string' || row.stt.length > 8192 || typeof row.tts !== 'string' || row.tts.length > 8192 ||
-          typeof row.ts !== 'string' || row.ts.length > 512 || typeof row.zone !== 'string' || row.zone.length > 512 ||
-          typeof row.user !== 'string' || row.user.length > 512) throw new Error('Invalid turn')
-      return { id: row.id, time: row.ts, room: row.zone, voice: row.user, transcript: row.stt, response: row.tts }
+      const id = typeof row?.id === 'string' ? row.id
+        : typeof row?.conversation_id === 'string' ? row.conversation_id : null
+      if (!id || id.length > 128) throw new Error('Invalid turn')
+      const ts = typeof row?.ts === 'string' ? row.ts : ''
+      const zone = typeof row?.zone === 'string' ? row.zone
+        : typeof row?.room_id === 'string' ? row.room_id : ''
+      const user = typeof row?.user === 'string' ? row.user : ''
+      const stt = typeof row?.stt === 'string' ? row.stt : ''
+      const tts = typeof row?.tts === 'string' ? row.tts : ''
+      if (stt.length > 8192 || tts.length > 8192 || ts.length > 512 || zone.length > 512 || user.length > 512) {
+        throw new Error('Invalid turn')
+      }
+      return { id, time: ts, room: zone, voice: user, transcript: stt, response: tts }
     })
   }
 

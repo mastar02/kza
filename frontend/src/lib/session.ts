@@ -247,7 +247,15 @@ export class Session {
   async homeAsset(kind: 'model' | 'plan', signal: AbortSignal): Promise<unknown> {
     try {
       return await this.#request<unknown>('/api/home/' + kind, { permissions: ['home:read'], signal },
-        response => kind === 'model' ? response.arrayBuffer() : response.json(), true)
+        async response => {
+          if (kind === 'model') return response.arrayBuffer()
+          const contentType = response.headers.get('content-type') ?? ''
+          if (/javascript|ecmascript/i.test(contentType)) {
+            discardBody(response)
+            return null
+          }
+          return response.json().catch(() => null)
+        }, true)
     } catch (error) {
       if (error instanceof HttpError && (error.status === 403 || error.status === 404)) return null
       throw error
