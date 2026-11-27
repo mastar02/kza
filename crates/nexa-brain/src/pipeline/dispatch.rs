@@ -19,11 +19,89 @@ use super::Turn;
 /// Minimum Whisper avg_logprob for uncorroborated SlowLlm transcripts lacking a wake word.
 /// Live captures showed real commands at [-0.69, -0.34] and non-speech hallucinations at <= -1.20.
 const MIN_UNCORROBORATED_LLM_LOGPROB: f32 = -1.10;
+const HIGH_CONFIDENCE_ACOUSTIC_WAKE: f32 = 0.92;
 
 fn contains_wake_word(text: &str) -> bool {
+    // Match explicit Nexa wake variants; intentionally exclude common nouns like "casa".
     words(text).split_whitespace().any(|word| {
-        nexa_nlu::normalize::WAKE_WORDS.contains(&word) || matches!(word, "neska" | "nexca")
+        matches!(
+            word,
+            "nexa"
+                | "nexia"
+                | "neza"
+                | "nexta"
+                | "nesa"
+                | "neska"
+                | "nexca"
+                | "nexo"
+                | "kaza"
+                | "alexa"
+                | "next"
+                | "necks"
+        )
     })
+}
+
+fn is_bare_clitic_command(text: &str) -> bool {
+    let normalized = words(text);
+    let mut tokens = normalized.split_whitespace();
+    let Some(first) = tokens.next() else {
+        return false;
+    };
+    tokens.next().is_none()
+        && matches!(
+            first,
+            "apagala"
+                | "apagalo"
+                | "apagarla"
+                | "apagarlo"
+                | "prendela"
+                | "prendelo"
+                | "prenderla"
+                | "prenderlo"
+                | "encendela"
+                | "encendelo"
+                | "encenderla"
+                | "encenderlo"
+                | "bajala"
+                | "bajalo"
+                | "subila"
+                | "subilo"
+                | "ponela"
+                | "ponelo"
+        )
+}
+
+fn should_drop_unverified_wake(
+    wake: bool,
+    wake_score: f32,
+    corroborated: bool,
+    stt_text: &str,
+    ring_stop: bool,
+) -> bool {
+    wake && !ring_stop
+        && !corroborated
+        && !contains_wake_word(stt_text)
+        && (!wake_score.is_finite() || wake_score < HIGH_CONFIDENCE_ACOUSTIC_WAKE)
+}
+
+fn should_drop_unverified_followup(
+    follow_up: bool,
+    corroborated: bool,
+    avg_logprob: f32,
+    stt_text: &str,
+    ring_stop: bool,
+) -> Option<&'static str> {
+    if !follow_up || ring_stop || corroborated || contains_wake_word(stt_text) {
+        return None;
+    }
+    if avg_logprob.is_finite() && avg_logprob < MIN_UNCORROBORATED_LLM_LOGPROB {
+        return Some("low_confidence_followup");
+    }
+    if is_bare_clitic_command(stt_text) {
+        return Some("ambiguous_followup_clitic");
+    }
+    None
 }
 
 fn should_drop_low_confidence_llm(route: &Route, avg_logprob: f32, stt_text: &str) -> bool {
@@ -121,15 +199,35 @@ impl Brain {
         let admitted = (wake || (follow_up && shadow_veto_ok) || routed.acceptance.ring_stop)
             && (!routed.requires_veto || shadow_veto_ok);
         let path = routed.decision.path.as_str_name();
+        let unverified_wake = should_drop_unverified_wake(
+            wake,
+            utterance.wake_score,
+            corroborated,
+            &stt.text,
+            routed.acceptance.ring_stop,
+        );
+        let followup_drop_reason = should_drop_unverified_followup(
+            follow_up,
+            corroborated,
+            stt.avg_logprob,
+            &stt.text,
+            routed.acceptance.ring_stop,
+        );
         let low_confidence_llm =
             should_drop_low_confidence_llm(&routed.route, stt.avg_logprob, &stt.text);
-        let admitted_route =
-            admitted && !matches!(routed.route, Route::Rejected) && !low_confidence_llm;
-        let reason = if low_confidence_llm {
-            "low_confidence_llm"
+        let silent_drop_reason = if unverified_wake {
+            Some("unverified_wake")
+        } else if let Some(drop_reason) = followup_drop_reason {
+            Some(drop_reason)
+        } else if low_confidence_llm {
+            Some("low_confidence_llm")
         } else {
-            routed.decision.reason.as_deref().unwrap_or("none")
+            None
         };
+        let admitted_route =
+            admitted && !matches!(routed.route, Route::Rejected) && silent_drop_reason.is_none();
+        let effective_reason = silent_drop_reason.or(routed.decision.reason.as_deref());
+        let reason = effective_reason.unwrap_or("none");
         tracing::info!(
             room_id = %room,
             utterance_id = %conversation,
@@ -165,11 +263,11 @@ impl Brain {
                 "avg_logprob": stt.avg_logprob,
                 "compression_ratio": stt.compression_ratio,
                 "path": path,
-                "reason": if low_confidence_llm { Some("low_confidence_llm") } else { routed.decision.reason.as_deref() },
+                "reason": effective_reason,
                 "admitted": admitted_route,
             }),
         );
-        if low_confidence_llm {
+        if silent_drop_reason.is_some() {
             return Ok(());
         }
         if !admitted {
@@ -426,5 +524,74 @@ mod tests {
             -1.30,
             "prendé la luz"
         ));
+    }
+
+    #[test]
+    fn drops_unverified_false_wakes_while_keeping_real_wakes() {
+        // Casual speech mentioning "casa" must not confirm a sub-0.92 false wake.
+        assert!(should_drop_unverified_wake(
+            true,
+            0.55,
+            false,
+            "te escuché pero es que a su casa para la novia",
+            false
+        ));
+        assert!(should_drop_unverified_wake(
+            true,
+            0.416,
+            false,
+            "se quiere dormido",
+            false
+        ));
+        // Real wake word in transcript passes even with lower acoustic score.
+        assert!(!should_drop_unverified_wake(
+            true,
+            0.476,
+            false,
+            "Nexa prendé la luz",
+            false
+        ));
+        // Corroborated shadow, high-confidence acoustic wake, or active timer ring_stop pass.
+        assert!(!should_drop_unverified_wake(
+            true,
+            0.55,
+            true,
+            "prendé la luz",
+            false
+        ));
+        assert!(!should_drop_unverified_wake(
+            true,
+            0.92,
+            false,
+            "prendé la luz",
+            false
+        ));
+        assert!(!should_drop_unverified_wake(
+            true, 0.45, false, "pará", true
+        ));
+    }
+
+    #[test]
+    fn drops_low_confidence_or_bare_clitic_uncorroborated_followups() {
+        assert_eq!(
+            should_drop_unverified_followup(true, false, -0.72, "apagala", false),
+            Some("ambiguous_followup_clitic")
+        );
+        assert_eq!(
+            should_drop_unverified_followup(true, false, -1.236, "apagalo", false),
+            Some("low_confidence_followup")
+        );
+        assert_eq!(
+            should_drop_unverified_followup(true, false, -0.50, "apagala luz", false),
+            None
+        );
+        assert_eq!(
+            should_drop_unverified_followup(true, false, -1.30, "Nexa apagala", false),
+            None
+        );
+        assert_eq!(
+            should_drop_unverified_followup(true, false, -0.45, "Qué hora es", false),
+            None
+        );
     }
 }

@@ -43,9 +43,11 @@ type Worker = HouseholdWorker<Arc<dyn BrainClock>>;
 
 // Keep initial_prompt empty on whisper-v3-turbo: non-empty domain prompts inject decoder history
 // that triggers prompt echoes ("Voseo, prendé, apagá.") and high-compression repetition loops on
-// real speech. Domain vocabulary boosting is handled cleanly by COMMAND_STT_HOTWORDS instead.
+// real speech. Also keep hotwords limited to the wake word ("Nexa"): biasing action verbs
+// (`apagala`, `apagalo`, `subí`, `bajá`) or room names causes Whisper to hallucinate command
+// sequences on noisy or casual speech.
 pub(crate) const COMMAND_STT_INITIAL_PROMPT: &str = "";
-pub(crate) const COMMAND_STT_HOTWORDS: &str = "Nexa prendé apagá prendelo apagalo prendela apagala subí bajá poné escritorio living cocina baño cuarto balcón escalera luz luces aire";
+pub(crate) const COMMAND_STT_HOTWORDS: &str = "Nexa";
 pub(crate) const COMMAND_STT_BEAM_SIZE: u32 = 5;
 
 #[derive(Debug)]

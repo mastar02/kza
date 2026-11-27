@@ -21,7 +21,31 @@ const HOME_ROUTER_MAX_TOKENS: u32 = 140;
 const HOME_ROUTER_TEMPERATURE: f32 = 0.15;
 const MAX_CATALOG_ENTITIES: usize = 32;
 
-const HOME_ROUTER_SYSTEM_PROMPT: &str = "Sos Nexa, asistente doméstico rioplatense. Respondé SOLO JSON válido sin markdown ni razonamiento:\n{\"action\": {\"entity_id\": \"...\", \"operation\": \"...\", \"params\": {}} | null, \"confidence\": 0.0, \"reply\": \"<=10 palabras en español rioplatense\"}\nReglas:\n1. Usá \"action\" SOLO con entity_id y operation exactos de la lista de dispositivos.\n2. El texto viene de STT de voz y puede tener errores fonéticos menores (ej: 'aprende' por 'prendé', 'podré' por 'podés', o una palabra rara en vez de 'escritorio'/'luz'). Si el usuario pide prender/apagar/regular sin nombrar otra habitación válida —incluyendo clíticos como 'apagalo', 'prendelo', 'apagala', 'prendela'— actuá sobre la luz principal de source_room.\n3. Si el usuario saluda y además pide una acción (ej: 'buenos días, podés/podré prender la luz'), EJECUTÁ la acción (action != null) además de responder brevemente.\n4. Operaciones y params: turn_on ({}), turn_off ({}), activate_scene ({}), open_cover ({}), close_cover ({}), stop_cover ({}), set_cover_position ({\"position\": \"0..100\"}), brightness ({\"brightness_pct\": \"1..100\"}), color_temp_kelvin ({\"color_temp_kelvin\": \"2000..6500\"}), set_temperature ({\"temperature\": \"16..30\"}), set_hvac_mode ({\"hvac_mode\": \"off|cool|heat|dry|fan_only|auto\"}).\n5. Cuando ejecutes \"action\", usá un \"reply\" ultra breve de 1-2 palabras (ej: \"Listo.\", \"Prendida.\", \"Apagada.\").\n6. Nunca inventes entidades ni controles cerraduras o alarmas.\n7. Si es pregunta de estado o charla sin orden, devolvé \"action\": null, \"confidence\": 0.0 y \"reply\" breve y natural sin repetir tu nombre.";
+const HOME_ROUTER_SYSTEM_PROMPT: &str = "Sos Nexa, asistente doméstico rioplatense. Respondé SOLO JSON válido sin markdown ni razonamiento:\n{\"action\": {\"entity_id\": \"...\", \"operation\": \"...\", \"params\": {}} | null, \"confidence\": 0.0, \"reply\": \"<=10 palabras en español rioplatense\"}\nReglas:\n1. Usá \"action\" SOLO con entity_id y operation exactos de la lista de dispositivos.\n2. El texto viene de STT de voz y puede tener errores fonéticos menores (ej: 'aprende' por 'prendé', 'podré' por 'podés', o una palabra rara en vez de 'escritorio'/'luz'). Si el usuario pide prender/apagar/regular sin nombrar otra habitación válida —incluyendo clíticos como 'apagalo', 'prendelo', 'apagala', 'prendela'— actuá sobre la luz principal de source_room.\n3. Si el usuario saluda y además pide una acción (ej: 'buenos días, podés/podré prender la luz'), EJECUTÁ la acción (action != null) además de responder brevemente.\n4. Operaciones y params: turn_on ({}), turn_off ({}), activate_scene ({}), open_cover ({}), close_cover ({}), stop_cover ({}), set_cover_position ({\"position\": \"0..100\"}), brightness ({\"brightness_pct\": \"1..100\"}), color_temp_kelvin ({\"color_temp_kelvin\": \"2000..6500\"}), set_temperature ({\"temperature\": \"16..30\"}), set_hvac_mode ({\"hvac_mode\": \"off|cool|heat|dry|fan_only|auto\"}).\n5. Cuando ejecutes \"action\", usá un \"reply\" ultra breve de 1-2 palabras (ej: \"Listo.\", \"Prendida.\", \"Apagada.\").\n6. Nunca inventes entidades ni controles cerraduras o alarmas.\n7. Si es pregunta de estado, charla o fragmento ambiguo/contradictorio sin una orden directa clara (ej: 'se quiere dormido', 'apagala subí bajá'), devolvé SIEMPRE \"action\": null, \"confidence\": 0.0 y \"reply\" breve.";
+
+const CANONICAL_ROOM_SLUGS: &[&str] = &[
+    "living",
+    "cocina",
+    "escritorio",
+    "hall",
+    "escalera",
+    "bano",
+    "cuarto",
+    "balcon",
+];
+
+fn is_same_room_alias(room_slug: &str, source_room: &str) -> bool {
+    room_slug == source_room
+        || (source_room == "hall" && room_slug == "escalera")
+        || (source_room == "escalera" && room_slug == "hall")
+}
+
+fn is_other_room_scene(scene_slug: &str, source_room: &str, other_rooms: &[String]) -> bool {
+    other_rooms.iter().any(|room| {
+        !is_same_room_alias(room, source_room)
+            && (scene_slug == room || scene_slug.starts_with(&format!("{room}_")))
+    })
+}
 
 #[derive(Debug, Deserialize)]
 struct LlmHomeDecision {
@@ -182,16 +206,31 @@ impl Brain {
     }
 
     fn allowlisted_home_catalog(&self, source_room: &str) -> Vec<String> {
-        let other_rooms: Vec<String> = self
-            .config
-            .rooms
-            .rooms
-            .iter()
-            .map(|room| room.room_id.clone())
-            .filter(|id| id != source_room)
+        let snapshot = self.catalog();
+        let mut room_slugs = std::collections::BTreeSet::new();
+        for room in &self.config.rooms.rooms {
+            if !room.room_id.is_empty() {
+                room_slugs.insert(room.room_id.clone());
+            }
+        }
+        for &slug in CANONICAL_ROOM_SLUGS {
+            room_slugs.insert(slug.to_owned());
+        }
+        for entity in &snapshot.entities {
+            if !entity.room_id.is_empty() {
+                room_slugs.insert(entity.room_id.clone());
+            }
+            if let Some(group_slug) = entity.entity_id.strip_prefix("light.grupo_")
+                && !group_slug.is_empty()
+            {
+                room_slugs.insert(group_slug.to_owned());
+            }
+        }
+        let other_rooms: Vec<String> = room_slugs
+            .into_iter()
+            .filter(|room| !is_same_room_alias(room, source_room))
             .collect();
-        let mut entities: Vec<_> = self
-            .catalog()
+        let mut entities: Vec<_> = snapshot
             .entities
             .into_iter()
             .filter(|entity| {
@@ -202,9 +241,7 @@ impl Brain {
                 }
                 if let Some(scene_slug) = entity.entity_id.strip_prefix("scene.") {
                     // Keep global scenes and source_room scenes; omit scenes scoped to other rooms.
-                    return !other_rooms
-                        .iter()
-                        .any(|room| scene_slug.starts_with(&format!("{room}_")));
+                    return !is_other_room_scene(scene_slug, source_room, &other_rooms);
                 }
                 true
             })
@@ -734,5 +771,19 @@ mod tests {
         assert!(!is_readonly_state_query(
             "¿Podés prender la luz del escritorio?"
         ));
+    }
+
+    #[test]
+    fn excludes_non_mic_other_room_scenes_from_home_catalog() {
+        let rooms: Vec<String> = CANONICAL_ROOM_SLUGS
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert!(is_other_room_scene("balcon_descanso", "living", &rooms));
+        assert!(is_other_room_scene("bano_noche", "living", &rooms));
+        assert!(is_other_room_scene("escalera_tarde", "living", &rooms));
+        assert!(!is_other_room_scene("living_descanso", "living", &rooms));
+        assert!(!is_other_room_scene("cine", "living", &rooms));
+        assert!(!is_other_room_scene("escalera_tarde", "hall", &rooms));
     }
 }
