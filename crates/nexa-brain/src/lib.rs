@@ -1,5 +1,6 @@
 //! Voice orchestration and the local Nexa control plane.
 
+pub mod ambient;
 pub mod clients;
 pub mod control;
 pub mod events;
@@ -177,6 +178,7 @@ pub struct Brain {
     timezone: chrono_tz::Tz,
     home: Home,
     pub events: Events,
+    pub(crate) ambient: Arc<ambient::AmbientState>,
     shutdown: CancellationToken,
     active: pipeline::ActiveTurns,
 }
@@ -299,6 +301,7 @@ impl Brain {
                 .collect(),
             ..RouterSettings::default()
         });
+        let short_term_turns = usize::from(config.core.memory.short_term_turns);
         Ok(Arc::new(Self {
             endpoints,
             config,
@@ -316,6 +319,7 @@ impl Brain {
             timezone,
             home: Home::new(deps.home),
             events: Events::default(),
+            ambient: Arc::new(ambient::AmbientState::new(short_term_turns)),
             shutdown: CancellationToken::new(),
             active: pipeline::ActiveTurns::default(),
         }))

@@ -88,6 +88,7 @@ pub(super) async fn mutate_memory_item(
                 if !result.tombstone_recorded {
                     return Err(Status::failed_precondition("memory did not confirm the erasure fence"));
                 }
+                brain.ambient.evict_conversation(&request.target_id);
                 brain.event(v1::LiveEventKind::ErasureFence, "", &request.target_id, json!({"erasure_id": result.erasure_id}));
                 Ok(v1::MemoryMutationResponse { payload_json: json!({
                     "erasure_id": result.erasure_id, "tombstone_recorded": true,

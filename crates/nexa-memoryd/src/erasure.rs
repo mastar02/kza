@@ -344,6 +344,11 @@ fn delete_captures(tx: &Transaction<'_>, now: u64) -> Result<u32> {
          WHERE conversation_id IN erase_capture_conversations OR utterance_id IN erase_utterances;
          DELETE FROM ambient.utterances WHERE utterance_id IN erase_utterances;
          DELETE FROM ambient.capture_conversations WHERE conversation_id IN erase_capture_conversations;
+         DELETE FROM voice_personalities
+         WHERE profile_id IN (
+             SELECT profile_id FROM voice_personality_sources
+             WHERE conversation_id IN erase_conversations
+         );
          DELETE FROM voice_fingerprints WHERE capture_id IN erase_captures;
          DELETE FROM voice_profiles WHERE profile_id IN erase_profiles;",
     )?;

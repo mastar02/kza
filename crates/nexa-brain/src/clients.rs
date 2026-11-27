@@ -130,6 +130,45 @@ pub trait MemoryClient: Debug + Send + Sync {
             "memory service has no per-sample evaluation RPC",
         ))
     }
+
+    async fn ambient_control(&self) -> Result<v1::AmbientControlStatus, Status> {
+        Err(Status::unimplemented(
+            "memory service has no ambient control RPC",
+        ))
+    }
+
+    async fn store_fact(&self, _request: v1::StoreFactRequest) -> Result<v1::MemoryFact, Status> {
+        Err(Status::unimplemented(
+            "memory service has no store_fact RPC",
+        ))
+    }
+
+    async fn identify_voice(
+        &self,
+        _request: v1::IdentifyVoiceRequest,
+    ) -> Result<v1::IdentifyVoiceResponse, Status> {
+        Err(Status::unimplemented(
+            "memory service has no identify_voice RPC",
+        ))
+    }
+
+    async fn upsert_voice_personality(
+        &self,
+        _request: v1::UpsertVoicePersonalityRequest,
+    ) -> Result<v1::VoicePersonality, Status> {
+        Err(Status::unimplemented(
+            "memory service has no upsert_voice_personality RPC",
+        ))
+    }
+
+    async fn get_voice_personality(
+        &self,
+        _request: v1::GetVoicePersonalityRequest,
+    ) -> Result<v1::VoicePersonality, Status> {
+        Err(Status::unimplemented(
+            "memory service has no get_voice_personality RPC",
+        ))
+    }
 }
 
 /// Lazily connect so mutually dependent daemons can start in any order.
@@ -348,6 +387,66 @@ impl MemoryClient for UdsMemory {
         self.0
             .clone()
             .record_voice_observation(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn ambient_control(&self) -> Result<v1::AmbientControlStatus, Status> {
+        let actor = v1::ActorContext {
+            subject: "nexa-brain".into(),
+            role: v1::Role::Operator.into(),
+            permissions: vec![v1::Permission::AmbientControl.into()],
+            ..Default::default()
+        };
+        let mut request = Request::new(v1::Empty {});
+        request.metadata_mut().insert_bin(
+            "actor-context-bin",
+            MetadataValue::from_bytes(&actor.encode_to_vec()),
+        );
+        self.0
+            .clone()
+            .get_ambient_control(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn store_fact(&self, request: v1::StoreFactRequest) -> Result<v1::MemoryFact, Status> {
+        self.0
+            .clone()
+            .store_fact(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn identify_voice(
+        &self,
+        request: v1::IdentifyVoiceRequest,
+    ) -> Result<v1::IdentifyVoiceResponse, Status> {
+        self.0
+            .clone()
+            .identify_voice(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn upsert_voice_personality(
+        &self,
+        request: v1::UpsertVoicePersonalityRequest,
+    ) -> Result<v1::VoicePersonality, Status> {
+        self.0
+            .clone()
+            .upsert_voice_personality(request)
+            .await
+            .map(tonic::Response::into_inner)
+    }
+
+    async fn get_voice_personality(
+        &self,
+        request: v1::GetVoicePersonalityRequest,
+    ) -> Result<v1::VoicePersonality, Status> {
+        self.0
+            .clone()
+            .get_voice_personality(request)
             .await
             .map(tonic::Response::into_inner)
     }

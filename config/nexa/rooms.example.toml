@@ -5,7 +5,7 @@
 room_id = "living"
 name = "Living"
 mic_usb_port = "1-2.3"
-mic_channel = 1
+mic_channel = 0
 ma1260_zone = 1
 default_light = "light.grupo_living"
 
@@ -13,33 +13,33 @@ default_light = "light.grupo_living"
 pp_agc_max_gain = 16.0
 pp_attns_mode = 1
 pp_attns_slope = 1.0
-pp_min_nn = 0.4
+pp_min_nn = 0.51
 
 [[rooms]]
 room_id = "hall"
 name = "Hall"
 mic_usb_port = "7-7.1"
-mic_channel = 1
+mic_channel = 0
 ma1260_zone = 2
 
 [rooms.xvf_tuning]
 pp_agc_max_gain = 16.0
 pp_attns_mode = 1
 pp_attns_slope = 1.0
-pp_min_nn = 0.4
+pp_min_nn = 0.51
 
 [[rooms]]
 room_id = "cocina"
 name = "Cocina"
 mic_usb_port = "7-5.3"
-mic_channel = 1
+mic_channel = 0
 ma1260_zone = 3
 
 [rooms.xvf_tuning]
 pp_agc_max_gain = 16.0
 pp_attns_mode = 1
 pp_attns_slope = 1.0
-pp_min_nn = 0.4
+pp_min_nn = 0.51
 
 [[rooms]]
 room_id = "escritorio"
@@ -54,4 +54,4 @@ default_light = "light.escritorio"
 pp_agc_max_gain = 16.0
 pp_attns_mode = 1
 pp_attns_slope = 1.0
-pp_min_nn = 0.4
+pp_min_nn = 0.51

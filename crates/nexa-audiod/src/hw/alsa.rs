@@ -57,6 +57,7 @@ pub struct AlsaCapture {
     sender: Option<mpsc::Sender<CaptureRequest>>,
     worker: Option<JoinHandle<()>>,
     device: Option<(String, u32)>,
+    port: Option<String>,
 }
 
 impl AlsaCapture {
@@ -66,6 +67,7 @@ impl AlsaCapture {
             sender: None,
             worker: None,
             device: None,
+            port: None,
         }
     }
 }
@@ -88,14 +90,14 @@ impl CaptureSource for AlsaCapture {
         let (ready, initialized) = oneshot::channel();
         self.worker = Some(thread::Builder::new().name("alsa-capture".into()).spawn(
             move || {
-                let (pcm, card, channels) = match open_capture(&room) {
+                let (pcm, port, card, channels) = match open_capture(&room) {
                     Ok(open) => open,
                     Err(error) => {
                         send_reply(ready, Err(error), "open capture");
                         return;
                     }
                 };
-                if !send_reply(ready, Ok((card, channels)), "open capture") {
+                if !send_reply(ready, Ok((port, card, channels)), "open capture") {
                     return;
                 }
                 let channels = channels as usize;
@@ -118,11 +120,11 @@ impl CaptureSource for AlsaCapture {
             },
         )?);
         self.sender = Some(sender);
-        self.device = Some(
-            initialized
-                .await
-                .map_err(|error| channel_error("open capture", error))??,
-        );
+        let (port, card, channels) = initialized
+            .await
+            .map_err(|error| channel_error("open capture", error))??;
+        self.port = Some(port);
+        self.device = Some((card, channels));
         Ok(())
     }
 
@@ -146,6 +148,7 @@ impl CaptureSource for AlsaCapture {
     async fn stop(&mut self) -> Result<(), AudioError> {
         self.sender.take();
         self.device.take();
+        self.port.take();
         if let Some(worker) = self.worker.take() {
             // Joining also confirms PCM was dropped if the worker unwound.
             tokio::task::spawn_blocking(move || {
@@ -158,15 +161,32 @@ impl CaptureSource for AlsaCapture {
         }
         Ok(())
     }
+
+    fn supports_dead_isoch_watchdog(&self) -> bool {
+        true
+    }
+
+    async fn reboot(&mut self) -> Result<(), AudioError> {
+        let port = self.port.clone().ok_or(AudioError::Unavailable)?;
+        XvfUsb::new(port).reboot().await
+    }
+
+    async fn probe_dsp(&mut self) -> Option<crate::hw::xvf::DspTelemetry> {
+        let port = self.port.clone()?;
+        tokio::task::spawn_blocking(move || XvfUsb::new(port).read_dsp_telemetry())
+            .await
+            .ok()
+            .flatten()
+    }
 }
 
-fn open_capture(room: &RoomDefinition) -> Result<(PCM, String, u32), AudioError> {
+fn open_capture(room: &RoomDefinition) -> Result<(PCM, String, String, u32), AudioError> {
     let (port, card) = sysfs::resolve(
         Path::new(SYSFS),
         room.mic_usb_port.as_deref(),
         room.mic_serial.as_deref(),
     )?;
-    XvfUsb::new(port).apply(&room.xvf_tuning)?;
+    XvfUsb::new(port.clone()).apply(&room.xvf_tuning)?;
     let hw =
         PCM::new(&format!("hw:CARD={card},DEV=0"), Direction::Capture, true).map_err(alsa_error)?;
     let channels = HwParams::any(&hw)
@@ -178,7 +198,7 @@ fn open_capture(room: &RoomDefinition) -> Result<(PCM, String, u32), AudioError>
     }
     let pcm = open_pcm(&card, Direction::Capture, channels, SAMPLE_RATE)?;
     pcm.start().map_err(alsa_error)?;
-    Ok((pcm, card, channels))
+    Ok((pcm, port, card, channels))
 }
 
 fn open_pcm(card: &str, direction: Direction, channels: u32, rate: u32) -> Result<PCM, AudioError> {

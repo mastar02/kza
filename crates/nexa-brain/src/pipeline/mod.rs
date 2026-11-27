@@ -6,7 +6,7 @@
 )]
 
 mod dispatch;
-mod llm;
+pub(crate) mod llm;
 mod tts;
 mod turns;
 

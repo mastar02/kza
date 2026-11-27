@@ -14,9 +14,9 @@ The Linux host has two RTX 3070 GPUs with 8 GiB each.
 
 | Device | Workload | Approximate VRAM |
 |---|---|---|
-| `cuda:1` | llama-server 7B on port 8101, Whisper Command v3-turbo and streaming Kokoro-82M | 6.7 GiB |
-| `cuda:0` | Two ambient Whisper large-v3 workers and one ECAPA-TDNN speaker encoder | 4.1 GiB |
-| CPU | BAAI/bge-m3 embeddings and ONNX inference for Parakeet, Silero and OpenWakeWord | — |
+| `cuda:1` | `llama-server` (`Qwen3.5-9B-Q4_K_M`) on port `8101` (dedicated to local LLM) | Dedicated |
+| `cuda:0` | Shared `whisper-v3-turbo` (`float16`, `WhisperPriorityGate`), streaming Kokoro-82M TTS, and ECAPA-TDNN speaker encoder | Shared STT+TTS+Speaker |
+| CPU | `BAAI/bge-m3` embeddings and ONNX inference for Silero VAD and OpenWakeWord (optional Parakeet shadow veto) | — |
 
 ## Offline model cache
 

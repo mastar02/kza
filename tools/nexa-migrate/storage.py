@@ -17,7 +17,7 @@ from typing import BinaryIO
 ROOT = Path(__file__).resolve().parents[2]
 VOICE_MODEL = "speechbrain/spkrec-ecapa-voxceleb"
 FACT_MODEL = "BAAI/bge-m3"
-VERSIONS = {"memory": 1, "ambient": 1, "household": 3, "auth": 0}
+VERSIONS = {"memory": 2, "ambient": 2, "household": 3, "auth": 0}
 LOCATIONS = {
     "memory": "memory/memory.db", "ambient": "memory/ambient.db",
     "household": "household/household.db", "auth": "auth/auth.db",

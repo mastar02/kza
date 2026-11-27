@@ -672,3 +672,68 @@ async fn withdrawn_gateway_skipped_without_penalizing_health() -> Result {
     assert_eq!(r.cooldown_remaining("cloud").await, Duration::ZERO);
     Ok(())
 }
+
+#[tokio::test]
+async fn stream_local_with_history_sends_prior_turns_and_refuses_cloud_failover() -> Result {
+    let local = MockServer::start().await;
+    let cloud = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"should_not_run\"}}]}\n\ndata: [DONE]\n\n",
+            "text/event-stream",
+        ))
+        .expect(0)
+        .mount(&cloud)
+        .await;
+    Mock::given(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"historial ok\"}}]}\n\ndata: [DONE]\n\n",
+            "text/event-stream",
+        ))
+        .expect(1)
+        .mount(&local)
+        .await;
+
+    let r = router(
+        vec![endpoint(&local.uri(), false), endpoint(&cloud.uri(), true)],
+        None,
+    )
+    .await?;
+    let history = vec![
+        nexa_llm::ChatTurn {
+            role: "user".into(),
+            content: "hola".into(),
+        },
+        nexa_llm::ChatTurn {
+            role: "assistant".into(),
+            content: "buenas".into(),
+        },
+    ];
+    let mut out = String::new();
+    let ep = r
+        .stream_local_with_history(
+            Some("Sistema local."),
+            &history,
+            "como seguimos?",
+            32,
+            &CancellationToken::new(),
+            |chunk| out.push_str(chunk),
+        )
+        .await?;
+    assert_eq!(ep, "fast");
+    assert_eq!(out, "historial ok");
+
+    let req = &local
+        .received_requests()
+        .await
+        .ok_or("recording disabled")?[0];
+    let body: serde_json::Value = serde_json::from_slice(&req.body)?;
+    assert_eq!(body["messages"][0]["content"], "Sistema local.");
+    assert_eq!(body["messages"][1]["role"], "user");
+    assert_eq!(body["messages"][1]["content"], "hola");
+    assert_eq!(body["messages"][2]["role"], "assistant");
+    assert_eq!(body["messages"][2]["content"], "buenas");
+    assert_eq!(body["messages"][3]["role"], "user");
+    assert_eq!(body["messages"][3]["content"], "como seguimos?");
+    Ok(())
+}

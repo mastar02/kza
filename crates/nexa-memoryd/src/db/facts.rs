@@ -24,6 +24,7 @@ impl Store {
         content: &str,
         category: &str,
         embedding: &[f32],
+        proposed: bool,
     ) -> Result<MemoryFact> {
         id(conversation)?;
         optional_id(owner)?;
@@ -39,11 +40,20 @@ impl Store {
 
         let fact_id = new_id(&tx)?;
         let created = now_ms()?;
+        let confirmed = !proposed;
         // This RPC accepts facts from the trusted, authorized producer. The owner
         // comes only from that control-plane request, never from the acoustic registry.
         tx.execute(
-            "INSERT INTO facts VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1)",
-            params![fact_id, conversation, owner, content, category, created],
+            "INSERT INTO facts VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                fact_id,
+                conversation,
+                owner,
+                content,
+                category,
+                created,
+                i32::from(confirmed),
+            ],
         )?;
         tx.execute(
             "INSERT INTO fact_sources VALUES (?1, ?2)",
@@ -71,7 +81,7 @@ impl Store {
             content: content.into(),
             category: category.into(),
             created_at_unix_ms: created,
-            confirmed: true,
+            confirmed,
         })
     }
 

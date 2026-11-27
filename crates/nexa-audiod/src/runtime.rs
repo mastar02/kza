@@ -1,6 +1,7 @@
 //! Room supervision and capture ownership across device and inference I/O.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,7 +19,8 @@ use crate::capture_seal::{
 use crate::dsp::{FRAME_SAMPLES, NoiseFloorTracker, SAMPLE_RATE, frame_duration, frame_rms};
 use crate::endpoint::{EndpointDecision, EndpointTelemetry, PostWakeEndpoint};
 use crate::grpc::AudioService;
-use crate::ring::{CaptureConsumer, CaptureProducer, capture_ring};
+use crate::hw::xvf::DspTelemetry;
+use crate::ring::{CaptureConsumer, CaptureProducer, capture_ring_with_frames};
 use crate::traits::{
     AmpTransport, AudioError, CaptureSource, PlaybackOutput, ShadowStt, VadEngine, WakeEngine,
 };
@@ -27,10 +29,16 @@ const FIRST_RETRY: Duration = Duration::from_millis(100);
 const MAX_RETRY: Duration = Duration::from_secs(5);
 const STABLE_CAPTURE: Duration = Duration::from_secs(5);
 const FRAME_TIMEOUT: Duration = Duration::from_secs(2);
+const CAPTURE_RING_FRAMES: usize = 24;
+const DEAD_ISOCH_ZERO_FRAMES: usize = 75;
+const MAX_WATCHDOG_REBOOTS_PER_HOUR: usize = 4;
+const WATCHDOG_WINDOW: Duration = Duration::from_secs(3600);
+const DSP_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const AMBIENT_MIN_VOICE_FRAMES: usize = 10; // 800 ms of voiced frames.
 const AMBIENT_MAX_FRAMES: usize = 150; // 12 s, including pauses.
 const NON_WAKE_END_SILENCE_FRAMES: usize = 8; // 640 ms at the capture frame size.
-const AMBIENT_COOLDOWN: Duration = Duration::from_secs(3);
+const AMBIENT_SILENCE_COOLDOWN: Duration = Duration::from_millis(500);
+const AMBIENT_CAP_COOLDOWN: Duration = Duration::ZERO;
 const FOLLOW_UP_WINDOW: Duration = Duration::from_secs(12);
 const FOLLOW_UP_MIN_VOICE_FRAMES: usize = 3;
 const FOLLOW_UP_MAX_FRAMES: usize = 62; // Just under the 5 s command cap.
@@ -247,6 +255,7 @@ struct RoomProcessor<V, W> {
     room: MicrophoneRoomStatus,
     inference: Arc<Mutex<(V, W)>>,
     wake_threshold: f32,
+    follow_up_window: Duration,
     arbiter: WakeArbiter,
 }
 
@@ -269,9 +278,17 @@ where
                 },
                 inference: Arc::new(Mutex::new((vad, wake))),
                 wake_threshold,
+                follow_up_window: FOLLOW_UP_WINDOW,
                 arbiter: WakeArbiter::default(),
             },
         }
+    }
+
+    /// Configure the post-command follow-up listening window duration.
+    #[must_use]
+    pub fn with_follow_up_window(mut self, window: Duration) -> Self {
+        self.processor.follow_up_window = window;
+        self
     }
 
     /// Share a multi-room wake arbiter across all configured room pipelines.
@@ -296,6 +313,7 @@ where
         };
         let mut retry = FIRST_RETRY;
         let mut attempt = 0_u32;
+        let watchdog_reboots = Arc::new(Mutex::new(VecDeque::<Instant>::new()));
         loop {
             if gate.epoch().is_none() {
                 self.processor.room.state = MicCaptureState::Muted as i32;
@@ -321,8 +339,10 @@ where
             };
 
             let started = Instant::now();
-            let (producer, consumer) = capture_ring();
+            let (producer, consumer) = capture_ring_with_frames(CAPTURE_RING_FRAMES);
             let (utterances, pending) = mpsc::channel(1);
+            let capture_busy = Arc::new(AtomicBool::new(false));
+            let latest_dsp = Arc::new(Mutex::new(None::<DspTelemetry>));
             self.processor.room.state = MicCaptureState::Waiting as i32;
             update_microphone(&service, &self.processor.room);
 
@@ -354,7 +374,17 @@ where
                     })
                     .await
                     .map_err(|error| unavailable("acknowledge capture start", error))?;
-                    pump_frames(&mut self.source, producer, room_gate.clone(), epoch).await
+                    pump_frames(
+                        &mut self.source,
+                        producer,
+                        room_gate.clone(),
+                        epoch,
+                        &room_id,
+                        Arc::clone(&capture_busy),
+                        Arc::clone(&watchdog_reboots),
+                        Arc::clone(&latest_dsp),
+                    )
+                    .await
                 }
                 .await;
                 // Do not drain buffered PCM once the device has failed or stopped.
@@ -379,6 +409,8 @@ where
                     utterances,
                     room_gate.clone(),
                     epoch,
+                    Arc::clone(&capture_busy),
+                    Arc::clone(&latest_dsp),
                 )
                 .await;
                 if result.is_err() {
@@ -425,13 +457,21 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn pump_frames(
     source: &mut impl CaptureSource,
     mut producer: CaptureProducer,
     mut gate: CaptureGate,
     epoch: u64,
+    room_id: &str,
+    capture_busy: Arc<AtomicBool>,
+    watchdog_reboots: Arc<Mutex<VecDeque<Instant>>>,
+    latest_dsp: Arc<Mutex<Option<DspTelemetry>>>,
 ) -> Result<(), AudioError> {
     let mut samples = [0.0; FRAME_SAMPLES];
+    let check_dead_isoch = source.supports_dead_isoch_watchdog();
+    let mut zero_streak = 0_usize;
+    let mut last_dsp_probe: Option<Instant> = None;
     loop {
         tokio::select! {
             biased;
@@ -441,6 +481,67 @@ async fn pump_frames(
                     .await.map_err(|error| unavailable("read capture frame", error))??;
                 let samples = samples.get(..count).filter(|frame| !frame.is_empty())
                     .ok_or_else(|| unavailable("read capture frame", "empty or oversized frame"))?;
+                if !capture_busy.load(Ordering::Relaxed)
+                    && last_dsp_probe.is_none_or(|prev| prev.elapsed() >= DSP_PROBE_INTERVAL)
+                {
+                    last_dsp_probe = Some(Instant::now());
+                    if let Some(telemetry) = source.probe_dsp().await
+                        && let Ok(mut slot) = latest_dsp.lock()
+                    {
+                        *slot = Some(telemetry);
+                    }
+                }
+                if check_dead_isoch {
+                    #[allow(clippy::float_cmp)]
+                    if samples.iter().all(|&sample| sample == 0.0) {
+                        zero_streak = zero_streak.saturating_add(1);
+                    } else {
+                        zero_streak = 0;
+                    }
+                    if zero_streak >= DEAD_ISOCH_ZERO_FRAMES
+                        && !capture_busy.load(Ordering::Relaxed)
+                    {
+                        let should_reboot = watchdog_reboots
+                            .lock()
+                            .ok()
+                            .is_some_and(|mut history| {
+                                let now = Instant::now();
+                                while history
+                                    .front()
+                                    .is_some_and(|ts| now.duration_since(*ts) >= WATCHDOG_WINDOW)
+                                {
+                                    history.pop_front();
+                                }
+                                if history.len() < MAX_WATCHDOG_REBOOTS_PER_HOUR {
+                                    history.push_back(now);
+                                    true
+                                } else {
+                                    false
+                                }
+                            });
+                        if should_reboot {
+                            tracing::warn!(
+                                %room_id,
+                                zero_streak,
+                                "XVF3800 dead isochronous stream detected; rebooting microphone"
+                            );
+                            if let Err(error) = source.reboot().await {
+                                tracing::warn!(
+                                    %room_id,
+                                    error = %error.cause(),
+                                    "XVF3800 watchdog reboot failed"
+                                );
+                            }
+                        } else {
+                            tracing::warn!(
+                                %room_id,
+                                zero_streak,
+                                "XVF3800 dead isochronous stream detected; reboot rate limit reached"
+                            );
+                        }
+                        return Err(AudioError::Unavailable);
+                    }
+                }
                 producer.push(samples).await.map_err(|error| unavailable("enqueue capture frame", error))
             } => result?,
         }
@@ -455,6 +556,11 @@ struct Recording {
     score: f32,
     time: u64,
     endpoint: Option<EndpointTelemetry>,
+    doa_azimuth_rad: f32,
+    has_doa: bool,
+    doa_stability: f32,
+    speech_ratio: f32,
+    continues_segment: bool,
 }
 
 impl Recording {
@@ -466,6 +572,11 @@ impl Recording {
             score,
             time: unix_ms(),
             endpoint: None,
+            doa_azimuth_rad: 0.0,
+            has_doa: false,
+            doa_stability: 0.0,
+            speech_ratio: 0.0,
+            continues_segment: false,
         }
     }
 
@@ -492,6 +603,11 @@ impl Recording {
             parakeet_latency_ms: latency_ms,
             captured_at_unix_ms: self.time,
             capture_epoch: epoch,
+            doa_azimuth_rad: self.doa_azimuth_rad,
+            has_doa: self.has_doa,
+            doa_stability: self.doa_stability,
+            speech_ratio: self.speech_ratio,
+            continues_segment: self.continues_segment,
         }
     }
 
@@ -523,8 +639,13 @@ impl Recording {
 struct NonWakeSegment {
     recording: Recording,
     voiced: usize,
+    total_frames: usize,
     quiet: usize,
     started: Instant,
+    doa_sin_sum: f32,
+    doa_cos_sum: f32,
+    doa_samples: u32,
+    continues_segment: bool,
 }
 
 impl NonWakeSegment {
@@ -532,6 +653,7 @@ impl NonWakeSegment {
         kind: UtteranceKind,
         started: Instant,
         preroll: impl IntoIterator<Item = &'a [f32; FRAME_SAMPLES]>,
+        continues_segment: bool,
     ) -> Self {
         let mut recording = Recording::new(kind, 0.0);
         for frame in preroll {
@@ -540,16 +662,34 @@ impl NonWakeSegment {
         Self {
             recording,
             voiced: 0,
+            total_frames: 0,
             quiet: 0,
             started,
+            doa_sin_sum: 0.0,
+            doa_cos_sum: 0.0,
+            doa_samples: 0,
+            continues_segment,
         }
     }
 
-    fn observe(&mut self, frame: &[f32; FRAME_SAMPLES], speaking: bool) -> bool {
+    fn observe(
+        &mut self,
+        frame: &[f32; FRAME_SAMPLES],
+        speaking: bool,
+        auto_beam_rad: Option<f32>,
+    ) -> bool {
         self.recording.samples.extend_from_slice(frame);
+        self.total_frames = self.total_frames.saturating_add(1);
         if speaking {
             self.voiced += 1;
             self.quiet = 0;
+            if let Some(angle) = auto_beam_rad
+                && angle.is_finite()
+            {
+                self.doa_sin_sum += angle.sin();
+                self.doa_cos_sum += angle.cos();
+                self.doa_samples = self.doa_samples.saturating_add(1);
+            }
         } else {
             self.quiet += 1;
         }
@@ -561,19 +701,34 @@ impl NonWakeSegment {
             || self.recording.samples.len() >= cap * FRAME_SAMPLES
     }
 
-    fn finish(mut self) -> Option<Recording> {
+    fn finish(mut self) -> Option<(Recording, bool)> {
+        let capped = self.quiet < NON_WAKE_END_SILENCE_FRAMES;
         let minimum = match self.recording.kind {
             // Preserve the command rule that an incomplete, capped clip is not actionable.
-            UtteranceKind::FollowUp if self.quiet < NON_WAKE_END_SILENCE_FRAMES => return None,
+            UtteranceKind::FollowUp if capped => return None,
             UtteranceKind::FollowUp => FOLLOW_UP_MIN_VOICE_FRAMES,
             _ => AMBIENT_MIN_VOICE_FRAMES,
         };
         let samples = &mut self.recording.samples;
         samples.truncate(samples.len() - self.quiet * FRAME_SAMPLES);
-        (self.voiced >= minimum).then_some(self.recording)
+        if self.voiced < minimum {
+            return None;
+        }
+        self.recording.speech_ratio =
+            (self.voiced as f32 / self.total_frames.max(1) as f32).clamp(0.0, 1.0);
+        self.recording.continues_segment = self.continues_segment;
+        if self.doa_samples > 0 {
+            self.recording.doa_azimuth_rad = self.doa_sin_sum.atan2(self.doa_cos_sum);
+            self.recording.doa_stability = (self.doa_sin_sum.hypot(self.doa_cos_sum)
+                / self.doa_samples as f32)
+                .clamp(0.0, 1.0);
+            self.recording.has_doa = true;
+        }
+        Some((self.recording, capped))
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
     processor: &mut RoomProcessor<impl VadEngine + 'static, impl WakeEngine + 'static>,
     service: &AudioService<A, P>,
@@ -581,11 +736,14 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
     utterances: mpsc::Sender<Recording>,
     mut gate: CaptureGate,
     epoch: u64,
+    capture_busy: Arc<AtomicBool>,
+    latest_dsp: Arc<Mutex<Option<DspTelemetry>>>,
 ) -> Result<(), AudioError> {
     let RoomProcessor {
         room,
         inference,
         wake_threshold,
+        follow_up_window,
         arbiter,
     } = processor;
     let reset = Arc::clone(inference);
@@ -610,6 +768,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
     let mut ambient_demand = service.ambient_demand();
     let mut generation = ambient_demand.borrow_and_update().generation();
     let mut ambient_after = Instant::now();
+    let mut chain_next_ambient_until: Option<Instant> = None;
     let mut follow_up_until = None;
     let zone = zone_id(&room.room_id);
     let mut frame = [0.0; FRAME_SAMPLES];
@@ -686,7 +845,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 match claim.finish(final_rms, now) {
                     ArbitrationOutcome::Won => {
                         guard.record(now, CaptureOutcome::Accepted);
-                        follow_up_until = Some(now + FOLLOW_UP_WINDOW);
+                        follow_up_until = Some(now + *follow_up_window);
                         tokio::select! {
                             biased;
                             _ = gate.closed(epoch) => return Ok(()),
@@ -760,6 +919,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             );
         }
         let speaking = service.speaking(&zone).unwrap_or(true);
+        capture_busy.store(speaking || current.is_some(), Ordering::Relaxed);
         if speaking {
             preroll.clear();
         } else {
@@ -803,14 +963,22 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             let available = preroll.len().saturating_sub(1);
             let start = available.saturating_sub(want);
             let prefix = preroll.range(start..available).map(|(samples, _)| samples);
-            NonWakeSegment::with_preroll(kind, now, prefix)
+            let continues = kind == UtteranceKind::Ambient
+                && chain_next_ambient_until
+                    .take()
+                    .is_some_and(|until| now < until);
+            NonWakeSegment::with_preroll(kind, now, prefix, continues)
         });
-        if !segment.observe(&frame, voiced) {
+        let auto_beam = latest_dsp
+            .lock()
+            .ok()
+            .and_then(|guard| guard.and_then(|telemetry| telemetry.auto_beam_rad));
+        if !segment.observe(&frame, voiced, auto_beam) {
             non_wake = Some(segment);
             continue;
         }
         let latency_ms = segment.started.elapsed().as_millis();
-        let Some(recording) = segment.finish() else {
+        let Some((recording, capped)) = segment.finish() else {
             continue;
         };
         if kind == UtteranceKind::FollowUp {
@@ -830,9 +998,15 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             }
             match service.publish_ambient(generation, utterance) {
                 Ok(true) => {
-                    ambient_after = now + AMBIENT_COOLDOWN;
+                    if capped {
+                        ambient_after = now + AMBIENT_CAP_COOLDOWN;
+                        chain_next_ambient_until = Some(now + Duration::from_secs(2));
+                    } else {
+                        ambient_after = now + AMBIENT_SILENCE_COOLDOWN;
+                        chain_next_ambient_until = None;
+                    }
                     tracing::info!(room_id = %room.room_id, %utterance_id, duration_ms, latency_ms,
-                        status = "published", "Ambient segment");
+                        capped, status = "published", "Ambient segment");
                 }
                 Ok(false) => (),
                 Err(error) => tracing::warn!(room_id = %room.room_id, %utterance_id, latency_ms,

@@ -28,12 +28,13 @@ fn insert_source(store: &mut Store) {
             preview: "synthetic",
             captured_at: 123,
             embedding: &sample(),
+            conversation_id: "",
         })
         .expect("seed capture");
     let mut embedding = vec![0.0; FACT_DIMENSIONS];
     embedding[0] = 1.0;
     store
-        .store_fact("source", "", "synthetic fact", "", &embedding)
+        .store_fact("source", "", "synthetic fact", "", &embedding, false)
         .expect("seed fact");
 }
 
@@ -50,7 +51,7 @@ fn on_disk_migrations_set_pragmas_and_reopen() {
         assert_eq!(timeout, 5000);
         for schema in [MAIN, AMBIENT] {
             for (pragma, expected) in [
-                ("user_version", 1),
+                ("user_version", 2),
                 ("foreign_keys", 1),
                 ("secure_delete", 1),
                 ("synchronous", 2),
@@ -86,7 +87,7 @@ fn rejects_future_and_partial_schemas_without_repairing_them() {
     ));
     {
         let conn = Connection::open(path.join("ambient.db")).expect("open");
-        conn.execute_batch("PRAGMA user_version=1; DROP TABLE pending_audio_deletions;")
+        conn.execute_batch("PRAGMA user_version=2; DROP TABLE pending_audio_deletions;")
             .expect("remove table");
     }
     assert!(matches!(
@@ -245,6 +246,7 @@ fn voice_observation_retries_after_only_provenance_is_committed() {
             preview: "synthetic",
             captured_at: 123,
             embedding: &embedding,
+            conversation_id: "",
         })
     };
     assert!(matches!(observe(&mut store), Err(Error::Sql(_))));

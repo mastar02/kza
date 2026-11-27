@@ -89,6 +89,7 @@ pub(crate) fn router(state: AppState) -> Router {
         GET "/api/evaluation/grants" => Op::Voices(voices::Action::EvaluationGrants), &[EvaluationRead];
         GET "/api/evaluation/samples/{id}" => Op::Voices(voices::Action::EvaluationSample), &[EvaluationRead];
         GET "/api/zones" => Op::Obs(obs::Action::Zones), &[DiagnosticsRead];
+        PUT "/api/zones/{id}/volume" => Op::Obs(obs::Action::ZoneVolume), &[HomeControl];
         GET "/api/conversations" => Op::Obs(obs::Action::Conversations), &[ConversationsRead];
         GET "/api/ha/entities" => Op::Obs(obs::Action::HaEntities), &[DiagnosticsRead];
         GET "/api/ha/actions" => Op::Obs(obs::Action::HaActions), &[DiagnosticsRead];
@@ -101,6 +102,8 @@ pub(crate) fn router(state: AppState) -> Router {
         PUT "/api/alerts/zones" => Op::Household(household::Action::AlertZonesWrite), &[AdminManage];
         GET "/api/system/gpus" => Op::Obs(obs::Action::Gpus), &[DiagnosticsRead];
         GET "/api/system/services" => Op::Obs(obs::Action::Services), &[DiagnosticsRead];
+        GET "/api/system/daemons" => Op::Obs(obs::Action::Daemons), &[DiagnosticsRead];
+        POST "/api/admin/ml/slots/{id}/reload" => Op::Obs(obs::Action::ReloadMlSlot), &[AdminManage];
         GET "/api/admin/users" => Op::Admin(admin::Action::Users), &[AdminManage];
         POST "/api/admin/users" => Op::Admin(admin::Action::UserWrite), &[AdminManage];
         PUT "/api/admin/users/{id}/permissions" => Op::Admin(admin::Action::UserWrite), &[AdminManage];

@@ -6,9 +6,22 @@ use rusqlite::{Connection, TransactionBehavior, params};
 use super::ambient::ambient_control;
 use super::{Error, Result, Store, VectorKind, create_memory_schema};
 
-pub(super) const SCHEMA_VERSION: u32 = 1;
+pub(super) const SCHEMA_VERSION: u32 = 2;
 pub(super) const MAIN: &str = "main";
 pub(super) const AMBIENT: &str = "ambient";
+
+const V1_TO_V2_SQL: &str = "CREATE TABLE voice_personalities (
+    profile_id TEXT PRIMARY KEY REFERENCES voice_profiles(profile_id) ON DELETE CASCADE,
+    summary_json TEXT NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL CHECK (updated_at_unix_ms >= 0),
+    source_count INTEGER NOT NULL CHECK (source_count >= 0)
+) STRICT;
+CREATE TABLE voice_personality_sources (
+    profile_id TEXT NOT NULL REFERENCES voice_personalities(profile_id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL,
+    PRIMARY KEY (profile_id, conversation_id)
+) STRICT;
+CREATE INDEX voice_personality_sources_conversation ON voice_personality_sources(conversation_id);";
 
 impl Store {
     pub(super) fn initialize(
@@ -33,8 +46,8 @@ impl Store {
         reference.execute_batch(include_str!("../ambient.sql"))?;
 
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let memory_version = validate_version(&tx, &reference, MAIN)?;
-        let ambient_version = validate_version(&tx, &reference, AMBIENT)?;
+        let memory_version = read_version(&tx, MAIN)?;
+        let ambient_version = read_version(&tx, AMBIENT)?;
         if memory_version != ambient_version {
             return Err(Error::Schema("database pair has different revisions"));
         }
@@ -42,9 +55,15 @@ impl Store {
             create_memory_schema(&tx)?;
             tx.execute_batch(include_str!("../ambient.sql"))?;
             initialize_metadata(&tx)?;
-            for schema in [MAIN, AMBIENT] {
-                tx.pragma_update(Some(schema), "user_version", SCHEMA_VERSION)?;
-            }
+            set_user_version(&tx, SCHEMA_VERSION)?;
+        } else if memory_version == 1 {
+            tx.execute_batch(V1_TO_V2_SQL)?;
+            set_user_version(&tx, SCHEMA_VERSION)?;
+        }
+        if schema_objects(&tx, MAIN)? != schema_objects(&reference, MAIN)?
+            || schema_objects(&tx, AMBIENT)? != schema_objects(&reference, AMBIENT)?
+        {
+            return Err(Error::Schema("incomplete or incompatible schema"));
         }
         validate_state(&tx)?;
         tx.commit()?;
@@ -78,22 +97,32 @@ fn initialize_metadata(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn validate_version(conn: &Connection, reference: &Connection, schema: &str) -> Result<u32> {
-    let version: u32 = conn.pragma_query_value(Some(schema), "user_version", |row| row.get(0))?;
-    if version > SCHEMA_VERSION {
-        return Err(Error::Schema("unsupported user_version"));
+fn set_user_version(conn: &Connection, version: u32) -> Result<()> {
+    for schema in [MAIN, AMBIENT] {
+        conn.pragma_update(Some(schema), "user_version", version)?;
     }
+    Ok(())
+}
+
+fn schema_objects(
+    conn: &Connection,
+    schema: &str,
+) -> Result<Vec<(String, String, Option<String>)>> {
     let sql = format!(
         "SELECT type, name, sql FROM {schema}.sqlite_schema
                        WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name"
     );
-    let objects = |db: &Connection| -> Result<Vec<(String, String, Option<String>)>> {
-        let mut stmt = db.prepare(&sql)?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
-        Ok(rows.collect::<std::result::Result<_, _>>()?)
-    };
-    let actual = objects(conn)?;
-    if (version == 0 && !actual.is_empty()) || (version != 0 && actual != objects(reference)?) {
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+fn read_version(conn: &Connection, schema: &str) -> Result<u32> {
+    let version: u32 = conn.pragma_query_value(Some(schema), "user_version", |row| row.get(0))?;
+    if version > SCHEMA_VERSION {
+        return Err(Error::Schema("unsupported user_version"));
+    }
+    if version == 0 && !schema_objects(conn, schema)?.is_empty() {
         return Err(Error::Schema("incomplete or incompatible schema"));
     }
     Ok(version)

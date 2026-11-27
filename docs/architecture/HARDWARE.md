@@ -4,11 +4,11 @@ Inventario verificado del servidor `192.168.1.2` al 2026-11-25. CPU AMD Threadri
 
 | Dispositivo físico | Carga | VRAM aproximada |
 | --- | --- | --- |
-| `cuda:1` · PCI `C2:00.0` | llama-server Qwen2.5-7B-Instruct-Q4_K_M (`-ngl 99 -c 2048`, ~4,43 GiB), Whisper Command v3-turbo en `int8_float16` + Kokoro-82M en streaming (~1,51 GiB) | 5,94 / 8 GiB medidos |
-| `cuda:0` · PCI `C1:00.0` | Dos instancias Whisper Ambient large-v3 en `int8_float16` (~3,8 GiB entre ambas) y una ECAPA-TDNN (~0,3 GiB) | 4,1 / 8 GiB |
-| CPU | Embeddings BAAI/bge-m3. ONNX para Parakeet TDT 0.6B v3, Silero VAD y OpenWakeWord. | RAM del host |
+| `cuda:1` · PCI `C2:00.0` | `llama-server` local `Qwen3.5-9B-Q4_K_M.gguf` en `:8101` (`-ngl 99 -c 4096`) dedicado 100 % al LLM | Dedicado a LLM local |
+| `cuda:0` · PCI `C1:00.0` | Whisper `whisper-v3-turbo` (`float16`) compartido entre comando y ambient mediante `WhisperPriorityGate`, Kokoro-82M TTS en streaming y ECAPA-TDNN | STT + TTS + Speaker |
+| CPU | Embeddings `BAAI/bge-m3`. ONNX para Silero VAD y OpenWakeWord (veto en sombra Parakeet deshabilitado por defecto). | RAM del host |
 
-El perfil de `llama-server` (`ik_llama.cpp`) usa `-t 8 -tb 8 -c 2048 -ctk q8_0 -ctv q8_0 -ngl 99` con todas las capas del 7B en GPU. La medición con Whisper Command y Kokoro deja unos 2,1 GiB libres. Al validar la asignación, contrastar los procesos con la dirección PCI física, porque CUDA puede renumerar los dispositivos visibles dentro de un servicio. Acordar cualquier reasignación antes de aplicarla.
+El perfil de `llama-server` (`ik_llama.cpp`) usa `-t 8 -tb 8 -c 4096 -ctk q8_0 -ctv q8_0 -ngl 99` con `Qwen3.5-9B-Q4_K_M` en `cuda:1`. En `cuda:0`, un único modelo `whisper-v3-turbo` en `float16` atiende tanto comandos como ambient con prioridad para comandos (`SharedWhisperAmbient` + `WhisperPriorityGate`), junto a Kokoro-82M y ECAPA-TDNN. Al validar la asignación, contrastar los procesos con la dirección PCI física, porque CUDA puede renumerar los dispositivos visibles dentro de un servicio. Acordar cualquier reasignación antes de aplicarla.
 
 ## Audio por habitación
 

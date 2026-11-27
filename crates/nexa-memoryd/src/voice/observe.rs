@@ -1,12 +1,17 @@
-use nexa_proto::v1::VoiceObservationReceipt;
+use nexa_proto::v1::{IdentifyVoiceResponse, VoiceObservationReceipt};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::db::{
-    Error, Result, Store, VectorKind, ensure_conversation_live, id, new_id, now_ms, vector,
+    Error, Result, Store, VOICE_MODEL, VectorKind, ensure_conversation_live, id, new_id, now_ms,
+    vector,
 };
 use crate::erasure::{Kind, ensure_not_erased};
 
 use super::global_enabled;
+
+const VOICE_MATCH_MAX_DISTANCE: f32 = 0.32;
+const UNLINKED_CLUSTER_MAX_DISTANCE: f32 = 0.25;
+const MATCH_MARGIN: f32 = 0.05;
 
 #[derive(Debug)]
 pub(crate) struct Observation<'a> {
@@ -16,9 +21,44 @@ pub(crate) struct Observation<'a> {
     pub preview: &'a str,
     pub captured_at: u64,
     pub embedding: &'a [f32],
+    pub conversation_id: &'a str,
 }
 
 impl Store {
+    pub(crate) fn identify_voice(
+        &self,
+        embedding: &[f32],
+        model: &str,
+    ) -> Result<IdentifyVoiceResponse> {
+        let conn = self.read()?;
+        let model = if model.trim().is_empty() {
+            VOICE_MODEL
+        } else {
+            model
+        };
+        let embedding = vector(conn, VectorKind::Voice, model, embedding)?;
+        if !global_enabled(conn)? {
+            return Ok(IdentifyVoiceResponse::default());
+        }
+        let Some((profile_id, similarity_score)) = nearest_profile(conn, &embedding)? else {
+            return Ok(IdentifyVoiceResponse::default());
+        };
+        let linked_person_id: String = conn
+            .query_row(
+                "SELECT COALESCE(person_id, '') FROM voice_profile_people WHERE profile_id=?1",
+                [&profile_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or_default();
+        Ok(IdentifyVoiceResponse {
+            profile_id,
+            linked_person_id,
+            similarity_score,
+            consented: true,
+        })
+    }
+
     pub(crate) fn record_observation(
         &mut self,
         observation: Observation<'_>,
@@ -69,25 +109,65 @@ impl Store {
             return Ok(conversation);
         }
 
-        // The RPC supplies no conversation ID or account. Use the utterance ID
-        // for a standalone conversation, unless it already identifies a conversation.
-        ensure_conversation_live(conn, utterance)?;
-        if conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM ambient.capture_conversations WHERE conversation_id=?1)",
-            [utterance],
-            |row| row.get(0),
-        )? {
-            return Err(Error::Conflict(
-                "utterance has no unambiguous capture conversation",
-            ));
-        }
+        let conversation = if !observation.conversation_id.is_empty() {
+            let conv_id = observation.conversation_id;
+            id(conv_id)?;
+            ensure_conversation_live(conn, conv_id)?;
+            let existing: Option<(String, Option<String>)> = conn
+                .query_row(
+                    "SELECT room_id, owner_user_id FROM ambient.capture_conversations
+                     WHERE conversation_id=?1",
+                    [conv_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .optional()?;
+            if let Some((room, owner)) = existing {
+                if room != observation.room {
+                    return Err(Error::Conflict("observation room conflict"));
+                }
+                if let Some(owner) = owner {
+                    ensure_not_erased(conn, Kind::RetiredUser, &owner)?;
+                }
+            }
+            let tx = self.write()?;
+            tx.execute(
+                "INSERT OR IGNORE INTO ambient.capture_conversations VALUES (?1, ?2, NULL, ?3)",
+                params![conv_id, observation.room, observation.captured_at],
+            )?;
+            tx.execute(
+                "INSERT INTO ambient.utterances VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                params![
+                    utterance,
+                    conv_id,
+                    observation.room,
+                    observation.preview,
+                    observation.captured_at
+                ],
+            )?;
+            tx.commit()?;
+            return Ok(conv_id.into());
+        } else {
+            // The RPC supplies no conversation ID or account. Use the utterance ID
+            // for a standalone conversation, unless it already identifies a conversation.
+            ensure_conversation_live(conn, utterance)?;
+            if conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM ambient.capture_conversations WHERE conversation_id=?1)",
+                [utterance],
+                |row| row.get(0),
+            )? {
+                return Err(Error::Conflict(
+                    "utterance has no unambiguous capture conversation",
+                ));
+            }
+            utterance
+        };
 
         // WAL commits are atomic per database. Persist the source first so every
         // committed fingerprint has a source and a retry can reuse the utterance.
         let tx = self.write()?;
         tx.execute(
             "INSERT INTO ambient.capture_conversations VALUES (?1, ?2, NULL, ?3)",
-            params![utterance, observation.room, observation.captured_at],
+            params![conversation, observation.room, observation.captured_at],
         )?;
         tx.execute(
             "INSERT INTO ambient.utterances VALUES (?1, ?1, ?2, ?3, ?4, NULL)",
@@ -99,7 +179,7 @@ impl Store {
             ],
         )?;
         tx.commit()?;
-        Ok(utterance.into())
+        Ok(conversation.into())
     }
 }
 
@@ -126,19 +206,23 @@ fn store_fingerprint(
         None
     };
     let capture_id = new_id(tx)?;
-    let (profile_id, matched_profile_id, similarity_score) = match matched {
-        Some((profile, score)) => (profile.clone(), profile, score),
+    let (profile_id, matched_profile_id, similarity_score, reused_unlinked) = match matched {
+        Some((profile, score)) => (profile.clone(), profile, score, false),
         None => {
-            let profile = new_id(tx)?;
-            tx.execute(
-                "INSERT INTO voice_profiles VALUES (?1, ?2, 1)",
-                params![profile, observation.model],
-            )?;
-            tx.execute(
-                "INSERT INTO voice_vec VALUES (?1, ?2)",
-                params![profile, embedding],
-            )?;
-            (profile, String::new(), 0.0)
+            if let Some(candidate) = nearest_unlinked_candidate(tx, embedding, conversation)? {
+                (candidate, String::new(), 0.0, true)
+            } else {
+                let profile = new_id(tx)?;
+                tx.execute(
+                    "INSERT INTO voice_profiles VALUES (?1, ?2, 1)",
+                    params![profile, observation.model],
+                )?;
+                tx.execute(
+                    "INSERT INTO voice_vec VALUES (?1, ?2)",
+                    params![profile, embedding],
+                )?;
+                (profile, String::new(), 0.0, false)
+            }
         }
     };
     tx.execute(
@@ -156,7 +240,7 @@ fn store_fingerprint(
         "INSERT INTO voice_fingerprint_sources VALUES (?1, ?2)",
         params![capture_id, conversation],
     )?;
-    if matched_profile_id.is_empty() {
+    if matched_profile_id.is_empty() || reused_unlinked {
         tx.execute(
             "INSERT INTO voice_profile_sources VALUES (?1, ?2)",
             params![profile_id, capture_id],
@@ -195,8 +279,49 @@ fn nearest_profile(conn: &Connection, embedding: &[u8]) -> Result<Option<(String
     let distance: f32 = row.get(1)?;
     let second_distance: Option<f32> = rows.next()?.map(|row| row.get(1)).transpose()?;
     // The score is an acoustic hint. A close runner-up makes the hint ambiguous.
-    if distance > 0.15 || second_distance.is_some_and(|second| second - distance < 0.05) {
+    if distance > VOICE_MATCH_MAX_DISTANCE
+        || second_distance.is_some_and(|second| second - distance < MATCH_MARGIN)
+    {
         return Ok(None);
     }
     Ok(Some((profile, 1.0 - distance)))
+}
+
+fn nearest_unlinked_candidate(
+    conn: &Connection,
+    embedding: &[u8],
+    conversation: &str,
+) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT profile_id, distance FROM voice_vec
+         WHERE embedding MATCH ?1 AND k=2 AND profile_id IN (
+             SELECT p.profile_id FROM voice_profiles p
+             LEFT JOIN voice_profile_people l ON l.profile_id=p.profile_id
+             LEFT JOIN voice_attribution_suspensions s ON s.profile_id=p.profile_id
+             WHERE l.profile_id IS NULL AND s.profile_id IS NULL
+               AND EXISTS (
+                   SELECT 1 FROM voice_profile_sources vps
+                   JOIN voice_fingerprint_sources vfs ON vfs.capture_id=vps.capture_id
+                   WHERE vps.profile_id=p.profile_id AND vfs.conversation_id=?2
+               )
+               AND NOT EXISTS (
+                   SELECT 1 FROM voice_profile_sources vps
+                   JOIN voice_fingerprint_sources vfs ON vfs.capture_id=vps.capture_id
+                   WHERE vps.profile_id=p.profile_id AND vfs.conversation_id<>?2
+               )
+         ) ORDER BY distance",
+    )?;
+    let mut rows = stmt.query(params![embedding, conversation])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let profile: String = row.get(0)?;
+    let distance: f32 = row.get(1)?;
+    let second_distance: Option<f32> = rows.next()?.map(|row| row.get(1)).transpose()?;
+    if distance > UNLINKED_CLUSTER_MAX_DISTANCE
+        || second_distance.is_some_and(|second| second - distance < MATCH_MARGIN)
+    {
+        return Ok(None);
+    }
+    Ok(Some(profile))
 }

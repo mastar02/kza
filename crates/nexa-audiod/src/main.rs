@@ -116,6 +116,9 @@ async fn run(options: Options) -> DaemonResult<()> {
                     Simulation,
                     bundle.core.audio.wake_threshold,
                 )
+                .with_follow_up_window(Duration::from_secs(
+                    bundle.core.household.voice_choice_window_s.into(),
+                ))
                 .with_arbiter(arbiter.clone())
             })
             .collect();
@@ -182,6 +185,9 @@ async fn run(options: Options) -> DaemonResult<()> {
                     wake,
                     audio.wake_threshold,
                 )
+                .with_follow_up_window(Duration::from_secs(
+                    bundle.core.household.voice_choice_window_s.into(),
+                ))
                 .with_arbiter(arbiter.clone()),
             );
         }

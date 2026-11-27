@@ -3,6 +3,7 @@ use super::*;
 #[derive(Clone, Copy)]
 pub(super) enum Action {
     Zones,
+    ZoneVolume,
     Conversations,
     HaEntities,
     HaActions,
@@ -10,6 +11,8 @@ pub(super) enum Action {
     Cooldown,
     Gpus,
     Services,
+    Daemons,
+    ReloadMlSlot,
     Restart,
     Cloud,
     CloudWithdraw,
@@ -37,6 +40,21 @@ pub(super) async fn execute(
                 .map(zone)
                 .collect::<Vec<_>>()
         ),
+        ZoneVolume => {
+            exact_fields(&fields.body, &["volume_pct"])?;
+            let pct = unsigned(&fields.body, "volume_pct")?;
+            if pct > 100 {
+                return Err(INVALID);
+            }
+            let updated = audio
+                .set_zone_volume(SetZoneVolumeRequest {
+                    zone_id: memory_id(id)?.into(),
+                    volume_pct: pct as u32,
+                    actor: actor(),
+                })
+                .await?;
+            zone(updated)
+        }
         Conversations => {
             let connection =
                 state
@@ -115,6 +133,38 @@ pub(super) async fn execute(
         }
         Gpus => json!(state.system.gpus().await),
         Services => json!(state.system.services().await),
+        Daemons => {
+            let (audio_res, brain_res, memory_res, ml_res) = tokio::join!(
+                audio.get_health(Empty {}),
+                brain.get_health(Empty {}),
+                state.clients.memory.get_health(lease.actor()),
+                state.clients.ml.get_health(Empty {}),
+            );
+            let daemons = json!({
+                "audio": daemon_health("nexa-audiod", audio_res),
+                "brain": daemon_health("nexa-brain", brain_res),
+                "memory": daemon_health("nexa-memoryd", memory_res),
+                "ml": ml_daemon_health(ml_res),
+            });
+            json!({ "daemons": daemons })
+        }
+        ReloadMlSlot => {
+            let slot_id = memory_id(id)?;
+            let resp = state
+                .clients
+                .ml
+                .reload_model(ReloadModelRequest {
+                    slot_id: slot_id.into(),
+                    actor: actor(),
+                })
+                .await?;
+            json!({
+                "ok": true,
+                "slot_id": slot_id,
+                "state": health_state_name(resp.state),
+                "detail": resp.detail,
+            })
+        }
         Restart => {
             if !crate::sys::restartable(id) {
                 return Err(MonitorError::Denied.into());

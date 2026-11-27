@@ -40,18 +40,36 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "private memory socket ready"
     );
 
-    let result = socket
-        .serve(
-            MemoryRpc::new(store, config.memory.ambient_enabled),
-            async {
-                tokio::select! {
-                    _ = tokio::signal::ctrl_c() => {},
-                    _ = terminate.recv() => {},
+    let rpc = MemoryRpc::new(store, config.memory.ambient_enabled);
+    let prune_task = config.memory.ambient_enabled.then(|| {
+        let prune_rpc = rpc.clone();
+        let retention_days = u32::from(config.memory.automatic_retention_days);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            // Skip immediate boot tick so startup stays lightweight.
+            interval.tick().await;
+            loop {
+                interval.tick().await;
+                if let Err(error) = prune_rpc.prune_expired_ambient(retention_days).await {
+                    tracing::warn!(%error, "periodic ambient TTL cleanup failed");
                 }
-                notify_stopping();
-            },
-        )
+            }
+        })
+    });
+
+    let result = socket
+        .serve(rpc, async {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = terminate.recv() => {},
+            }
+            notify_stopping();
+        })
         .await;
+    if let Some(prune_task) = prune_task {
+        prune_task.abort();
+    }
     if let Some(watchdog) = watchdog {
         watchdog.abort();
     }

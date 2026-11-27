@@ -1,5 +1,5 @@
 use crate::{
-    CancellationToken, CloudConsentGate, Endpoint, LlmError, Metrics, OpenAiClient,
+    CancellationToken, ChatTurn, CloudConsentGate, Endpoint, LlmError, Metrics, OpenAiClient,
     health::{Cooldowns, Samples},
 };
 use nexa_config::LlmConfig;
@@ -73,7 +73,7 @@ impl FailoverRouter {
         cancel: &CancellationToken,
         emit: impl FnMut(&str),
     ) -> Result<&str, LlmError> {
-        self.stream_endpoints(None, prompt, max_tokens, None, cancel, false, emit)
+        self.stream_endpoints(None, &[], prompt, max_tokens, None, cancel, false, emit)
             .await
     }
 
@@ -85,8 +85,32 @@ impl FailoverRouter {
         cancel: &CancellationToken,
         emit: impl FnMut(&str),
     ) -> Result<&str, LlmError> {
-        self.stream_endpoints(None, prompt, max_tokens, None, cancel, true, emit)
+        self.stream_endpoints(None, &[], prompt, max_tokens, None, cancel, true, emit)
             .await
+    }
+
+    /// Stream from local endpoints only with multi-turn chat history and optional system prompt.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn stream_local_with_history(
+        &self,
+        system_prompt: Option<&str>,
+        history: &[ChatTurn],
+        prompt: &str,
+        max_tokens: u32,
+        cancel: &CancellationToken,
+        emit: impl FnMut(&str),
+    ) -> Result<&str, LlmError> {
+        self.stream_endpoints(
+            system_prompt,
+            history,
+            prompt,
+            max_tokens,
+            None,
+            cancel,
+            true,
+            emit,
+        )
+        .await
     }
 
     /// Run a bounded local-only completion with a custom system prompt and temperature.
@@ -102,6 +126,7 @@ impl FailoverRouter {
         let endpoint = self
             .stream_endpoints(
                 Some(system_prompt),
+                &[],
                 prompt,
                 max_tokens,
                 Some(temperature),
@@ -117,6 +142,7 @@ impl FailoverRouter {
     async fn stream_endpoints(
         &self,
         system_prompt: Option<&str>,
+        history: &[ChatTurn],
         prompt: &str,
         max_tokens: u32,
         temperature: Option<f32>,
@@ -135,11 +161,12 @@ impl FailoverRouter {
             let start = Instant::now();
             // Filtered reasoning can establish endpoint progress before the caller sees text.
             let mut visible = false;
-            let (result, first_token) = if let Some(system_prompt) = system_prompt {
+            let (result, first_token) = if system_prompt.is_some() || !history.is_empty() {
                 self.client
-                    .stream_attempt_with(
+                    .stream_attempt_messages(
                         ep,
-                        system_prompt,
+                        system_prompt.unwrap_or(crate::client::DEFAULT_SYSTEM_PROMPT),
+                        history,
                         prompt,
                         max_tokens,
                         temperature,

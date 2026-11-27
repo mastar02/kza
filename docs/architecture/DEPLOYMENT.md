@@ -12,12 +12,12 @@ La configuración tipada vive en `/etc/nexa/{nexa,rooms,ha-controls}.toml`. Part
 
 | Servicio | Contrato de ejecución |
 | --- | --- |
-| nexa-audiod | Compilar en Linux con `--features hardware`. ALSA por habitación, control USB XVF3800 vía rusb (`RestrictAddressFamilies=AF_UNIX AF_NETLINK`, sin red) y MA1260 en simulación. Silero VAD, OpenWakeWord y veto en sombra Parakeet usan ONNX CPU con `ORT_DYLIB_PATH=/opt/nexa/lib/libonnxruntime.so`. El sello persistente de captura vive en `/var/lib/nexa/audiod`. |
+| nexa-audiod | Compilar en Linux con `--features hardware`. ALSA `ch0` (beamformed/AEC+NS) por habitación con `pp_min_nn = 0.51`, ring multi-frame, control USB XVF3800 vía rusb (`RestrictAddressFamilies=AF_UNIX AF_NETLINK`, sin red), watchdog de streams isócronos mudos y MA1260. Silero VAD y OpenWakeWord usan ONNX CPU con `ORT_DYLIB_PATH=/opt/nexa/lib/libonnxruntime.so` (veto en sombra Parakeet deshabilitado por defecto). El sello persistente de captura vive en `/var/lib/nexa/audiod`. |
 | nexa-ml | Worker GPU stateless en `/opt/nexa/ml-venv`, con `PYTHONPATH=/opt/nexa/current/ml/src` y `RestrictAddressFamilies=AF_UNIX`. Precargar modelos y voces en la caché persistente `/var/lib/nexa/.cache` (`0700`), con `HF_HOME=/var/lib/nexa/.cache/huggingface`. |
 | nexa-memoryd | Sin red. SQLite WAL y sqlite-vec 0.1.7 en `/var/lib/nexa/memory/`, con `secure_delete=ON`. El borrado forense usa `write_both`, tombstones y deletion ledger. La voz no confiere autoridad. |
 | nexa-brain | Compone nexa-nlu, nexa-ha, nexa-household (SQLite v3 en `/var/lib/nexa/household/`, rutinas programadas y actualización CAS de recordatorios) y nexa-llm (failover, Bearer auth y CloudConsentGate). |
 | nexa-web | Axum y `/var/lib/nexa/auth/auth.db`. RBAC OPERATOR/HOME/EVALUATOR, WebSocket v3 con revalidación anti-TOCTOU. Feature `test-mode` apagada en release. Sirve Vite + TypeScript + Svelte 5, carga Three.js bajo demanda para el recurso autenticado `casa.glb`. NEXO en `/` y observabilidad en `/obs`, sin enlace entre vistas (D1). |
-| nexa-llm-fast | llama-server Qwen2.5-7B-Instruct-Q4_K_M en `127.0.0.1:8101`, con `LD_LIBRARY_PATH=/opt/nexa/lib` y `--api-key-file /etc/nexa/secrets/llama-api-key`. |
+| nexa-llm-fast | llama-server `Qwen3.5-9B-Q4_K_M` en `cuda:1` (`127.0.0.1:8101`), con `LD_LIBRARY_PATH=/opt/nexa/lib` y `--api-key-file /etc/nexa/secrets/llama-api-key`. |
 | nexa-dashboard-proxy | NGINX termina TLS en `192.168.30.2:9540` y reenvía a nexa-web en `127.0.0.1:9500`. El certificado, la clave y el GLB privado se provisionan fuera del paquete. |
 
 ## Construcción y validación

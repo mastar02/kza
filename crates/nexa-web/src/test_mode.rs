@@ -19,7 +19,7 @@ use crate::{
     WebConfig,
     auth::{AuthError, AuthStore, Origin},
     build_app,
-    clients::{Audio, Brain, Clients, LiveEvents, Memory},
+    clients::{Audio, Brain, Clients, LiveEvents, Memory, Ml},
     sys::{Gpu, MonitorError, Service, SystemMonitor},
 };
 
@@ -110,6 +110,7 @@ impl TestMode {
             audio: fixtures.clone(),
             brain: fixtures.clone(),
             memory: fixtures.clone(),
+            ml: fixtures.clone(),
         };
         Ok(Self {
             root,
@@ -178,6 +179,7 @@ struct Fixtures {
     reminder: Mutex<ReminderRecord>,
     voice_profiles: Mutex<Vec<VoiceProfile>>,
     light_state: Mutex<String>,
+    zone_volume: Mutex<u32>,
     receipts: Mutex<HashMap<String, HomeActionReceipt>>,
 }
 
@@ -217,6 +219,7 @@ impl Default for Fixtures {
                     .collect(),
             ),
             light_state: Mutex::new("off".into()),
+            zone_volume: Mutex::new(20),
             receipts: Mutex::new(HashMap::new()),
         }
     }
@@ -236,6 +239,16 @@ fn locked<T>(value: &Mutex<T>) -> Result<std::sync::MutexGuard<'_, T>, FixtureLo
 
 #[async_trait]
 impl Audio for Fixtures {
+    async fn get_health(&self, _: Empty) -> Result<HealthResponse, Status> {
+        Ok(HealthResponse {
+            service: "nexa-audiod".into(),
+            version: "2.2.0-test".into(),
+            state: HealthState::Ok as i32,
+            uptime_ms: 1_000,
+            detail: String::new(),
+        })
+    }
+
     async fn get_microphones(&self, _: Empty) -> Result<MicrophonesSnapshot, Status> {
         let observed = now_unix_ms();
         Ok(MicrophonesSnapshot {
@@ -257,9 +270,26 @@ impl Audio for Fixtures {
                 zone_id: "test-room".into(),
                 room_id: "test-room".into(),
                 ma1260_zone: 1,
-                volume_pct: 20,
+                volume_pct: *locked(&self.zone_volume)?,
                 ..Default::default()
             }],
+        })
+    }
+
+    async fn set_zone_volume(&self, request: SetZoneVolumeRequest) -> Result<ZoneState, Status> {
+        if request.zone_id != "test-room" {
+            return Err(Status::not_found("zone not found"));
+        }
+        if request.volume_pct > 100 {
+            return Err(Status::invalid_argument("volume_pct out of range"));
+        }
+        *locked(&self.zone_volume)? = request.volume_pct;
+        Ok(ZoneState {
+            zone_id: "test-room".into(),
+            room_id: "test-room".into(),
+            ma1260_zone: 1,
+            volume_pct: request.volume_pct,
+            ..Default::default()
         })
     }
 
@@ -290,6 +320,16 @@ impl Audio for Fixtures {
 
 #[async_trait]
 impl Brain for Fixtures {
+    async fn get_health(&self, _: Empty) -> Result<HealthResponse, Status> {
+        Ok(HealthResponse {
+            service: "nexa-brain".into(),
+            version: "2.2.0-test".into(),
+            state: HealthState::Ok as i32,
+            uptime_ms: 1_000,
+            detail: String::new(),
+        })
+    }
+
     async fn get_home_catalog(
         &self,
         _: GetHomeCatalogRequest,
@@ -575,6 +615,16 @@ impl Brain for Fixtures {
 
 #[async_trait]
 impl Memory for Fixtures {
+    async fn get_health(&self, _: ActorContext) -> Result<HealthResponse, Status> {
+        Ok(HealthResponse {
+            service: "nexa-memoryd".into(),
+            version: "2.2.0-test".into(),
+            state: HealthState::Ok as i32,
+            uptime_ms: 1_000,
+            detail: String::new(),
+        })
+    }
+
     async fn list_memory_overview(
         &self,
         request: MemoryOverviewRequest,
@@ -690,6 +740,42 @@ impl Memory for Fixtures {
         state.paused = request.paused;
         state.updated_at_unix_ms = now_unix_ms();
         Ok(*state)
+    }
+}
+
+#[async_trait]
+impl Ml for Fixtures {
+    async fn get_health(&self, _: Empty) -> Result<MlHealthResponse, Status> {
+        Ok(MlHealthResponse {
+            base: Some(HealthResponse {
+                service: "nexa-ml".into(),
+                version: "2.2.0-test".into(),
+                state: HealthState::Ok as i32,
+                uptime_ms: 1_000,
+                detail: String::new(),
+            }),
+            models: vec![ModelSlotHealth {
+                slot_id: "stt-command".into(),
+                model_name: "whisper-v3-turbo".into(),
+                device: "cuda:0".into(),
+                state: HealthState::Ok as i32,
+                vram_mib: 0,
+                consecutive_failures: 0,
+            }],
+        })
+    }
+
+    async fn reload_model(&self, request: ReloadModelRequest) -> Result<HealthResponse, Status> {
+        if request.slot_id != "stt-command" {
+            return Err(Status::not_found("unknown model slot"));
+        }
+        Ok(HealthResponse {
+            service: "nexa-ml".into(),
+            version: "2.2.0-test".into(),
+            state: HealthState::Ok as i32,
+            uptime_ms: 1_000,
+            detail: "reloaded".into(),
+        })
     }
 }
 

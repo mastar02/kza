@@ -16,6 +16,9 @@ service MemoryService {
 
   // Voice biometric registry (strictly separated from authorization roles)
   rpc RecordVoiceObservation(RecordVoiceObservationRequest) returns (VoiceObservationReceipt);
+  rpc IdentifyVoice(IdentifyVoiceRequest) returns (IdentifyVoiceResponse);
+  rpc UpsertVoicePersonality(UpsertVoicePersonalityRequest) returns (VoicePersonality);
+  rpc GetVoicePersonality(GetVoicePersonalityRequest) returns (VoicePersonality);
   rpc ListVoiceProfiles(ListVoiceProfilesRequest) returns (ListVoiceProfilesResponse);
   rpc LinkVoiceProfileToPerson(LinkVoiceProfileRequest) returns (VoiceProfile);
   rpc SetVoiceConsent(SetVoiceConsentRequest) returns (VoiceConsentStatus);
@@ -55,6 +58,7 @@ message StoreFactRequest {
   string category = 4;
   repeated float embedding = 5;
   ActorContext actor = 6;
+  bool proposed = 7;
 }
 
 message QueryMemoryRequest {
@@ -86,6 +90,7 @@ message RecordVoiceObservationRequest {
   string encoder_model_key = 4;
   string transcript_preview = 5;
   uint64 captured_at_unix_ms = 6;
+  string conversation_id = 7;
 }
 
 message VoiceObservationReceipt {
@@ -230,4 +235,37 @@ message EvaluationSampleRequest {
 
 message EvaluationSampleResponse {
   string payload_json = 1;
+}
+
+message IdentifyVoiceRequest {
+  repeated float embedding = 1;
+  string encoder_model_key = 2;
+  string room_id = 3;
+  ActorContext actor = 4;
+}
+
+message IdentifyVoiceResponse {
+  string profile_id = 1;
+  string linked_person_id = 2;
+  float similarity_score = 3;
+  bool consented = 4;
+}
+
+message UpsertVoicePersonalityRequest {
+  string profile_id = 1;
+  string summary_json = 2;
+  string source_conversation_id = 3;
+  ActorContext actor = 4;
+}
+
+message GetVoicePersonalityRequest {
+  string profile_id = 1;
+  ActorContext actor = 2;
+}
+
+message VoicePersonality {
+  string profile_id = 1;
+  string summary_json = 2;
+  uint64 updated_unix_ms = 3;
+  uint32 source_count = 4;
 }

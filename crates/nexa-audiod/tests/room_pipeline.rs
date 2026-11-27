@@ -668,3 +668,166 @@ async fn total_mute_waits_for_inflight_shadow_work_and_discards_its_result() {
     .await
     .unwrap();
 }
+
+struct DeadIsochSource {
+    reboots: Arc<AtomicUsize>,
+    starts: Arc<AtomicUsize>,
+    frames: usize,
+    fail_forever: bool,
+}
+
+impl CaptureSource for DeadIsochSource {
+    async fn start(&mut self) -> Result<(), AudioError> {
+        self.starts.fetch_add(1, Ordering::Relaxed);
+        self.frames = 0;
+        Ok(())
+    }
+
+    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
+        let len = samples.len().min(FRAME_SAMPLES);
+        let value = if !self.fail_forever && self.reboots.load(Ordering::Relaxed) >= 1 {
+            0.002
+        } else {
+            0.0
+        };
+        samples[..len].fill(value);
+        self.frames += 1;
+        Ok(len)
+    }
+
+    async fn stop(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    fn supports_dead_isoch_watchdog(&self) -> bool {
+        true
+    }
+
+    async fn reboot(&mut self) -> Result<(), AudioError> {
+        self.reboots.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn dead_isochronous_watchdog_reboots_and_enforces_hourly_rate_limit() {
+    tokio::time::timeout(Duration::from_secs(8), async {
+        let (capture, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let reboots = Arc::new(AtomicUsize::new(0));
+        let starts = Arc::new(AtomicUsize::new(0));
+        let shadow = Arc::new(SharedShadow::new(CountShadow(Arc::default())));
+        let pipeline = RoomPipeline::new(
+            &room("living"),
+            DeadIsochSource {
+                reboots: reboots.clone(),
+                starts: starts.clone(),
+                frames: 0,
+                fail_forever: true,
+            },
+            Detector,
+            Detector,
+            0.4,
+        );
+        let worker = tokio::spawn(pipeline.run(service, shadow, shutdown.clone()));
+        let coordinator = tokio::spawn(run_capture_control(capture, shutdown));
+
+        while starts.load(Ordering::Relaxed) < 6 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(reboots.load(Ordering::Relaxed), 4);
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+        coordinator.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+struct ContinuousDoaSource {
+    frames: usize,
+}
+
+impl CaptureSource for ContinuousDoaSource {
+    async fn start(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
+        let len = samples.len().min(FRAME_SAMPLES);
+        let val = if self.frames < 5 {
+            0.001
+        } else if self.frames < 310 {
+            0.3
+        } else {
+            0.0
+        };
+        samples[..len].fill(val);
+        self.frames += 1;
+        Ok(len)
+    }
+
+    async fn stop(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    async fn probe_dsp(&mut self) -> Option<nexa_audiod::hw::xvf::DspTelemetry> {
+        Some(nexa_audiod::hw::xvf::DspTelemetry {
+            spenergy: [0.0; 4],
+            azimuth_rad: [0.0, 0.0, 0.0, 1.0],
+            auto_beam_rad: Some(1.0),
+        })
+    }
+}
+
+#[tokio::test]
+async fn continuous_ambient_speech_chains_without_blind_spot_and_tracks_doa() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (_, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let mut ambient = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest {
+                include_ambient: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                ContinuousDoaSource { frames: 0 },
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(
+                service,
+                Arc::new(SharedShadow::new(SilentShadowStub)),
+                shutdown,
+            ),
+        );
+
+        let first = ambient.next().await.unwrap().unwrap();
+        let second = ambient.next().await.unwrap().unwrap();
+        assert!(!first.continues_segment);
+        assert!(second.continues_segment);
+        for seg in [&first, &second] {
+            assert!(seg.has_doa);
+            assert!((seg.doa_azimuth_rad - 1.0).abs() < 0.05);
+            assert!(seg.doa_stability > 0.9);
+            assert!(seg.speech_ratio > 0.8);
+        }
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+struct SilentShadowStub;
+
+impl ShadowStt for SilentShadowStub {
+    fn transcribe(&mut self, _: &[f32]) -> Result<String, AudioError> {
+        Ok(String::new())
+    }
+}

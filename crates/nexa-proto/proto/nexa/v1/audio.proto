@@ -123,6 +123,11 @@ message AudioUtterance {
   uint32 parakeet_latency_ms = 9;
   uint64 captured_at_unix_ms = 10;
   uint64 capture_epoch = 11;
+  float doa_azimuth_rad = 12;
+  bool has_doa = 13;
+  float doa_stability = 14;
+  float speech_ratio = 15;
+  bool continues_segment = 16;
 }
 
 message PlayAudioChunk {

@@ -51,6 +51,7 @@ pub fn fact(conversation: &str, owner: &str, axis: usize) -> StoreFactRequest {
             Permission::MemoryReview,
             Permission::MemoryAssign,
         ])),
+        proposed: false,
     }
 }
 
@@ -76,6 +77,7 @@ pub fn observation(utterance: &str, axis: usize) -> Request<RecordVoiceObservati
             transcript_preview: "synthetic speech".into(),
             captured_at_unix_ms: 123,
             embedding: unit(VOICE_DIMENSIONS, axis),
+            conversation_id: String::new(),
         },
         &operator(&[Permission::VoicesReview]),
     )

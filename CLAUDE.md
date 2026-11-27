@@ -25,7 +25,7 @@ Cinco daemons nativos coordinan captura por habitación, inferencia offline, mem
 - Orden de imports: stdlib → third-party → `import absoluto del paquete` (nunca relativos).
 - Logging con `logger = logging.getLogger(__name__)`; mensajes de voz/UI en español, código/logs en inglés.
 - Tests con `.venv/bin/pytest` (`tests-v2/`, `tools/nexa-migrate/tests`, `workers/nexa-ml`), `cargo nextest --workspace` y Vitest/Playwright en `frontend/`.
-- Respetar asignación de GPUs (`cuda:1` comando+TTS+7B, `cuda:0` ambient+ECAPA, BGE-M3 en CPU) y centralizar la configuración en los tres TOML de Nexa.
+- Respetar asignación de GPUs (`cuda:1` LLM local `Qwen3.5-9B`, `cuda:0` STT comando+ambient Whisper compartido + Kokoro TTS + ECAPA, `BGE-M3` en CPU) y centralizar la configuración en los tres TOML de Nexa.
 - Conservar la separación entre voz, persona, cuenta, roles, consentimiento y administración, y las releases gestionadas autocontenidas (`mem:decisions`).
 
 ### NUNCA hacer

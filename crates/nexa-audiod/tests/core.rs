@@ -12,7 +12,7 @@ use nexa_audiod::endpoint::{EndpointDecision, PostWakeEndpoint};
 use nexa_audiod::ma1260::{
     Command, CommandFrame, FrameError, is_acknowledgment, percent_to_step, step_to_percent,
 };
-use nexa_audiod::ring::{PushError, capture_ring};
+use nexa_audiod::ring::{PushError, capture_ring, capture_ring_with_frames};
 use proptest::prelude::*;
 
 fn ms(value: u64) -> Duration {
@@ -80,6 +80,21 @@ fn ring_capacity_whole_writes_and_wraparound() {
     assert_eq!(&output[FRAME_SAMPLES - 12..], &[100.0; 12]);
     drop(consumer);
     assert_eq!(producer.try_push(&[0.0]), Err(PushError::Closed));
+}
+
+#[test]
+fn capture_ring_with_frames_absorbs_multi_frame_bursts() {
+    let (mut producer, mut consumer) = capture_ring_with_frames(4);
+    let frame = [0.25_f32; FRAME_SAMPLES];
+    for _ in 0..4 {
+        producer.try_push(&frame).unwrap();
+    }
+    assert_eq!(producer.try_push(&[0.5]), Err(PushError::Full));
+    let mut out = [0.0_f32; FRAME_SAMPLES];
+    for _ in 0..4 {
+        assert_eq!(consumer.try_read(&mut out), FRAME_SAMPLES);
+    }
+    assert_eq!(consumer.try_read(&mut out), 0);
 }
 
 #[tokio::test]

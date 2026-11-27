@@ -4,7 +4,7 @@ use std::{
 };
 
 use nexa_ha::EffectIntent;
-use nexa_llm::{CancellationToken, LlmError};
+use nexa_llm::{CancellationToken, ChatTurn, LlmError};
 use nexa_proto::v1::{self, LiveEventKind};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -41,7 +41,7 @@ struct LlmHomeAction {
     params: HashMap<String, Value>,
 }
 
-fn strip_json_fences(raw: &str) -> &str {
+pub(crate) fn strip_json_fences(raw: &str) -> &str {
     let trimmed = raw.trim();
     if let Some(rest) = trimmed.strip_prefix("```") {
         let body = rest
@@ -476,6 +476,7 @@ impl Brain {
         turn: &Turn,
         conversation: &str,
         text: &str,
+        speaker_personality: Option<&str>,
     ) -> Result<(), Status> {
         let context = match tokio::time::timeout(
             Duration::from_millis(1500),
@@ -499,6 +500,10 @@ impl Brain {
             .try_local_home_router(turn, conversation, text, &context)
             .await?
         {
+            self.ambient
+                .record_chat_turn(&turn.zone, conversation, "user", text);
+            self.ambient
+                .record_chat_turn(&turn.zone, conversation, "assistant", &reply);
             return self.say(turn, conversation, reply).await.map(|_| ());
         }
         let local_prompt = (!context.is_empty()).then(|| {
@@ -509,60 +514,100 @@ impl Brain {
                 json!(context)
             )
         });
+        let history = self.ambient.chat_turns(&turn.zone);
+        let local_system_prompt = speaker_personality.map(|personality| {
+            format!(
+                "Sos Nexa, un asistente doméstico. Respondé en español, con claridad y brevedad.\nPersonalidad observada: {personality}"
+            )
+        });
+        let has_local_context =
+            local_prompt.is_some() || local_system_prompt.is_some() || !history.is_empty();
         let (tx, rx) = mpsc::channel(64);
         let cancel = turn.lease.cancel.child_token();
+        let full_reply = tokio::sync::Mutex::new(String::new());
         let generate = async {
             let mut segment = String::new();
             let mut truncated = false;
             let mut started = false;
             let mut length = 0usize;
-            let mut emit =
-                |chunk: &str, segment: &mut String, started: &mut bool, truncated: &mut bool| {
-                    if *truncated {
-                        return;
-                    }
-                    length = length.saturating_add(chunk.len());
-                    if length > 32 * 1024 {
-                        *truncated = true;
-                        cancel.cancel();
-                        return;
-                    }
-                    for character in chunk.chars() {
-                        segment.push(character);
-                        if (matches!(character, '.' | '!' | '?' | '\n') && segment.len() > 24)
-                            || segment.len() >= 256 && character.is_whitespace()
-                            || segment.len() >= 1024
-                        {
-                            let value = std::mem::take(segment);
-                            if tx.try_send(value).is_err() {
-                                *truncated = true;
-                                cancel.cancel();
-                                return;
-                            }
-                            *started = true;
+            let mut reply_buf = String::new();
+            let mut emit = |chunk: &str,
+                            segment: &mut String,
+                            reply_buf: &mut String,
+                            started: &mut bool,
+                            truncated: &mut bool| {
+                if *truncated {
+                    return;
+                }
+                length = length.saturating_add(chunk.len());
+                if length > 32 * 1024 {
+                    *truncated = true;
+                    cancel.cancel();
+                    return;
+                }
+                reply_buf.push_str(chunk);
+                for character in chunk.chars() {
+                    segment.push(character);
+                    if (matches!(character, '.' | '!' | '?' | '\n') && segment.len() > 24)
+                        || segment.len() >= 256 && character.is_whitespace()
+                        || segment.len() >= 1024
+                    {
+                        let value = std::mem::take(segment);
+                        if tx.try_send(value).is_err() {
+                            *truncated = true;
+                            cancel.cancel();
+                            return;
                         }
+                        *started = true;
                     }
-                };
+                }
+            };
             let mut result = self
                 .stream_reply(
                     turn,
                     conversation,
+                    local_system_prompt.as_deref(),
+                    &history,
                     local_prompt.as_deref().unwrap_or(text),
-                    local_prompt.is_some(),
+                    has_local_context,
                     &cancel,
-                    |chunk| emit(chunk, &mut segment, &mut started, &mut truncated),
+                    |chunk| {
+                        emit(
+                            chunk,
+                            &mut segment,
+                            &mut reply_buf,
+                            &mut started,
+                            &mut truncated,
+                        )
+                    },
                 )
                 .await;
             if result.is_err()
-                && local_prompt.is_some()
+                && has_local_context
                 && !started
                 && segment.is_empty()
                 && !cancel.is_cancelled()
             {
+                reply_buf.clear();
                 result = self
-                    .stream_reply(turn, conversation, text, false, &cancel, |chunk| {
-                        emit(chunk, &mut segment, &mut started, &mut truncated)
-                    })
+                    .stream_reply(
+                        turn,
+                        conversation,
+                        None,
+                        &[],
+                        text,
+                        false,
+                        &cancel,
+                        |chunk| {
+                            emit(
+                                chunk,
+                                &mut segment,
+                                &mut reply_buf,
+                                &mut started,
+                                &mut truncated,
+                            )
+                        },
+                    )
                     .await;
             }
             if !segment.trim().is_empty() && !truncated {
@@ -570,10 +615,12 @@ impl Brain {
                     .await
                     .map_err(|_| Status::cancelled("speech stopped"))?;
             } else if !started && result.is_err() && !cancel.is_cancelled() {
+                reply_buf.clear();
                 tx.send("No pude responder en este momento.".into())
                     .await
                     .map_err(|_| Status::cancelled("speech stopped"))?;
             }
+            *full_reply.lock().await = reply_buf;
             drop(tx);
             for endpoint in &self.endpoints {
                 let remaining = self.llm.cooldown_remaining(&endpoint.id).await;
@@ -595,13 +642,23 @@ impl Brain {
         };
         let play = self.speak(turn, conversation, Box::pin(ReceiverStream::new(rx)));
         tokio::try_join!(generate, play)?;
+        let spoken = full_reply.into_inner();
+        if !spoken.trim().is_empty() {
+            self.ambient
+                .record_chat_turn(&turn.zone, conversation, "user", text);
+            self.ambient
+                .record_chat_turn(&turn.zone, conversation, "assistant", spoken.trim());
+        }
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn stream_reply(
         &self,
         turn: &Turn,
         conversation: &str,
+        system_prompt: Option<&str>,
+        history: &[ChatTurn],
         prompt: &str,
         local_only: bool,
         cancel: &CancellationToken,
@@ -610,7 +667,14 @@ impl Brain {
         let started = Instant::now();
         let result = if local_only {
             self.llm
-                .stream_local_only(prompt, VOICE_MAX_TOKENS, cancel, emit)
+                .stream_local_with_history(
+                    system_prompt,
+                    history,
+                    prompt,
+                    VOICE_MAX_TOKENS,
+                    cancel,
+                    emit,
+                )
                 .await
         } else {
             self.llm

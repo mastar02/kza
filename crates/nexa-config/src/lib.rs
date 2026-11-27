@@ -90,6 +90,8 @@ pub struct MlConfig {
     pub command_stt_compute_type: String,
     pub ambient_stt_model: String,
     pub ambient_stt_device: String,
+    #[serde(default)]
+    pub ambient_stt_compute_type: Option<String>,
     pub ambient_stt_workers: u8,
     pub tts_voice: String,
     pub tts_lang_code: String,
@@ -331,6 +333,11 @@ impl NexaConfig {
                 "audio.capture_sample_rate must be 16000 Hz for XVF3800/Silero/OWW/Whisper".into(),
             ));
         }
+        if self.audio.frame_ms != 80 {
+            return Err(ConfigError::Validation(
+                "audio.frame_ms must be 80 ms for Silero VAD and OWW".into(),
+            ));
+        }
         if !matches!(
             self.audio.playback_sample_rate,
             16_000 | 22_050 | 24_000 | 48_000
@@ -347,6 +354,13 @@ impl NexaConfig {
         if self.ml.ambient_stt_workers == 0 || self.ml.ambient_stt_workers > 4 {
             return Err(ConfigError::Validation(
                 "ml.ambient_stt_workers must be between 1 and 4".into(),
+            ));
+        }
+        if let Some(compute_type) = &self.ml.ambient_stt_compute_type
+            && compute_type.trim().is_empty()
+        {
+            return Err(ConfigError::Validation(
+                "ml.ambient_stt_compute_type must not be empty".into(),
             ));
         }
         if self.nlu.compound_max_parts == 0 || self.nlu.compound_max_parts > 5 {
@@ -895,6 +909,20 @@ mod tests {
             vec!["alarm_disarm".into()],
         );
         assert!(alarm.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_non_80ms_audio_frame_and_empty_ambient_compute_type() {
+        let mut bad_frame = NexaConfig::from_toml_str(sample_nexa_toml()).expect("valid base");
+        bad_frame.audio.frame_ms = 40;
+        assert!(bad_frame.validate().is_err());
+
+        let mut empty_ct = NexaConfig::from_toml_str(sample_nexa_toml()).expect("valid base");
+        empty_ct.ml.ambient_stt_compute_type = Some("   ".into());
+        assert!(empty_ct.validate().is_err());
+
+        let base = NexaConfig::from_toml_str(sample_nexa_toml()).expect("valid base");
+        assert_eq!(base.ml.ambient_stt_compute_type.as_deref(), Some("float16"));
     }
 
     proptest! {

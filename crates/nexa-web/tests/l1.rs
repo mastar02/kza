@@ -691,3 +691,94 @@ async fn voice_switch_compare_and_set_and_personal_voice_stay_role_scoped() {
     assert_eq!(rows["consents"][0]["user_id"], HOME_ID);
     assert_eq!(rows["consents"][0]["revision"], 2);
 }
+
+#[tokio::test]
+async fn system_daemons_ml_reload_and_zone_volume_enforce_permissions_and_bounds() {
+    let fixture = TestMode::new().await.unwrap();
+    let app = fixture
+        .app(Origin::parse(ORIGIN).unwrap(), false, None)
+        .unwrap();
+
+    assert_eq!(
+        call(
+            &app,
+            "GET",
+            "/api/system/daemons",
+            Some(HOME_TOKEN),
+            None,
+            Body::empty(),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let daemons = call(
+        &app,
+        "GET",
+        "/api/system/daemons",
+        Some(OPERATOR_TOKEN),
+        None,
+        Body::empty(),
+    )
+    .await;
+    assert_eq!(daemons.status(), StatusCode::OK);
+    let daemons_doc = document(daemons).await;
+    assert_eq!(daemons_doc["daemons"]["audio"]["available"], true);
+    assert_eq!(daemons_doc["daemons"]["brain"]["available"], true);
+    assert_eq!(daemons_doc["daemons"]["memory"]["available"], true);
+    assert_eq!(daemons_doc["daemons"]["ml"]["available"], true);
+    assert_eq!(
+        daemons_doc["daemons"]["ml"]["slots"][0]["slot_id"],
+        "stt-command"
+    );
+
+    assert_eq!(
+        call(
+            &app,
+            "POST",
+            "/api/admin/ml/slots/stt-command/reload",
+            Some(HOME_TOKEN),
+            Some(ORIGIN),
+            Body::from("{}"),
+        )
+        .await
+        .status(),
+        StatusCode::FORBIDDEN
+    );
+    let reloaded = call(
+        &app,
+        "POST",
+        "/api/admin/ml/slots/stt-command/reload",
+        Some(OPERATOR_TOKEN),
+        Some(ORIGIN),
+        Body::from("{}"),
+    )
+    .await;
+    assert_eq!(reloaded.status(), StatusCode::OK);
+    assert_eq!(document(reloaded).await["ok"], true);
+
+    assert_eq!(
+        call(
+            &app,
+            "PUT",
+            "/api/zones/test-room/volume",
+            Some(HOME_TOKEN),
+            Some(ORIGIN),
+            Body::from(r#"{"volume_pct":150}"#),
+        )
+        .await
+        .status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let vol = call(
+        &app,
+        "PUT",
+        "/api/zones/test-room/volume",
+        Some(HOME_TOKEN),
+        Some(ORIGIN),
+        Body::from(r#"{"volume_pct":65}"#),
+    )
+    .await;
+    assert_eq!(vol.status(), StatusCode::OK);
+    assert_eq!(document(vol).await["volume"], 65);
+}

@@ -296,3 +296,63 @@ pub(super) fn cloud(row: CloudConsentStatus, withdrawal: bool) -> Value {
             "consent_granted":row.consent_granted,"updated_at":seconds(row.updated_at_unix_ms)})
     }
 }
+
+pub(super) fn health_state_name(state: i32) -> &'static str {
+    match HealthState::try_from(state) {
+        Ok(HealthState::Ok) => "ok",
+        Ok(HealthState::Degraded) => "degraded",
+        Ok(HealthState::Unavailable) => "unavailable",
+        _ => "unknown",
+    }
+}
+
+pub(super) fn daemon_health(
+    fallback_service: &'static str,
+    res: std::result::Result<HealthResponse, tonic::Status>,
+) -> Value {
+    match res {
+        Ok(resp) => json!({
+            "service": if resp.service.is_empty() { fallback_service } else { &resp.service },
+            "available": true,
+            "state": health_state_name(resp.state),
+            "version": resp.version,
+            "uptime_ms": resp.uptime_ms,
+            "detail": nonempty(resp.detail),
+        }),
+        Err(err) => json!({
+            "service": fallback_service,
+            "available": false,
+            "state": "unavailable",
+            "version": null,
+            "uptime_ms": 0,
+            "detail": format!("{:?}", err.code()),
+        }),
+    }
+}
+
+pub(super) fn ml_daemon_health(res: std::result::Result<MlHealthResponse, tonic::Status>) -> Value {
+    match res {
+        Ok(resp) => {
+            let mut value = daemon_health("nexa-ml", Ok(resp.base.unwrap_or_default()));
+            let slots: Vec<_> = resp
+                .models
+                .into_iter()
+                .map(|slot| {
+                    json!({
+                        "slot_id": slot.slot_id,
+                        "model_name": slot.model_name,
+                        "device": slot.device,
+                        "state": health_state_name(slot.state),
+                        "vram_mib": slot.vram_mib,
+                        "consecutive_failures": slot.consecutive_failures,
+                    })
+                })
+                .collect();
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("slots".into(), json!(slots));
+            }
+            value
+        }
+        Err(err) => daemon_health("nexa-ml", Err(err)),
+    }
+}

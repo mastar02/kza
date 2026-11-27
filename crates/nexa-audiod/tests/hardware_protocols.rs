@@ -11,7 +11,10 @@ use nexa_audiod::grpc::AudioService;
 use nexa_audiod::hw::amp::Ma1260;
 use nexa_audiod::hw::simulation::Simulation;
 use nexa_audiod::hw::sysfs::{alsa_card, parse_usb_port};
-use nexa_audiod::hw::xvf::{ControlSetup, INTERFACE, reboot_frame, tuning_frames};
+use nexa_audiod::hw::xvf::{
+    ControlSetup, INTERFACE, azimuth_read_setup, parse_auto_beam_f32, reboot_frame,
+    spenergy_read_setup, tuning_frames,
+};
 use nexa_audiod::ma1260::{ACK, Command, CommandFrame};
 use nexa_audiod::traits::{AmpTransport, AudioError};
 use nexa_config::{Ma1260Connection, XvfTuning};
@@ -108,6 +111,28 @@ fn xvf_tuning_and_reboot_use_the_firmware_wire_format() {
             index: 17
         }
     );
+    assert_eq!(
+        spenergy_read_setup(),
+        ControlSetup {
+            request_type: 192,
+            request: 0,
+            value: 0x80 | 80,
+            index: 33
+        }
+    );
+    assert_eq!(
+        azimuth_read_setup(),
+        ControlSetup {
+            request_type: 192,
+            request: 0,
+            value: 0x80 | 75,
+            index: 33
+        }
+    );
+    let mut azimuth_payload = [0_u8; 16];
+    azimuth_payload[12..16].copy_from_slice(&1.25_f32.to_le_bytes());
+    assert_eq!(parse_auto_beam_f32(&azimuth_payload), Some(1.25_f32));
+    assert_eq!(parse_auto_beam_f32(&[0_u8; 12]), None);
 }
 
 #[tokio::test]

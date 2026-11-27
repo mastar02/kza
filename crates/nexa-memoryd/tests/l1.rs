@@ -644,3 +644,210 @@ async fn malformed_rpc_inputs_fail_before_reading_private_state() {
         .expect_err("no consent revision coercion");
     assert_eq!(failure.code(), Code::InvalidArgument);
 }
+
+fn tilted_voice_vector(cos_sim: f32) -> Vec<f32> {
+    let mut vec = vec![0.0_f32; nexa_memoryd::db::VOICE_DIMENSIONS];
+    vec[0] = cos_sim;
+    vec[1] = (1.0 - cos_sim * cos_sim).sqrt();
+    vec
+}
+
+#[tokio::test]
+async fn schema_v1_upgrades_in_place_to_v2() {
+    let dir = tempfile::tempdir_in("/tmp").expect("tempdir");
+    let path = dir.path().join("data");
+    {
+        let store = Store::open(&path).expect("init v2");
+        drop(store);
+    }
+    let mem = rusqlite::Connection::open(path.join("memory.db")).expect("mem");
+    let amb = rusqlite::Connection::open(path.join("ambient.db")).expect("amb");
+    mem.execute_batch(
+        "DROP TABLE voice_personality_sources;
+         DROP TABLE voice_personalities;
+         PRAGMA user_version = 1;",
+    )
+    .expect("downgrade memory schema to v1");
+    amb.execute_batch("PRAGMA user_version = 1;")
+        .expect("downgrade ambient user_version to v1");
+    drop(mem);
+    drop(amb);
+
+    let store = Store::open(&path).expect("upgrade v1 -> v2");
+    drop(store);
+
+    let mem = rusqlite::Connection::open(path.join("memory.db")).expect("mem verify");
+    let amb = rusqlite::Connection::open(path.join("ambient.db")).expect("amb verify");
+    let mem_ver: u32 = mem
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("mem version");
+    let amb_ver: u32 = amb
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("amb version");
+    assert_eq!(mem_ver, 2);
+    assert_eq!(amb_ver, 2);
+}
+
+#[tokio::test]
+async fn proposed_facts_wait_for_confirmation_and_ambient_ttl_prunes_expired_unconfirmed() {
+    let mut rpc_store = Store::in_memory().expect("store");
+    rpc_store
+        .configure_voice_attribution(true)
+        .expect("voice attribution");
+    let rpc = MemoryRpc::new(rpc_store, true);
+
+    let mut req = fact("conv-prop", "", 0);
+    req.proposed = true;
+    let stored = rpc
+        .store_fact(Request::new(req))
+        .await
+        .expect("store proposed")
+        .into_inner();
+    assert!(!stored.confirmed);
+
+    let hits = rpc
+        .query_memory(Request::new(query("", true, 5)))
+        .await
+        .expect("query")
+        .into_inner()
+        .hits;
+    assert!(
+        hits.is_empty(),
+        "proposed fact must not leak to query_memory"
+    );
+
+    let mut store = Store::in_memory().expect("store ttl");
+    store.configure_voice_attribution(true).expect("voice");
+    let rpc_ttl = MemoryRpc::new(store, true);
+    let mut old_obs = observation("utt-old-ttl", 0).into_inner();
+    old_obs.captured_at_unix_ms = 1_000_000;
+    old_obs.conversation_id = "conv-old-ttl".into();
+    rpc_ttl
+        .record_voice_observation(actor_metadata(
+            old_obs,
+            &operator(&[Permission::VoicesReview]),
+        ))
+        .await
+        .expect("record old ambient");
+    assert_eq!(
+        rpc_ttl
+            .prune_expired_ambient(30)
+            .await
+            .expect("prune expired ambient"),
+        1
+    );
+}
+
+#[tokio::test]
+async fn voice_identification_clustering_and_personality_consent_cascade() {
+    use Permission::*;
+
+    let rpc = service(true);
+    let mut c1 = observation("utt-c1", 0).into_inner();
+    c1.conversation_id = "conv-session-1".into();
+    rpc.record_voice_observation(actor_metadata(c1, &operator(&[VoicesReview])))
+        .await
+        .expect("c1");
+
+    let mut c2 = observation("utt-c2", 0).into_inner();
+    c2.embedding = tilted_voice_vector(0.80);
+    c2.conversation_id = "conv-session-1".into();
+    rpc.record_voice_observation(actor_metadata(c2, &operator(&[VoicesReview])))
+        .await
+        .expect("c2");
+
+    let mut c_orth = observation("utt-orth", 1).into_inner();
+    c_orth.conversation_id = "conv-session-1".into();
+    rpc.record_voice_observation(actor_metadata(c_orth, &operator(&[VoicesReview])))
+        .await
+        .expect("orth");
+
+    let profiles = rpc
+        .list_voice_profiles(Request::new(list_profiles()))
+        .await
+        .expect("list profiles")
+        .into_inner()
+        .profiles;
+    assert_eq!(
+        profiles.len(),
+        2,
+        "0.80 cosine should merge unlinked candidate, orthogonal stays separate"
+    );
+    let primary = profiles
+        .iter()
+        .find(|p| p.sample_count == 2)
+        .expect("merged unlinked profile")
+        .clone();
+
+    assert_eq!(
+        rpc.upsert_voice_personality(Request::new(UpsertVoicePersonalityRequest {
+            profile_id: primary.profile_id.clone(),
+            summary_json: r#"{"tone":"concise"}"#.into(),
+            source_conversation_id: "conv-session-1".into(),
+            actor: Some(operator(&[MemoryReview, VoicesReview])),
+        }))
+        .await
+        .expect_err("unconsented personality rejected")
+        .code(),
+        Code::FailedPrecondition
+    );
+
+    let linked = rpc
+        .link_voice_profile_to_person(Request::new(link(&primary, "alice")))
+        .await
+        .expect("link")
+        .into_inner();
+    rpc.set_voice_consent(Request::new(consent("alice", true)))
+        .await
+        .expect("consent");
+
+    let identified = rpc
+        .identify_voice(Request::new(IdentifyVoiceRequest {
+            embedding: tilted_voice_vector(0.72),
+            encoder_model_key: nexa_memoryd::db::VOICE_MODEL.into(),
+            room_id: "room".into(),
+            actor: Some(operator(&[VoicesRead])),
+        }))
+        .await
+        .expect("identify within 0.32 distance")
+        .into_inner();
+    assert!(identified.consented);
+    assert_eq!(identified.profile_id, linked.profile_id);
+    assert_eq!(identified.linked_person_id, "alice");
+
+    let upserted = rpc
+        .upsert_voice_personality(Request::new(UpsertVoicePersonalityRequest {
+            profile_id: linked.profile_id.clone(),
+            summary_json: r#"{"tone":"friendly","topics":["domotica"]}"#.into(),
+            source_conversation_id: "conv-session-1".into(),
+            actor: Some(operator(&[MemoryReview, VoicesReview])),
+        }))
+        .await
+        .expect("upsert personality")
+        .into_inner();
+    assert_eq!(upserted.source_count, 1);
+
+    let fetched = rpc
+        .get_voice_personality(Request::new(GetVoicePersonalityRequest {
+            profile_id: linked.profile_id.clone(),
+            actor: Some(operator(&[MemoryRead])),
+        }))
+        .await
+        .expect("get personality")
+        .into_inner();
+    assert_eq!(fetched.summary_json, upserted.summary_json);
+
+    rpc.erase_conversation(Request::new(erase("conv-session-1")))
+        .await
+        .expect("erase conversation cascades personality");
+    assert_eq!(
+        rpc.get_voice_personality(Request::new(GetVoicePersonalityRequest {
+            profile_id: linked.profile_id,
+            actor: Some(operator(&[MemoryRead])),
+        }))
+        .await
+        .expect_err("personality erased on conversation erasure")
+        .code(),
+        Code::NotFound
+    );
+}

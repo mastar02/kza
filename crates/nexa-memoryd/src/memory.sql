@@ -159,3 +159,15 @@ CREATE TABLE voice_verification_attempts (
     outcome TEXT NOT NULL CHECK (outcome IN ('passed', 'failed')),
     PRIMARY KEY (person_id, attempted_at_unix_ms)
 ) STRICT;
+CREATE TABLE voice_personalities (
+    profile_id TEXT PRIMARY KEY REFERENCES voice_profiles(profile_id) ON DELETE CASCADE,
+    summary_json TEXT NOT NULL,
+    updated_at_unix_ms INTEGER NOT NULL CHECK (updated_at_unix_ms >= 0),
+    source_count INTEGER NOT NULL CHECK (source_count >= 0)
+) STRICT;
+CREATE TABLE voice_personality_sources (
+    profile_id TEXT NOT NULL REFERENCES voice_personalities(profile_id) ON DELETE CASCADE,
+    conversation_id TEXT NOT NULL,
+    PRIMARY KEY (profile_id, conversation_id)
+) STRICT;
+CREATE INDEX voice_personality_sources_conversation ON voice_personality_sources(conversation_id);

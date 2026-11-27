@@ -73,3 +73,26 @@ def test_missing_or_broken_file(tmp_path: pathlib.Path) -> None:
     not_table.write_text('ml = "x"\n')
     with pytest.raises(ConfigError):
         load_config(not_table)
+
+
+def test_load_config_inherits_command_compute_type_when_shared_worker_omits_it(tmp_path) -> None:
+    from pathlib import Path
+
+    toml_file = tmp_path / "nexa.toml"
+    toml_file.write_text(
+        """
+[ml]
+command_stt_model = "whisper-v3-turbo"
+command_stt_device = "cuda:0"
+command_stt_compute_type = "float16"
+ambient_stt_model = "whisper-v3-turbo"
+ambient_stt_device = "cuda:0"
+ambient_stt_workers = 1
+""",
+        encoding="utf-8",
+    )
+    cfg = load_config(toml_file)
+    assert cfg.ambient_stt_compute_type == "float16"
+
+    repo_cfg = load_config(Path(__file__).resolve().parents[3] / "config" / "nexa" / "nexa.toml")
+    assert repo_cfg.command_stt_compute_type == repo_cfg.ambient_stt_compute_type == "float16"

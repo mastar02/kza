@@ -45,6 +45,21 @@ pub trait CaptureSource: Send {
 
     /// Resolve successfully only after the source has stopped producing capture I/O.
     fn stop(&mut self) -> impl Future<Output = Result<(), AudioError>> + Send;
+
+    /// Whether this source can suffer dead USB isochronous frames (consecutive exact zeros).
+    fn supports_dead_isoch_watchdog(&self) -> bool {
+        false
+    }
+
+    /// Issue a hardware reboot on supported capture devices (e.g. XVF3800 USB).
+    fn reboot(&mut self) -> impl Future<Output = Result<(), AudioError>> + Send {
+        async { Ok(()) }
+    }
+
+    /// Poll optional hardware DSP telemetry (e.g. XVF3800 speaker energy and azimuth).
+    fn probe_dsp(&mut self) -> impl Future<Output = Option<crate::hw::xvf::DspTelemetry>> + Send {
+        async { None }
+    }
 }
 
 /// Synchronous model inference. Call adapters from a bounded blocking executor.

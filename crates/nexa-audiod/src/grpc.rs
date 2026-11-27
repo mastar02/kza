@@ -30,7 +30,7 @@ use crate::ma1260::{Command, CommandFrame, LAST_ZONE, percent_to_step, step_to_p
 use crate::traits::{AmpTransport, AudioError, PlaybackOutput, PlaybackSession, PlaybackSpec};
 
 const PLAYBACK_SAMPLE_RATE: u32 = 24_000;
-const UTTERANCE_QUEUE: usize = 16;
+const UTTERANCE_QUEUE: usize = 64;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct AmbientDemand {

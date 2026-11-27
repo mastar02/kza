@@ -72,6 +72,13 @@ impl MemoryRpc {
         }
         result
     }
+
+    pub async fn prune_expired_ambient(&self, retention_days: u32) -> Result<u32> {
+        let mut store = self.store.clone().lock_owned().await;
+        tokio::task::spawn_blocking(move || store.prune_expired_ambient(retention_days))
+            .await
+            .map_err(|_| Error::Unavailable("memory worker stopped"))?
+    }
 }
 
 struct Actor<'a> {
@@ -264,6 +271,7 @@ impl MemoryService for MemoryRpc {
                 &req.content,
                 &req.category,
                 &req.embedding,
+                req.proposed,
             )
         })
         .await
@@ -329,9 +337,52 @@ impl MemoryService for MemoryRpc {
                 preview: &req.transcript_preview,
                 captured_at: req.captured_at_unix_ms,
                 embedding: &req.embedding,
+                conversation_id: &req.conversation_id,
             })
         })
         .await
+    }
+
+    async fn identify_voice(
+        &self,
+        req: Request<IdentifyVoiceRequest>,
+    ) -> std::result::Result<Response<IdentifyVoiceResponse>, Status> {
+        let req = req.into_inner();
+        Actor::validate(req.actor.as_ref())
+            .and_then(|actor| actor.operator(Permission::VoicesRead))
+            .map_err(status)?;
+        self.run(move |store| store.identify_voice(&req.embedding, &req.encoder_model_key))
+            .await
+    }
+
+    async fn upsert_voice_personality(
+        &self,
+        req: Request<UpsertVoicePersonalityRequest>,
+    ) -> std::result::Result<Response<VoicePersonality>, Status> {
+        let req = req.into_inner();
+        let actor = Actor::validate(req.actor.as_ref()).map_err(status)?;
+        actor.operator(Permission::MemoryReview).map_err(status)?;
+        actor.require(Permission::VoicesReview).map_err(status)?;
+        self.run_observed("upsert_voice_personality", move |store| {
+            store.upsert_voice_personality(
+                &req.profile_id,
+                &req.summary_json,
+                &req.source_conversation_id,
+            )
+        })
+        .await
+    }
+
+    async fn get_voice_personality(
+        &self,
+        req: Request<GetVoicePersonalityRequest>,
+    ) -> std::result::Result<Response<VoicePersonality>, Status> {
+        let req = req.into_inner();
+        Actor::validate(req.actor.as_ref())
+            .and_then(|actor| actor.operator(Permission::MemoryRead))
+            .map_err(status)?;
+        self.run(move |store| store.get_voice_personality(&req.profile_id))
+            .await
     }
 
     async fn list_voice_profiles(

@@ -16,7 +16,7 @@ use tokio::time::{Instant, timeout, timeout_at};
 
 use crate::{CancellationToken, CloudConsentGate, ThinkTagStripper};
 
-const SYSTEM_PROMPT: &str =
+pub(crate) const DEFAULT_SYSTEM_PROMPT: &str =
     "Sos Nexa, un asistente doméstico. Respondé en español, con claridad y brevedad.";
 const LOCAL_STREAM_BUDGET: Duration = Duration::from_secs(25);
 const CLOUD_STREAM_BUDGET: Duration = Duration::from_secs(60);
@@ -152,6 +152,12 @@ impl LlmError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatTurn {
+    pub role: String,
+    pub content: String,
+}
+
 #[derive(Debug)]
 pub struct OpenAiClient {
     http: reqwest::Client,
@@ -211,7 +217,7 @@ impl OpenAiClient {
     ) -> (Result<Option<u64>, LlmError>, bool) {
         self.stream_attempt_with(
             endpoint,
-            SYSTEM_PROMPT,
+            DEFAULT_SYSTEM_PROMPT,
             prompt,
             max_tokens,
             None,
@@ -226,6 +232,31 @@ impl OpenAiClient {
         &self,
         endpoint: &Endpoint,
         system_prompt: &str,
+        prompt: &str,
+        max_tokens: u32,
+        temperature: Option<f32>,
+        cancel: &CancellationToken,
+        emit: impl FnMut(&str),
+    ) -> (Result<Option<u64>, LlmError>, bool) {
+        self.stream_attempt_messages(
+            endpoint,
+            system_prompt,
+            &[],
+            prompt,
+            max_tokens,
+            temperature,
+            cancel,
+            emit,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn stream_attempt_messages(
+        &self,
+        endpoint: &Endpoint,
+        system_prompt: &str,
+        history: &[ChatTurn],
         prompt: &str,
         max_tokens: u32,
         temperature: Option<f32>,
@@ -247,15 +278,18 @@ impl OpenAiClient {
         let first_token_deadline = started + endpoint.timeout;
         let request = async {
             check()?;
+            let mut messages = Vec::with_capacity(history.len() + 2);
+            messages.push(json!({"role": "system", "content": system_prompt}));
+            for turn in history {
+                messages.push(json!({"role": turn.role, "content": turn.content}));
+            }
+            messages.push(json!({"role": "user", "content": prompt}));
             let mut body = json!({
                 "model": endpoint.model,
                 "stream": true,
                 "max_tokens": max_tokens,
                 "stream_options": {"include_usage": true},
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt}
-                ]
+                "messages": messages,
             });
             if let Some(temp) = temperature {
                 body["temperature"] = json!(temp);

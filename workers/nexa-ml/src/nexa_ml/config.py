@@ -181,6 +181,14 @@ def parse_ml_section(document: dict[str, object]) -> MlConfig:
             logger.warning("Ignoring unknown ml config key %s", key)
             continue
         values[key] = _coerce(key, hints[key], value)
+    if "ambient_stt_compute_type" not in values:
+        preview = MlConfig(**values)
+        if (
+            preview.ambient_stt_workers == 1
+            and preview.ambient_stt_model == preview.command_stt_model
+            and preview.ambient_stt_device == preview.command_stt_device
+        ):
+            values["ambient_stt_compute_type"] = preview.command_stt_compute_type
     return MlConfig(**values)
 
 

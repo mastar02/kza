@@ -133,6 +133,35 @@ impl MemoryClient for ObservedMemory {
             .map_err(|_| Status::cancelled("test ended"))?;
         self.0.observe_voice(request).await
     }
+
+    async fn ambient_control(&self) -> RpcResult<v1::AmbientControlStatus> {
+        self.0.ambient_control().await
+    }
+
+    async fn store_fact(&self, request: v1::StoreFactRequest) -> RpcResult<v1::MemoryFact> {
+        self.0.store_fact(request).await
+    }
+
+    async fn identify_voice(
+        &self,
+        request: v1::IdentifyVoiceRequest,
+    ) -> RpcResult<v1::IdentifyVoiceResponse> {
+        self.0.identify_voice(request).await
+    }
+
+    async fn upsert_voice_personality(
+        &self,
+        request: v1::UpsertVoicePersonalityRequest,
+    ) -> RpcResult<v1::VoicePersonality> {
+        self.0.upsert_voice_personality(request).await
+    }
+
+    async fn get_voice_personality(
+        &self,
+        request: v1::GetVoicePersonalityRequest,
+    ) -> RpcResult<v1::VoicePersonality> {
+        self.0.get_voice_personality(request).await
+    }
 }
 
 struct MemoryDaemon(Child);

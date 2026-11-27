@@ -2,7 +2,7 @@
 
 ## Seguir una petición
 
-El XVF3800 de la habitación entra por ALSA a audiod. El detector local y el veto en sombra corren en CPU. El worker ML ofrece STT de comando, STT ambiental, TTS en streaming, identificación de hablante y embeddings. Brain coordina la interpretación en español con el estado de HA, los motores del hogar y el enrutamiento LLM. Verificar el consentimiento en CloudConsentGate antes de toda salida cloud. Memoryd conserva hechos y datos ambientales bajo políticas de borrado. Identificar una voz no concede permisos de cuenta.
+El XVF3800 de la habitación entra por ALSA (`mic_channel = 0`, beamformed AEC+NS) a audiod con watchdog isócrono USB. Silero VAD y OpenWakeWord corren en CPU (veto en sombra Parakeet deshabilitado por defecto). El worker ML comparte una instancia `whisper-v3-turbo` (`float16`) para STT de comando y ambiental con prioridad para comandos en `cuda:0`, además de TTS en streaming, identificación de hablante y embeddings (`BAAI/bge-m3` en CPU). Brain coordina la interpretación en español con el estado de HA, los motores del hogar, la destilación conversacional local y el enrutamiento LLM (`Qwen3.5-9B` local en `cuda:1`). Verificar el consentimiento en CloudConsentGate antes de toda salida cloud. Memoryd conserva hechos, datos ambientales y personalidad por perfil de voz bajo políticas de borrado. Identificar una voz no concede permisos de cuenta.
 
 | Área | Dónde trabajar | Qué comprobar |
 | --- | --- | --- |

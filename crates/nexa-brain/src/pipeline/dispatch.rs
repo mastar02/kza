@@ -222,8 +222,14 @@ impl Brain {
             Route::Time(query) => world::describe_clock(query, &self.local_now()),
             Route::Weather(horizon) => self.weather(horizon).await,
             Route::SlowLlm => {
+                let speaker_personality = self.identify_speaker_personality(utterance).await;
                 return self
-                    .slow_llm(turn, conversation, &routed.decision.normalized_text)
+                    .slow_llm(
+                        turn,
+                        conversation,
+                        &routed.decision.normalized_text,
+                        speaker_personality.as_deref(),
+                    )
                     .await;
             }
         };
@@ -233,7 +239,75 @@ impl Brain {
                 "reply": reply.chars().take(320).collect::<String>(),
             }),
         );
+        self.ambient
+            .record_chat_turn(room, conversation, "user", &routed.decision.normalized_text);
+        self.ambient
+            .record_chat_turn(room, conversation, "assistant", &reply);
         self.say(turn, conversation, reply).await.map(|_| ())
+    }
+
+    async fn identify_speaker_personality(&self, utterance: &AudioUtterance) -> Option<String> {
+        let memory = self.memory.as_deref()?;
+        if !self.config.core.memory.enabled {
+            return None;
+        }
+        let lookup = async {
+            let emb = self
+                .ml
+                .embed_speaker(nexa_proto::v1::EmbedSpeakerRequest {
+                    pcm_f32le: utterance.pcm_f32le.clone(),
+                    sample_rate: utterance.sample_rate,
+                })
+                .await
+                .ok()?;
+            if emb.vector.len() != 192
+                || !emb.vector.iter().all(|v| v.is_finite())
+                || emb.encoder_model_key.trim().is_empty()
+            {
+                return None;
+            }
+            let identified = memory
+                .identify_voice(nexa_proto::v1::IdentifyVoiceRequest {
+                    embedding: emb.vector,
+                    encoder_model_key: emb.encoder_model_key,
+                    room_id: utterance.room_id.clone(),
+                    actor: Some(nexa_proto::v1::ActorContext {
+                        subject: "nexa-brain".into(),
+                        role: nexa_proto::v1::Role::Operator as i32,
+                        permissions: vec![nexa_proto::v1::Permission::VoicesRead as i32],
+                        ..Default::default()
+                    }),
+                })
+                .await
+                .ok()?;
+            if !identified.consented || identified.profile_id.is_empty() {
+                return None;
+            }
+            let personality = tokio::time::timeout(
+                Duration::from_millis(200),
+                memory.get_voice_personality(nexa_proto::v1::GetVoicePersonalityRequest {
+                    profile_id: identified.profile_id.clone(),
+                    actor: Some(nexa_proto::v1::ActorContext {
+                        subject: "nexa-brain".into(),
+                        role: nexa_proto::v1::Role::Operator as i32,
+                        permissions: vec![nexa_proto::v1::Permission::MemoryRead as i32],
+                        ..Default::default()
+                    }),
+                }),
+            )
+            .await
+            .ok()?
+            .ok()?;
+            let summary = personality.summary_json.trim();
+            (!summary.is_empty()).then(|| {
+                let capped: String = summary.chars().take(512).collect();
+                format!("Perfil vocal {}: {capped}", identified.profile_id)
+            })
+        };
+        tokio::time::timeout(Duration::from_millis(300), lookup)
+            .await
+            .ok()
+            .flatten()
     }
 
     async fn voice_action(

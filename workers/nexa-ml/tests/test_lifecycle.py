@@ -161,3 +161,21 @@ async def test_serve_does_not_delete_a_replaced_socket_path(short_dir: pathlib.P
     stop.set()
     await asyncio.wait_for(task, timeout=10)
     assert sock_path.read_text() == "replacement"
+
+
+async def test_shared_whisper_when_ambient_matches_command() -> None:
+    from pathlib import Path
+
+    from nexa_ml.config import load_config
+    from nexa_ml.whisper_slot import SharedWhisperAmbient
+
+    repo_cfg = Path(__file__).resolve().parents[3] / "config" / "nexa" / "nexa.toml"
+
+    cfg = load_config(repo_cfg)
+    runtime = MlRuntime(cfg, Fakes().loaders(cfg.ambient_stt_workers))
+    await runtime.load_all()
+    try:
+        assert runtime.slot_ids == ["stt-command", "tts", "speaker", "embed"]
+        assert isinstance(runtime.ambient, SharedWhisperAmbient)
+    finally:
+        runtime.close()

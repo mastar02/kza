@@ -6,6 +6,7 @@ mod captures;
 mod consent;
 mod groups;
 mod observe;
+mod personality;
 mod profiles;
 
 pub(crate) use groups::voice_ids;

@@ -297,6 +297,24 @@ impl MemoryService for Memory {
     async fn delete_fact(&self, _: Request<DeleteFactRequest>) -> Reply<ErasureReceipt> {
         Err(Status::unimplemented("delete_fact"))
     }
+    async fn identify_voice(
+        &self,
+        _: Request<IdentifyVoiceRequest>,
+    ) -> Reply<IdentifyVoiceResponse> {
+        Err(Status::unimplemented("identify_voice"))
+    }
+    async fn upsert_voice_personality(
+        &self,
+        _: Request<UpsertVoicePersonalityRequest>,
+    ) -> Reply<VoicePersonality> {
+        Err(Status::unimplemented("upsert_voice_personality"))
+    }
+    async fn get_voice_personality(
+        &self,
+        _: Request<GetVoicePersonalityRequest>,
+    ) -> Reply<VoicePersonality> {
+        Err(Status::unimplemented("get_voice_personality"))
+    }
     async fn list_voice_profiles(
         &self,
         _: Request<ListVoiceProfilesRequest>,

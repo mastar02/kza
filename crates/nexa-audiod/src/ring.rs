@@ -43,7 +43,14 @@ pub enum PushError {
 /// Allocate the shared 80 ms queue once. Transfers use caller-owned slices.
 #[must_use]
 pub fn capture_ring() -> (CaptureProducer, CaptureConsumer) {
-    let (producer, consumer) = RingBuffer::new(FRAME_SAMPLES);
+    capture_ring_with_frames(1)
+}
+
+/// Allocate a shared capture ring sized for `frames` whole 80 ms capture frames.
+#[must_use]
+pub fn capture_ring_with_frames(frames: usize) -> (CaptureProducer, CaptureConsumer) {
+    assert!(frames >= 1, "capture ring requires at least 1 frame");
+    let (producer, consumer) = RingBuffer::new(FRAME_SAMPLES * frames);
     let signal = Arc::new(Signal::default());
     (
         CaptureProducer {

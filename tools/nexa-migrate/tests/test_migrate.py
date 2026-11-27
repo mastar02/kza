@@ -33,7 +33,7 @@ FACT = "synthetic fact content never in the report"
 TRANSCRIPT = "synthetic transcript never in the report"
 TOKEN = "synthetic-token-never-in-report"
 EMBEDDING = struct.pack("<192f", 1, *([0] * 191))
-VERSIONS = {"memory/memory.db": 1, "memory/ambient.db": 1,
+VERSIONS = {"memory/memory.db": 2, "memory/ambient.db": 2,
             "household/household.db": 3, "auth/auth.db": 0}
 
 
@@ -359,7 +359,7 @@ def test_full_migration_and_privacy(legacy, tmp_path, run_migration, vec_extensi
         "filtered_tombstoned": 0, "filtered_retired": 0,
     }
     assert report["tables"]["sessions"]["discarded"] == 1
-    assert report["destination_schema_versions"] == {"memory": 1, "ambient": 1, "household": 3, "auth": 0}
+    assert report["destination_schema_versions"] == {"memory": 2, "ambient": 2, "household": 3, "auth": 0}
     for file, version in VERSIONS.items():
         path = dest / file
         assert stat.S_IMODE(path.stat().st_mode) == 0o600

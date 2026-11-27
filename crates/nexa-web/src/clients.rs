@@ -56,8 +56,10 @@ fn actor_request(actor: ActorContext, metadata_key: &'static str) -> Request<Emp
 
 daemon! {
     Audio, TonicAudio, audio_service_client::AudioServiceClient<Channel>;
+    get_health(Empty) -> HealthResponse;
     get_microphones(Empty) -> MicrophonesSnapshot;
     get_zones(Empty) -> ZonesSnapshot;
+    set_zone_volume(SetZoneVolumeRequest) -> ZoneState;
     get_capture_control(Empty) -> CaptureControlStatus;
     set_capture_mute(SetCaptureMuteRequest) -> CaptureControlStatus;
     forget_carried_owners(ForgetCarriedOwnersRequest) -> ForgetCarriedOwnersResponse;
@@ -65,6 +67,7 @@ daemon! {
 
 daemon! {
     Brain, TonicBrain, brain_control_service_client::BrainControlServiceClient<Channel>;
+    get_health(Empty) -> HealthResponse;
     get_home_catalog(GetHomeCatalogRequest) -> HomeCatalogSnapshot;
     execute_home_action(HomeActionRequest) -> HomeActionReceipt;
     get_home_action_receipt(GetHomeActionReceiptRequest) -> HomeActionReceipt;
@@ -107,6 +110,7 @@ daemon! {
 
 daemon! {
     Memory, TonicMemory, memory_service_client::MemoryServiceClient<Channel>;
+    get_health(ActorContext => "actor-context-bin") -> HealthResponse;
     delete_fact(DeleteFactRequest) -> ErasureReceipt;
     list_memory_overview(MemoryOverviewRequest) -> MemoryOverviewResponse;
     mutate_memory_item(MemoryMutationRequest) -> MemoryMutationResponse;
@@ -118,11 +122,18 @@ daemon! {
     set_ambient_pause(SetAmbientPauseRequest) -> AmbientControlStatus;
 }
 
+daemon! {
+    Ml, TonicMl, ml_service_client::MlServiceClient<Channel>;
+    get_health(Empty) -> MlHealthResponse;
+    reload_model(ReloadModelRequest) -> HealthResponse;
+}
+
 #[derive(Clone)]
 pub struct Clients {
     pub audio: Arc<dyn Audio>,
     pub brain: Arc<dyn Brain>,
     pub memory: Arc<dyn Memory>,
+    pub ml: Arc<dyn Ml>,
 }
 
 impl std::fmt::Debug for Clients {
@@ -132,12 +143,13 @@ impl std::fmt::Debug for Clients {
 }
 
 impl Clients {
-    /// Channels reconnect lazily so Axum can start before the three daemons.
+    /// Channels reconnect lazily so Axum can start before the upstream daemons.
     pub fn uds(directory: &Path) -> Self {
         Self {
             audio: Arc::new(TonicAudio(channel(directory, sockets::AUDIO))),
             brain: Arc::new(TonicBrain(channel(directory, sockets::BRAIN))),
             memory: Arc::new(TonicMemory(channel(directory, sockets::MEMORY))),
+            ml: Arc::new(TonicMl(channel(directory, sockets::ML))),
         }
     }
 }
