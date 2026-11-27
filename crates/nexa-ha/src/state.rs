@@ -41,7 +41,8 @@ impl EntityState {
     }
 
     pub(crate) fn valid(&self) -> bool {
-        domain(&self.entity_id).is_some() && !self.state.is_empty()
+        // Home Assistant text/sensor entities (e.g. sensor.kza_focus_name) legitimately report "".
+        domain(&self.entity_id).is_some()
     }
 }
 

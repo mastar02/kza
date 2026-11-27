@@ -851,3 +851,44 @@ async fn voice_identification_clustering_and_personality_consent_cascade() {
         Code::NotFound
     );
 }
+
+#[tokio::test]
+async fn far_field_unlinked_clustering_merges_and_updates_centroid() {
+    let rpc = service(true);
+    let mut c1 = observation("utt-ff-1", 0).into_inner();
+    c1.conversation_id = "conv-far-field".into();
+    rpc.record_voice_observation(actor_metadata(c1, &operator(&[Permission::VoicesReview])))
+        .await
+        .expect("c1");
+
+    let mut c2 = observation("utt-ff-2", 0).into_inner();
+    c2.embedding = tilted_voice_vector(0.65);
+    c2.conversation_id = "conv-far-field".into();
+    rpc.record_voice_observation(actor_metadata(c2, &operator(&[Permission::VoicesReview])))
+        .await
+        .expect("c2");
+
+    // cos_sim=0.45 with dim-0 alone has distance 0.55 (>0.38), so it merges only after centroid update.
+    let mut c3 = observation("utt-ff-3", 0).into_inner();
+    c3.embedding = tilted_voice_vector(0.45);
+    c3.conversation_id = "conv-far-field".into();
+    rpc.record_voice_observation(actor_metadata(c3, &operator(&[Permission::VoicesReview])))
+        .await
+        .expect("c3");
+
+    let mut c4 = observation("utt-ff-4", 2).into_inner();
+    c4.conversation_id = "conv-far-field".into();
+    rpc.record_voice_observation(actor_metadata(c4, &operator(&[Permission::VoicesReview])))
+        .await
+        .expect("c4");
+
+    let profiles = rpc
+        .list_voice_profiles(Request::new(list_profiles()))
+        .await
+        .expect("list profiles")
+        .into_inner()
+        .profiles;
+    assert_eq!(profiles.len(), 2);
+    assert!(profiles.iter().any(|p| p.sample_count == 3));
+    assert!(profiles.iter().any(|p| p.sample_count == 1));
+}

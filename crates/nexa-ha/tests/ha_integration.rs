@@ -858,3 +858,23 @@ async fn scene_preflight_verifies_membership_and_every_leaf_before_dispatch() {
     })
     .await;
 }
+
+#[tokio::test]
+async fn snapshot_accepts_entities_with_empty_state() {
+    paused(async {
+        let mut origin = HaOrigin::start().await;
+        authenticated("GET", "/api/states")
+            .respond_with(response(200).set_body_json([
+                entity("light.main", "off", json!({})),
+                entity("sensor.kza_focus_name", "", json!({})),
+            ]))
+            .mount(&origin.http)
+            .await;
+        let ha = client(origin.url.clone());
+        let _sync = StateSync::start(&ha);
+        let _peer = origin.sessions.recv().await.expect("subscription");
+        wait_for(|| frame_has(&ha, "light.main", "off")).await;
+        assert!(frame_has(&ha, "sensor.kza_focus_name", ""));
+    })
+    .await;
+}

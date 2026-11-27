@@ -831,3 +831,107 @@ impl ShadowStt for SilentShadowStub {
         Ok(String::new())
     }
 }
+
+struct LongContinuousSource {
+    frames: usize,
+    total_frames: usize,
+}
+
+impl CaptureSource for LongContinuousSource {
+    async fn start(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
+        if self.frames >= self.total_frames + 16 {
+            return std::future::pending().await;
+        }
+        let len = samples.len().min(FRAME_SAMPLES);
+        let val = if self.frames < 5 || self.frames >= self.total_frames {
+            0.001
+        } else {
+            0.3
+        };
+        samples[..len].fill(val);
+        self.frames += 1;
+        Ok(len)
+    }
+
+    async fn stop(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn one_hour_continuous_ambient_speech_streams_without_drops_or_unbounded_buffers() {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        let (_, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let mut ambient = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest {
+                include_ambient: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        // 45,000 frames * 80 ms = 3,600 seconds (1 hour of continuous speech).
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                LongContinuousSource {
+                    frames: 0,
+                    total_frames: 45_000,
+                },
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(
+                service.clone(),
+                Arc::new(SharedShadow::new(SilentShadowStub)),
+                shutdown,
+            ),
+        );
+
+        let mut segments = 0_usize;
+        while segments < 300 {
+            let seg = ambient.next().await.unwrap().unwrap();
+            assert_eq!(seg.kind(), UtteranceKind::Ambient);
+            assert!(
+                seg.pcm_f32le.len() <= 150 * FRAME_SAMPLES * 4,
+                "segment {} exceeded 12s PCM cap: {} bytes",
+                segments,
+                seg.pcm_f32le.len()
+            );
+            if segments == 0 {
+                assert!(!seg.continues_segment);
+            } else {
+                assert!(
+                    seg.continues_segment,
+                    "segment {segments} should chain cleanly"
+                );
+            }
+            segments += 1;
+        }
+        let health = service
+            .get_health(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            health.detail.contains("utterances_dropped=0"),
+            "unexpected dropped utterances: {}",
+            health.detail
+        );
+        assert!(
+            health.detail.contains("utterances_lagged=0"),
+            "unexpected lagged utterances: {}",
+            health.detail
+        );
+
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}

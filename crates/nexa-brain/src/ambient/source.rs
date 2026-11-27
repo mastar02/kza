@@ -7,14 +7,15 @@ const MIN_AVG_LOGPROB: f32 = -1.10;
 const MAX_COMPRESSION_RATIO: f32 = 2.40;
 const MEDIA_HA_SPEECH_RATIO: f32 = 0.85;
 const MEDIA_HA_DOA_STABILITY: f32 = 0.90;
-const MEDIA_STREAK_SPEECH_RATIO: f32 = 0.88;
-const MEDIA_STREAK_DOA_STABILITY: f32 = 0.92;
-const SAME_DIRECTION_MAX_RAD: f32 = 0.26;
+const MEDIA_STREAK_SPEECH_RATIO: f32 = 0.92;
+const MEDIA_STREAK_DOA_STABILITY: f32 = 0.96;
+const SAME_DIRECTION_MAX_RAD: f32 = 0.14;
+const MEDIA_STREAK_MIN_SEGMENTS: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SourceKind {
     Live,
-    MediaTv,
+    MediaTv { confirmed_by_ha: bool },
     Noise,
 }
 
@@ -67,7 +68,9 @@ impl SourceClassifier {
             && (utterance.speech_ratio >= MEDIA_HA_SPEECH_RATIO
                 || (utterance.has_doa && utterance.doa_stability >= MEDIA_HA_DOA_STABILITY))
         {
-            return SourceKind::MediaTv;
+            return SourceKind::MediaTv {
+                confirmed_by_ha: true,
+            };
         }
 
         if utterance.has_doa
@@ -76,8 +79,10 @@ impl SourceClassifier {
         {
             let streak =
                 tv_tracker.observe_static_monologue(&utterance.room_id, utterance.doa_azimuth_rad);
-            if streak >= 2 {
-                return SourceKind::MediaTv;
+            if streak >= MEDIA_STREAK_MIN_SEGMENTS {
+                return SourceKind::MediaTv {
+                    confirmed_by_ha: false,
+                };
             }
         } else {
             tv_tracker.reset(&utterance.room_id);
@@ -127,22 +132,42 @@ mod tests {
             room_id: "living".into(),
             has_doa: true,
             doa_azimuth_rad: 1.1,
-            doa_stability: 0.96,
-            speech_ratio: 0.92,
+            doa_stability: 0.97,
+            speech_ratio: 0.93,
             ..Default::default()
         };
         assert_eq!(
             SourceClassifier::classify(&tv_utt, &stt("monologo de television"), true, &mut tracker),
-            SourceKind::MediaTv
+            SourceKind::MediaTv {
+                confirmed_by_ha: true
+            }
         );
-        // Without HA state, two consecutive static-DoA high-density segments classify as MediaTv.
+        // Without HA state, segments 1..3 remain Live; segment 4 classifies as unconfirmed MediaTv.
+        for label in ["parte uno", "parte dos", "parte tres"] {
+            assert_eq!(
+                SourceClassifier::classify(&tv_utt, &stt(label), false, &mut tracker),
+                SourceKind::Live
+            );
+        }
         assert_eq!(
-            SourceClassifier::classify(&tv_utt, &stt("primera parte"), false, &mut tracker),
+            SourceClassifier::classify(&tv_utt, &stt("parte cuatro"), false, &mut tracker),
+            SourceKind::MediaTv {
+                confirmed_by_ha: false
+            }
+        );
+        // Moving > 0.14 rad resets the static-DoA streak back to Live.
+        let moved_utt = AudioUtterance {
+            doa_azimuth_rad: 1.4,
+            ..tv_utt.clone()
+        };
+        assert_eq!(
+            SourceClassifier::classify(
+                &moved_utt,
+                &stt("hable desde otro lado"),
+                false,
+                &mut tracker
+            ),
             SourceKind::Live
-        );
-        assert_eq!(
-            SourceClassifier::classify(&tv_utt, &stt("segunda parte"), false, &mut tracker),
-            SourceKind::MediaTv
         );
     }
 }

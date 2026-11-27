@@ -19,12 +19,40 @@ use tonic::Status;
 
 use crate::{
     Brain,
-    ambient::{AmbientTurn, SourceKind},
+    ambient::{AmbientTurn, ClosedSession, SourceKind},
 };
 
 const AMBIENT_CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
-const AMBIENT_ROOM_QUEUE_CAPACITY: usize = 8;
+const AMBIENT_ROOM_QUEUE_CAPACITY: usize = 32;
+const DISTILL_QUEUE_CAPACITY: usize = 32;
 const AMBIENT_IDLE_SWEEP_INTERVAL: Duration = Duration::from_secs(5);
+const MAX_OBSERVATION_PREVIEW_BYTES: usize = 4096;
+const VOICE_ID_TIMEOUT: Duration = Duration::from_millis(200);
+
+fn truncate_utf8_bytes(text: &str, max_bytes: usize) -> String {
+    if text.len() <= max_bytes {
+        return text.to_owned();
+    }
+    let mut end = 0;
+    for (idx, ch) in text.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+    text[..end].to_owned()
+}
+
+fn enqueue_distillation(tx: &mpsc::Sender<ClosedSession>, session: ClosedSession) {
+    if let Err(mpsc::error::TrySendError::Full(dropped)) = tx.try_send(session) {
+        tracing::warn!(
+            conversation_id = %dropped.conversation_id,
+            room_id = %dropped.room_id,
+            "Ambient distiller queue full; dropping closed session"
+        );
+    }
+}
 
 async fn ambient_control(
     memory: &dyn crate::clients::MemoryClient,
@@ -143,6 +171,20 @@ impl Brain {
     pub async fn run_voice(self: Arc<Self>) {
         let mut jobs = JoinSet::new();
         let mut ambient_rooms: HashMap<String, mpsc::Sender<AudioUtterance>> = HashMap::new();
+        let (distill_tx, mut distill_rx) = mpsc::channel::<ClosedSession>(DISTILL_QUEUE_CAPACITY);
+        let distill_brain = Arc::clone(&self);
+        jobs.spawn(async move {
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = distill_brain.shutdown.cancelled() => break,
+                    maybe = distill_rx.recv() => {
+                        let Some(session) = maybe else { break };
+                        distill_brain.distill_closed_session(session).await;
+                    }
+                }
+            }
+        });
         let ambient_enabled = self.config.core.memory.ambient_enabled && self.memory.is_some();
         while !self.shutdown.is_cancelled() {
             let result = tokio::select! {
@@ -157,7 +199,7 @@ impl Brain {
                         Some(_) = jobs.join_next(), if !jobs.is_empty() => {}
                         item = stream.next() => {
                             match item {
-                                Some(Ok(utterance)) => self.accept(utterance, &mut jobs, &mut ambient_rooms, ambient_enabled),
+                                Some(Ok(utterance)) => self.accept(utterance, &mut jobs, &mut ambient_rooms, &distill_tx, ambient_enabled),
                                 _ => break,
                             }
                         }
@@ -170,6 +212,7 @@ impl Brain {
             }
         }
         ambient_rooms.clear();
+        drop(distill_tx);
         let grace = async { while jobs.join_next().await.is_some() {} };
         if tokio::time::timeout(Duration::from_millis(600), grace)
             .await
@@ -182,6 +225,7 @@ impl Brain {
     fn spawn_ambient_room_worker(
         self: &Arc<Self>,
         room_id: String,
+        distill_tx: mpsc::Sender<ClosedSession>,
         jobs: &mut JoinSet<()>,
     ) -> mpsc::Sender<AudioUtterance> {
         let (tx, mut rx) = mpsc::channel::<AudioUtterance>(AMBIENT_ROOM_QUEUE_CAPACITY);
@@ -200,7 +244,7 @@ impl Brain {
                         let result = tokio::select! {
                             biased;
                             _ = brain.shutdown.cancelled() => Ok(Ok("cancelled")),
-                            result = tokio::time::timeout(Duration::from_secs(15), brain.ambient(&utterance)) => result,
+                            result = tokio::time::timeout(Duration::from_secs(15), brain.ambient(&utterance, &distill_tx)) => result,
                         };
                         let utterance_id = &utterance.utterance_id;
                         let latency_ms = started.elapsed().as_millis();
@@ -214,7 +258,7 @@ impl Brain {
                     }
                     _ = sweep.tick() => {
                         if let Some(closed) = brain.ambient.take_idle(&room_id, brain.now()) {
-                            brain.distill_closed_session(closed).await;
+                            enqueue_distillation(&distill_tx, closed);
                         }
                     }
                 }
@@ -228,6 +272,7 @@ impl Brain {
         utterance: AudioUtterance,
         jobs: &mut JoinSet<()>,
         ambient_rooms: &mut HashMap<String, mpsc::Sender<AudioUtterance>>,
+        distill_tx: &mpsc::Sender<ClosedSession>,
         ambient_enabled: bool,
     ) {
         if !self.zone(&utterance.room_id)
@@ -246,13 +291,14 @@ impl Brain {
                 return;
             }
             let room_id = utterance.room_id.clone();
-            let sender = ambient_rooms
-                .entry(room_id.clone())
-                .or_insert_with(|| self.spawn_ambient_room_worker(room_id.clone(), jobs));
+            let sender = ambient_rooms.entry(room_id.clone()).or_insert_with(|| {
+                self.spawn_ambient_room_worker(room_id.clone(), distill_tx.clone(), jobs)
+            });
             match sender.try_send(utterance) {
                 Ok(()) => {}
                 Err(mpsc::error::TrySendError::Closed(returned)) => {
-                    let fresh = self.spawn_ambient_room_worker(room_id.clone(), jobs);
+                    let fresh =
+                        self.spawn_ambient_room_worker(room_id.clone(), distill_tx.clone(), jobs);
                     if fresh.try_send(returned).is_err() {
                         tracing::warn!(%room_id, "ambient room worker queue unavailable");
                     }
@@ -333,7 +379,11 @@ impl Brain {
         })
     }
 
-    async fn ambient(&self, utterance: &AudioUtterance) -> Result<&'static str, Status> {
+    async fn ambient(
+        &self,
+        utterance: &AudioUtterance,
+        distill_tx: &mpsc::Sender<ClosedSession>,
+    ) -> Result<&'static str, Status> {
         let Some(memory) = &self.memory else {
             return Ok("memory_disabled");
         };
@@ -360,14 +410,39 @@ impl Brain {
         let media_playing = self.room_media_playing(&utterance.room_id);
         match self.ambient.classify(utterance, &transcript, media_playing) {
             SourceKind::Noise => return Ok("filtered_noise"),
-            SourceKind::MediaTv => return Ok("filtered_media_tv"),
+            SourceKind::MediaTv {
+                confirmed_by_ha: true,
+            } => return Ok("filtered_media_tv"),
+            SourceKind::MediaTv {
+                confirmed_by_ha: false,
+            } => {
+                let identified = tokio::time::timeout(
+                    VOICE_ID_TIMEOUT,
+                    memory.identify_voice(v1::IdentifyVoiceRequest {
+                        embedding: embedding.vector.clone(),
+                        encoder_model_key: embedding.encoder_model_key.clone(),
+                        room_id: utterance.room_id.clone(),
+                        actor: Some(v1::ActorContext {
+                            subject: "nexa-brain".into(),
+                            role: v1::Role::Operator as i32,
+                            permissions: vec![v1::Permission::VoicesRead as i32],
+                            ..Default::default()
+                        }),
+                    }),
+                )
+                .await;
+                if !matches!(identified, Ok(Ok(ref res)) if res.consented && !res.profile_id.is_empty())
+                {
+                    return Ok("filtered_media_tv");
+                }
+            }
             SourceKind::Live => {}
         }
         let (conversation_id, idle_closed) = self
             .ambient
             .prepare_ambient(&utterance.room_id, utterance.captured_at_unix_ms);
         if let Some(closed) = idle_closed {
-            self.distill_closed_session(closed).await;
+            enqueue_distillation(distill_tx, closed);
         }
         // The observation receipt is acoustic metadata. It does not enter command admission.
         let receipt = memory
@@ -376,12 +451,15 @@ impl Brain {
                 room_id: utterance.room_id.clone(),
                 embedding: embedding.vector,
                 encoder_model_key: embedding.encoder_model_key,
-                transcript_preview: transcript.text.chars().take(160).collect(),
+                transcript_preview: truncate_utf8_bytes(
+                    transcript.text.trim(),
+                    MAX_OBSERVATION_PREVIEW_BYTES,
+                ),
                 captured_at_unix_ms: utterance.captured_at_unix_ms,
                 conversation_id: conversation_id.clone(),
             })
             .await?;
-        if let Some(capped_closed) = self.ambient.finish_ambient(
+        if let Some(window_closed) = self.ambient.finish_ambient(
             &utterance.room_id,
             &conversation_id,
             AmbientTurn {
@@ -389,9 +467,10 @@ impl Brain {
                 matched_profile_id: (!receipt.matched_profile_id.is_empty())
                     .then_some(receipt.matched_profile_id),
                 captured_at_unix_ms: utterance.captured_at_unix_ms,
+                continues_segment: utterance.continues_segment,
             },
         ) {
-            self.distill_closed_session(capped_closed).await;
+            enqueue_distillation(distill_tx, window_closed);
         }
         Ok("observed")
     }
@@ -482,22 +561,39 @@ mod tests {
             .start(&utterance.room_id, &brain.shutdown, false)
             .ok_or("could not start active turn")?;
         let mut ambient_rooms = HashMap::new();
+        let (distill_tx, _distill_rx) = mpsc::channel(1);
         let mut jobs = JoinSet::new();
         let capacity = brain.config.rooms.rooms.len() * 4;
         for _ in 0..capacity {
             jobs.spawn(std::future::pending());
         }
-        brain.accept(utterance.clone(), &mut jobs, &mut ambient_rooms, false);
+        brain.accept(
+            utterance.clone(),
+            &mut jobs,
+            &mut ambient_rooms,
+            &distill_tx,
+            false,
+        );
         assert_eq!(jobs.len(), capacity);
         assert!(!active.lease.cancel.is_cancelled());
         assert!(brain.active.busy(&utterance.room_id));
 
         jobs.shutdown().await;
-        brain.accept(utterance, &mut jobs, &mut ambient_rooms, false);
+        brain.accept(utterance, &mut jobs, &mut ambient_rooms, &distill_tx, false);
         assert_eq!(jobs.len(), 1);
         assert!(active.lease.cancel.is_cancelled());
         jobs.shutdown().await;
         Ok(())
+    }
+
+    #[test]
+    fn truncate_utf8_bytes_preserves_multibyte_boundaries() {
+        let sample = "Configuración y canción con ñ y ¿¡acentos!";
+        let truncated = truncate_utf8_bytes(sample, 10);
+        assert!(truncated.len() <= 10);
+        assert!(sample.starts_with(&truncated));
+        assert_eq!(truncate_utf8_bytes("á", 1), "");
+        assert_eq!(truncate_utf8_bytes("á", 2), "á");
     }
 
     #[tokio::test]

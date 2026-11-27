@@ -478,7 +478,7 @@ async fn ambient_conversation_distills_proposed_facts_and_personality_and_erases
     assert!(!obs1.conversation_id.is_empty());
     assert_eq!(obs1.conversation_id, obs2.conversation_id);
 
-    // Gap > 45 s closes session 1 and triggers local-only distillation before obs3 completes.
+    // Gap > 45 s closes session 1 and triggers async local-only distillation in the background.
     capture_tx
         .send(Ok(ambient_utt(
             "conv-u3",
@@ -489,27 +489,36 @@ async fn ambient_conversation_distills_proposed_facts_and_personality_and_erases
     let obs3 = receive(&mut obs_rx).await?;
     assert_ne!(obs3.conversation_id, obs1.conversation_id);
 
-    let proposals_resp = memory
-        .list_memory_overview(v1::MemoryOverviewRequest {
-            view: "proposals".into(),
-            cursor: String::new(),
-            limit: 20,
-            actor: Some(actor(Role::Operator, &[Permission::MemoryRead])),
-        })
-        .await?
-        .into_inner();
-    let proposals_doc: Value = serde_json::from_str(&proposals_resp.payload_json)?;
-    let proposals = proposals_doc["proposals"]
-        .as_array()
-        .ok_or("missing proposals")?;
-    assert!(
-        proposals.iter().any(|p| {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let proposals = loop {
+        let proposals_resp = memory
+            .list_memory_overview(v1::MemoryOverviewRequest {
+                view: "proposals".into(),
+                cursor: String::new(),
+                limit: 20,
+                actor: Some(actor(Role::Operator, &[Permission::MemoryRead])),
+            })
+            .await?
+            .into_inner();
+        let proposals_doc: Value = serde_json::from_str(&proposals_resp.payload_json)?;
+        let list = proposals_doc["proposals"]
+            .as_array()
+            .ok_or("missing proposals")?
+            .clone();
+        if list.iter().any(|p| {
             p["content"] == "Prefiere cafe sin azucar"
                 && p["conversation_id"] == obs1.conversation_id
                 && p["confirmed"] == false
-        }),
-        "expected distilled proposed fact in {proposals_doc}"
-    );
+        }) {
+            break list;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for async distilled fact in {proposals_doc}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    };
+    assert!(!proposals.is_empty());
 
     let hits = memory
         .query_memory(v1::QueryMemoryRequest {
@@ -527,13 +536,22 @@ async fn ambient_conversation_distills_proposed_facts_and_personality_and_erases
         "unconfirmed proposed fact must not be returned by query_memory"
     );
 
-    let personality = memory
-        .get_voice_personality(v1::GetVoicePersonalityRequest {
-            profile_id: alice_profile.clone(),
-            actor: Some(actor(Role::Operator, &[Permission::MemoryRead])),
-        })
-        .await?
-        .into_inner();
+    let personality = loop {
+        match memory
+            .get_voice_personality(v1::GetVoicePersonalityRequest {
+                profile_id: alice_profile.clone(),
+                actor: Some(actor(Role::Operator, &[Permission::MemoryRead])),
+            })
+            .await
+        {
+            Ok(resp) => break resp.into_inner(),
+            Err(status) if tokio::time::Instant::now() < deadline => {
+                let _ = status;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(err) => return Err(err.into()),
+        }
+    };
     let summary: Value = serde_json::from_str(&personality.summary_json)?;
     assert_eq!(summary["tone"], "calido");
 
@@ -619,27 +637,30 @@ async fn media_tv_ambient_stream_is_filtered_without_observing_or_distilling() -
         pcm_f32le: padded_text_pcm(text),
         has_doa: true,
         doa_azimuth_rad: 1.1,
-        doa_stability: 0.96,
-        speech_ratio: 0.92,
+        doa_stability: 0.97,
+        speech_ratio: 0.93,
         captured_at_unix_ms: 1_800_000_000_000,
         ..Default::default()
     };
 
-    capture_tx
-        .send(Ok(tv_utt("tv-1", "Bienvenidos al programa de la tarde")))
-        .await?;
-    assert_eq!(receive(&mut stt_rx).await?, SttMode::Ambient);
-    let first = receive(&mut obs_rx).await?;
-    assert_eq!(first.utterance_id, "tv-1");
+    for (id, text) in [
+        ("tv-1", "Bienvenidos al programa de la tarde"),
+        ("tv-2", "Seguimos en vivo con noticias del dia"),
+        ("tv-3", "En instantes llega el analisis completo"),
+    ] {
+        capture_tx.send(Ok(tv_utt(id, text))).await?;
+        assert_eq!(receive(&mut stt_rx).await?, SttMode::Ambient);
+        assert_eq!(receive(&mut obs_rx).await?.utterance_id, id);
+    }
 
     capture_tx
         .send(Ok(tv_utt(
-            "tv-2",
+            "tv-4",
             "Continuamos con el informe meteorologico completo del dia",
         )))
         .await?;
     assert_eq!(receive(&mut stt_rx).await?, SttMode::Ambient);
-    // Sentinel noise frame guarantees tv-2 completed before asserting obs_rx is empty.
+    // Sentinel noise frame guarantees tv-4 completed before asserting obs_rx is empty.
     capture_tx
         .send(Ok(v1::AudioUtterance {
             utterance_id: "noise-sentinel".into(),
@@ -655,7 +676,7 @@ async fn media_tv_ambient_stream_is_filtered_without_observing_or_distilling() -
     tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
         obs_rx.try_recv().is_err(),
-        "static-DoA high-density tv-2 must be filtered as MediaTv without observe_voice"
+        "static-DoA high-density tv-4 must be filtered as MediaTv without observe_voice"
     );
 
     brain.shutdown();
@@ -835,6 +856,302 @@ async fn command_turns_inject_short_term_history_and_personality_only_locally_ne
             "cloud payload leaked local context ({leak}): {cloud_text}"
         );
     }
+
+    brain.shutdown();
+    worker.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn consented_speaker_long_static_monologue_is_not_filtered_as_media_tv() -> Result {
+    let local_llm = MockServer::start().await;
+    let dir = tempfile::tempdir_in("/tmp")?;
+    let mut config = bundle(dir.path())?;
+    config.core.llm.fast_router_url = format!("{}/v1", local_llm.uri());
+    config.core.memory.enabled = true;
+    config.core.memory.ambient_enabled = true;
+
+    let core_toml = include_str!("../../../config/nexa/nexa.toml").replace(
+        "/var/lib/nexa",
+        config.core.paths.data_dir.to_str().ok_or("data path")?,
+    );
+    tokio::fs::write(dir.path().join("nexa.toml"), core_toml).await?;
+    let (_daemon, mut memory) =
+        MemoryDaemon::start(dir.path(), &config.core.paths.runtime_dir).await?;
+    let _alice_profile = seed_consented_alice(&mut memory).await?;
+
+    let (capture_tx, capture_rx) = mpsc::channel(16);
+    let (obs_tx, mut obs_rx) = mpsc::unbounded_channel();
+    let (play_tx, _play_rx) = mpsc::unbounded_channel();
+    let (ml, _stt_rx, _spoken_rx) = TestMl::new(false);
+    let brain = Brain::open(
+        config,
+        Dependencies {
+            audio: Arc::new(Audio(Mutex::new(Some(capture_rx)), play_tx)),
+            ml: Arc::new(ml),
+            memory: Some(Arc::new(ObservedMemory {
+                inner: UdsMemory(memory),
+                observed: obs_tx,
+            })),
+            home: None,
+            clock: Arc::new(SystemClock::default()),
+        },
+    )
+    .await?;
+    let worker = tokio::spawn(Arc::clone(&brain).run_voice());
+
+    for idx in 0..5 {
+        let id = format!("mono-{idx}");
+        capture_tx
+            .send(Ok(v1::AudioUtterance {
+                utterance_id: id.clone(),
+                room_id: "living".into(),
+                kind: UtteranceKind::Ambient as i32,
+                sample_rate: 16_000,
+                pcm_f32le: padded_text_pcm(&format!(
+                    "Segmento {idx} de mi monologo sentado quieto frente al escritorio"
+                )),
+                has_doa: true,
+                doa_azimuth_rad: 1.1,
+                doa_stability: 0.98,
+                speech_ratio: 0.96,
+                captured_at_unix_ms: 1_800_000_000_000 + (idx as u64) * 12_000,
+                ..Default::default()
+            }))
+            .await?;
+        let obs = receive(&mut obs_rx).await?;
+        assert_eq!(obs.utterance_id, id);
+    }
+
+    brain.shutdown();
+    worker.await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn one_hour_continuous_conversation_preserves_full_transcripts_single_id_rolling_distillation_and_atomic_erasure()
+-> Result {
+    let local_llm = MockServer::start().await;
+    let distilled_json = json!({
+        "facts": [{"content": "Planificación semanal de compras y agenda familiar en marcha", "category": "rutina"}],
+        "personalities": [],
+    })
+    .to_string();
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(sse_reply(&distilled_json))
+        .mount(&local_llm)
+        .await;
+
+    let dir = tempfile::tempdir_in("/tmp")?;
+    let mut config = bundle(dir.path())?;
+    config.core.llm.fast_router_url = format!("{}/v1", local_llm.uri());
+    config.core.memory.enabled = true;
+    config.core.memory.ambient_enabled = true;
+    config.core.memory.voice_proposals_enabled = true;
+
+    let core_toml = include_str!("../../../config/nexa/nexa.toml").replace(
+        "/var/lib/nexa",
+        config.core.paths.data_dir.to_str().ok_or("data path")?,
+    );
+    tokio::fs::write(dir.path().join("nexa.toml"), core_toml).await?;
+    let (_daemon, mut memory) =
+        MemoryDaemon::start(dir.path(), &config.core.paths.runtime_dir).await?;
+
+    let (capture_tx, capture_rx) = mpsc::channel(64);
+    let (obs_tx, mut obs_rx) = mpsc::unbounded_channel();
+    let (play_tx, _play_rx) = mpsc::unbounded_channel();
+    let (ml, _stt_rx, _spoken_rx) = TestMl::new(false);
+    let brain = Brain::open(
+        config,
+        Dependencies {
+            audio: Arc::new(Audio(Mutex::new(Some(capture_rx)), play_tx)),
+            ml: Arc::new(ml),
+            memory: Some(Arc::new(ObservedMemory {
+                inner: UdsMemory(memory.clone()),
+                observed: obs_tx,
+            })),
+            home: None,
+            clock: Arc::new(SystemClock::default()),
+        },
+    )
+    .await?;
+    let worker = tokio::spawn(Arc::clone(&brain).run_voice());
+
+    let mut shared_conv_id: Option<String> = None;
+    let mut first_expected_text = String::new();
+    let base_ts = 1_800_000_000_000_u64;
+    // 300 consecutive 12-second segments = 3,600,000 ms (1 full hour).
+    for idx in 0..300_usize {
+        let continues = idx % 2 == 1;
+        let text = if !continues {
+            format!(
+                "Bloque {idx:03} de la conversación continua sobre logística del hogar, música, educación, compras de la semana, recetas saludables y preparación de la reunión del próximo viernes con mucha calma para organizar"
+            )
+        } else {
+            format!(
+                "para organizar mejor cada detalle pendiente del cronograma semanal número {idx:03}, revisando entregas, presupuestos domésticos, turnos médicos y listas compartidas en perfecto español."
+            )
+        };
+        if idx == 0 {
+            first_expected_text = text.clone();
+            assert!(first_expected_text.chars().count() > 200);
+        }
+        capture_tx
+            .send(Ok(v1::AudioUtterance {
+                utterance_id: format!("hour-u-{idx:03}"),
+                room_id: "living".into(),
+                kind: UtteranceKind::Ambient as i32,
+                sample_rate: 16_000,
+                pcm_f32le: padded_text_pcm(&text),
+                speech_ratio: 0.65,
+                captured_at_unix_ms: base_ts + (idx as u64) * 12_000,
+                continues_segment: continues,
+                ..Default::default()
+            }))
+            .await?;
+        let obs = receive(&mut obs_rx).await?;
+        match &shared_conv_id {
+            Some(expected) => assert_eq!(
+                &obs.conversation_id, expected,
+                "1h conversation split unexpectedly at segment {idx}"
+            ),
+            None => shared_conv_id = Some(obs.conversation_id),
+        }
+    }
+    let conversation_id = shared_conv_id.ok_or("missing conversation_id")?;
+
+    let review_permissions = &[Permission::VoicesRead, Permission::VoicesReview];
+    let mut cursor = String::new();
+    let first_capture_id = loop {
+        let captures_resp = memory
+            .query_voice_captures(v1::VoiceCaptureQueryRequest {
+                query_json: json!({"limit": 100, "cursor": cursor}).to_string(),
+                actor: Some(actor(Role::Operator, review_permissions)),
+            })
+            .await?
+            .into_inner();
+        let captures_doc: Value = serde_json::from_str(&captures_resp.payload_json)?;
+        if let Some(found) = captures_doc["captures"]
+            .as_array()
+            .and_then(|arr| arr.iter().find(|c| c["utterance_id"] == "hour-u-000"))
+        {
+            break found["capture_id"]
+                .as_str()
+                .ok_or("missing capture_id")?
+                .to_owned();
+        }
+        let Some(next) = captures_doc["next"].as_str() else {
+            return Err("missing hour-u-000 capture across paginated query".into());
+        };
+        cursor = next.to_owned();
+    };
+    let review_resp = memory
+        .get_voice_capture_review(v1::VoiceCaptureReviewRequest {
+            fingerprint_id: first_capture_id.clone(),
+            include_transcript: true,
+            actor: Some(actor(
+                Role::Operator,
+                &[
+                    Permission::VoicesRead,
+                    Permission::VoicesReview,
+                    Permission::ConversationsRead,
+                ],
+            )),
+        })
+        .await?
+        .into_inner();
+    let review_doc: Value = serde_json::from_str(&review_resp.payload_json)?;
+    assert_eq!(
+        review_doc["transcript_preview"].as_str(),
+        Some(first_expected_text.as_str()),
+        "stored transcript must not be truncated at 160 chars"
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(6);
+    let llm_reqs = loop {
+        let reqs = local_llm.received_requests().await.ok_or("no recording")?;
+        let proposals_resp = memory
+            .list_memory_overview(v1::MemoryOverviewRequest {
+                view: "proposals".into(),
+                cursor: String::new(),
+                limit: 50,
+                actor: Some(actor(Role::Operator, &[Permission::MemoryRead])),
+            })
+            .await?
+            .into_inner();
+        let proposals_doc: Value = serde_json::from_str(&proposals_resp.payload_json)?;
+        let has_fact = proposals_doc["proposals"]
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|p| p["conversation_id"] == conversation_id));
+        if reqs.len() >= 4 && has_fact {
+            break reqs;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for rolling 1h distillation (reqs={}, docs={proposals_doc})",
+            reqs.len()
+        );
+        tokio::time::sleep(Duration::from_millis(40)).await;
+    };
+    let req0_body = String::from_utf8_lossy(&llm_reqs[0].body);
+    assert!(req0_body.contains("Bloque 000"));
+    assert!(
+        !req0_body.contains("para organizar para organizar"),
+        "boundary overlap was not deduplicated: {req0_body}"
+    );
+    let has_rolling_context = llm_reqs[1..].iter().any(|req| {
+        String::from_utf8_lossy(&req.body).contains("Contexto previo de esta misma conversación")
+    });
+    assert!(
+        has_rolling_context,
+        "later rolling windows did not include prior context"
+    );
+
+    Control(Arc::clone(&brain))
+        .mutate_memory_item(Request::new(v1::MemoryMutationRequest {
+            operation: "erase_conversation".into(),
+            target_id: conversation_id.clone(),
+            payload_json: "{}".into(),
+            actor: Some(actor(
+                Role::Operator,
+                &[
+                    Permission::ConversationsRead,
+                    Permission::AdminManage,
+                    Permission::MemoryReview,
+                ],
+            )),
+        }))
+        .await?;
+
+    let proposals_after = memory
+        .list_memory_overview(v1::MemoryOverviewRequest {
+            view: "proposals".into(),
+            cursor: String::new(),
+            limit: 50,
+            actor: Some(actor(Role::Operator, &[Permission::MemoryRead])),
+        })
+        .await?
+        .into_inner();
+    let after_doc: Value = serde_json::from_str(&proposals_after.payload_json)?;
+    assert!(
+        !after_doc["proposals"]
+            .as_array()
+            .is_some_and(|arr| arr.iter().any(|p| p["conversation_id"] == conversation_id)),
+        "expected atomic erasure of 1h proposed facts: {after_doc}"
+    );
+    assert_eq!(
+        memory
+            .get_voice_capture_review(v1::VoiceCaptureReviewRequest {
+                fingerprint_id: first_capture_id,
+                include_transcript: false,
+                actor: Some(actor(Role::Operator, review_permissions)),
+            })
+            .await
+            .expect_err("capture should be erased with 1h conversation")
+            .code(),
+        Code::NotFound
+    );
 
     brain.shutdown();
     worker.await?;

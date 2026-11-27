@@ -2,15 +2,15 @@ use nexa_proto::v1::{IdentifyVoiceResponse, VoiceObservationReceipt};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::db::{
-    Error, Result, Store, VOICE_MODEL, VectorKind, ensure_conversation_live, id, new_id, now_ms,
-    vector,
+    Error, Result, Store, VOICE_DIMENSIONS, VOICE_MODEL, VectorKind, ensure_conversation_live, id,
+    new_id, now_ms, vector,
 };
 use crate::erasure::{Kind, ensure_not_erased};
 
 use super::global_enabled;
 
-const VOICE_MATCH_MAX_DISTANCE: f32 = 0.32;
-const UNLINKED_CLUSTER_MAX_DISTANCE: f32 = 0.25;
+const VOICE_MATCH_MAX_DISTANCE: f32 = 0.42;
+const UNLINKED_CLUSTER_MAX_DISTANCE: f32 = 0.38;
 const MATCH_MARGIN: f32 = 0.05;
 
 #[derive(Debug)]
@@ -245,6 +245,9 @@ fn store_fingerprint(
             "INSERT INTO voice_profile_sources VALUES (?1, ?2)",
             params![profile_id, capture_id],
         )?;
+        if reused_unlinked {
+            refresh_unlinked_centroid(tx, &profile_id, observation.model)?;
+        }
     } else {
         tx.execute(
             "INSERT INTO voice_attribution_events VALUES (?1, ?2, 'match', ?3)",
@@ -256,6 +259,38 @@ fn store_fingerprint(
         matched_profile_id,
         similarity_score,
     })
+}
+
+fn refresh_unlinked_centroid(tx: &Transaction<'_>, profile_id: &str, model: &str) -> Result<()> {
+    let mut centroid = vec![0.0_f32; VOICE_DIMENSIONS];
+    {
+        let mut stmt =
+            tx.prepare("SELECT embedding FROM voice_fingerprints WHERE profile_id=?1")?;
+        let mut rows = stmt.query([profile_id])?;
+        let mut count = 0_usize;
+        while let Some(row) = rows.next()? {
+            let embedding: Vec<u8> = row.get(0)?;
+            let (coordinates, rest) = embedding.as_chunks::<4>();
+            if !rest.is_empty() || coordinates.len() != centroid.len() {
+                return Err(Error::Schema("invalid voice embedding"));
+            }
+            for (sum, bytes) in centroid.iter_mut().zip(coordinates) {
+                *sum += f32::from_ne_bytes(*bytes);
+            }
+            count += 1;
+        }
+        if count == 0 {
+            return Ok(());
+        }
+    }
+    if let Ok(normalized) = vector(tx, VectorKind::Voice, model, &centroid) {
+        tx.execute("DELETE FROM voice_vec WHERE profile_id=?1", [profile_id])?;
+        tx.execute(
+            "INSERT INTO voice_vec VALUES (?1, ?2)",
+            params![profile_id, normalized],
+        )?;
+    }
+    Ok(())
 }
 
 fn nearest_profile(conn: &Connection, embedding: &[u8]) -> Result<Option<(String, f32)>> {
