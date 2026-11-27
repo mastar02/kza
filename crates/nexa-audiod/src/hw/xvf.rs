@@ -121,7 +121,10 @@ mod native {
     const XVF_PID: u16 = 0x001a;
     const TIMEOUT: Duration = Duration::from_millis(250);
     const SERVICER_COMMAND_RETRY: u8 = 64;
-    const READ_RETRIES: usize = 5;
+    const INIT_READ_RETRIES: usize = 25;
+    const INIT_READ_RETRY_DELAY: Duration = Duration::from_millis(10);
+    const TELEMETRY_READ_RETRIES: usize = 4;
+    const TELEMETRY_READ_RETRY_DELAY: Duration = Duration::from_millis(5);
 
     #[derive(Debug, Clone)]
     pub struct XvfUsb {
@@ -163,7 +166,13 @@ mod native {
             for frame in tuning_frames(tuning) {
                 write(&handle, frame.setup, &frame.payload)?;
             }
-            let readback = read_with_retry(&handle, ControlSetup::read(17, 11), 4)?;
+            let readback = read_with_retry(
+                &handle,
+                ControlSetup::read(17, 11),
+                4,
+                INIT_READ_RETRIES,
+                INIT_READ_RETRY_DELAY,
+            )?;
             let actual = f32::from_le_bytes(
                 readback
                     .as_slice()
@@ -181,8 +190,22 @@ mod native {
 
         pub(crate) fn read_dsp_telemetry(&self) -> Option<DspTelemetry> {
             let handle = self.open().ok()?;
-            let sp_raw = read_with_retry(&handle, spenergy_read_setup(), 16).ok()?;
-            let az_raw = read_with_retry(&handle, azimuth_read_setup(), 16).ok()?;
+            let sp_raw = read_with_retry(
+                &handle,
+                spenergy_read_setup(),
+                16,
+                TELEMETRY_READ_RETRIES,
+                TELEMETRY_READ_RETRY_DELAY,
+            )
+            .ok()?;
+            let az_raw = read_with_retry(
+                &handle,
+                azimuth_read_setup(),
+                16,
+                TELEMETRY_READ_RETRIES,
+                TELEMETRY_READ_RETRY_DELAY,
+            )
+            .ok()?;
             let spenergy = parse_f32x4(&sp_raw)?;
             let azimuth_rad = parse_f32x4(&az_raw)?;
             Some(DspTelemetry {
@@ -231,7 +254,13 @@ mod native {
                 if size == 0 {
                     return Ok(Vec::new());
                 }
-                read_with_retry(&handle, ControlSetup::read(resource, command), size)
+                read_with_retry(
+                    &handle,
+                    ControlSetup::read(resource, command),
+                    size,
+                    INIT_READ_RETRIES,
+                    INIT_READ_RETRY_DELAY,
+                )
             })
             .await
             .map_err(|_| AudioError::Unavailable)??;
@@ -244,9 +273,11 @@ mod native {
         handle: &DeviceHandle<rusb::GlobalContext>,
         setup: ControlSetup,
         size: usize,
+        max_retries: usize,
+        retry_delay: Duration,
     ) -> Result<Vec<u8>, AudioError> {
         let mut data = vec![0; size + 1];
-        for attempt in 0..READ_RETRIES {
+        for attempt in 0..max_retries {
             let length = handle
                 .read_control(
                     setup.request_type,
@@ -260,10 +291,27 @@ mod native {
             if length == data.len() && data[0] == 0 {
                 return Ok(data.split_off(1));
             }
-            if length >= 1 && data[0] == SERVICER_COMMAND_RETRY && attempt + 1 < READ_RETRIES {
-                std::thread::sleep(Duration::from_millis(2));
-                continue;
+            if length >= 1 && data[0] == SERVICER_COMMAND_RETRY {
+                if attempt + 1 < max_retries {
+                    std::thread::sleep(retry_delay);
+                    continue;
+                }
+                tracing::warn!(
+                    resource = setup.index,
+                    command = setup.value & 0x7f,
+                    attempts = max_retries,
+                    "XVF3800 control read exhausted SERVICER_COMMAND_RETRY"
+                );
+                return Err(AudioError::Unavailable);
             }
+            tracing::warn!(
+                resource = setup.index,
+                command = setup.value & 0x7f,
+                length,
+                expected = data.len(),
+                status = data.first().copied().unwrap_or(0xff),
+                "XVF3800 control read rejected"
+            );
             return Err(AudioError::Rejected);
         }
         Err(AudioError::Unavailable)
