@@ -121,9 +121,11 @@ mod native {
     const XVF_PID: u16 = 0x001a;
     const TIMEOUT: Duration = Duration::from_millis(250);
     const SERVICER_COMMAND_RETRY: u8 = 64;
+    const SERVICER_COMMAND_BUSY: u8 = 68;
+    const WRITE_SETTLE_DELAY: Duration = Duration::from_millis(5);
     const INIT_READ_RETRIES: usize = 25;
     const INIT_READ_RETRY_DELAY: Duration = Duration::from_millis(10);
-    const TELEMETRY_READ_RETRIES: usize = 4;
+    const TELEMETRY_READ_RETRIES: usize = 6;
     const TELEMETRY_READ_RETRY_DELAY: Duration = Duration::from_millis(5);
 
     #[derive(Debug, Clone)]
@@ -165,6 +167,7 @@ mod native {
             let handle = self.open()?;
             for frame in tuning_frames(tuning) {
                 write(&handle, frame.setup, &frame.payload)?;
+                std::thread::sleep(WRITE_SETTLE_DELAY);
             }
             let readback = read_with_retry(
                 &handle,
@@ -172,6 +175,7 @@ mod native {
                 4,
                 INIT_READ_RETRIES,
                 INIT_READ_RETRY_DELAY,
+                true,
             )?;
             let actual = f32::from_le_bytes(
                 readback
@@ -196,6 +200,7 @@ mod native {
                 16,
                 TELEMETRY_READ_RETRIES,
                 TELEMETRY_READ_RETRY_DELAY,
+                false,
             )
             .ok()?;
             let az_raw = read_with_retry(
@@ -204,6 +209,7 @@ mod native {
                 16,
                 TELEMETRY_READ_RETRIES,
                 TELEMETRY_READ_RETRY_DELAY,
+                false,
             )
             .ok()?;
             let spenergy = parse_f32x4(&sp_raw)?;
@@ -260,6 +266,7 @@ mod native {
                     size,
                     INIT_READ_RETRIES,
                     INIT_READ_RETRY_DELAY,
+                    true,
                 )
             })
             .await
@@ -275,6 +282,7 @@ mod native {
         size: usize,
         max_retries: usize,
         retry_delay: Duration,
+        warn_on_retry_exhausted: bool,
     ) -> Result<Vec<u8>, AudioError> {
         let mut data = vec![0; size + 1];
         for attempt in 0..max_retries {
@@ -291,17 +299,28 @@ mod native {
             if length == data.len() && data[0] == 0 {
                 return Ok(data.split_off(1));
             }
-            if length >= 1 && data[0] == SERVICER_COMMAND_RETRY {
+            if length >= 1 && matches!(data[0], SERVICER_COMMAND_RETRY | SERVICER_COMMAND_BUSY) {
                 if attempt + 1 < max_retries {
                     std::thread::sleep(retry_delay);
                     continue;
                 }
-                tracing::warn!(
-                    resource = setup.index,
-                    command = setup.value & 0x7f,
-                    attempts = max_retries,
-                    "XVF3800 control read exhausted SERVICER_COMMAND_RETRY"
-                );
+                if warn_on_retry_exhausted {
+                    tracing::warn!(
+                        resource = setup.index,
+                        command = setup.value & 0x7f,
+                        attempts = max_retries,
+                        status = data[0],
+                        "XVF3800 control read exhausted SERVICER_COMMAND_RETRY"
+                    );
+                } else {
+                    tracing::debug!(
+                        resource = setup.index,
+                        command = setup.value & 0x7f,
+                        attempts = max_retries,
+                        status = data[0],
+                        "XVF3800 control read exhausted SERVICER_COMMAND_RETRY"
+                    );
+                }
                 return Err(AudioError::Unavailable);
             }
             tracing::warn!(
