@@ -15,6 +15,11 @@
   `/home/kza/app`. Son el despliegue existente, no un checkout de desarrollo.
 - Los servicios legacy a cargo de `kza` conservan su cuenta. Los archivos de
   la versión instalada se conservan hasta que una release los sustituya.
+- Una vez validado el resultado, limpiar las cachés de compilación (`target/`)
+  y borrar las evidencias y reportes locales o de soak que ya no se necesiten
+  en Mac y en las cuentas `yo` y `nexa` para compartir el disco. Conservar
+  los activos en curso hasta su validación final y respetar el GO de limpieza
+  del servidor.
 - Mantener secretos, datos de ejecución y modelos fuera de Git.
 - Antes de cerrar una sesión, guardar el trabajo autorizado en commits y subir
   la rama a GitHub. Indicar expresamente cualquier trabajo que quede sin subir.
@@ -27,6 +32,8 @@
 
 ## Delegación de agentes y workflow multi-consola
 
+- Delegar infraestructura, packaging, limpieza de disco y relevamiento
+  operativo de KZA al especialista `kza-ops` vía `scripts/kza_seat.py`.
 - Podemos usar más de cuatro agentes cuando haya trabajo útil para paralelizar.
   El máximo acordado es de ocho agentes activos en total, incluido el
   coordinador.
