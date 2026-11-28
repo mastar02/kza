@@ -27,6 +27,8 @@ use tracing_subscriber::EnvFilter;
 
 const CAPTURE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const GRPC_SHUTDOWN_GRACE: Duration = Duration::from_millis(300);
+const WORKER_THREADS: usize = 4;
+const MAX_BLOCKING_THREADS: usize = 16;
 
 type DaemonResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -86,6 +88,8 @@ fn main() -> DaemonResult<()> {
         .with_target(true)
         .init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .max_blocking_threads(MAX_BLOCKING_THREADS)
         .enable_all()
         .build()?;
     let result = runtime.block_on(run(options));

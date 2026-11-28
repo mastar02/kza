@@ -111,11 +111,11 @@ mod native {
     use rusb::DeviceHandle;
 
     use super::{
-        ControlSetup, DspTelemetry, INTERFACE, azimuth_read_setup, parse_f32x4, reboot_frame,
-        spenergy_read_setup, tuning_frames,
+        ControlSetup, INTERFACE, azimuth_read_setup, parse_auto_beam_f32, reboot_frame,
+        tuning_frames,
     };
     use crate::hw::sysfs::parse_usb_port;
-    use crate::traits::{AudioError, XvfTransport};
+    use crate::traits::{AudioError, DspProbe, XvfTransport};
 
     const XVF_VID: u16 = 0x2886;
     const XVF_PID: u16 = 0x001a;
@@ -192,17 +192,8 @@ mod native {
             Ok(())
         }
 
-        pub(crate) fn read_dsp_telemetry(&self) -> Option<DspTelemetry> {
+        pub(crate) fn read_azimuth_blocking(&self) -> Option<f32> {
             let handle = self.open().ok()?;
-            let sp_raw = read_with_retry(
-                &handle,
-                spenergy_read_setup(),
-                16,
-                TELEMETRY_READ_RETRIES,
-                TELEMETRY_READ_RETRY_DELAY,
-                false,
-            )
-            .ok()?;
             let az_raw = read_with_retry(
                 &handle,
                 azimuth_read_setup(),
@@ -212,13 +203,7 @@ mod native {
                 false,
             )
             .ok()?;
-            let spenergy = parse_f32x4(&sp_raw)?;
-            let azimuth_rad = parse_f32x4(&az_raw)?;
-            Some(DspTelemetry {
-                spenergy,
-                azimuth_rad,
-                auto_beam_rad: Some(azimuth_rad[3]),
-            })
+            parse_auto_beam_f32(&az_raw)
         }
 
         /// Deliberately reboot only the device at this port. The next capture start
@@ -231,6 +216,17 @@ mod native {
             })
             .await
             .map_err(|_| AudioError::Unavailable)?
+        }
+    }
+
+    #[tonic::async_trait]
+    impl DspProbe for XvfUsb {
+        async fn read_azimuth(&self) -> Option<f32> {
+            let device = self.clone();
+            tokio::task::spawn_blocking(move || device.read_azimuth_blocking())
+                .await
+                .ok()
+                .flatten()
         }
     }
 

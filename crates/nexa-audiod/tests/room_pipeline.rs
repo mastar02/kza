@@ -8,8 +8,11 @@ use nexa_audiod::capture_seal::{CaptureControl, CapturePhase, CaptureState};
 use nexa_audiod::dsp::FRAME_SAMPLES;
 use nexa_audiod::grpc::AudioService;
 use nexa_audiod::hw::{amp::Ma1260, simulation::Simulation};
+use nexa_audiod::ring::{CaptureProducer, PushError};
 use nexa_audiod::runtime::{RoomPipeline, SharedShadow, run_capture_control};
-use nexa_audiod::traits::{AudioError, CaptureSource, ShadowStt, VadEngine, WakeEngine};
+use nexa_audiod::traits::{
+    AudioError, CaptureCounters, CaptureSource, DspProbe, ShadowStt, VadEngine, WakeEngine,
+};
 use nexa_config::{Ma1260Connection, RoomDefinition, XvfTuning};
 use nexa_proto::v1::audio_service_server::AudioService as AudioRpc;
 use nexa_proto::v1::{Empty, SubscribeUtterancesRequest, UtteranceKind};
@@ -36,21 +39,32 @@ impl CaptureSource for Script {
         Ok(())
     }
 
-    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
-        if self.broken {
-            return Err(AudioError::Unavailable);
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let mut buf = [0.0_f32; FRAME_SAMPLES];
+        loop {
+            if self.broken {
+                return Err(AudioError::Unavailable);
+            }
+            if self.frame == 15 * self.utterances {
+                return std::future::pending().await;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            buf.fill(match self.frame % 15 {
+                0 => 0.8,
+                1..=4 => self.sample,
+                _ => 0.0,
+            });
+            self.frame += 1;
+            match producer.push(&buf).await {
+                Ok(()) => (),
+                Err(PushError::Closed) => return Ok(()),
+                Err(PushError::Full) => return Err(AudioError::Unavailable),
+            }
         }
-        if self.frame == 15 * self.utterances {
-            return std::future::pending().await;
-        }
-        tokio::time::sleep(Duration::from_millis(2)).await;
-        samples.fill(match self.frame % 15 {
-            0 => 0.8,
-            1..=4 => self.sample,
-            _ => 0.0,
-        });
-        self.frame += 1;
-        Ok(samples.len())
     }
 
     async fn stop(&mut self) -> Result<(), AudioError> {
@@ -135,9 +149,21 @@ impl CaptureSource for FrameSource {
         Ok(())
     }
 
-    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
-        samples.fill(self.0.recv().await.ok_or(AudioError::Unavailable)??);
-        Ok(samples.len())
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let mut buf = [0.0_f32; FRAME_SAMPLES];
+        loop {
+            let level = self.0.recv().await.ok_or(AudioError::Unavailable)??;
+            buf.fill(level);
+            match producer.push(&buf).await {
+                Ok(()) => (),
+                Err(PushError::Closed) => return Ok(()),
+                Err(PushError::Full) => return Err(AudioError::Unavailable),
+            }
+        }
     }
 
     async fn stop(&mut self) -> Result<(), AudioError> {
@@ -683,16 +709,26 @@ impl CaptureSource for DeadIsochSource {
         Ok(())
     }
 
-    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
-        let len = samples.len().min(FRAME_SAMPLES);
-        let value = if !self.fail_forever && self.reboots.load(Ordering::Relaxed) >= 1 {
-            0.002
-        } else {
-            0.0
-        };
-        samples[..len].fill(value);
-        self.frames += 1;
-        Ok(len)
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let mut buf = [0.0_f32; FRAME_SAMPLES];
+        loop {
+            let value = if !self.fail_forever && self.reboots.load(Ordering::Relaxed) >= 1 {
+                0.002
+            } else {
+                0.0
+            };
+            buf.fill(value);
+            self.frames += 1;
+            match producer.push(&buf).await {
+                Ok(()) => (),
+                Err(PushError::Closed) => return Ok(()),
+                Err(PushError::Full) => return Err(AudioError::Unavailable),
+            }
+        }
     }
 
     async fn stop(&mut self) -> Result<(), AudioError> {
@@ -744,6 +780,15 @@ async fn dead_isochronous_watchdog_reboots_and_enforces_hourly_rate_limit() {
     .unwrap();
 }
 
+struct FixedAzimuthProbe(f32);
+
+#[tonic::async_trait]
+impl DspProbe for FixedAzimuthProbe {
+    async fn read_azimuth(&self) -> Option<f32> {
+        Some(self.0)
+    }
+}
+
 struct ContinuousDoaSource {
     frames: usize,
 }
@@ -753,30 +798,36 @@ impl CaptureSource for ContinuousDoaSource {
         Ok(())
     }
 
-    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
-        let len = samples.len().min(FRAME_SAMPLES);
-        let val = if self.frames < 5 {
-            0.001
-        } else if self.frames < 310 {
-            0.3
-        } else {
-            0.0
-        };
-        samples[..len].fill(val);
-        self.frames += 1;
-        Ok(len)
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let mut buf = [0.0_f32; FRAME_SAMPLES];
+        loop {
+            let val = if self.frames < 5 {
+                0.001
+            } else if self.frames < 310 {
+                0.3
+            } else {
+                0.0
+            };
+            buf.fill(val);
+            self.frames += 1;
+            match producer.push(&buf).await {
+                Ok(()) => (),
+                Err(PushError::Closed) => return Ok(()),
+                Err(PushError::Full) => return Err(AudioError::Unavailable),
+            }
+        }
     }
 
     async fn stop(&mut self) -> Result<(), AudioError> {
         Ok(())
     }
 
-    async fn probe_dsp(&mut self) -> Option<nexa_audiod::hw::xvf::DspTelemetry> {
-        Some(nexa_audiod::hw::xvf::DspTelemetry {
-            spenergy: [0.0; 4],
-            azimuth_rad: [0.0, 0.0, 0.0, 1.0],
-            auto_beam_rad: Some(1.0),
-        })
+    fn dsp_probe(&self) -> Option<Arc<dyn DspProbe>> {
+        Some(Arc::new(FixedAzimuthProbe(1.0)))
     }
 }
 
@@ -842,19 +893,29 @@ impl CaptureSource for LongContinuousSource {
         Ok(())
     }
 
-    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
-        if self.frames >= self.total_frames + 16 {
-            return std::future::pending().await;
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let mut buf = [0.0_f32; FRAME_SAMPLES];
+        loop {
+            if self.frames >= self.total_frames + 16 {
+                return std::future::pending().await;
+            }
+            let val = if self.frames < 5 || self.frames >= self.total_frames {
+                0.001
+            } else {
+                0.3
+            };
+            buf.fill(val);
+            self.frames += 1;
+            match producer.push(&buf).await {
+                Ok(()) => (),
+                Err(PushError::Closed) => return Ok(()),
+                Err(PushError::Full) => return Err(AudioError::Unavailable),
+            }
         }
-        let len = samples.len().min(FRAME_SAMPLES);
-        let val = if self.frames < 5 || self.frames >= self.total_frames {
-            0.001
-        } else {
-            0.3
-        };
-        samples[..len].fill(val);
-        self.frames += 1;
-        Ok(len)
     }
 
     async fn stop(&mut self) -> Result<(), AudioError> {
@@ -929,6 +990,367 @@ async fn one_hour_continuous_ambient_speech_streams_without_drops_or_unbounded_b
             health.detail
         );
 
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+struct CountingDspProbe(Arc<AtomicUsize>);
+
+#[tonic::async_trait]
+impl DspProbe for CountingDspProbe {
+    async fn read_azimuth(&self) -> Option<f32> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Some(0.75)
+    }
+}
+
+struct ProbedFrameSource {
+    rx: mpsc::Receiver<Result<f32, AudioError>>,
+    probe_calls: Arc<AtomicUsize>,
+}
+
+impl CaptureSource for ProbedFrameSource {
+    async fn start(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let mut buf = [0.0_f32; FRAME_SAMPLES];
+        loop {
+            let level = self.rx.recv().await.ok_or(AudioError::Unavailable)??;
+            buf.fill(level);
+            match producer.push(&buf).await {
+                Ok(()) => (),
+                Err(PushError::Closed) => return Ok(()),
+                Err(PushError::Full) => return Err(AudioError::Unavailable),
+            }
+        }
+    }
+
+    async fn stop(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    fn dsp_probe(&self) -> Option<Arc<dyn DspProbe>> {
+        Some(Arc::new(CountingDspProbe(Arc::clone(&self.probe_calls))))
+    }
+}
+
+#[tokio::test]
+async fn dsp_probe_runs_only_with_ambient_demand_and_pauses_during_active_wake_command() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (_, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let (sender, receiver) = mpsc::channel(32);
+        let probe_calls = Arc::new(AtomicUsize::new(0));
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                ProbedFrameSource {
+                    rx: receiver,
+                    probe_calls: Arc::clone(&probe_calls),
+                },
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(
+                service.clone(),
+                Arc::new(SharedShadow::new(Shadow)),
+                shutdown,
+            ),
+        );
+
+        // Without ambient demand, DSP polling must stay completely idle.
+        frames(&sender, 5, 0.0).await;
+        wait_for_frames(&service, 5).await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert_eq!(probe_calls.load(Ordering::Relaxed), 0);
+
+        // Subscribing with include_ambient activates the independent DSP poller.
+        let mut ambient = service
+            .subscribe_utterances(Request::new(SubscribeUtterancesRequest {
+                include_ambient: true,
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while probe_calls.load(Ordering::Relaxed) == 0 && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(probe_calls.load(Ordering::Relaxed) >= 1);
+
+        // Trigger a wake command: capture_busy must become true and pause DSP polling
+        // across a >500ms window while the post-wake endpoint is still listening.
+        frames(&sender, 1, 0.8).await;
+        wait_for_frames(&service, 6).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let during_wake = probe_calls.load(Ordering::Relaxed);
+        for step in 0..4 {
+            tokio::time::sleep(Duration::from_millis(160)).await;
+            frames(&sender, 1, 0.2).await;
+            wait_for_frames(&service, 7 + step).await;
+        }
+        assert_eq!(probe_calls.load(Ordering::Relaxed), during_wake);
+
+        frames(&sender, 9, 0.0).await;
+        let cmd = ambient.next().await.unwrap().unwrap();
+        assert_eq!(cmd.kind(), UtteranceKind::Command);
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+struct NoAudioFailSource {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl CaptureSource for NoAudioFailSource {
+    async fn start(&mut self) -> Result<(), AudioError> {
+        self.events.lock().unwrap().push("start");
+        Ok(())
+    }
+
+    async fn run(
+        &mut self,
+        _producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        Err(AudioError::Unavailable)
+    }
+
+    async fn stop(&mut self) -> Result<(), AudioError> {
+        self.events.lock().unwrap().push("stop");
+        Ok(())
+    }
+
+    fn supports_dead_isoch_watchdog(&self) -> bool {
+        true
+    }
+
+    async fn reboot(&mut self) -> Result<(), AudioError> {
+        self.events.lock().unwrap().push("reboot");
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn watchdog_stops_before_reboot_and_reboots_after_consecutive_no_audio_failures() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (capture, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                NoAudioFailSource {
+                    events: Arc::clone(&events),
+                },
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(
+                service.clone(),
+                Arc::new(SharedShadow::new(SilentShadowStub)),
+                shutdown.clone(),
+            ),
+        );
+        let coordinator = tokio::spawn(run_capture_control(capture, shutdown));
+
+        while !events.lock().unwrap().contains(&"reboot") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let prefix = {
+            let log = events.lock().unwrap();
+            let pos = log.iter().position(|&ev| ev == "reboot").unwrap();
+            log[..=pos].to_vec()
+        };
+        assert_eq!(
+            prefix,
+            vec!["start", "stop", "start", "stop", "start", "stop", "reboot"]
+        );
+
+        let health = service
+            .get_health(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            health.detail.contains("watchdog_reboots=1"),
+            "unexpected health detail: {}",
+            health.detail
+        );
+
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+        coordinator.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+struct PartialZeroSource {
+    events: Arc<Mutex<Vec<&'static str>>>,
+    chunks_pushed: Arc<AtomicUsize>,
+    reboots: Arc<AtomicUsize>,
+}
+
+impl CaptureSource for PartialZeroSource {
+    async fn start(&mut self) -> Result<(), AudioError> {
+        self.events.lock().unwrap().push("start");
+        Ok(())
+    }
+
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let chunk = if self.reboots.load(Ordering::Relaxed) >= 1 {
+            [0.002_f32; 320]
+        } else {
+            [0.0_f32; 320]
+        };
+        loop {
+            match producer.push(&chunk).await {
+                Ok(()) => {
+                    self.chunks_pushed.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(PushError::Closed) => return Ok(()),
+                Err(PushError::Full) => return Err(AudioError::Unavailable),
+            }
+            tokio::task::yield_now().await;
+        }
+    }
+
+    async fn stop(&mut self) -> Result<(), AudioError> {
+        self.events.lock().unwrap().push("stop");
+        Ok(())
+    }
+
+    fn supports_dead_isoch_watchdog(&self) -> bool {
+        true
+    }
+
+    async fn reboot(&mut self) -> Result<(), AudioError> {
+        self.events.lock().unwrap().push("reboot");
+        self.reboots.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn dead_isoch_watchdog_counts_exact_80ms_frames_even_on_partial_chunks() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (capture, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let chunks_pushed = Arc::new(AtomicUsize::new(0));
+        let reboots = Arc::new(AtomicUsize::new(0));
+        let worker = tokio::spawn(
+            RoomPipeline::new(
+                &room("living"),
+                PartialZeroSource {
+                    events: Arc::clone(&events),
+                    chunks_pushed: Arc::clone(&chunks_pushed),
+                    reboots: Arc::clone(&reboots),
+                },
+                Detector,
+                Detector,
+                0.4,
+            )
+            .run(
+                service,
+                Arc::new(SharedShadow::new(SilentShadowStub)),
+                shutdown.clone(),
+            ),
+        );
+        let coordinator = tokio::spawn(run_capture_control(capture, shutdown));
+
+        while reboots.load(Ordering::Relaxed) < 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // 75 frames * 1280 samples = 300 chunks of 320 samples (must NOT fire at 75 chunks).
+        assert!(chunks_pushed.load(Ordering::Relaxed) >= 300);
+        let log = events.lock().unwrap().clone();
+        let reboot_idx = log.iter().position(|&ev| ev == "reboot").unwrap();
+        assert_eq!(&log[..=reboot_idx], &["start", "stop", "reboot"]);
+
+        stop.send_replace(true);
+        worker.await.unwrap().unwrap();
+        coordinator.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+struct CounterSource;
+
+impl CaptureSource for CounterSource {
+    async fn start(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        counters.xruns.fetch_add(2, Ordering::Relaxed);
+        counters.ring_overruns.fetch_add(3, Ordering::Relaxed);
+        let _ = producer.push(&[0.002_f32; FRAME_SAMPLES]).await;
+        std::future::pending().await
+    }
+
+    async fn stop(&mut self) -> Result<(), AudioError> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn capture_counters_are_reported_in_health_detail() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let (_, service) = services();
+        let (stop, shutdown) = watch::channel(false);
+        let worker = tokio::spawn(
+            RoomPipeline::new(&room("living"), CounterSource, Detector, Detector, 0.4).run(
+                service.clone(),
+                Arc::new(SharedShadow::new(SilentShadowStub)),
+                shutdown,
+            ),
+        );
+        wait_for_frames(&service, 1).await;
+        let health = service
+            .get_health(Request::new(Empty {}))
+            .await
+            .unwrap()
+            .into_inner();
+        assert!(
+            health.detail.contains("capture_xruns=2"),
+            "detail={}",
+            health.detail
+        );
+        assert!(
+            health.detail.contains("ring_overruns=3"),
+            "detail={}",
+            health.detail
+        );
+        assert!(
+            health.detail.contains("watchdog_reboots=0"),
+            "detail={}",
+            health.detail
+        );
         stop.send_replace(true);
         worker.await.unwrap().unwrap();
     })

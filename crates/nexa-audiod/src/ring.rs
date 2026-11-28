@@ -23,6 +23,7 @@ struct Signal {
 #[derive(Debug)]
 pub struct CaptureProducer {
     ring: Producer<f32>,
+    capacity: usize,
     signal: Arc<Signal>,
 }
 
@@ -50,11 +51,13 @@ pub fn capture_ring() -> (CaptureProducer, CaptureConsumer) {
 #[must_use]
 pub fn capture_ring_with_frames(frames: usize) -> (CaptureProducer, CaptureConsumer) {
     assert!(frames >= 1, "capture ring requires at least 1 frame");
-    let (producer, consumer) = RingBuffer::new(FRAME_SAMPLES * frames);
+    let capacity = FRAME_SAMPLES * frames;
+    let (producer, consumer) = RingBuffer::new(capacity);
     let signal = Arc::new(Signal::default());
     (
         CaptureProducer {
             ring: producer,
+            capacity,
             signal: Arc::clone(&signal),
         },
         CaptureConsumer {
@@ -65,9 +68,15 @@ pub fn capture_ring_with_frames(frames: usize) -> (CaptureProducer, CaptureConsu
 }
 
 impl CaptureProducer {
-    /// Wait for room for the complete frame. Dropping the wait leaves the ring intact.
+    /// Total ring capacity in samples.
+    #[must_use]
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Wait for room for the complete slice. Dropping the wait leaves the ring intact.
     pub async fn push(&mut self, samples: &[f32]) -> Result<(), PushError> {
-        if samples.len() > FRAME_SAMPLES {
+        if samples.len() > self.capacity {
             return Err(PushError::Full);
         }
         poll_fn(|cx| {
@@ -90,7 +99,7 @@ impl CaptureProducer {
 
     /// Enqueue the entire block, or return immediately without writing if it does not fit.
     pub fn try_push(&mut self, samples: &[f32]) -> Result<(), PushError> {
-        if self.ring.is_abandoned() {
+        if self.ring.is_abandoned() || self.signal.consumer_closed.load(Ordering::Acquire) {
             return Err(PushError::Closed);
         }
         self.ring

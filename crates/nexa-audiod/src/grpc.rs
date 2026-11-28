@@ -27,7 +27,9 @@ use crate::capture_seal::{
 };
 use crate::dsp::{frame_duration, frame_rms};
 use crate::ma1260::{Command, CommandFrame, LAST_ZONE, percent_to_step, step_to_percent};
-use crate::traits::{AmpTransport, AudioError, PlaybackOutput, PlaybackSession, PlaybackSpec};
+use crate::traits::{
+    AmpTransport, AudioError, CaptureCounters, PlaybackOutput, PlaybackSession, PlaybackSpec,
+};
 
 const PLAYBACK_SAMPLE_RATE: u32 = 24_000;
 const UTTERANCE_QUEUE: usize = 64;
@@ -125,6 +127,8 @@ struct AudioDiagnostics {
     utterances_dropped: AtomicU64,
     utterances_lagged: AtomicU64,
     playbacks_failed: AtomicU64,
+    watchdog_reboots: AtomicU64,
+    capture: Arc<CaptureCounters>,
 }
 
 struct PlaybackTrace<'a> {
@@ -297,6 +301,37 @@ impl<A: AmpTransport, P: PlaybackOutput> AudioService<A, P> {
             return Ok(false);
         }
         self.publish_utterance(utterance)
+    }
+
+    pub(crate) fn capture_counters(&self) -> Arc<CaptureCounters> {
+        Arc::clone(&self.diagnostics.capture)
+    }
+
+    pub(crate) fn record_watchdog_reboot(&self) {
+        self.diagnostics.watchdog_reboots.fetch_add(1, Relaxed);
+    }
+
+    pub(crate) fn update_microphone_frame(
+        &self,
+        room_id: &str,
+        rms: f32,
+        frames_captured: u64,
+        last_frame_unix_ms: u64,
+    ) -> Result<(), Status> {
+        let mut snapshot = lock(&self.microphones)?;
+        snapshot.observed_at_unix_ms = last_frame_unix_ms;
+        snapshot.stale = false;
+        if let Some(current) = snapshot
+            .microphones
+            .iter_mut()
+            .find(|status| status.room_id == room_id)
+        {
+            current.state = MicCaptureState::Receiving as i32;
+            current.last_rms = rms;
+            current.frames_captured = frames_captured;
+            current.last_frame_unix_ms = last_frame_unix_ms;
+        }
+        Ok(())
     }
 
     pub(crate) fn update_microphone(&self, microphone: MicrophoneRoomStatus) -> Result<(), Status> {
@@ -556,12 +591,15 @@ impl<A: AmpTransport + 'static, P: PlaybackOutput + 'static> AudioServiceRpc
             state: state as i32,
             uptime_ms: u64::try_from(self.started.elapsed().as_millis()).unwrap_or(u64::MAX),
             detail: format!(
-                "{detail}; amp_mode={}; utterances_published={}; utterances_dropped={}; utterances_lagged={}; playbacks_failed={}",
+                "{detail}; amp_mode={}; utterances_published={}; utterances_dropped={}; utterances_lagged={}; playbacks_failed={}; capture_xruns={}; ring_overruns={}; watchdog_reboots={}",
                 self.amp.mode(),
                 self.diagnostics.utterances_published.load(Relaxed),
                 self.diagnostics.utterances_dropped.load(Relaxed),
                 self.diagnostics.utterances_lagged.load(Relaxed),
                 self.diagnostics.playbacks_failed.load(Relaxed),
+                self.diagnostics.capture.xruns.load(Relaxed),
+                self.diagnostics.capture.ring_overruns.load(Relaxed),
+                self.diagnostics.watchdog_reboots.load(Relaxed),
             ),
         }))
     }

@@ -1,7 +1,7 @@
 //! Room supervision and capture ownership across device and inference I/O.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -18,11 +18,11 @@ use crate::capture_seal::{
 };
 use crate::dsp::{FRAME_SAMPLES, NoiseFloorTracker, SAMPLE_RATE, frame_duration, frame_rms};
 use crate::endpoint::{EndpointDecision, EndpointTelemetry, PostWakeEndpoint};
-use crate::grpc::AudioService;
-use crate::hw::xvf::DspTelemetry;
-use crate::ring::{CaptureConsumer, CaptureProducer, capture_ring_with_frames};
+use crate::grpc::{AmbientDemand, AudioService};
+use crate::ring::{CaptureConsumer, capture_ring_with_frames};
 use crate::traits::{
-    AmpTransport, AudioError, CaptureSource, PlaybackOutput, ShadowStt, VadEngine, WakeEngine,
+    AmpTransport, AudioError, CaptureSource, DspProbe, PlaybackOutput, ShadowStt, VadEngine,
+    WakeEngine,
 };
 
 const FIRST_RETRY: Duration = Duration::from_millis(100);
@@ -33,6 +33,7 @@ const CAPTURE_RING_FRAMES: usize = 24;
 const DEAD_ISOCH_ZERO_FRAMES: usize = 75;
 const MAX_WATCHDOG_REBOOTS_PER_HOUR: usize = 4;
 const WATCHDOG_WINDOW: Duration = Duration::from_secs(3600);
+const REBOOT_AFTER_NO_AUDIO_FAILURES: u32 = 3;
 const DSP_PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const AMBIENT_MIN_VOICE_FRAMES: usize = 10; // 800 ms of voiced frames.
 const AMBIENT_MAX_FRAMES: usize = 150; // 12 s, including pauses.
@@ -49,6 +50,94 @@ const PREROLL_MIN_VOICED_FRAMES: usize = 3; // 240 ms of speech inside pre-roll.
 const PREROLL_VAD_THRESHOLD: f32 = 0.35;
 const NEAR_WAKE_LOG_MIN: f32 = 0.15;
 const NEAR_WAKE_LOG_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Bounded sliding-window event counter used to escalate repeated transient errors (e.g. ALSA xruns).
+#[derive(Debug)]
+pub struct BurstTracker {
+    limit: usize,
+    window: Duration,
+    events: VecDeque<Instant>,
+}
+
+impl BurstTracker {
+    #[must_use]
+    pub fn new(limit: usize, window: Duration) -> Self {
+        let limit = limit.max(1);
+        Self {
+            limit,
+            window,
+            events: VecDeque::with_capacity(limit),
+        }
+    }
+
+    /// Record an event at `now` and return `true` if the burst limit within `window` is reached.
+    pub fn record_exceeded(&mut self, now: Instant) -> bool {
+        while self
+            .events
+            .front()
+            .is_some_and(|ts| now.saturating_duration_since(*ts) >= self.window)
+        {
+            self.events.pop_front();
+        }
+        self.events.push_back(now);
+        self.events.len() >= self.limit
+    }
+}
+
+/// Sliding-window rate limiter for hardware microphone watchdog reboots.
+#[derive(Debug)]
+pub struct RebootRateLimiter {
+    limit: usize,
+    window: Duration,
+    history: VecDeque<Instant>,
+}
+
+impl RebootRateLimiter {
+    #[must_use]
+    pub fn new(limit: usize, window: Duration) -> Self {
+        Self {
+            limit,
+            window,
+            history: VecDeque::with_capacity(limit),
+        }
+    }
+
+    /// Attempt to reserve one reboot slot at `now`.
+    pub fn try_acquire(&mut self, now: Instant) -> bool {
+        while self
+            .history
+            .front()
+            .is_some_and(|ts| now.saturating_duration_since(*ts) >= self.window)
+        {
+            self.history.pop_front();
+        }
+        if self.history.len() < self.limit {
+            self.history.push_back(now);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn store_azimuth(slot: &AtomicU32, value: Option<f32>) {
+    let bits = value
+        .filter(|angle| angle.is_finite())
+        .unwrap_or(f32::NAN)
+        .to_bits();
+    slot.store(bits, Ordering::Relaxed);
+}
+
+fn load_azimuth(slot: &AtomicU32) -> Option<f32> {
+    let value = f32::from_bits(slot.load(Ordering::Relaxed));
+    value.is_finite().then_some(value)
+}
+
+#[derive(Debug, Default)]
+struct ProcessReport {
+    nonzero_frames: u64,
+    dead_isoch: bool,
+}
 
 pub fn zone_id(room_id: &str) -> String {
     format!("zone_{room_id}")
@@ -313,7 +402,10 @@ where
         };
         let mut retry = FIRST_RETRY;
         let mut attempt = 0_u32;
-        let watchdog_reboots = Arc::new(Mutex::new(VecDeque::<Instant>::new()));
+        let check_dead_isoch = self.source.supports_dead_isoch_watchdog();
+        let mut reboot_limiter =
+            RebootRateLimiter::new(MAX_WATCHDOG_REBOOTS_PER_HOUR, WATCHDOG_WINDOW);
+        let mut consecutive_no_audio_failures = 0_u32;
         loop {
             if gate.epoch().is_none() {
                 self.processor.room.state = MicCaptureState::Muted as i32;
@@ -321,6 +413,7 @@ where
                 update_microphone(&service, &self.processor.room);
                 retry = FIRST_RETRY;
                 attempt = 0;
+                consecutive_no_audio_failures = 0;
             }
             let Some(epoch) = gate.wait_for_epoch().await else {
                 return Ok(());
@@ -342,7 +435,7 @@ where
             let (producer, consumer) = capture_ring_with_frames(CAPTURE_RING_FRAMES);
             let (utterances, pending) = mpsc::channel(1);
             let capture_busy = Arc::new(AtomicBool::new(false));
-            let latest_dsp = Arc::new(Mutex::new(None::<DspTelemetry>));
+            let latest_azimuth = Arc::new(AtomicU32::new(f32::NAN.to_bits()));
             self.processor.room.state = MicCaptureState::Waiting as i32;
             update_microphone(&service, &self.processor.room);
 
@@ -352,92 +445,174 @@ where
                 room_closed,
                 ..gate.clone()
             };
-            let capture = async {
-                let mut device = None;
-                let result = async {
-                    if gate.epoch() != Some(epoch) {
-                        return Ok(());
-                    }
-                    let result = self.source.start().await;
-                    if attempt > 0 {
-                        match &result {
-                            Ok(()) => tracing::info!(%room_id, attempt, result = "ok", "XVF3800 capture reopen"),
-                            Err(error) => tracing::warn!(%room_id, attempt, result = "error", error = %error.cause(), "XVF3800 capture reopen"),
+
+            let mut device = None;
+            let mut started_ok = false;
+            let start_result: Result<(), AudioError> = async {
+                if gate.epoch() != Some(epoch) {
+                    return Ok(());
+                }
+                let result = self.source.start().await;
+                if attempt > 0 {
+                    match &result {
+                        Ok(()) => {
+                            tracing::info!(%room_id, attempt, result = "ok", "XVF3800 capture reopen")
+                        }
+                        Err(error) => {
+                            tracing::warn!(%room_id, attempt, result = "error", error = %error.cause(), "XVF3800 capture reopen")
                         }
                     }
-                    result?;
-                    let (card, channels) = self.source.device();
-                    tracing::info!(%room_id, card, channels, "room capture opened");
-                    device = Some((card.to_owned(), channels));
-                    change_capture(&gate.control, move |control| {
-                        control.acknowledge_started(owner)
-                    })
-                    .await
-                    .map_err(|error| unavailable("acknowledge capture start", error))?;
-                    pump_frames(
-                        &mut self.source,
-                        producer,
-                        room_gate.clone(),
-                        epoch,
-                        &room_id,
-                        Arc::clone(&capture_busy),
-                        Arc::clone(&watchdog_reboots),
-                        Arc::clone(&latest_dsp),
-                    )
-                    .await
                 }
-                .await;
-                // Do not drain buffered PCM once the device has failed or stopped.
-                close_room.send_replace(true);
-                // Even a failed start can have performed partial hardware I/O.
-                let mut delay = FIRST_RETRY;
-                while let Err(error) = self.source.stop().await {
-                    tracing::warn!(%room_id, error = %error.cause(), "capture stop failed; ownership retained");
-                    tokio::time::sleep(delay).await;
-                    delay = (delay * 2).min(MAX_RETRY);
-                }
-                if let Some((card, channels)) = device {
-                    tracing::info!(%room_id, %card, channels, "room capture closed");
-                }
-                result
-            };
-            let processing = async {
-                let result = process_frames(
-                    &mut self.processor,
-                    &service,
-                    consumer,
-                    utterances,
+                result?;
+                let (card, channels) = self.source.device();
+                tracing::info!(%room_id, card, channels, "room capture opened");
+                device = Some((card.to_owned(), channels));
+                change_capture(&gate.control, move |control| {
+                    control.acknowledge_started(owner)
+                })
+                .await
+                .map_err(|error| unavailable("acknowledge capture start", error))?;
+                started_ok = true;
+                Ok(())
+            }
+            .await;
+
+            let (capture_result, processing_result) = if start_result.is_ok()
+                && started_ok
+                && gate.epoch() == Some(epoch)
+            {
+                let dsp_probe = self.source.dsp_probe();
+                let dsp_poller = poll_dsp(
+                    dsp_probe,
+                    service.ambient_demand(),
                     room_gate.clone(),
                     epoch,
                     Arc::clone(&capture_busy),
-                    Arc::clone(&latest_dsp),
-                )
-                .await;
-                if result.is_err() {
+                    Arc::clone(&latest_azimuth),
+                );
+                let mut capture_gate = room_gate.clone();
+                let capture_run = async {
+                    let result = tokio::select! {
+                        biased;
+                        _ = capture_gate.closed(epoch) => Ok(()),
+                        result = self.source.run(producer, service.capture_counters()) => result,
+                    };
+                    // Do not drain buffered PCM once the device has failed or stopped.
                     close_room.send_replace(true);
-                }
-                result
+                    result
+                };
+                let processing = async {
+                    let result = process_frames(
+                        &mut self.processor,
+                        &service,
+                        consumer,
+                        utterances,
+                        room_gate.clone(),
+                        epoch,
+                        Arc::clone(&capture_busy),
+                        Arc::clone(&latest_azimuth),
+                        check_dead_isoch,
+                    )
+                    .await;
+                    close_room.send_replace(true);
+                    result
+                };
+                let publish = publish_utterances(
+                    &service,
+                    &shadow,
+                    pending,
+                    room_gate.clone(),
+                    epoch,
+                    &room_id,
+                );
+                let ((), capture_res, processing_res, ()) =
+                    tokio::join!(dsp_poller, capture_run, processing, publish);
+                close_room.send_replace(true);
+                (capture_res, processing_res)
+            } else {
+                drop((producer, consumer, utterances, pending));
+                close_room.send_replace(true);
+                (start_result, Ok(ProcessReport::default()))
             };
-            let publish = publish_utterances(
-                &service,
-                &shadow,
-                pending,
-                room_gate.clone(),
-                epoch,
-                &room_id,
-            );
-            let (capture, processing, ()) = tokio::join!(capture, processing, publish);
+
+            // Even a failed start can have performed partial hardware I/O. Always stop before
+            // retiring the capture owner or issuing a firmware reboot.
+            let mut delay = FIRST_RETRY;
+            while let Err(error) = self.source.stop().await {
+                tracing::warn!(%room_id, error = %error.cause(), "capture stop failed; ownership retained");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(MAX_RETRY);
+            }
+            if let Some((card, channels)) = device {
+                tracing::info!(%room_id, %card, channels, "room capture closed");
+            }
             let retired = change_capture(&gate.control, move |control| {
                 control.acknowledge_stopped(owner)
             })
             .await;
-            for (operation, result) in [("capture", capture), ("processing", processing)] {
-                if let Err(error) = result {
-                    tracing::warn!(%room_id, operation, error = %error.cause(), "room audio failed");
-                }
+
+            let mut session_had_error = false;
+            if let Err(error) = &capture_result {
+                session_had_error = true;
+                tracing::warn!(%room_id, operation = "capture", error = %error.cause(), "room audio failed");
             }
+            let report = match &processing_result {
+                Ok(report) => ProcessReport {
+                    nonzero_frames: report.nonzero_frames,
+                    dead_isoch: report.dead_isoch,
+                },
+                Err(error) => {
+                    session_had_error = true;
+                    tracing::warn!(%room_id, operation = "processing", error = %error.cause(), "room audio failed");
+                    ProcessReport::default()
+                }
+            };
             retired?;
+
+            if report.nonzero_frames > 0 || gate.epoch().is_none() {
+                consecutive_no_audio_failures = 0;
+            } else if !report.dead_isoch && session_had_error {
+                consecutive_no_audio_failures = consecutive_no_audio_failures.saturating_add(1);
+            }
+
             if gate.epoch() == Some(epoch) {
+                if check_dead_isoch {
+                    let no_audio_reboot =
+                        consecutive_no_audio_failures >= REBOOT_AFTER_NO_AUDIO_FAILURES;
+                    if report.dead_isoch || no_audio_reboot {
+                        if reboot_limiter.try_acquire(Instant::now()) {
+                            let reason = if report.dead_isoch {
+                                "dead_isoch_zeros"
+                            } else {
+                                "consecutive_no_audio_failures"
+                            };
+                            tracing::warn!(
+                                %room_id,
+                                reason,
+                                consecutive_no_audio_failures,
+                                "XVF3800 watchdog issuing hardware reboot"
+                            );
+                            if let Err(error) = self.source.reboot().await {
+                                tracing::warn!(
+                                    %room_id,
+                                    error = %error.cause(),
+                                    "XVF3800 watchdog reboot failed"
+                                );
+                            } else {
+                                service.record_watchdog_reboot();
+                            }
+                        } else {
+                            tracing::warn!(
+                                %room_id,
+                                consecutive_no_audio_failures,
+                                "XVF3800 watchdog reboot rate limit reached"
+                            );
+                        }
+                        if no_audio_reboot {
+                            consecutive_no_audio_failures = 0;
+                        }
+                    }
+                }
                 self.processor.room.state = MicCaptureState::Recovering as i32;
                 self.processor.room.last_rms = 0.0;
                 self.processor.room.recoveries = self.processor.room.recoveries.saturating_add(1);
@@ -457,93 +632,50 @@ where
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn pump_frames(
-    source: &mut impl CaptureSource,
-    mut producer: CaptureProducer,
+async fn poll_dsp(
+    probe: Option<Arc<dyn DspProbe>>,
+    mut ambient_demand: watch::Receiver<AmbientDemand>,
     mut gate: CaptureGate,
     epoch: u64,
-    room_id: &str,
     capture_busy: Arc<AtomicBool>,
-    watchdog_reboots: Arc<Mutex<VecDeque<Instant>>>,
-    latest_dsp: Arc<Mutex<Option<DspTelemetry>>>,
-) -> Result<(), AudioError> {
-    let mut samples = [0.0; FRAME_SAMPLES];
-    let check_dead_isoch = source.supports_dead_isoch_watchdog();
-    let mut zero_streak = 0_usize;
-    let mut last_dsp_probe: Option<Instant> = None;
+    latest_azimuth: Arc<AtomicU32>,
+) {
+    let Some(probe) = probe else {
+        return;
+    };
     loop {
+        if ambient_demand.borrow_and_update().generation().is_none() {
+            store_azimuth(&latest_azimuth, None);
+            tokio::select! {
+                biased;
+                _ = gate.closed(epoch) => return,
+                changed = ambient_demand.changed() => {
+                    if changed.is_err() {
+                        return;
+                    }
+                }
+            }
+            continue;
+        }
+        if !capture_busy.load(Ordering::Acquire) {
+            let azimuth = tokio::select! {
+                biased;
+                _ = gate.closed(epoch) => return,
+                azimuth = probe.read_azimuth() => azimuth,
+            };
+            if let Some(angle) = azimuth {
+                store_azimuth(&latest_azimuth, Some(angle));
+            }
+        }
         tokio::select! {
             biased;
-            _ = gate.closed(epoch) => return Ok(()),
-            result = async {
-                let count = tokio::time::timeout(FRAME_TIMEOUT, source.read(&mut samples))
-                    .await.map_err(|error| unavailable("read capture frame", error))??;
-                let samples = samples.get(..count).filter(|frame| !frame.is_empty())
-                    .ok_or_else(|| unavailable("read capture frame", "empty or oversized frame"))?;
-                if !capture_busy.load(Ordering::Relaxed)
-                    && last_dsp_probe.is_none_or(|prev| prev.elapsed() >= DSP_PROBE_INTERVAL)
-                {
-                    last_dsp_probe = Some(Instant::now());
-                    if let Some(telemetry) = source.probe_dsp().await
-                        && let Ok(mut slot) = latest_dsp.lock()
-                    {
-                        *slot = Some(telemetry);
-                    }
+            _ = gate.closed(epoch) => return,
+            changed = ambient_demand.changed() => {
+                if changed.is_err() {
+                    return;
                 }
-                if check_dead_isoch {
-                    #[allow(clippy::float_cmp)]
-                    if samples.iter().all(|&sample| sample == 0.0) {
-                        zero_streak = zero_streak.saturating_add(1);
-                    } else {
-                        zero_streak = 0;
-                    }
-                    if zero_streak >= DEAD_ISOCH_ZERO_FRAMES
-                        && !capture_busy.load(Ordering::Relaxed)
-                    {
-                        let should_reboot = watchdog_reboots
-                            .lock()
-                            .ok()
-                            .is_some_and(|mut history| {
-                                let now = Instant::now();
-                                while history
-                                    .front()
-                                    .is_some_and(|ts| now.duration_since(*ts) >= WATCHDOG_WINDOW)
-                                {
-                                    history.pop_front();
-                                }
-                                if history.len() < MAX_WATCHDOG_REBOOTS_PER_HOUR {
-                                    history.push_back(now);
-                                    true
-                                } else {
-                                    false
-                                }
-                            });
-                        if should_reboot {
-                            tracing::warn!(
-                                %room_id,
-                                zero_streak,
-                                "XVF3800 dead isochronous stream detected; rebooting microphone"
-                            );
-                            if let Err(error) = source.reboot().await {
-                                tracing::warn!(
-                                    %room_id,
-                                    error = %error.cause(),
-                                    "XVF3800 watchdog reboot failed"
-                                );
-                            }
-                        } else {
-                            tracing::warn!(
-                                %room_id,
-                                zero_streak,
-                                "XVF3800 dead isochronous stream detected; reboot rate limit reached"
-                            );
-                        }
-                        return Err(AudioError::Unavailable);
-                    }
-                }
-                producer.push(samples).await.map_err(|error| unavailable("enqueue capture frame", error))
-            } => result?,
+            }
+            () = tokio::time::sleep(DSP_PROBE_INTERVAL) => (),
         }
     }
 }
@@ -737,8 +869,9 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
     mut gate: CaptureGate,
     epoch: u64,
     capture_busy: Arc<AtomicBool>,
-    latest_dsp: Arc<Mutex<Option<DspTelemetry>>>,
-) -> Result<(), AudioError> {
+    latest_azimuth: Arc<AtomicU32>,
+    check_dead_isoch: bool,
+) -> Result<ProcessReport, AudioError> {
     let RoomProcessor {
         room,
         inference,
@@ -773,10 +906,12 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
     let zone = zone_id(&room.room_id);
     let mut frame = [0.0; FRAME_SAMPLES];
     let mut filled = 0;
+    let mut zero_streak = 0_usize;
+    let mut nonzero_frames = 0_u64;
     loop {
         let count = tokio::select! {
             biased;
-            _ = gate.closed(epoch) => return Ok(()),
+            _ = gate.closed(epoch) => return Ok(ProcessReport { nonzero_frames, dead_isoch: false }),
             Ok(()) = ambient_demand.changed() => {
                 let next = ambient_demand.borrow_and_update().generation();
                 if next != generation {
@@ -785,10 +920,15 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 }
                 continue;
             }
-            count = consumer.read(&mut frame[filled..]) => count,
+            read = tokio::time::timeout(FRAME_TIMEOUT, consumer.read(&mut frame[filled..])) => {
+                read.map_err(|error| unavailable("read capture frame", error))?
+            }
         };
         if count == 0 {
-            return Ok(());
+            return Ok(ProcessReport {
+                nonzero_frames,
+                dead_isoch: false,
+            });
         }
         filled += count;
         if filled < frame.len() {
@@ -807,7 +947,44 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
         room.last_rms = rms;
         room.frames_captured = room.frames_captured.saturating_add(1);
         room.last_frame_unix_ms = unix_ms();
-        update_microphone(service, room);
+        if let Err(error) = service.update_microphone_frame(
+            &room.room_id,
+            rms,
+            room.frames_captured,
+            room.last_frame_unix_ms,
+        ) {
+            tracing::warn!(room_id = %room.room_id, %error, "microphone diagnostics update failed");
+        }
+
+        #[allow(clippy::float_cmp)]
+        if frame.iter().all(|&sample| sample == 0.0) {
+            zero_streak = zero_streak.saturating_add(1);
+        } else {
+            zero_streak = 0;
+            nonzero_frames = nonzero_frames.saturating_add(1);
+        }
+        let speaking = service.speaking(&zone).unwrap_or(true);
+        let follow_up_window_open = follow_up_until.is_some_and(|expires| Instant::now() < expires);
+        let follow_up_segment_active =
+            matches!(&non_wake, Some(segment) if segment.recording.kind == UtteranceKind::FollowUp);
+        capture_busy.store(
+            speaking || current.is_some() || follow_up_window_open || follow_up_segment_active,
+            Ordering::Release,
+        );
+        if check_dead_isoch
+            && zero_streak >= DEAD_ISOCH_ZERO_FRAMES
+            && !capture_busy.load(Ordering::Acquire)
+        {
+            tracing::warn!(
+                room_id = %room.room_id,
+                zero_streak,
+                "XVF3800 dead isochronous stream detected"
+            );
+            return Ok(ProcessReport {
+                nonzero_frames,
+                dead_isoch: true,
+            });
+        }
 
         // Await an in-flight model call on seal before retiring the capture owner.
         let models = Arc::clone(inference);
@@ -825,7 +1002,10 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             _ = gate.closed(epoch) => {
                 drop((current, non_wake));
                 inference_job.await.map_err(|error| unavailable("join room inference worker", error))??;
-                return Ok(());
+                return Ok(ProcessReport {
+                    nonzero_frames,
+                    dead_isoch: false,
+                });
             }
             result = &mut inference_job => result,
         }
@@ -848,11 +1028,18 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                         follow_up_until = Some(now + *follow_up_window);
                         tokio::select! {
                             biased;
-                            _ = gate.closed(epoch) => return Ok(()),
+                            _ = gate.closed(epoch) => return Ok(ProcessReport {
+                                nonzero_frames,
+                                dead_isoch: false,
+                            }),
                             result = utterances.send(recording) => result.map_err(|error| unavailable("enqueue utterance", error))?,
                         }
                     }
                     ArbitrationOutcome::Yielded { winner_room } => {
+                        capture_busy.store(
+                            speaking || follow_up_until.is_some_and(|expires| now < expires),
+                            Ordering::Release,
+                        );
                         tracing::info!(
                             room_id = %room.room_id,
                             utterance_id = %recording.id,
@@ -868,6 +1055,10 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 recording.endpoint = Some(endpoint.telemetry());
                 recording.log_endpoint(&room.room_id, decision, 0, false);
                 guard.record(now, CaptureOutcome::Rejected);
+                capture_busy.store(
+                    speaking || follow_up_until.is_some_and(|expires| now < expires),
+                    Ordering::Release,
+                );
             }
             continue;
         }
@@ -902,6 +1093,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             recording.samples.extend_from_slice(&frame);
             let claim = arbiter.begin(&room.room_id, now, score, rms);
             current = Some((endpoint, recording, claim));
+            capture_busy.store(true, Ordering::Release);
             continue;
         }
         if score >= NEAR_WAKE_LOG_MIN
@@ -918,8 +1110,6 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                 "near-threshold wake score"
             );
         }
-        let speaking = service.speaking(&zone).unwrap_or(true);
-        capture_busy.store(speaking || current.is_some(), Ordering::Relaxed);
         if speaking {
             preroll.clear();
         } else {
@@ -969,10 +1159,7 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
                     .is_some_and(|until| now < until);
             NonWakeSegment::with_preroll(kind, now, prefix, continues)
         });
-        let auto_beam = latest_dsp
-            .lock()
-            .ok()
-            .and_then(|guard| guard.and_then(|telemetry| telemetry.auto_beam_rad));
+        let auto_beam = load_azimuth(&latest_azimuth);
         if !segment.observe(&frame, voiced, auto_beam) {
             non_wake = Some(segment);
             continue;
@@ -985,7 +1172,10 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             follow_up_until = None; // One candidate per completed wake command.
             tokio::select! {
                 biased;
-                _ = gate.closed(epoch) => return Ok(()),
+                _ = gate.closed(epoch) => return Ok(ProcessReport {
+                    nonzero_frames,
+                    dead_isoch: false,
+                }),
                 result = utterances.send(recording) => result.map_err(|error| unavailable("enqueue follow-up", error))?,
             }
         } else if let Some(generation) = generation {
@@ -994,7 +1184,10 @@ async fn process_frames<A: AmpTransport, P: PlaybackOutput>(
             let utterance = recording.into_utterance(&room.room_id, epoch, String::new(), 0);
             let room_closed = gate.room_closed.borrow();
             if *room_closed || *gate.shutdown.borrow() {
-                return Ok(());
+                return Ok(ProcessReport {
+                    nonzero_frames,
+                    dead_isoch: false,
+                });
             }
             match service.publish_ambient(generation, utterance) {
                 Ok(true) => {

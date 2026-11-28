@@ -13,6 +13,7 @@ use nexa_audiod::ma1260::{
     Command, CommandFrame, FrameError, is_acknowledgment, percent_to_step, step_to_percent,
 };
 use nexa_audiod::ring::{PushError, capture_ring, capture_ring_with_frames};
+use nexa_audiod::runtime::{BurstTracker, RebootRateLimiter};
 use proptest::prelude::*;
 
 fn ms(value: u64) -> Duration {
@@ -85,6 +86,7 @@ fn ring_capacity_whole_writes_and_wraparound() {
 #[test]
 fn capture_ring_with_frames_absorbs_multi_frame_bursts() {
     let (mut producer, mut consumer) = capture_ring_with_frames(4);
+    assert_eq!(producer.capacity(), 4 * FRAME_SAMPLES);
     let frame = [0.25_f32; FRAME_SAMPLES];
     for _ in 0..4 {
         producer.try_push(&frame).unwrap();
@@ -95,6 +97,42 @@ fn capture_ring_with_frames_absorbs_multi_frame_bursts() {
         assert_eq!(consumer.try_read(&mut out), FRAME_SAMPLES);
     }
     assert_eq!(consumer.try_read(&mut out), 0);
+}
+
+#[tokio::test]
+async fn capture_ring_push_accepts_slices_up_to_ring_capacity() {
+    let (mut producer, mut consumer) = capture_ring_with_frames(4);
+    let double_frame = vec![0.42_f32; 2 * FRAME_SAMPLES];
+    producer.push(&double_frame).await.unwrap();
+    let mut out = vec![0.0_f32; 2 * FRAME_SAMPLES];
+    assert_eq!(consumer.read(&mut out).await, 2 * FRAME_SAMPLES);
+    assert_eq!(out, double_frame);
+
+    let oversized = vec![0.1_f32; 4 * FRAME_SAMPLES + 1];
+    assert_eq!(producer.push(&oversized).await, Err(PushError::Full));
+}
+
+#[test]
+fn burst_tracker_and_reboot_rate_limiter_enforce_sliding_windows() {
+    let t0 = Instant::now();
+    let mut burst = BurstTracker::new(3, Duration::from_secs(10));
+    assert!(!burst.record_exceeded(t0));
+    assert!(!burst.record_exceeded(t0 + Duration::from_secs(2)));
+    assert!(burst.record_exceeded(t0 + Duration::from_secs(9)));
+
+    let mut expiring = BurstTracker::new(3, Duration::from_secs(10));
+    assert!(!expiring.record_exceeded(t0));
+    assert!(!expiring.record_exceeded(t0 + Duration::from_secs(5)));
+    // First event expires at t0 + 10s, leaving only 2 events inside the window.
+    assert!(!expiring.record_exceeded(t0 + Duration::from_secs(10)));
+    assert!(expiring.record_exceeded(t0 + Duration::from_secs(11)));
+
+    let mut limiter = RebootRateLimiter::new(4, Duration::from_secs(3600));
+    for sec in 0..4 {
+        assert!(limiter.try_acquire(t0 + Duration::from_secs(sec)));
+    }
+    assert!(!limiter.try_acquire(t0 + Duration::from_secs(3599)));
+    assert!(limiter.try_acquire(t0 + Duration::from_secs(3600)));
 }
 
 #[tokio::test]
