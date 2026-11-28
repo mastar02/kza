@@ -21,3 +21,4 @@ description: Reglas de aislamiento de worktrees, diálogos de confianza en tabs 
 - Roles de escritura: exigir `--merged` (valida `git merge-base --is-ancestor`) o `--merged-squash`.
 - Roles de lectura: exigir `--done-readonly`.
 - Conservar intacto el worktree hermano `bench-ambient` y nunca tocar worktrees/templates de otros proyectos (`tu-*`, `gsm-*`).
+- Una vez cerrado el asiento con `kza_seat.py close` y validados el merge (si corresponde) y la evidencia, borrar `~/.local/state/kza-router/reports/<alias>.md` y limpiar las cachés `target/` de KZA que ya no se necesiten.

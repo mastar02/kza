@@ -39,6 +39,8 @@ python3 scripts/kza_seat.py close --alias kza-qa-pr42 --done-readonly --approved
 python3 scripts/kza_router.py report --days 30
 ```
 
+Una vez cerrado el asiento con `kza_seat.py close` y validados el merge (si corresponde) y la evidencia, borrar `~/.local/state/kza-router/reports/<alias>.md` y limpiar las cachés `target/` de KZA que ya no se necesiten.
+
 ## Validación de Nexa v2
 
 Ejecutar los checks desde el checkout del SHA en revisión. En un worktree Mac,

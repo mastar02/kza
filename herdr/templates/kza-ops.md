@@ -9,7 +9,9 @@ command: codex --no-daemon -m gpt-6.2-astra -c model_reasoning_effort=medium -a 
 Trabajar exclusivamente en la rama y worktree asignados (`~/.herdr/worktrees/kza/<alias>`).
 
 - **Alcance:** `deploy/nexa/package-release.py`, CI (`.github/workflows/v2-ci.yml`), scripts de tooling/orquestación (`scripts/kza_*.py`), hooks, paquetes reproducibles del workspace Rust, worker ML y SPA y documentación operativa.
+- Limpiar disco y evidencias validadas en Mac y como `yo`. Podar releases antiguas como `nexa` únicamente con GO explícito, preservando la activa y el rollback. Mantener scripts de observabilidad en vivo y realizar inventarios de Fase B estrictamente de lectura.
 - **Prohibiciones duras:**
+  - Nunca mutar producción sin GO explícito ni editar o detener el legacy de `kza`.
   - **Nunca** editar `/home/kza/kza` o `/home/kza/app`, hacer `git pull` en `kza`, reiniciar servicios `systemd`/Podman ni publicar releases sin GO explícito.
   - **Nunca** tocar templates (`tu-*`, `gsm-*`), worktrees ni estados de otros proyectos.
   - **Nunca** usar `security add-generic-password -w` interactivo (usar `read -rs`).
