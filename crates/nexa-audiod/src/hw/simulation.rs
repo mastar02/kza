@@ -1,10 +1,13 @@
 //! Silent, paced capture and a playback sink for portable daemon integration.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::dsp::{FRAME_SAMPLES, frame_duration};
+use crate::ring::{CaptureProducer, PushError};
 use crate::traits::{
-    AudioError, CaptureSource, PlaybackOutput, PlaybackSession, PlaybackSpec, ShadowStt, VadEngine,
-    WakeEngine,
+    AudioError, CaptureCounters, CaptureSource, PlaybackOutput, PlaybackSession, PlaybackSpec,
+    ShadowStt, VadEngine, WakeEngine,
 };
 
 #[derive(Debug, Default)]
@@ -19,10 +22,20 @@ impl CaptureSource for Simulation {
         Ok(())
     }
 
-    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
-        tokio::time::sleep(crate::dsp::frame_duration(samples.len())).await;
-        samples.fill(0.0);
-        Ok(samples.len())
+    async fn run(
+        &mut self,
+        mut producer: CaptureProducer,
+        _counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let silence = [0.0_f32; FRAME_SAMPLES];
+        loop {
+            tokio::time::sleep(frame_duration(FRAME_SAMPLES)).await;
+            match producer.push(&silence).await {
+                Ok(()) => (),
+                Err(PushError::Closed) => return Ok(()),
+                Err(PushError::Full) => return Err(AudioError::Unavailable),
+            }
+        }
     }
 
     async fn stop(&mut self) -> Result<(), AudioError> {

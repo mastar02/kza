@@ -449,6 +449,8 @@ impl RoomsConfig {
         }
         let mut seen_ids = HashSet::new();
         let mut seen_ports = HashSet::new();
+        let mut seen_serials = HashSet::new();
+        let mut seen_zones = HashSet::new();
         for room in &self.rooms {
             if room.room_id.trim().is_empty() || room.name.trim().is_empty() {
                 return Err(ConfigError::Validation(
@@ -474,6 +476,19 @@ impl RoomsConfig {
                     )));
                 }
             }
+            if let Some(serial) = room.mic_serial.as_deref() {
+                if serial.trim().is_empty() {
+                    return Err(ConfigError::Validation(format!(
+                        "room '{}' has empty mic_serial",
+                        room.room_id
+                    )));
+                }
+                if !seen_serials.insert(serial) {
+                    return Err(ConfigError::Validation(format!(
+                        "duplicate mic_serial '{serial}'"
+                    )));
+                }
+            }
             if room.mic_channel > 5 {
                 return Err(ConfigError::Validation(format!(
                     "room '{}' mic_channel ({}) out of range 0..=5",
@@ -486,9 +501,39 @@ impl RoomsConfig {
                     room.room_id, room.ma1260_zone
                 )));
             }
-            if !(0.0..=1.0).contains(&room.xvf_tuning.pp_min_nn) {
+            if !seen_zones.insert(room.ma1260_zone) {
                 return Err(ConfigError::Validation(format!(
-                    "room '{}' xvf_tuning.pp_min_nn must be in [0.0, 1.0]",
+                    "duplicate ma1260_zone {}",
+                    room.ma1260_zone
+                )));
+            }
+            if !room.xvf_tuning.pp_agc_max_gain.is_finite()
+                || !(1.0..=1000.0).contains(&room.xvf_tuning.pp_agc_max_gain)
+            {
+                return Err(ConfigError::Validation(format!(
+                    "room '{}' xvf_tuning.pp_agc_max_gain must be finite and in [1.0, 1000.0]",
+                    room.room_id
+                )));
+            }
+            if room.xvf_tuning.pp_attns_mode > 1 {
+                return Err(ConfigError::Validation(format!(
+                    "room '{}' xvf_tuning.pp_attns_mode must be 0 or 1",
+                    room.room_id
+                )));
+            }
+            if !room.xvf_tuning.pp_attns_slope.is_finite()
+                || !(0.0..=5.0).contains(&room.xvf_tuning.pp_attns_slope)
+            {
+                return Err(ConfigError::Validation(format!(
+                    "room '{}' xvf_tuning.pp_attns_slope must be finite and in [0.0, 5.0]",
+                    room.room_id
+                )));
+            }
+            if !room.xvf_tuning.pp_min_nn.is_finite()
+                || !(0.0..=1.0).contains(&room.xvf_tuning.pp_min_nn)
+            {
+                return Err(ConfigError::Validation(format!(
+                    "room '{}' xvf_tuning.pp_min_nn must be finite and in [0.0, 1.0]",
                     room.room_id
                 )));
             }
@@ -921,8 +966,70 @@ mod tests {
         empty_ct.ml.ambient_stt_compute_type = Some("   ".into());
         assert!(empty_ct.validate().is_err());
 
-        let base = NexaConfig::from_toml_str(sample_nexa_toml()).expect("valid base");
+        let base = NexaConfig::from_toml_str(sample_nexa_toml()).expect("template base");
         assert_eq!(base.ml.ambient_stt_compute_type.as_deref(), Some("float16"));
+    }
+
+    #[test]
+    fn rejects_invalid_xvf_tuning_duplicate_zones_and_serials() {
+        let base_room = || RoomDefinition {
+            room_id: "living".into(),
+            name: "Living".into(),
+            mic_usb_port: None,
+            mic_serial: None,
+            mic_channel: 0,
+            ma1260_zone: 1,
+            default_light: None,
+            default_climate: None,
+            xvf_tuning: XvfTuning {
+                pp_agc_max_gain: 16.0,
+                pp_attns_mode: 1,
+                pp_attns_slope: 1.0,
+                pp_min_nn: 0.51,
+            },
+        };
+
+        // Optional USB port/serial remain valid for --simulation.
+        let sim_cfg = RoomsConfig {
+            rooms: vec![base_room()],
+        };
+        sim_cfg.validate().expect("optional usb/serial valid");
+
+        for mutator in [
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_agc_max_gain = 0.9,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_agc_max_gain = 1000.1,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_agc_max_gain = f32::NAN,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_attns_mode = 2,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_attns_slope = -0.1,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_attns_slope = 5.1,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_attns_slope = f32::INFINITY,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_min_nn = -0.01,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_min_nn = 1.01,
+            |r: &mut RoomDefinition| r.xvf_tuning.pp_min_nn = f32::NAN,
+            |r: &mut RoomDefinition| r.mic_serial = Some("   ".into()),
+        ] {
+            let mut room = base_room();
+            mutator(&mut room);
+            let cfg = RoomsConfig { rooms: vec![room] };
+            assert!(cfg.validate().is_err());
+        }
+
+        let mut second = base_room();
+        second.room_id = "hall".into();
+        second.name = "Hall".into();
+        let dup_zone = RoomsConfig {
+            rooms: vec![base_room(), second.clone()],
+        };
+        assert!(dup_zone.validate().is_err());
+
+        second.ma1260_zone = 2;
+        let mut first = base_room();
+        first.mic_serial = Some("SER-1".into());
+        second.mic_serial = Some("SER-1".into());
+        let dup_serial = RoomsConfig {
+            rooms: vec![first, second],
+        };
+        assert!(dup_serial.validate().is_err());
     }
 
     proptest! {

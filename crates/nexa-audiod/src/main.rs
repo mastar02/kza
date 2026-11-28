@@ -27,6 +27,8 @@ use tracing_subscriber::EnvFilter;
 
 const CAPTURE_SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 const GRPC_SHUTDOWN_GRACE: Duration = Duration::from_millis(300);
+const WORKER_THREADS: usize = 4;
+const MAX_BLOCKING_THREADS: usize = 16;
 
 type DaemonResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -86,6 +88,8 @@ fn main() -> DaemonResult<()> {
         .with_target(true)
         .init();
     let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(WORKER_THREADS)
+        .max_blocking_threads(MAX_BLOCKING_THREADS)
         .enable_all()
         .build()?;
     let result = runtime.block_on(run(options));
@@ -141,7 +145,7 @@ async fn run(options: Options) -> DaemonResult<()> {
 
         enum HardwareShadow {
             Disabled,
-            Parakeet(Parakeet),
+            Parakeet(Box<Parakeet>),
         }
 
         impl ShadowStt for HardwareShadow {
@@ -171,7 +175,9 @@ async fn run(options: Options) -> DaemonResult<()> {
                 parakeet_mode = "enabled",
                 "loading Parakeet shadow STT model"
             );
-            HardwareShadow::Parakeet(Parakeet::open(&models.join(&audio.parakeet_model))?)
+            HardwareShadow::Parakeet(Box::new(Parakeet::open(
+                &models.join(&audio.parakeet_model),
+            )?))
         };
         let mut rooms = Vec::new();
         for room in &bundle.rooms.rooms {

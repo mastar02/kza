@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -14,14 +15,24 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::dsp::{FRAME_SAMPLES, SAMPLE_RATE};
 use crate::hw::{sysfs, xvf::XvfUsb};
-use crate::runtime::zone_id;
-use crate::traits::{AudioError, CaptureSource, PlaybackOutput, PlaybackSession, PlaybackSpec};
+use crate::ring::{CaptureProducer, PushError};
+use crate::runtime::{BurstTracker, zone_id};
+use crate::traits::{
+    AudioError, CaptureCounters, CaptureSource, DspProbe, PlaybackOutput, PlaybackSession,
+    PlaybackSpec,
+};
 
-const POLL_MS: u32 = 50;
+const CAPTURE_POLL_MS: u32 = 50;
+const PLAYBACK_POLL_MS: u32 = 15;
 const IO_TIMEOUT: Duration = Duration::from_millis(500);
+const XRUN_BURST_LIMIT: usize = 3;
+const XRUN_BURST_WINDOW: Duration = Duration::from_secs(10);
+const RING_OVERRUN_RESET_AFTER: Duration = Duration::from_secs(1);
+const RING_OVERRUN_LOG_INTERVAL: Duration = Duration::from_secs(1);
 const SYSFS: &str = "/sys";
 
 type Reply<T> = oneshot::Sender<Result<T, AudioError>>;
+type CaptureStart = (CaptureProducer, Arc<CaptureCounters>);
 
 fn channel_error(operation: &'static str, error: impl std::fmt::Display) -> AudioError {
     tracing::warn!(operation, %error, "ALSA worker communication failed");
@@ -46,15 +57,11 @@ fn drop_playback(pcm: &PCM) {
 }
 
 #[derive(Debug)]
-struct CaptureRequest {
-    length: usize,
-    reply: Reply<Vec<f32>>,
-}
-
-#[derive(Debug)]
 pub struct AlsaCapture {
     room: RoomDefinition,
-    sender: Option<mpsc::Sender<CaptureRequest>>,
+    begin: Option<oneshot::Sender<CaptureStart>>,
+    done: Option<oneshot::Receiver<Result<(), AudioError>>>,
+    stop: Option<Arc<AtomicBool>>,
     worker: Option<JoinHandle<()>>,
     device: Option<(String, u32)>,
     port: Option<String>,
@@ -64,7 +71,9 @@ impl AlsaCapture {
     pub fn new(room: RoomDefinition) -> Self {
         Self {
             room,
-            sender: None,
+            begin: None,
+            done: None,
+            stop: None,
             worker: None,
             device: None,
             port: None,
@@ -86,10 +95,14 @@ impl CaptureSource for AlsaCapture {
             return Err(AudioError::Rejected);
         }
         let room = self.room.clone();
-        let (sender, mut requests) = mpsc::channel::<CaptureRequest>(1);
         let (ready, initialized) = oneshot::channel();
-        self.worker = Some(thread::Builder::new().name("alsa-capture".into()).spawn(
-            move || {
+        let (begin_tx, begin_rx) = oneshot::channel::<CaptureStart>();
+        let (done_tx, done_rx) = oneshot::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let worker = thread::Builder::new()
+            .name("alsa-capture".into())
+            .spawn(move || {
                 let (pcm, port, card, channels) = match open_capture(&room) {
                     Ok(open) => open,
                     Err(error) => {
@@ -100,26 +113,32 @@ impl CaptureSource for AlsaCapture {
                 if !send_reply(ready, Ok((port, card, channels)), "open capture") {
                     return;
                 }
-                let channels = channels as usize;
-                let mut interleaved = vec![0; FRAME_SAMPLES * channels];
-                while let Some(request) = requests.blocking_recv() {
-                    let chunk = &mut interleaved[..request.length * channels];
-                    let result = read_capture(&pcm, chunk).map(|frames| {
-                        chunk
-                            .chunks_exact(channels)
-                            .take(frames)
-                            .map(|frame| f32::from(frame[usize::from(room.mic_channel)]) / 32_768.0)
-                            .collect()
-                    });
-                    let failed = result.is_err();
-                    if !send_reply(request.reply, result, "read capture") || failed {
-                        break;
-                    }
+                let Ok((mut producer, counters)) = begin_rx.blocking_recv() else {
+                    return;
+                };
+                if worker_stop.load(Ordering::Acquire) {
+                    return;
                 }
+                if let Err(error) = pcm.start().map_err(alsa_error) {
+                    send_reply(done_tx, Err(error), "start capture");
+                    return;
+                }
+                let result = capture_loop(
+                    &room.room_id,
+                    &pcm,
+                    channels as usize,
+                    usize::from(room.mic_channel),
+                    &mut producer,
+                    &counters,
+                    &worker_stop,
+                );
+                send_reply(done_tx, result, "run capture");
                 // Closing PCM is the stop barrier, including on disconnect and read error.
-            },
-        )?);
-        self.sender = Some(sender);
+            })?;
+        self.stop = Some(stop);
+        self.begin = Some(begin_tx);
+        self.done = Some(done_rx);
+        self.worker = Some(worker);
         let (port, card, channels) = initialized
             .await
             .map_err(|error| channel_error("open capture", error))??;
@@ -128,27 +147,27 @@ impl CaptureSource for AlsaCapture {
         Ok(())
     }
 
-    async fn read(&mut self, samples: &mut [f32]) -> Result<usize, AudioError> {
-        let sender = self.sender.as_ref().ok_or(AudioError::Unavailable)?;
-        let (reply, result) = oneshot::channel();
-        sender
-            .send(CaptureRequest {
-                length: samples.len().min(FRAME_SAMPLES),
-                reply,
-            })
-            .await
-            .map_err(|error| channel_error("request capture read", error))?;
-        let received = result
-            .await
-            .map_err(|error| channel_error("receive capture frame", error))??;
-        samples[..received.len()].copy_from_slice(&received);
-        Ok(received.len())
+    async fn run(
+        &mut self,
+        producer: CaptureProducer,
+        counters: Arc<CaptureCounters>,
+    ) -> Result<(), AudioError> {
+        let begin = self.begin.take().ok_or(AudioError::Unavailable)?;
+        let done = self.done.take().ok_or(AudioError::Unavailable)?;
+        begin
+            .send((producer, counters))
+            .map_err(|_| AudioError::Unavailable)?;
+        done.await
+            .map_err(|error| channel_error("join capture stream", error))?
     }
 
     async fn stop(&mut self) -> Result<(), AudioError> {
-        self.sender.take();
+        if let Some(stop) = self.stop.take() {
+            stop.store(true, Ordering::Release);
+        }
+        self.begin.take();
+        self.done.take();
         self.device.take();
-        self.port.take();
         if let Some(worker) = self.worker.take() {
             // Joining also confirms PCM was dropped if the worker unwound.
             tokio::task::spawn_blocking(move || {
@@ -167,16 +186,26 @@ impl CaptureSource for AlsaCapture {
     }
 
     async fn reboot(&mut self) -> Result<(), AudioError> {
-        let port = self.port.clone().ok_or(AudioError::Unavailable)?;
+        let port = if let Some(port) = self.port.clone() {
+            port
+        } else if let Some(port) = self.room.mic_usb_port.clone() {
+            port
+        } else if let Some(serial) = self.room.mic_serial.clone() {
+            tokio::task::spawn_blocking(move || {
+                sysfs::resolve(Path::new(SYSFS), None, Some(&serial)).map(|(port, _)| port)
+            })
+            .await
+            .map_err(|error| channel_error("resolve XVF port for reboot", error))??
+        } else {
+            return Err(AudioError::Unavailable);
+        };
         XvfUsb::new(port).reboot().await
     }
 
-    async fn probe_dsp(&mut self) -> Option<crate::hw::xvf::DspTelemetry> {
-        let port = self.port.clone()?;
-        tokio::task::spawn_blocking(move || XvfUsb::new(port).read_dsp_telemetry())
-            .await
-            .ok()
-            .flatten()
+    fn dsp_probe(&self) -> Option<Arc<dyn DspProbe>> {
+        self.port
+            .clone()
+            .map(|port| Arc::new(XvfUsb::new(port)) as Arc<dyn DspProbe>)
     }
 }
 
@@ -197,7 +226,6 @@ fn open_capture(room: &RoomDefinition) -> Result<(PCM, String, String, u32), Aud
         return Err(AudioError::Rejected);
     }
     let pcm = open_pcm(&card, Direction::Capture, channels, SAMPLE_RATE)?;
-    pcm.start().map_err(alsa_error)?;
     Ok((pcm, port, card, channels))
 }
 
@@ -231,26 +259,88 @@ fn open_pcm(card: &str, direction: Direction, channels: u32, rate: u32) -> Resul
     Ok(pcm)
 }
 
-fn read_capture(pcm: &PCM, samples: &mut [i16]) -> Result<usize, AudioError> {
+fn capture_loop(
+    room_id: &str,
+    pcm: &PCM,
+    channels: usize,
+    mic_channel: usize,
+    producer: &mut CaptureProducer,
+    counters: &CaptureCounters,
+    stop: &AtomicBool,
+) -> Result<(), AudioError> {
     let io = pcm.io_i16().map_err(alsa_error)?;
-    let started = Instant::now();
-    loop {
-        match io.readi(samples) {
-            Ok(count) if count > 0 || samples.is_empty() => return Ok(count),
+    let mut interleaved = vec![0_i16; FRAME_SAMPLES * channels];
+    let mut mono = [0.0_f32; FRAME_SAMPLES];
+    let mut xruns = BurstTracker::new(XRUN_BURST_LIMIT, XRUN_BURST_WINDOW);
+    let mut last_progress = Instant::now();
+    let mut overrun_since: Option<Instant> = None;
+    let mut last_overrun_log: Option<Instant> = None;
+
+    while !stop.load(Ordering::Acquire) {
+        match io.readi(&mut interleaved) {
+            Ok(frames) if frames > 0 => {
+                last_progress = Instant::now();
+                let count = frames.min(FRAME_SAMPLES);
+                for (dst, frame) in mono[..count]
+                    .iter_mut()
+                    .zip(interleaved.chunks_exact(channels).take(count))
+                {
+                    *dst = f32::from(frame[mic_channel]) / 32_768.0;
+                }
+                match producer.try_push(&mono[..count]) {
+                    Ok(()) => overrun_since = None,
+                    Err(PushError::Closed) => return Ok(()),
+                    Err(PushError::Full) => {
+                        counters.ring_overruns.fetch_add(1, Ordering::Relaxed);
+                        let now = Instant::now();
+                        let started = *overrun_since.get_or_insert(now);
+                        if last_overrun_log.is_none_or(|prev| {
+                            now.duration_since(prev) >= RING_OVERRUN_LOG_INTERVAL
+                        }) {
+                            last_overrun_log = Some(now);
+                            tracing::warn!(
+                                %room_id,
+                                dropped_samples = count,
+                                "capture ring full; dropping samples"
+                            );
+                        }
+                        if now.duration_since(started) >= RING_OVERRUN_RESET_AFTER {
+                            tracing::warn!(
+                                %room_id,
+                                "capture ring overflow persisted; restarting capture"
+                            );
+                            return Err(AudioError::Unavailable);
+                        }
+                    }
+                }
+            }
+            Err(error) if error.errno() == rustix::io::Errno::PIPE.raw_os_error() => {
+                counters.xruns.fetch_add(1, Ordering::Relaxed);
+                if xruns.record_exceeded(Instant::now()) {
+                    tracing::warn!(%room_id, %error, "ALSA capture overrun burst exceeded limit");
+                    return Err(alsa_error(error));
+                }
+                tracing::warn!(%room_id, %error, "ALSA capture overrun; preparing device");
+                pcm.prepare().map_err(alsa_error)?;
+                pcm.start().map_err(alsa_error)?;
+                last_progress = Instant::now();
+            }
             Err(error) if !again(error) => return Err(alsa_error(error)),
-            _ if started.elapsed() >= IO_TIMEOUT => {
+            _ if last_progress.elapsed() >= IO_TIMEOUT => {
                 return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
             }
             _ => {
-                pcm.wait(Some(POLL_MS)).map_err(alsa_error)?;
+                pcm.wait(Some(CAPTURE_POLL_MS)).map_err(alsa_error)?;
             }
         }
     }
+    Ok(())
 }
 
 #[derive(Debug)]
 pub struct AlsaPlayback {
     rooms: BTreeMap<String, RoomDefinition>,
+    workers: Mutex<BTreeMap<String, JoinHandle<()>>>,
 }
 
 impl AlsaPlayback {
@@ -260,6 +350,7 @@ impl AlsaPlayback {
                 .into_iter()
                 .map(|room| (zone_id(&room.room_id), room))
                 .collect(),
+            workers: Mutex::default(),
         }
     }
 }
@@ -292,6 +383,21 @@ impl PlaybackOutput for AlsaPlayback {
             .get(&spec.zone_id)
             .cloned()
             .ok_or(AudioError::Unavailable)?;
+        let previous = self
+            .workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&spec.zone_id);
+        if let Some(worker) = previous {
+            tokio::task::spawn_blocking(move || {
+                if worker.join().is_err() {
+                    tracing::warn!("ALSA playback worker panicked");
+                }
+            })
+            .await
+            .map_err(|error| channel_error("join prior playback worker", error))?;
+        }
+
         let sample_rate = spec.sample_rate;
         let (sender, mut requests) = mpsc::channel(1);
         let (ready, opened) = oneshot::channel();
@@ -301,7 +407,7 @@ impl PlaybackOutput for AlsaPlayback {
             cancelled: Arc::clone(&cancelled),
             card: String::new(),
         };
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("alsa-playback".into())
             .spawn(move || {
                 let opened = sysfs::alsa_card(
@@ -346,6 +452,10 @@ impl PlaybackOutput for AlsaPlayback {
                 }
                 drop_playback(&pcm);
             })?;
+        self.workers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(spec.zone_id.clone(), worker);
         session.card = opened
             .await
             .map_err(|error| channel_error("open playback", error))??;
@@ -410,7 +520,7 @@ fn write_playback(
             }
             Err(error) if !again(error) => return Err(alsa_error(error)),
             _ => {
-                pcm.wait(Some(POLL_MS)).map_err(alsa_error)?;
+                pcm.wait(Some(PLAYBACK_POLL_MS)).map_err(alsa_error)?;
             }
         }
     }

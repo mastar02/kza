@@ -1,10 +1,13 @@
 //! Dependency injection points for device I/O and inference.
 
 use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use thiserror::Error;
 
 use crate::ma1260::CommandFrame;
+use crate::ring::CaptureProducer;
 
 #[derive(Debug, Error)]
 pub enum AudioError {
@@ -27,6 +30,20 @@ impl AudioError {
     }
 }
 
+/// Shared capture-path counters updated by the capture producer and exposed in health.
+#[derive(Debug, Default)]
+pub struct CaptureCounters {
+    pub xruns: AtomicU64,
+    pub ring_overruns: AtomicU64,
+}
+
+/// Out-of-band hardware DSP telemetry probe (never called on the audio capture loop).
+#[tonic::async_trait]
+pub trait DspProbe: Send + Sync {
+    /// Poll auto-select beam azimuth in radians (best effort).
+    async fn read_azimuth(&self) -> Option<f32>;
+}
+
 /// One room's mono f32 capture source at 16 kHz.
 pub trait CaptureSource: Send {
     /// Device metadata for an open capture session.
@@ -37,11 +54,13 @@ pub trait CaptureSource: Send {
     /// Open capture I/O after the runtime has reserved an owner.
     fn start(&mut self) -> impl Future<Output = Result<(), AudioError>> + Send;
 
-    /// Read samples into caller-owned storage. A zero count signals end of stream.
-    fn read(
+    /// Stream mono 16 kHz samples directly into the bounded SPSC capture ring until
+    /// EOF, fatal error, or future cancellation.
+    fn run(
         &mut self,
-        samples: &mut [f32],
-    ) -> impl Future<Output = Result<usize, AudioError>> + Send;
+        producer: CaptureProducer,
+        counters: Arc<CaptureCounters>,
+    ) -> impl Future<Output = Result<(), AudioError>> + Send;
 
     /// Resolve successfully only after the source has stopped producing capture I/O.
     fn stop(&mut self) -> impl Future<Output = Result<(), AudioError>> + Send;
@@ -56,9 +75,10 @@ pub trait CaptureSource: Send {
         async { Ok(()) }
     }
 
-    /// Poll optional hardware DSP telemetry (e.g. XVF3800 speaker energy and azimuth).
-    fn probe_dsp(&mut self) -> impl Future<Output = Option<crate::hw::xvf::DspTelemetry>> + Send {
-        async { None }
+    /// Optional independent handle for out-of-band DSP telemetry (e.g. XVF3800 DoA).
+    /// Called after `start()` succeeds.
+    fn dsp_probe(&self) -> Option<Arc<dyn DspProbe>> {
+        None
     }
 }
 
