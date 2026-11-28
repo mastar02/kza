@@ -145,7 +145,7 @@ async fn run(options: Options) -> DaemonResult<()> {
 
         enum HardwareShadow {
             Disabled,
-            Parakeet(Parakeet),
+            Parakeet(Box<Parakeet>),
         }
 
         impl ShadowStt for HardwareShadow {
@@ -175,7 +175,9 @@ async fn run(options: Options) -> DaemonResult<()> {
                 parakeet_mode = "enabled",
                 "loading Parakeet shadow STT model"
             );
-            HardwareShadow::Parakeet(Parakeet::open(&models.join(&audio.parakeet_model))?)
+            HardwareShadow::Parakeet(Box::new(Parakeet::open(
+                &models.join(&audio.parakeet_model),
+            )?))
         };
         let mut rooms = Vec::new();
         for room in &bundle.rooms.rooms {
